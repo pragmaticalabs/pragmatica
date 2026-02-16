@@ -37,6 +37,7 @@ import org.slf4j.LoggerFactory;
 
 /// Handles REST API requests for the Forge dashboard.
 /// Uses RequestRouter for endpoint routing and delegates to domain-specific route handlers.
+@SuppressWarnings("JBCT-RET-01")
 public final class ForgeApiHandler {
     private static final Logger log = LoggerFactory.getLogger(ForgeApiHandler.class);
     private static final int MAX_EVENTS = 100;
@@ -49,7 +50,7 @@ public final class ForgeApiHandler {
 
     // Mutable state for modes/config
     private final Object modeLock = new Object();
-    private volatile SimulatorConfig config = SimulatorConfig.defaultConfig();
+    private volatile SimulatorConfig config = SimulatorConfig.simulatorConfig();
     private volatile SimulatorMode currentMode = SimulatorMode.DEVELOPMENT;
     private final ChaosController chaosController;
     private final InventoryState inventoryState;

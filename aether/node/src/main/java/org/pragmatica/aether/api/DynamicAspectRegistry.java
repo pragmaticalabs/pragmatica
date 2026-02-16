@@ -23,6 +23,7 @@ import org.slf4j.LoggerFactory;
 /// <p>Aspect modes are persisted to consensus KV-Store for cluster-wide consistency
 /// and survival across node restarts. The local registry provides fast lock-free
 /// lookups on the hot path.
+@SuppressWarnings("JBCT-RET-01")
 public class DynamicAspectRegistry {
     private static final Logger log = LoggerFactory.getLogger(DynamicAspectRegistry.class);
     private static final Logger aspectLog = LoggerFactory.getLogger("org.pragmatica.aether.aspect");

@@ -1,5 +1,6 @@
 package org.pragmatica.aether.slice;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -8,6 +9,10 @@ import org.pragmatica.lang.type.TypeToken;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.utils.Causes.cause;
 
 /// Context for loading a slice that buffers method handles for eager materialization.
 ///
@@ -58,13 +63,7 @@ public final class SliceLoadingContext implements SliceCreationContext {
     }
 
     private static ResourceProviderFacade noOpResourceProvider() {
-        return new ResourceProviderFacade() {
-            @Override
-            public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                return org.pragmatica.lang.utils.Causes.cause("Resource provisioning not configured")
-                          .promise();
-            }
-        };
+        return new NoOpResourceProvider();
     }
 
     @Override
@@ -97,9 +96,12 @@ public final class SliceLoadingContext implements SliceCreationContext {
     ///
     /// After this is called, new handles created via {@link #invoker()} will
     /// not be buffered. This is called after successful materialization.
-    public void markMaterialized() {
+    ///
+    /// @return Result<Unit> indicating success
+    public Result<Unit> markMaterialized() {
         materialized.set(true);
         bufferingInvoker.stopBuffering();
+        return success(unit());
     }
 
     /// Check if this context has been materialized.
@@ -122,6 +124,16 @@ public final class SliceLoadingContext implements SliceCreationContext {
     /// @return The delegate SliceCreationContext
     public SliceCreationContext delegate() {
         return delegate;
+    }
+
+    /// No-op resource provider that fails for any resource request.
+    private static final class NoOpResourceProvider implements ResourceProviderFacade {
+        private static final Cause NOT_CONFIGURED = cause("Resource provisioning not configured");
+
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+            return NOT_CONFIGURED.promise();
+        }
     }
 
     /// Internal invoker facade that buffers method handles for later materialization.

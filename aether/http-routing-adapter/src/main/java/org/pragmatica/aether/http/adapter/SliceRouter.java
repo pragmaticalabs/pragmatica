@@ -104,7 +104,7 @@ public interface SliceRouter {
 
             private HttpResponseData successToResponse(Object value, ContentType contentType) {
                 if (value == null) {
-                    return HttpResponseData.noContent();
+                    return HttpResponseData.httpResponseData(204);
                 }
                 var headers = headersForContentType(contentType);
                 if (isTextContent(contentType)) {
@@ -113,7 +113,7 @@ public interface SliceRouter {
                     return HttpResponseData.httpResponseData(200, headers, body);
                 }
                 return jsonMapper.writeAsBytes(value)
-                                 .fold(_ -> HttpResponseData.internalError("Serialization failed"),
+                                 .fold(_ -> HttpResponseData.httpResponseData(500, "Serialization failed"),
                                        body -> HttpResponseData.httpResponseData(200, headers, body));
             }
 

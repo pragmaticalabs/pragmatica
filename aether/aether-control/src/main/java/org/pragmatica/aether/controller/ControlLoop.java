@@ -48,6 +48,7 @@ import org.slf4j.LoggerFactory;
 ///   - Periodically evaluate controller with current metrics
 ///   - Apply scaling decisions by updating blueprints in KVStore
 ///
+@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) // MessageReceiver callbacks + framework lifecycle methods
 public interface ControlLoop {
     @MessageReceiver
     void onLeaderChange(LeaderChange leaderChange);

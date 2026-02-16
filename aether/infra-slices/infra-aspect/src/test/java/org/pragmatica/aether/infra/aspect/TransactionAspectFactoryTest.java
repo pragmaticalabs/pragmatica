@@ -251,7 +251,7 @@ class TransactionAspectFactoryTest {
 
     @Test
     void transactionContext_tracksStatus() {
-        var ctx = TransactionContext.transactionContext(TransactionConfig.transactionConfig().unwrap());
+        var ctx = TransactionContext.transactionContext(TransactionConfig.transactionConfig().unwrap()).unwrap();
         assertThat(ctx.isActive()).isTrue();
 
         var committed = ctx.commit();

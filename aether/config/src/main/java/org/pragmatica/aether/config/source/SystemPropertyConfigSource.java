@@ -7,6 +7,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
+import static org.pragmatica.lang.Option.option;
+
 /// Configuration source backed by Java system properties.
 ///
 /// System properties are filtered by prefix and the prefix is stripped.
@@ -43,13 +45,13 @@ public final class SystemPropertyConfigSource implements ConfigSource {
     /// @param priority Source priority
     /// @return New SystemPropertyConfigSource
     public static SystemPropertyConfigSource systemPropertyConfigSource(String prefix, int priority) {
-        var values = loadFromSystemProperties(prefix);
+        var values = fetchFromSystemProperties(prefix);
         return new SystemPropertyConfigSource(prefix, priority, values);
     }
 
     @Override
     public Option<String> getString(String key) {
-        return Option.option(values.get(key));
+        return option(values.get(key));
     }
 
     @Override
@@ -72,15 +74,15 @@ public final class SystemPropertyConfigSource implements ConfigSource {
         return "SystemPropertyConfigSource[prefix=" + prefix + "]";
     }
 
-    private static Map<String, String> loadFromSystemProperties(String prefix) {
-        var result = new LinkedHashMap<String, String>();
+    private static Map<String, String> fetchFromSystemProperties(String prefix) {
         var properties = System.getProperties();
-        for (var key : properties.stringPropertyNames()) {
-            if (key.startsWith(prefix)) {
-                var normalizedKey = key.substring(prefix.length());
-                result.put(normalizedKey, properties.getProperty(key));
-            }
-        }
+        var result = new LinkedHashMap<String, String>();
+        var filteredNames = properties.stringPropertyNames()
+                                      .stream()
+                                      .filter(key -> key.startsWith(prefix))
+                                      .toList();
+        filteredNames.forEach(key -> result.put(key.substring(prefix.length()),
+                                                properties.getProperty(key)));
         return result;
     }
 }

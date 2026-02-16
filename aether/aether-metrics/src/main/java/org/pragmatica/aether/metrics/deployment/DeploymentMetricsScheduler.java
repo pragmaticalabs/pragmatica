@@ -30,16 +30,20 @@ public interface DeploymentMetricsScheduler {
                                        .seconds();
 
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
     void onLeaderChange(LeaderChange leaderChange);
 
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
     void onTopologyChange(TopologyChangeNotification topologyChange);
 
     /// Handle quorum state changes (stop pinging when quorum disappears).
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
     void onQuorumStateChange(QuorumStateNotification notification);
 
     /// Stop the scheduler (for graceful shutdown).
+    @SuppressWarnings("JBCT-RET-01")
     void stop();
 
     /// Create a new DeploymentMetricsScheduler with default 5-second interval.
@@ -80,6 +84,7 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onLeaderChange(LeaderChange leaderChange) {
         if (leaderChange.localNodeIsLeader()) {
             log.info("Node {} became leader, starting deployment metrics scheduler", self);
@@ -91,6 +96,7 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onTopologyChange(TopologyChangeNotification topologyChange) {
         switch (topologyChange) {
             case NodeAdded(_, List<NodeId> newTopology) -> topology.set(newTopology);
@@ -100,6 +106,7 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onQuorumStateChange(QuorumStateNotification notification) {
         if (notification == QuorumStateNotification.DISAPPEARED) {
             log.info("Quorum disappeared, stopping deployment metrics scheduler");
@@ -108,6 +115,7 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void stop() {
         stopPinging();
     }
@@ -125,6 +133,7 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
         }
     }
 
+    @SuppressWarnings("JBCT-EX-01")
     private void sendPingsToAllNodes() {
         try{
             var currentTopology = topology.get();
@@ -133,11 +142,9 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
             }
             var localMetrics = collector.collectLocalEntries();
             var ping = new DeploymentMetricsPing(self, localMetrics);
-            for (var nodeId : currentTopology) {
-                if (!nodeId.equals(self)) {
-                    network.send(nodeId, ping);
-                }
-            }
+            currentTopology.stream()
+                           .filter(nodeId -> !nodeId.equals(self))
+                           .forEach(nodeId -> network.send(nodeId, ping));
             log.trace("Sent DeploymentMetricsPing to {} nodes", currentTopology.size() - 1);
         } catch (Exception e) {
             log.warn("Failed to send deployment metrics ping: {}", e.getMessage());

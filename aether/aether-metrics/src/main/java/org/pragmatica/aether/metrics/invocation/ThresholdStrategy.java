@@ -1,12 +1,16 @@
 package org.pragmatica.aether.metrics.invocation;
 
 import org.pragmatica.aether.slice.MethodName;
-import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.unitResult;
 
 /// Strategy for determining when an invocation is considered "slow".
 ///
@@ -25,6 +29,7 @@ public sealed interface ThresholdStrategy {
     ///
     /// @param method     The method that was invoked
     /// @param durationNs Duration in nanoseconds
+    @SuppressWarnings("JBCT-RET-01")
     default void observe(MethodName method, long durationNs) {}
 
     /// Get the current threshold for a method (for monitoring).
@@ -76,6 +81,19 @@ public sealed interface ThresholdStrategy {
         return new Composite(methodThresholdsNs, adaptive);
     }
 
+    /// Unused record for sealed utility interface.
+    record unused() implements ThresholdStrategy {
+        @Override
+        public boolean isSlow(MethodName method, long durationNs) {
+            return false;
+        }
+
+        @Override
+        public long thresholdNs(MethodName method) {
+            return 0;
+        }
+    }
+
     // ========== Implementations ==========
     /// Fixed threshold - same for all methods.
     record Fixed(long thresholdNs) implements ThresholdStrategy {
@@ -104,13 +122,13 @@ public sealed interface ThresholdStrategy {
             var stats = methodStats.get(method);
             if (stats == null || stats.count()
                                       .get() < 10) {
-                // Use minimum threshold until we have enough data
                 return durationNs > minThresholdNs;
             }
             return durationNs > computeThreshold(stats);
         }
 
         @Override
+        @SuppressWarnings("JBCT-RET-01")
         public void observe(MethodName method, long durationNs) {
             var stats = methodStats.computeIfAbsent(method, _ -> MethodStats.methodStats());
             stats.update(durationNs);
@@ -146,19 +164,22 @@ public sealed interface ThresholdStrategy {
                 if (c == 1) {
                     ema.set((double) durationNs);
                 } else {
-                    // Thread-safe EMA update using CAS loop
-                    double currentEma;
-                    double newEma;
-                    do{
-                        currentEma = ema.get();
-                        newEma = ALPHA * durationNs + (1 - ALPHA) * currentEma;
-                    } while (!ema.compareAndSet(currentEma, newEma));
+                    updateEma(durationNs);
                 }
             }
 
             long averageNs() {
                 return ema.get()
                           .longValue();
+            }
+
+            private void updateEma(long durationNs) {
+                double currentEma;
+                double newEma;
+                do{
+                    currentEma = ema.get();
+                    newEma = ALPHA * durationNs + (1 - ALPHA) * currentEma;
+                } while (!ema.compareAndSet(currentEma, newEma));
             }
         }
     }
@@ -201,12 +222,12 @@ public sealed interface ThresholdStrategy {
                      ThresholdStrategy fallback) implements ThresholdStrategy {
         @Override
         public boolean isSlow(MethodName method, long durationNs) {
-            return Option.option(methodThresholdsNs.get(method))
-                         .map(explicit -> durationNs > explicit)
+            return option(methodThresholdsNs.get(method)).map(explicit -> durationNs > explicit)
                          .or(() -> fallback.isSlow(method, durationNs));
         }
 
         @Override
+        @SuppressWarnings("JBCT-RET-01")
         public void observe(MethodName method, long durationNs) {
             if (!methodThresholdsNs.containsKey(method)) {
                 fallback.observe(method, durationNs);
@@ -215,8 +236,7 @@ public sealed interface ThresholdStrategy {
 
         @Override
         public long thresholdNs(MethodName method) {
-            return Option.option(methodThresholdsNs.get(method))
-                         .or(() -> fallback.thresholdNs(method));
+            return option(methodThresholdsNs.get(method)).or(() -> fallback.thresholdNs(method));
         }
     }
 }

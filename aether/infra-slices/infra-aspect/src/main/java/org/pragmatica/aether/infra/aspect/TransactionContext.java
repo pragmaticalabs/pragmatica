@@ -1,12 +1,16 @@
 package org.pragmatica.aether.infra.aspect;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
 
 /// Context representing an active transaction.
 /// Thread-safe and immutable.
@@ -29,17 +33,17 @@ public record TransactionContext(String id,
         SUSPENDED
     }
 
-    /// Creates a new transaction context.
-    public static TransactionContext transactionContext(TransactionConfig config) {
-        return new TransactionContext(UUID.randomUUID()
-                                          .toString(),
-                                      config,
-                                      TransactionStatus.ACTIVE,
-                                      Instant.now(),
-                                      none());
+    public static Result<TransactionContext> transactionContext(TransactionConfig config) {
+        return success(new TransactionContext(UUID.randomUUID()
+                                                  .toString(),
+                                              config,
+                                              TransactionStatus.ACTIVE,
+                                              Instant.now(),
+                                              none()));
     }
 
     /// Creates a nested transaction context.
+    @SuppressWarnings({"JBCT-VO-02", "JBCT-NAM-01"})
     public static TransactionContext nestedContext(TransactionConfig config, TransactionContext parent) {
         return new TransactionContext(UUID.randomUUID()
                                           .toString(),
@@ -50,21 +54,25 @@ public record TransactionContext(String id,
     }
 
     /// Creates a new context with committed status.
+    @SuppressWarnings("JBCT-VO-02")
     public TransactionContext commit() {
         return new TransactionContext(id, config, TransactionStatus.COMMITTED, startTime, parentContext);
     }
 
     /// Creates a new context with rolled back status.
+    @SuppressWarnings("JBCT-VO-02")
     public TransactionContext rollback() {
         return new TransactionContext(id, config, TransactionStatus.ROLLED_BACK, startTime, parentContext);
     }
 
     /// Creates a new context with suspended status.
+    @SuppressWarnings("JBCT-VO-02")
     public TransactionContext suspend() {
         return new TransactionContext(id, config, TransactionStatus.SUSPENDED, startTime, parentContext);
     }
 
     /// Creates a new context with active status (resume from suspended).
+    @SuppressWarnings("JBCT-VO-02")
     public TransactionContext resume() {
         return new TransactionContext(id, config, TransactionStatus.ACTIVE, startTime, parentContext);
     }
@@ -82,11 +90,12 @@ public record TransactionContext(String id,
     /// Checks if the transaction has timed out.
     public boolean isTimedOut() {
         return config.timeout()
-                     .filter(timeout -> {
-                                 var elapsed = java.time.Duration.between(startTime,
-                                                                          Instant.now());
-                                 return elapsed.toMillis() > timeout.millis();
-                             })
+                     .filter(this::hasExceededTimeout)
                      .isPresent();
+    }
+
+    private boolean hasExceededTimeout(TimeSpan timeout) {
+        var elapsed = Duration.between(startTime, Instant.now());
+        return elapsed.toMillis() > timeout.millis();
     }
 }

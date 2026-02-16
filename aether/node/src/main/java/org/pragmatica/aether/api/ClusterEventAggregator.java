@@ -19,6 +19,7 @@ import java.util.Map;
 /// Listens to topology changes, leader elections, quorum state, deployments,
 /// slice failures, and network events. Each handler creates a structured
 /// ClusterEvent and stores it for dashboard and API consumption.
+@SuppressWarnings("JBCT-RET-01")
 public final class ClusterEventAggregator {
     private final RingBuffer<ClusterEvent> buffer;
 

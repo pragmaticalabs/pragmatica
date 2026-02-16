@@ -4,9 +4,12 @@ import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import java.util.List;
+
+import static org.pragmatica.lang.Result.success;
 
 /// Database connector providing query and transaction operations.
 ///
@@ -101,7 +104,8 @@ public interface DatabaseConnector extends Slice {
     /// @param config Connector configuration
     /// @return New DatabaseConnector instance
     static DatabaseConnector databaseConnector(DatabaseConnectorConfig config) {
-        return new NoOpDatabaseConnector(config);
+        return NoOpDatabaseConnector.noOpDatabaseConnector(config)
+                                    .unwrap();
     }
 
     // ========== Slice Lifecycle ==========
@@ -123,6 +127,10 @@ public interface DatabaseConnector extends Slice {
 
 /// No-op implementation returned when no concrete implementation is available.
 record NoOpDatabaseConnector(DatabaseConnectorConfig config) implements DatabaseConnector {
+    static Result<NoOpDatabaseConnector> noOpDatabaseConnector(DatabaseConnectorConfig config) {
+        return success(new NoOpDatabaseConnector(config));
+    }
+
     @Override
     public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
         return DatabaseConnectorError.configurationError("No DatabaseConnector implementation available")

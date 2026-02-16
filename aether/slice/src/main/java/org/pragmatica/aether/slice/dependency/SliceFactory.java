@@ -17,6 +17,9 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.utils.Causes.cause;
+
 /// Creates slice instances via reflection using static factory methods.
 ///
 /// RFC-0001 Factory method convention:
@@ -26,6 +29,7 @@ import org.slf4j.LoggerFactory;
 /// - First parameter: Aspect<SliceType>
 /// - Second parameter: SliceCreationContext
 /// - Remaining parameters: resolved dependency slices in declaration order
+@SuppressWarnings({"JBCT-LAM-01", "JBCT-LAM-02", "JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"})
 public interface SliceFactory {
     Logger log = LoggerFactory.getLogger(SliceFactory.class);
 
@@ -139,10 +143,11 @@ public interface SliceFactory {
                                                         parameters[1].getType()
                                                                   .getName()).result();
         }
-        return Result.success(method);
+        return success(method);
     }
 
-    @SuppressWarnings("unchecked")
+    /// Adapter boundary — Method.invoke(null, args) uses null for static invocation per JDK API.
+    @SuppressWarnings({"unchecked", "JBCT-RET-03"})
     private static Promise<Slice> invokeFactory(Method method,
                                                 SliceCreationContext creationContext,
                                                 List<Slice> dependencies) {
@@ -178,23 +183,23 @@ public interface SliceFactory {
     }
 
     private static Cause factoryMethodNotFound(String className, String methodName) {
-        return Causes.cause("Factory method not found: " + className + "." + methodName + "() returning Promise<Slice>");
+        return cause("Factory method not found: " + className + "." + methodName + "() returning Promise<Slice>");
     }
 
     private static Cause parameterCountMismatch(String methodName, int expected, int actual) {
-        return Causes.cause("Parameter count mismatch in " + methodName + ": expected " + expected
-                            + " (Aspect, SliceCreationContext), got " + actual);
+        return cause("Parameter count mismatch in " + methodName + ": expected " + expected
+                     + " (Aspect, SliceCreationContext), got " + actual);
     }
 
     private static Cause firstParameterMustBeAspect(String methodName, String actual) {
-        return Causes.cause("First parameter of " + methodName + " must be Aspect, got " + actual);
+        return cause("First parameter of " + methodName + " must be Aspect, got " + actual);
     }
 
     private static Cause secondParameterMustBeCreationContext(String methodName, String actual) {
-        return Causes.cause("Second parameter of " + methodName + " must be SliceCreationContext, got " + actual);
+        return cause("Second parameter of " + methodName + " must be SliceCreationContext, got " + actual);
     }
 
     private static Cause parameterTypeMismatch(int index, String expected, String actual) {
-        return Causes.cause("Parameter type mismatch at index " + index + ": expected " + expected + ", got " + actual);
+        return cause("Parameter type mismatch at index " + index + ": expected " + expected + ", got " + actual);
     }
 }

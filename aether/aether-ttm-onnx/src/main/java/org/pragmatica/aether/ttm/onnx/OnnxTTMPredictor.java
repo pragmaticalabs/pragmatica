@@ -1,6 +1,6 @@
 package org.pragmatica.aether.ttm.onnx;
 
-import org.pragmatica.aether.config.TTMConfig;
+import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.ttm.error.TTMError;
 import org.pragmatica.aether.ttm.model.FeatureIndex;
 import org.pragmatica.aether.ttm.model.TTMPredictor;
@@ -25,14 +25,15 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 
 /// ONNX Runtime implementation of {@link TTMPredictor}.
+@SuppressWarnings("JBCT-EX-01")
 record OnnxTTMPredictor(OrtEnvironment env,
                         OrtSession session,
-                        TTMConfig config,
+                        TtmConfig config,
                         AtomicReference<Double> lastConfidenceRef,
                         AtomicBoolean ready) implements TTMPredictor {
     private static final Logger log = LoggerFactory.getLogger(OnnxTTMPredictor.class);
 
-    static Result<TTMPredictor> onnxTTMPredictor(TTMConfig config) {
+    static Result<TTMPredictor> onnxTTMPredictor(TtmConfig config) {
         return checkModelExists(config).flatMap(OnnxTTMPredictor::loadModel);
     }
 
@@ -142,19 +143,19 @@ record OnnxTTMPredictor(OrtEnvironment env,
         return unit();
     }
 
-    private static Result<TTMConfig> checkModelExists(TTMConfig config) {
+    private static Result<TtmConfig> checkModelExists(TtmConfig config) {
         var modelPath = Path.of(config.modelPath());
         return Files.exists(modelPath)
                ? Result.success(config)
                : new TTMError.ModelLoadFailed(config.modelPath(), "File not found").result();
     }
 
-    private static Result<TTMPredictor> loadModel(TTMConfig config) {
+    private static Result<TTMPredictor> loadModel(TtmConfig config) {
         return Result.lift(e -> new TTMError.ModelLoadFailed(config.modelPath(), e.getMessage()),
                            () -> createPredictor(config));
     }
 
-    private static TTMPredictor createPredictor(TTMConfig config) throws OrtException {
+    private static TTMPredictor createPredictor(TtmConfig config) throws OrtException {
         var env = OrtEnvironment.getEnvironment();
         var sessionOptions = new OrtSession.SessionOptions();
         try{
@@ -207,7 +208,7 @@ record OnnxTTMPredictor(OrtEnvironment env,
         }
     }
 
-    private static void runWarmupInference(OnnxTTMPredictor predictor, TTMConfig config) {
+    private static void runWarmupInference(OnnxTTMPredictor predictor, TtmConfig config) {
         log.info("Running warm-up inference...");
         var warmupInput = new float[config.inputWindowMinutes()][FeatureIndex.FEATURE_COUNT];
         Result.lift(e -> new TTMError.InferenceFailed("Warm-up inference failed: " + e.getMessage()),

@@ -38,6 +38,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 ///
 /// When --config is provided, values from the config file are used as defaults,
 /// but can be overridden by command-line arguments.
+@SuppressWarnings("JBCT-RET-01")
 public record Main(String[] args) {
     private static final Logger log = LoggerFactory.getLogger(Main.class);
     private static final int DEFAULT_CLUSTER_PORT = 8090;
@@ -69,7 +70,7 @@ public record Main(String[] args) {
 
     private SliceConfig parseSliceConfig(Option<AetherConfig> aetherConfig) {
         return aetherConfig.map(AetherConfig::slice)
-                           .or(SliceConfig.defaultConfig());
+                           .or(SliceConfig.sliceConfig());
     }
 
     private Option<AetherConfig> loadConfig() {

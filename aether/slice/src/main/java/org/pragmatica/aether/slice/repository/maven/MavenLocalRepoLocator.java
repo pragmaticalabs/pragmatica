@@ -9,6 +9,9 @@ import java.io.File;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.option;
+
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"})
 public sealed interface MavenLocalRepoLocator {
     Logger log = LoggerFactory.getLogger(MavenLocalRepoLocator.class);
 
@@ -24,8 +27,7 @@ public sealed interface MavenLocalRepoLocator {
     }
 
     private static Option<String> checkGlobalSettings(String userHome) {
-        return Option.option(System.getenv("M2_HOME"))
-                     .filter(Verify.Is::notEmpty)
+        return option(System.getenv("M2_HOME")).filter(Verify.Is::notEmpty)
                      .map(MavenLocalRepoLocator::fromM2ConfSettings)
                      .flatMap(MavenLocalRepoLocator::getLocalRepoFromSettings)
                      .map(globalRepo -> expandPath(globalRepo, userHome));
@@ -37,8 +39,7 @@ public sealed interface MavenLocalRepoLocator {
     }
 
     private static Option<String> checkSystemProperty() {
-        return Option.option(System.getProperty("maven.repo.local"))
-                     .filter(Verify.Is::notEmpty);
+        return option(System.getProperty("maven.repo.local")).filter(Verify.Is::notEmpty);
     }
 
     private static Option<String> getLocalRepoFromSettings(String settingsPath) {
@@ -53,10 +54,9 @@ public sealed interface MavenLocalRepoLocator {
             var doc = db.parse(file);
             var nodes = doc.getElementsByTagName("localRepository");
             if (nodes.getLength() > 0) {
-                return Option.option(nodes.item(0)
-                                          .getTextContent()
-                                          .trim())
-                             .filter(Verify.Is::notEmpty);
+                return option(nodes.item(0)
+                                   .getTextContent()
+                                   .trim()).filter(Verify.Is::notEmpty);
             }
         } catch (Exception e) {
             log.debug("Failed to read Maven settings from {}: {}", settingsPath, e.getMessage());

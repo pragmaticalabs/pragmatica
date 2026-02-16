@@ -1,6 +1,7 @@
 package org.pragmatica.aether.infra.lock;
 
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -8,7 +9,7 @@ import java.time.Instant;
 
 /// Handle to a held distributed lock.
 /// Provides methods to release or extend the lock.
-public interface LockHandle extends AutoCloseable {
+public interface LockHandle {
     /// Get the lock identifier.
     ///
     /// @return Lock ID
@@ -36,10 +37,8 @@ public interface LockHandle extends AutoCloseable {
     /// @return Promise with true if extension succeeded, false if lock was lost
     Promise<Boolean> extend(TimeSpan extension);
 
-    /// AutoCloseable implementation for try-with-resources.
-    /// Releases the lock synchronously.
-    @Override
-    default void close() {
-        release().await();
+    /// Synchronously releases the lock and returns the result.
+    default Result<Unit> close() {
+        return release().await();
     }
 }

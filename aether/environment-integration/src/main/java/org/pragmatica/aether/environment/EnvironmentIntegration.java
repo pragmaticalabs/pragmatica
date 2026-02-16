@@ -1,8 +1,13 @@
 package org.pragmatica.aether.environment;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import java.util.ServiceLoader;
+
+import static org.pragmatica.lang.Option.empty;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
 
 /// Faceted SPI entry point for all deployment environment interactions.
 ///
@@ -23,16 +28,24 @@ public interface EnvironmentIntegration {
 
     /// Create an EnvironmentIntegration with compute support only.
     static EnvironmentIntegration withCompute(ComputeProvider compute) {
-        return environmentIntegration(Option.some(compute), Option.empty(), Option.empty());
+        return environmentIntegration(some(compute), empty(), empty());
     }
 
     /// Create an EnvironmentIntegration with all specified facets.
     static EnvironmentIntegration environmentIntegration(Option<ComputeProvider> compute,
                                                          Option<SecretsProvider> secrets,
                                                          Option<LoadBalancerProvider> loadBalancer) {
-        record facetedEnvironment(Option<ComputeProvider> compute,
-                                  Option<SecretsProvider> secrets,
-                                  Option<LoadBalancerProvider> loadBalancer) implements EnvironmentIntegration {}
-        return new facetedEnvironment(compute, secrets, loadBalancer);
+        return FacetedEnvironment.facetedEnvironment(compute, secrets, loadBalancer)
+                                 .unwrap();
+    }
+
+    record FacetedEnvironment(Option<ComputeProvider> compute,
+                              Option<SecretsProvider> secrets,
+                              Option<LoadBalancerProvider> loadBalancer) implements EnvironmentIntegration {
+        public static Result<FacetedEnvironment> facetedEnvironment(Option<ComputeProvider> compute,
+                                                                    Option<SecretsProvider> secrets,
+                                                                    Option<LoadBalancerProvider> loadBalancer) {
+            return success(new FacetedEnvironment(compute, secrets, loadBalancer));
+        }
     }
 }

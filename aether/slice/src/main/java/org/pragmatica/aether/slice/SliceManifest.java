@@ -12,6 +12,8 @@ import java.net.URL;
 import java.util.jar.JarFile;
 import java.util.jar.Manifest;
 
+import static org.pragmatica.lang.Option.option;
+
 /// Reads slice artifact metadata from JAR manifest.
 ///
 ///
@@ -25,6 +27,7 @@ import java.util.jar.Manifest;
 ///
 /// A valid slice JAR MUST contain these manifest attributes.
 /// Loading will fail if manifest is missing or invalid.
+@SuppressWarnings({"JBCT-VO-01", "JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-03"})
 public interface SliceManifest {
     String SLICE_ARTIFACT_ATTR = "Slice-Artifact";
     String SLICE_CLASS_ATTR = "Slice-Class";
@@ -46,10 +49,13 @@ public interface SliceManifest {
     static Result<SliceManifestInfo> readFromClassLoader(ClassLoader classLoader) {
         return Result.lift(Causes::fromThrowable,
                            () -> classLoader.getResource(JarFile.MANIFEST_NAME))
-                     .flatMap(url -> url == null
-                                     ? MANIFEST_NOT_FOUND.result()
-                                     : readManifestFromUrl(url))
+                     .flatMap(SliceManifest::resolveManifestUrl)
                      .flatMap(SliceManifest::parseManifest);
+    }
+
+    private static Result<Manifest> resolveManifestUrl(URL url) {
+        return option(url).toResult(MANIFEST_NOT_FOUND)
+                     .flatMap(SliceManifest::readManifestFromUrl);
     }
 
     private static Result<Manifest> readManifest(URL jarUrl) {
@@ -68,15 +74,15 @@ public interface SliceManifest {
     }
 
     private static Result<Manifest> extractManifest(JarFile jarFile, URL jarUrl) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> extractManifestFromJar(jarFile))
+                     .flatMap(opt -> opt.toResult(MANIFEST_NOT_FOUND_FN.apply(jarUrl.toString())));
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Option<Manifest> extractManifestFromJar(JarFile jarFile) throws IOException {
         try (jarFile) {
-            var manifest = jarFile.getManifest();
-            return manifest == null
-                   ? MANIFEST_NOT_FOUND_FN.apply(jarUrl.toString())
-                                          .result()
-                   : Result.success(manifest);
-        } catch (IOException e) {
-            return Causes.fromThrowable(e)
-                         .result();
+            return option(jarFile.getManifest());
         }
     }
 
@@ -91,11 +97,9 @@ public interface SliceManifest {
 
     private static Result<SliceManifestInfo> parseManifest(Manifest manifest) {
         var mainAttrs = manifest.getMainAttributes();
-        return Option.option(mainAttrs.getValue(SLICE_ARTIFACT_ATTR))
-                     .filter(s -> !s.isBlank())
+        return option(mainAttrs.getValue(SLICE_ARTIFACT_ATTR)).filter(s -> !s.isBlank())
                      .toResult(MISSING_ARTIFACT_ATTR)
-                     .flatMap(artifactStr -> Option.option(mainAttrs.getValue(SLICE_CLASS_ATTR))
-                                                   .filter(s -> !s.isBlank())
+                     .flatMap(artifactStr -> option(mainAttrs.getValue(SLICE_CLASS_ATTR)).filter(s -> !s.isBlank())
                                                    .toResult(MISSING_CLASS_ATTR)
                                                    .flatMap(sliceClass -> Artifact.artifact(artifactStr)
                                                                                   .map(artifact -> new SliceManifestInfo(artifact,

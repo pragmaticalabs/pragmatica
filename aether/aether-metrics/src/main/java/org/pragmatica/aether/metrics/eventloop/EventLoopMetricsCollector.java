@@ -1,6 +1,8 @@
 package org.pragmatica.aether.metrics.eventloop;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledExecutorService;
@@ -19,6 +21,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.unitResult;
 
 /// Collects event loop metrics by injecting probe tasks.
 ///
@@ -52,18 +55,19 @@ public final class EventLoopMetricsCollector {
     /// Register an EventLoopGroup to monitor.
     ///
     /// @param group the event loop group, must not be null
-    public void register(EventLoopGroup group) {
+    public Result<Unit> register(EventLoopGroup group) {
         if (eventLoopGroups.addIfAbsent(group)) {
             log.debug("Registered EventLoopGroup for monitoring: {}",
                       group.getClass()
                            .getSimpleName());
         }
+        return unitResult();
     }
 
     /// Start collecting metrics with external scheduler.
-    public void start(ScheduledExecutorService scheduler) {
+    public Result<Unit> start(ScheduledExecutorService scheduler) {
         if (started) {
-            return;
+            return unitResult();
         }
         this.scheduler = scheduler;
         started = true;
@@ -72,40 +76,32 @@ public final class EventLoopMetricsCollector {
                                                            PROBE_INTERVAL_MS,
                                                            TimeUnit.MILLISECONDS)));
         log.info("Event loop metrics collection started");
+        return unitResult();
     }
 
     /// Stop collecting metrics.
-    public void stop() {
+    public Result<Unit> stop() {
         if (!started) {
-            return;
+            return unitResult();
         }
         started = false;
         probeFuture.getAndSet(none())
                    .onPresent(future -> future.cancel(false));
         log.info("Event loop metrics collection stopped");
+        return unitResult();
     }
 
+    @SuppressWarnings("JBCT-EX-01")
     private void probe() {
         if (eventLoopGroups.isEmpty()) {
             return;
         }
-        long worstLag = 0;
         int totalPending = 0;
         int totalChannels = 0;
         for (EventLoopGroup group : eventLoopGroups) {
             for (EventExecutor executor : group) {
                 if (executor instanceof EventLoop eventLoop) {
-                    // Measure lag by scheduling a probe task
-                    long submitTime = System.nanoTime();
-                    try{
-                        eventLoop.execute(() -> {
-                            long lag = System.nanoTime() - submitTime;
-                            updateMaxLag(lag);
-                        });
-                    } catch (Exception e) {
-                        log.trace("Failed to probe event loop: {}", e.getMessage());
-                    }
-                    // Count pending tasks and registered channels if available
+                    submitLagProbe(eventLoop);
                     if (eventLoop instanceof SingleThreadEventLoop stEventLoop) {
                         totalPending += stEventLoop.pendingTasks();
                         totalChannels += stEventLoop.registeredChannels();
@@ -113,9 +109,17 @@ public final class EventLoopMetricsCollector {
                 }
             }
         }
-        // Update counters (lag is updated asynchronously by probe tasks)
         totalPendingTasks.set(totalPending);
         totalActiveChannels.set(totalChannels);
+    }
+
+    private void submitLagProbe(EventLoop eventLoop) {
+        long submitTime = System.nanoTime();
+        try{
+            eventLoop.execute(() -> updateMaxLag(System.nanoTime() - submitTime));
+        } catch (Exception e) {
+            log.trace("Failed to probe event loop: {}", e.getMessage());
+        }
     }
 
     private void updateMaxLag(long lag) {

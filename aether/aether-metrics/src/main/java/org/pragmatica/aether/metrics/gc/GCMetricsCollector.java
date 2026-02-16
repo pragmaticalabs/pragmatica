@@ -1,17 +1,25 @@
 package org.pragmatica.aether.metrics.gc;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
+import javax.management.Notification;
 import javax.management.NotificationEmitter;
 import javax.management.NotificationListener;
 import javax.management.openmbean.CompositeData;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryUsage;
+import java.util.Arrays;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 
 import com.sun.management.GarbageCollectionNotificationInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Result.unitResult;
 
 /// Collects GC metrics using JMX notifications.
 ///
@@ -55,17 +63,13 @@ public final class GCMetricsCollector {
     }
 
     /// Start collecting GC metrics via JMX notifications.
-    public void start() {
+    @SuppressWarnings("JBCT-EX-01")
+    public Result<Unit> start() {
         if (started) {
-            return;
+            return unitResult();
         }
         started = true;
-        listener = (notification, handback) -> {
-            if (GarbageCollectionNotificationInfo.GARBAGE_COLLECTION_NOTIFICATION.equals(notification.getType())) {
-                var gcInfo = GarbageCollectionNotificationInfo.from((CompositeData) notification.getUserData());
-                processGcEvent(gcInfo);
-            }
-        };
+        listener = this::handleGcNotification;
         for (GarbageCollectorMXBean gcBean : ManagementFactory.getGarbageCollectorMXBeans()) {
             if (gcBean instanceof NotificationEmitter emitter) {
                 try{
@@ -77,12 +81,14 @@ public final class GCMetricsCollector {
             }
         }
         log.info("GC metrics collection started");
+        return unitResult();
     }
 
     /// Stop collecting GC metrics.
-    public void stop() {
+    @SuppressWarnings("JBCT-EX-01")
+    public Result<Unit> stop() {
         if (!started || listener == null) {
-            return;
+            return unitResult();
         }
         started = false;
         for (GarbageCollectorMXBean gcBean : ManagementFactory.getGarbageCollectorMXBeans()) {
@@ -95,6 +101,14 @@ public final class GCMetricsCollector {
             }
         }
         log.info("GC metrics collection stopped");
+        return unitResult();
+    }
+
+    private void handleGcNotification(Notification notification, Object handback) {
+        if (GarbageCollectionNotificationInfo.GARBAGE_COLLECTION_NOTIFICATION.equals(notification.getType())) {
+            var gcInfo = GarbageCollectionNotificationInfo.from((CompositeData) notification.getUserData());
+            processGcEvent(gcInfo);
+        }
     }
 
     private void processGcEvent(GarbageCollectionNotificationInfo gcInfo) {
@@ -102,24 +116,26 @@ public final class GCMetricsCollector {
         var gcName = gcInfo.getGcName();
         var duration = gcInfo.getGcInfo()
                              .getDuration();
-        // Calculate reclaimed bytes
-        long beforeUsed = 0;
-        long afterUsed = 0;
-        for (MemoryUsage usage : gcInfo.getGcInfo()
-                                       .getMemoryUsageBeforeGc()
-                                       .values()) {
-            beforeUsed += usage.getUsed();
-        }
-        for (MemoryUsage usage : gcInfo.getGcInfo()
-                                       .getMemoryUsageAfterGc()
-                                       .values()) {
-            afterUsed += usage.getUsed();
-        }
+        long beforeUsed = sumMemoryUsage(gcInfo.getGcInfo()
+                                               .getMemoryUsageBeforeGc());
+        long afterUsed = sumMemoryUsage(gcInfo.getGcInfo()
+                                              .getMemoryUsageAfterGc());
         long reclaimed = Math.max(0, beforeUsed - afterUsed);
         reclaimedBytes.add(reclaimed);
-        // Categorize as young or old GC
-        boolean isYoungGc = isYoungGc(gcName);
-        if (isYoungGc) {
+        recordGcByCategory(gcName, duration);
+        updateAllocationRate(afterUsed);
+        log.trace("GC event: {} ({}) duration={}ms reclaimed={}bytes", gcName, gcAction, duration, reclaimed);
+    }
+
+    private long sumMemoryUsage(Map<String, MemoryUsage> usageMap) {
+        return usageMap.values()
+                       .stream()
+                       .mapToLong(MemoryUsage::getUsed)
+                       .sum();
+    }
+
+    private void recordGcByCategory(String gcName, long duration) {
+        if (isYoungGc(gcName)) {
             youngGcCount.increment();
             youngGcPauseMs.add(duration);
         } else {
@@ -127,18 +143,13 @@ public final class GCMetricsCollector {
             oldGcPauseMs.add(duration);
             lastMajorGcTimestamp.set(System.currentTimeMillis());
         }
-        // Update allocation rate estimate
-        updateAllocationRate(afterUsed);
-        log.trace("GC event: {} ({}) duration={}ms reclaimed={}bytes", gcName, gcAction, duration, reclaimed);
     }
 
     private boolean isYoungGc(String gcName) {
-        for (String pattern : YOUNG_GC_PATTERNS) {
-            if (gcName.contains(pattern)) {
-                return true;
-            }
+        if (Arrays.stream(YOUNG_GC_PATTERNS)
+                  .anyMatch(gcName::contains)) {
+            return true;
         }
-        // Default: if name contains "Old", "Major", or "Full", it's not young
         return ! gcName.contains("Old") && !gcName.contains("Major") && !gcName.contains("Full");
     }
 

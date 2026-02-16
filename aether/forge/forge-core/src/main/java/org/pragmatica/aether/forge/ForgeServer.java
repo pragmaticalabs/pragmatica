@@ -53,6 +53,7 @@ import org.slf4j.LoggerFactory;
 /// CLUSTER_SIZE        - Number of nodes (backwards compatible)
 /// LOAD_RATE           - Initial load rate (backwards compatible)
 /// ```
+@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
 public final class ForgeServer {
     private static final Logger log = LoggerFactory.getLogger(ForgeServer.class);
 
@@ -292,7 +293,7 @@ public final class ForgeServer {
         log.info("Loading load configuration from {}...", loadConfigPath);
         LoadConfigLoader.load(loadConfigPath)
                         .onSuccess(config -> {
-                                       configurableLoadRunner.onPresent(r -> r.setConfig(config));
+                                       configurableLoadRunner.onPresent(r -> r.applyConfig(config));
                                        log.info("Load configuration loaded: {} targets",
                                                 config.targets()
                                                       .size());
@@ -389,7 +390,8 @@ public final class ForgeServer {
                                    FORGE_H2_USERNAME,
                                    "database.password",
                                    FORGE_H2_PASSWORD);
-        builder.withSource(MapConfigSource.mapConfigSource("runtime", runtimeValues, 500));
+        builder.withSource(MapConfigSource.mapConfigSource("runtime", runtimeValues, 500)
+                                          .unwrap());
         log.info("Injected H2 configuration into ConfigurationProvider");
     }
 

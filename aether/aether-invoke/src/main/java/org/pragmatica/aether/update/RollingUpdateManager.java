@@ -161,6 +161,7 @@ public interface RollingUpdateManager {
 
     /// Handle leader change notifications.
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
     void onLeaderChange(LeaderChange leaderChange);
 
     /// Factory method following JBCT naming convention.
@@ -180,6 +181,7 @@ public interface RollingUpdateManager {
             private static final long TERMINAL_RETENTION_MS = TimeUnit.HOURS.toMillis(1);
 
             @Override
+            @SuppressWarnings("JBCT-RET-01")
             public void onLeaderChange(LeaderChange leaderChange) {
                 if (leaderChange.localNodeIsLeader()) {
                     log.info("Rolling update manager active (leader)");

@@ -40,8 +40,10 @@ class KryoSerializerTest {
     void roundtrip_serializes_record() {
         record Person(String name, int age) {}
 
-        var serializer = KryoSerializer.kryoSerializer(c -> c.accept(Person.class));
-        var deserializer = KryoDeserializer.kryoDeserializer(c -> c.accept(Person.class));
+        List<Class<?>> classes = List.of(Person.class);
+        org.pragmatica.serialization.ClassRegistrator registrator = () -> classes;
+        var serializer = KryoSerializer.kryoSerializer(registrator);
+        var deserializer = KryoDeserializer.kryoDeserializer(registrator);
 
         var original = new Person("Alice", 30);
         var bytes = serializer.encode(original);
@@ -52,9 +54,8 @@ class KryoSerializerTest {
 
     @Test
     void roundtrip_serializes_list() {
-        var registrator = (org.pragmatica.serialization.ClassRegistrator) c -> {
-            c.accept(java.util.ArrayList.class);
-        };
+        List<Class<?>> classes = List.of(java.util.ArrayList.class);
+        org.pragmatica.serialization.ClassRegistrator registrator = () -> classes;
         var serializer = KryoSerializer.kryoSerializer(registrator);
         var deserializer = KryoDeserializer.kryoDeserializer(registrator);
 

@@ -1,4 +1,9 @@
 package org.pragmatica.aether.slice;
+
+import org.pragmatica.lang.Result;
+
+import static org.pragmatica.lang.Result.success;
+
 /// Unified context for slice factory methods during slice creation.
 ///
 /// Provides access to all services needed when creating a slice:
@@ -48,10 +53,16 @@ public interface SliceCreationContext {
     /// @return New SliceCreationContext
     static SliceCreationContext sliceCreationContext(SliceInvokerFacade invoker,
                                                      ResourceProviderFacade resources) {
-        return new DefaultSliceCreationContext(invoker, resources);
+        return DefaultSliceCreationContext.defaultSliceCreationContext(invoker, resources)
+                                          .unwrap();
     }
 }
 
 /// Default implementation of SliceCreationContext.
 record DefaultSliceCreationContext(SliceInvokerFacade invoker,
-                                   ResourceProviderFacade resources) implements SliceCreationContext {}
+                                   ResourceProviderFacade resources) implements SliceCreationContext {
+    static Result<DefaultSliceCreationContext> defaultSliceCreationContext(SliceInvokerFacade invoker,
+                                                                           ResourceProviderFacade resources) {
+        return success(new DefaultSliceCreationContext(invoker, resources));
+    }
+}

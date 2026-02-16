@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 
 /// Records nanosecond-precision stage timings for an invocation.
 /// Zero-overhead when trace logging is disabled — all operations are no-ops.
+@SuppressWarnings("JBCT-RET-01") // Timing methods are fire-and-forget state mutations — void is intentional
 public final class InvocationTimingContext {
     private static final Logger log = LoggerFactory.getLogger(InvocationTimingContext.class);
     private static final InvocationTimingContext NOOP = new InvocationTimingContext(false);

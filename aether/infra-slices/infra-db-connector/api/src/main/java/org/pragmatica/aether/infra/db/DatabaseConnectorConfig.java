@@ -3,10 +3,15 @@ package org.pragmatica.aether.infra.db;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
 
 import java.util.Map;
 import java.util.Properties;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.utils.Causes.cause;
 
 /// Configuration for database connectors.
 ///
@@ -42,13 +47,50 @@ public record DatabaseConnectorConfig(String name,
     }
 
     private static String sanitizeUrl(Option<String> url) {
-        return url.map(DatabaseConnectorConfig::removeCredentialsFromUrl)
+        return url.map(DatabaseConnectorConfig::maskCredentialsInUrl)
                   .or("none");
     }
 
-    private static String removeCredentialsFromUrl(String url) {
-        // Remove embedded credentials like user:password@ from URLs
+    private static String maskCredentialsInUrl(String url) {
         return url.replaceAll("://[^:]+:[^@]+@", "://[REDACTED]@");
+    }
+
+    /// Creates a config with all parameters.
+    ///
+    /// @param name       Connector name
+    /// @param type       Database type
+    /// @param host       Database host
+    /// @param port       Database port
+    /// @param database   Database name
+    /// @param username   Connection username
+    /// @param password   Connection password
+    /// @param poolConfig Pool configuration
+    /// @param properties Additional properties
+    /// @param jdbcUrl    Override JDBC URL
+    /// @param r2dbcUrl   Override R2DBC URL
+    /// @return Result with config or validation error
+    public static Result<DatabaseConnectorConfig> databaseConnectorConfig(String name,
+                                                                          DatabaseType type,
+                                                                          String host,
+                                                                          int port,
+                                                                          String database,
+                                                                          Option<String> username,
+                                                                          Option<String> password,
+                                                                          PoolConfig poolConfig,
+                                                                          Map<String, String> properties,
+                                                                          Option<String> jdbcUrl,
+                                                                          Option<String> r2dbcUrl) {
+        return success(new DatabaseConnectorConfig(name,
+                                                   type,
+                                                   host,
+                                                   port,
+                                                   database,
+                                                   username,
+                                                   password,
+                                                   poolConfig,
+                                                   properties,
+                                                   jdbcUrl,
+                                                   r2dbcUrl));
     }
 
     /// Creates a config with required parameters.
@@ -66,18 +108,18 @@ public record DatabaseConnectorConfig(String name,
                                                                           String database,
                                                                           String username,
                                                                           String password) {
-        return validate(name, type, host, database)
-        .map(_ -> new DatabaseConnectorConfig(name,
+        return ensureRequired(name, type, host, database)
+        .flatMap(_ -> databaseConnectorConfig(name,
                                               type,
                                               host,
                                               0,
                                               database,
-                                              Option.option(username),
-                                              Option.option(password),
+                                              option(username),
+                                              option(password),
                                               PoolConfig.DEFAULT,
                                               Map.of(),
-                                              Option.none(),
-                                              Option.none()));
+                                              none(),
+                                              none()));
     }
 
     /// Creates a config from a JDBC URL.
@@ -87,31 +129,49 @@ public record DatabaseConnectorConfig(String name,
     /// @param username Connection username
     /// @param password Connection password
     /// @return Result with config or validation error
-    public static Result<DatabaseConnectorConfig> databaseConnectorConfigFromJdbcUrl(String name,
-                                                                                     String jdbcUrl,
-                                                                                     String username,
-                                                                                     String password) {
-        return Option.option(name)
-                     .filter(n -> !n.isBlank())
-                     .toResult(Causes.cause("Connector name is required"))
-                     .flatMap(_ -> Option.option(jdbcUrl)
-                                         .filter(u -> !u.isBlank())
-                                         .toResult(Causes.cause("JDBC URL is required")))
-                     .map(url -> {
-                              var type = DatabaseType.fromJdbcUrl(url)
-                                                     .or(DatabaseType.POSTGRESQL);
-                              return new DatabaseConnectorConfig(name,
-                                                                 type,
-                                                                 "",
-                                                                 0,
-                                                                 "",
-                                                                 Option.option(username),
-                                                                 Option.option(password),
-                                                                 PoolConfig.DEFAULT,
-                                                                 Map.of(),
-                                                                 Option.some(url),
-                                                                 Option.none());
-                          });
+    public static Result<DatabaseConnectorConfig> databaseConnectorConfig(String name,
+                                                                          String jdbcUrl,
+                                                                          String username,
+                                                                          String password) {
+        return ensureName(name).flatMap(_ -> ensureJdbcUrl(jdbcUrl))
+                         .flatMap(url -> databaseConnectorConfig(name,
+                                                                 typeFromUrl(url),
+                                                                 url,
+                                                                 username,
+                                                                 password));
+    }
+
+    private static DatabaseType typeFromUrl(String url) {
+        return DatabaseType.fromJdbcUrl(url)
+                           .or(DatabaseType.POSTGRESQL);
+    }
+
+    private static Result<DatabaseConnectorConfig> databaseConnectorConfig(String name,
+                                                                           DatabaseType type,
+                                                                           String url,
+                                                                           String username,
+                                                                           String password) {
+        return databaseConnectorConfig(name,
+                                       type,
+                                       "",
+                                       0,
+                                       "",
+                                       option(username),
+                                       option(password),
+                                       PoolConfig.DEFAULT,
+                                       Map.of(),
+                                       some(url),
+                                       none());
+    }
+
+    private static Result<String> ensureName(String name) {
+        return option(name).filter(n -> !n.isBlank())
+                     .toResult(cause("Connector name is required"));
+    }
+
+    private static Result<String> ensureJdbcUrl(String jdbcUrl) {
+        return option(jdbcUrl).filter(u -> !u.isBlank())
+                     .toResult(cause("JDBC URL is required"));
     }
 
     /// Creates a builder for fluent configuration.
@@ -148,19 +208,25 @@ public record DatabaseConnectorConfig(String name,
         return props;
     }
 
-    private static Result<Unit> validate(String name, DatabaseType type, String host, String database) {
-        return Option.option(name)
-                     .filter(n -> !n.isBlank())
-                     .toResult(Causes.cause("Connector name is required"))
-                     .flatMap(_ -> Option.option(type)
-                                         .toResult(Causes.cause("Database type is required")))
-                     .flatMap(_ -> Option.option(host)
-                                         .filter(h -> !h.isBlank())
-                                         .toResult(Causes.cause("Database host is required")))
-                     .flatMap(_ -> Option.option(database)
-                                         .filter(d -> !d.isBlank())
-                                         .toResult(Causes.cause("Database name is required")))
-                     .map(_ -> Unit.unit());
+    private static Result<Unit> ensureRequired(String name, DatabaseType type, String host, String database) {
+        return ensureName(name).flatMap(_ -> ensureType(type))
+                         .flatMap(_ -> ensureHost(host))
+                         .flatMap(_ -> ensureDatabase(database))
+                         .map(_ -> Unit.unit());
+    }
+
+    private static Result<DatabaseType> ensureType(DatabaseType type) {
+        return option(type).toResult(cause("Database type is required"));
+    }
+
+    private static Result<String> ensureHost(String host) {
+        return option(host).filter(h -> !h.isBlank())
+                     .toResult(cause("Database host is required"));
+    }
+
+    private static Result<String> ensureDatabase(String database) {
+        return option(database).filter(d -> !d.isBlank())
+                     .toResult(cause("Database name is required"));
     }
 
     /// Builder for DatabaseConnectorConfig.
@@ -170,73 +236,73 @@ public record DatabaseConnectorConfig(String name,
         private String host;
         private int port = 0;
         private String database;
-        private Option<String> username = Option.none();
-        private Option<String> password = Option.none();
+        private Option<String> username = none();
+        private Option<String> password = none();
         private PoolConfig poolConfig = PoolConfig.DEFAULT;
         private Map<String, String> properties = Map.of();
-        private Option<String> jdbcUrl = Option.none();
-        private Option<String> r2dbcUrl = Option.none();
+        private Option<String> jdbcUrl = none();
+        private Option<String> r2dbcUrl = none();
 
         private Builder() {}
 
-        public Builder name(String name) {
-            this.name = name;
+        public Builder withName(String value) {
+            this.name = value;
             return this;
         }
 
-        public Builder type(DatabaseType type) {
-            this.type = type;
+        public Builder withType(DatabaseType value) {
+            this.type = value;
             return this;
         }
 
-        public Builder host(String host) {
-            this.host = host;
+        public Builder withHost(String value) {
+            this.host = value;
             return this;
         }
 
-        public Builder port(int port) {
-            this.port = port;
+        public Builder withPort(int value) {
+            this.port = value;
             return this;
         }
 
-        public Builder database(String database) {
-            this.database = database;
+        public Builder withDatabase(String value) {
+            this.database = value;
             return this;
         }
 
-        public Builder username(String username) {
-            this.username = Option.option(username);
+        public Builder withUsername(String value) {
+            this.username = option(value);
             return this;
         }
 
-        public Builder password(String password) {
-            this.password = Option.option(password);
+        public Builder withPassword(String value) {
+            this.password = option(value);
             return this;
         }
 
-        public Builder poolConfig(PoolConfig poolConfig) {
-            this.poolConfig = poolConfig;
+        public Builder withPoolConfig(PoolConfig value) {
+            this.poolConfig = value;
             return this;
         }
 
-        public Builder properties(Map<String, String> properties) {
-            this.properties = properties;
+        public Builder withProperties(Map<String, String> value) {
+            this.properties = value;
             return this;
         }
 
-        public Builder jdbcUrl(String jdbcUrl) {
-            this.jdbcUrl = Option.option(jdbcUrl);
+        public Builder withJdbcUrl(String value) {
+            this.jdbcUrl = option(value);
             return this;
         }
 
-        public Builder r2dbcUrl(String r2dbcUrl) {
-            this.r2dbcUrl = Option.option(r2dbcUrl);
+        public Builder withR2dbcUrl(String value) {
+            this.r2dbcUrl = option(value);
             return this;
         }
 
         public Result<DatabaseConnectorConfig> build() {
-            return validate(name, type, host, database)
-            .map(_ -> new DatabaseConnectorConfig(name,
+            return ensureRequired(name, type, host, database)
+            .flatMap(_ -> databaseConnectorConfig(name,
                                                   type,
                                                   host,
                                                   port,

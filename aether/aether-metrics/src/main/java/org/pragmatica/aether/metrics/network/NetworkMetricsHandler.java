@@ -33,18 +33,21 @@ public final class NetworkMetricsHandler extends ChannelDuplexHandler {
     }
 
     @Override
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
         activeConnections.incrementAndGet();
         super.channelActive(ctx);
     }
 
     @Override
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         activeConnections.decrementAndGet();
         super.channelInactive(ctx);
     }
 
     @Override
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         messagesRead.increment();
         if (msg instanceof ByteBuf buf) {
@@ -54,6 +57,7 @@ public final class NetworkMetricsHandler extends ChannelDuplexHandler {
     }
 
     @Override
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
         messagesWritten.increment();
         if (msg instanceof ByteBuf buf) {
@@ -63,10 +67,10 @@ public final class NetworkMetricsHandler extends ChannelDuplexHandler {
     }
 
     @Override
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
     public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
         if (!ctx.channel()
                 .isWritable()) {
-            // Channel became non-writable = backpressure
             backpressureEvents.incrementAndGet();
             lastBackpressureTimestamp.set(System.currentTimeMillis());
         }

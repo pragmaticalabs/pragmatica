@@ -31,6 +31,7 @@ import org.jooq.impl.DSL;
 ///
 /// Provides both standard DatabaseConnector operations and jOOQ-specific
 /// operations for type-safe query building.
+@SuppressWarnings("JBCT-EX-01") // JDBC/jOOQ adapter — exceptions are caught at Promise.lift() boundary
 public final class JooqDatabaseConnector implements DatabaseConnector {
     private final DatabaseConnectorConfig config;
     private final DataSource dataSource;

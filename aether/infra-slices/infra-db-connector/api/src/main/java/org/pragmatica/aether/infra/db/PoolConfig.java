@@ -1,8 +1,13 @@
 package org.pragmatica.aether.infra.db;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import java.time.Duration;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
 
 /// Connection pool configuration for database connectors.
 ///
@@ -20,42 +25,40 @@ public record PoolConfig(int minConnections,
                          Duration maxLifetime,
                          Option<String> validationQuery,
                          Duration leakDetectionTimeout) {
+    /// Creates a validated pool config with all parameters.
+    ///
+    /// @param minConnections       Minimum connections
+    /// @param maxConnections       Maximum connections
+    /// @param connectionTimeout    Connection timeout
+    /// @param idleTimeout          Idle timeout
+    /// @param maxLifetime          Max lifetime
+    /// @param validationQuery      Validation query
+    /// @param leakDetectionTimeout Leak detection timeout
+    /// @return Result with pool configuration
+    public static Result<PoolConfig> poolConfig(int minConnections,
+                                                int maxConnections,
+                                                Duration connectionTimeout,
+                                                Duration idleTimeout,
+                                                Duration maxLifetime,
+                                                Option<String> validationQuery,
+                                                Duration leakDetectionTimeout) {
+        return success(new PoolConfig(minConnections,
+                                      maxConnections,
+                                      connectionTimeout,
+                                      idleTimeout,
+                                      maxLifetime,
+                                      validationQuery,
+                                      leakDetectionTimeout));
+    }
+
     /// Default pool configuration suitable for most applications.
-    public static final PoolConfig DEFAULT = new PoolConfig(2,
-                                                            // minConnections
-    10,
-                                                            // maxConnections
-    Duration.ofSeconds(30),
-                                                            // connectionTimeout
-    Duration.ofMinutes(10),
-                                                            // idleTimeout
-    Duration.ofMinutes(30),
-                                                            // maxLifetime
-    Option.none(),
-                                                            // validationQuery (use driver default)
-    Duration.ZERO);
-
-    /// Creates a pool config with default values.
-    ///
-    /// @return Default pool configuration
-    public static PoolConfig poolConfig() {
-        return DEFAULT;
-    }
-
-    /// Creates a pool config with specified connection limits.
-    ///
-    /// @param minConnections Minimum connections
-    /// @param maxConnections Maximum connections
-    /// @return Pool configuration
-    public static PoolConfig poolConfig(int minConnections, int maxConnections) {
-        return new PoolConfig(minConnections,
-                              maxConnections,
-                              DEFAULT.connectionTimeout,
-                              DEFAULT.idleTimeout,
-                              DEFAULT.maxLifetime,
-                              DEFAULT.validationQuery,
-                              DEFAULT.leakDetectionTimeout);
-    }
+    public static final PoolConfig DEFAULT = poolConfig(2,
+                                                        10,
+                                                        Duration.ofSeconds(30),
+                                                        Duration.ofMinutes(10),
+                                                        Duration.ofMinutes(30),
+                                                        none(),
+                                                        Duration.ZERO).unwrap();
 
     /// Creates a builder for fluent configuration.
     ///
@@ -76,49 +79,49 @@ public record PoolConfig(int minConnections,
 
         private Builder() {}
 
-        public Builder minConnections(int minConnections) {
-            this.minConnections = minConnections;
+        public Builder withMinConnections(int value) {
+            this.minConnections = value;
             return this;
         }
 
-        public Builder maxConnections(int maxConnections) {
-            this.maxConnections = maxConnections;
+        public Builder withMaxConnections(int value) {
+            this.maxConnections = value;
             return this;
         }
 
-        public Builder connectionTimeout(Duration connectionTimeout) {
-            this.connectionTimeout = connectionTimeout;
+        public Builder withConnectionTimeout(Duration value) {
+            this.connectionTimeout = value;
             return this;
         }
 
-        public Builder idleTimeout(Duration idleTimeout) {
-            this.idleTimeout = idleTimeout;
+        public Builder withIdleTimeout(Duration value) {
+            this.idleTimeout = value;
             return this;
         }
 
-        public Builder maxLifetime(Duration maxLifetime) {
-            this.maxLifetime = maxLifetime;
+        public Builder withMaxLifetime(Duration value) {
+            this.maxLifetime = value;
             return this;
         }
 
-        public Builder validationQuery(String validationQuery) {
-            this.validationQuery = Option.option(validationQuery);
+        public Builder withValidationQuery(String value) {
+            this.validationQuery = option(value);
             return this;
         }
 
-        public Builder leakDetectionTimeout(Duration leakDetectionTimeout) {
-            this.leakDetectionTimeout = leakDetectionTimeout;
+        public Builder withLeakDetectionTimeout(Duration value) {
+            this.leakDetectionTimeout = value;
             return this;
         }
 
-        public PoolConfig build() {
-            return new PoolConfig(minConnections,
-                                  maxConnections,
-                                  connectionTimeout,
-                                  idleTimeout,
-                                  maxLifetime,
-                                  validationQuery,
-                                  leakDetectionTimeout);
+        public Result<PoolConfig> build() {
+            return poolConfig(minConnections,
+                              maxConnections,
+                              connectionTimeout,
+                              idleTimeout,
+                              maxLifetime,
+                              validationQuery,
+                              leakDetectionTimeout);
         }
     }
 }

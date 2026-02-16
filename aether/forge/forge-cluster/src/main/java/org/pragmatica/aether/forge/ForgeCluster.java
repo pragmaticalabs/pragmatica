@@ -54,6 +54,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 /// Manages a cluster of AetherNodes for Forge.
 /// Supports starting, stopping, adding, and killing nodes.
+@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
 public final class ForgeCluster {
     private static final Logger log = LoggerFactory.getLogger(ForgeCluster.class);
 
@@ -129,10 +130,7 @@ public final class ForgeCluster {
                                   .map(info -> List.of("localhost:" + info.address()
                                                                          .port()))
                                   .or(List.of());
-            return InstanceInfo.instanceInfo(InstanceId.instanceId(nodeIdStr),
-                                             InstanceStatus.RUNNING,
-                                             addresses,
-                                             InstanceType.ON_DEMAND);
+            return new InstanceInfo(new InstanceId(nodeIdStr), InstanceStatus.RUNNING, addresses, InstanceType.ON_DEMAND);
         }
     }
 
@@ -535,13 +533,13 @@ public final class ForgeCluster {
         var config = new AetherNodeConfig(topology,
                                           ProtocolConfig.testConfig(),
                                           defaultSliceActionConfig(),
-                                          org.pragmatica.aether.config.SliceConfig.defaultConfig(),
+                                          org.pragmatica.aether.config.SliceConfig.sliceConfig(),
                                           mgmtPort,
                                           DHTConfig.FULL,
                                           Option.empty(),
-                                          org.pragmatica.aether.config.TTMConfig.disabled(),
-                                          RollbackConfig.defaultConfig(),
-                                          AppHttpConfig.enabledOnPort(appHttpPort),
+                                          org.pragmatica.aether.config.TtmConfig.ttmConfig(),
+                                          RollbackConfig.rollbackConfig(),
+                                          AppHttpConfig.appHttpConfig(appHttpPort),
                                           ControllerConfig.forgeDefaults(),
                                           configProvider,
                                           Option.some(forgeEnvironment),

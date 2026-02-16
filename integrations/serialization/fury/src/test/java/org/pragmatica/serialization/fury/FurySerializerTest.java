@@ -40,8 +40,10 @@ class FurySerializerTest {
     void roundtrip_serializes_record() {
         record Person(String name, int age) {}
 
-        var serializer = FurySerializer.furySerializer(c -> c.accept(Person.class));
-        var deserializer = FuryDeserializer.furyDeserializer(c -> c.accept(Person.class));
+        List<Class<?>> classes = List.of(Person.class);
+        org.pragmatica.serialization.ClassRegistrator registrator = () -> classes;
+        var serializer = FurySerializer.furySerializer(registrator);
+        var deserializer = FuryDeserializer.furyDeserializer(registrator);
 
         var original = new Person("Alice", 30);
         var bytes = serializer.encode(original);

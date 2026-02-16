@@ -329,7 +329,8 @@ class DatabaseServiceTest {
     @Test
     void databaseConfig_withMethods_createNewConfig() {
         DatabaseConfig.databaseConfig()
-                      .map(c -> c.withName("custom").withMaxConnections(20))
+                      .flatMap(c -> c.withName("custom"))
+                      .flatMap(c -> c.withMaxConnections(20))
                       .onFailureRun(Assertions::fail)
                       .onSuccess(config -> {
                           assertThat(config.name()).isEqualTo("custom");

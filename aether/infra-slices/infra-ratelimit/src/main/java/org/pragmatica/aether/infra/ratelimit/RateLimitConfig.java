@@ -31,15 +31,17 @@ public record RateLimitConfig(int maxRequests, TimeSpan window, RateLimitStrateg
     public static Result<RateLimitConfig> rateLimitConfig(int maxRequests,
                                                           TimeSpan window,
                                                           RateLimitStrategy strategy) {
-        return ensure(maxRequests, Verify.Is::positive)
-        .flatMap(requests -> ensure(window, Verify.Is::notNull)
-        .flatMap(w -> ensure(strategy, Verify.Is::notNull).map(s -> new RateLimitConfig(requests, w, s))));
+        var validRequests = ensure(maxRequests, Verify.Is::positive);
+        var validWindow = ensure(window, Verify.Is::notNull);
+        var validStrategy = ensure(strategy, Verify.Is::notNull);
+        return Result.all(validRequests, validWindow, validStrategy)
+                     .map(RateLimitConfig::new);
     }
 
     /// Default configuration: 100 requests per minute with fixed window.
     ///
     /// @return Result containing default configuration
-    public static Result<RateLimitConfig> defaultConfig() {
+    public static Result<RateLimitConfig> rateLimitConfig() {
         return rateLimitConfig(100, timeSpan(1).minutes());
     }
 }

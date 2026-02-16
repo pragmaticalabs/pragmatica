@@ -27,20 +27,24 @@ final class DefaultMetricsAspectFactory implements MetricsAspectFactory {
     @Override
     @SuppressWarnings("unchecked")
     public <T> Aspect<T> create(MetricsConfig config) {
-        return instance -> {
-            if (!enabled.get()) {
-                return instance;
-            }
-            var interfaces = instance.getClass()
-                                     .getInterfaces();
-            if (interfaces.length == 0) {
-                return instance;
-            }
-            return (T) Proxy.newProxyInstance(instance.getClass()
-                                                      .getClassLoader(),
-                                              interfaces,
-                                              new MetricsInvocationHandler<>(instance, config, registry, enabled));
-        };
+        return instance -> createProxy(instance, config);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T createProxy(T instance, MetricsConfig config) {
+        if (!enabled.get()) {
+            return instance;
+        }
+        var interfaces = instance.getClass()
+                                 .getInterfaces();
+        if (interfaces.length == 0) {
+            return instance;
+        }
+        var handler = new MetricsInvocationHandler<>(instance, config, registry, enabled);
+        return (T) Proxy.newProxyInstance(instance.getClass()
+                                                  .getClassLoader(),
+                                          interfaces,
+                                          handler);
     }
 
     @Override
@@ -59,13 +63,13 @@ final class DefaultMetricsAspectFactory implements MetricsAspectFactory {
         return registry;
     }
 
-    // Note: InvocationHandler.invoke() requires `throws Throwable` - this is inherent
-    // to the reflection API contract and acceptable for infrastructure code.
+    @SuppressWarnings({"JBCT-VO-01", "JBCT-VO-02"})
     private record MetricsInvocationHandler<T>(T delegate,
                                                MetricsConfig config,
                                                MeterRegistry registry,
                                                AtomicBoolean enabled) implements InvocationHandler {
         @Override
+        @SuppressWarnings("JBCT-EX-01")
         public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
             if (!enabled.get() || isObjectMethod(method)) {
                 return method.invoke(delegate, args);
@@ -77,7 +81,7 @@ final class DefaultMetricsAspectFactory implements MetricsAspectFactory {
             return invokeWithTimer(method, args, metricName);
         }
 
-        @SuppressWarnings("unchecked")
+        @SuppressWarnings({"unchecked", "JBCT-EX-01"})
         private Object invokeWithPromiseMetrics(Method method, Object[] args, String metricName) throws Throwable {
             var result = (Promise<?>) method.invoke(delegate, args);
             return wrapPromise(result, metricName);
@@ -92,11 +96,12 @@ final class DefaultMetricsAspectFactory implements MetricsAspectFactory {
             var timerName = success
                             ? metricName + ".success"
                             : metricName + ".failure";
-            sample.stop(registry.timer(timerName,
-                                       config.tags()
-                                             .toArray(new String[0])));
+            var tagsArray = config.tags()
+                                  .toArray(new String[0]);
+            sample.stop(registry.timer(timerName, tagsArray));
         }
 
+        @SuppressWarnings("JBCT-EX-01")
         private Object invokeWithTimer(Method method, Object[] args, String metricName) throws Throwable {
             var tagsArray = config.tags()
                                   .toArray(new String[0]);

@@ -4,6 +4,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
 
+import static org.pragmatica.lang.Result.all;
 import static org.pragmatica.lang.Verify.ensure;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -13,12 +14,15 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param resetTimeout     Time to wait before attempting to close the circuit
 /// @param testAttempts     Number of successful calls in half-open state before closing
 public record CircuitBreakerConfig(int failureThreshold, TimeSpan resetTimeout, int testAttempts) {
+    @SuppressWarnings("JBCT-VO-02")
+    private static final CircuitBreakerConfig DEFAULTS = new CircuitBreakerConfig(5, timeSpan(30).seconds(), 3);
+
     /// Create circuit breaker configuration with default values.
     /// Default: 5 failures, 30 second reset timeout, 3 test attempts.
     ///
-    /// @return Result containing configuration
-    public static Result<CircuitBreakerConfig> circuitBreakerConfig() {
-        return Result.success(new CircuitBreakerConfig(5, timeSpan(30).seconds(), 3));
+    /// @return Default configuration
+    public static CircuitBreakerConfig circuitBreakerConfig() {
+        return DEFAULTS;
     }
 
     /// Create circuit breaker configuration with custom failure threshold.
@@ -39,9 +43,9 @@ public record CircuitBreakerConfig(int failureThreshold, TimeSpan resetTimeout, 
     public static Result<CircuitBreakerConfig> circuitBreakerConfig(int failureThreshold,
                                                                     TimeSpan resetTimeout,
                                                                     int testAttempts) {
-        return ensure(failureThreshold, Verify.Is::positive)
-        .flatMap(threshold -> ensure(resetTimeout, Verify.Is::notNull)
-        .flatMap(timeout -> ensure(testAttempts, Verify.Is::positive)
-        .map(attempts -> new CircuitBreakerConfig(threshold, timeout, attempts))));
+        var validThreshold = ensure(failureThreshold, Verify.Is::positive);
+        var validTimeout = ensure(resetTimeout, Verify.Is::notNull);
+        var validAttempts = ensure(testAttempts, Verify.Is::positive);
+        return all(validThreshold, validTimeout, validAttempts).map(CircuitBreakerConfig::new);
     }
 }

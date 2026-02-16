@@ -7,8 +7,10 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
 
 /// Defines the structure of a state machine.
 ///
@@ -26,10 +28,9 @@ public record StateMachineDefinition<S, E, C>(String name,
 
     /// Finds a transition for the given state and event.
     public Option<Transition<S, E, C>> findTransition(S currentState, E event) {
-        return option(transitions.stream()
-                                 .filter(t -> t.matches(currentState, event))
-                                 .findFirst()
-                                 .orElse(null));
+        return Option.from(transitions.stream()
+                                      .filter(t -> t.matches(currentState, event))
+                                      .findFirst());
     }
 
     /// Checks if a state is a final state.
@@ -39,26 +40,20 @@ public record StateMachineDefinition<S, E, C>(String name,
 
     /// Gets all possible events from a given state.
     public Set<E> getEventsFrom(S state) {
-        var events = new HashSet<E>();
-        for (var transition : transitions) {
-            if (transition.fromState()
-                          .equals(state)) {
-                events.add(transition.event());
-            }
-        }
-        return Set.copyOf(events);
+        var fromState = transitions.stream()
+                                   .filter(t -> t.fromState()
+                                                 .equals(state));
+        return fromState.map(Transition::event)
+                        .collect(Collectors.toUnmodifiableSet());
     }
 
     /// Gets all possible target states from a given state.
     public Set<S> getTargetStatesFrom(S state) {
-        var targets = new HashSet<S>();
-        for (var transition : transitions) {
-            if (transition.fromState()
-                          .equals(state)) {
-                targets.add(transition.toState());
-            }
-        }
-        return Set.copyOf(targets);
+        var fromState = transitions.stream()
+                                   .filter(t -> t.fromState()
+                                                 .equals(state));
+        return fromState.map(Transition::toState)
+                        .collect(Collectors.toUnmodifiableSet());
     }
 
     /// Builder for state machine definitions.
@@ -102,14 +97,25 @@ public record StateMachineDefinition<S, E, C>(String name,
         }
 
         private Result<Builder<S, E, C>> validate() {
+            return validateName().flatMap(_ -> validateInitialState())
+                               .flatMap(_ -> validateTransitions());
+        }
+
+        private Result<Builder<S, E, C>> validateName() {
             return option(name).filter(n -> !n.isBlank())
                          .toResult(StateMachineError.invalidConfiguration("Name cannot be null or empty"))
-                         .flatMap(_ -> option(initialState)
-            .toResult(StateMachineError.invalidConfiguration("Initial state must be defined")))
-                         .flatMap(_ -> transitions.isEmpty()
-                                       ? StateMachineError.invalidConfiguration("At least one transition must be defined")
-                                                          .result()
-                                       : Result.success(this));
+                         .map(_ -> this);
+        }
+
+        private Result<Builder<S, E, C>> validateInitialState() {
+            return option(initialState).toResult(StateMachineError.invalidConfiguration("Initial state must be defined"))
+                         .map(_ -> this);
+        }
+
+        private Result<Builder<S, E, C>> validateTransitions() {
+            return option(transitions).filter(t -> !t.isEmpty())
+                         .toResult(StateMachineError.invalidConfiguration("At least one transition must be defined"))
+                         .map(_ -> this);
         }
     }
 }

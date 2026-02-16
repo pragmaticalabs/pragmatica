@@ -2,6 +2,7 @@ package org.pragmatica.aether.config;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -10,6 +11,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.unitResult;
 
 /// Wraps a base ConfigurationProvider with a mutable overlay.
 ///
@@ -30,8 +34,7 @@ public final class DynamicConfigurationProvider implements ConfigurationProvider
 
     @Override
     public Option<String> getString(String key) {
-        return Option.option(overlay.get(key))
-                     .orElse(() -> base.getString(key));
+        return option(overlay.get(key)).orElse(() -> base.getString(key));
     }
 
     @Override
@@ -64,12 +67,14 @@ public final class DynamicConfigurationProvider implements ConfigurationProvider
                    .map(_ -> this);
     }
 
-    public void put(String key, String value) {
+    public Result<Unit> put(String key, String value) {
         overlay.put(key, value);
+        return unitResult();
     }
 
-    public void remove(String key) {
+    public Result<Unit> remove(String key) {
         overlay.remove(key);
+        return unitResult();
     }
 
     public Map<String, String> overlayMap() {

@@ -15,6 +15,9 @@ import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.utils.Causes.cause;
+
 /// ClassLoader for framework classes shared by all slices.
 ///
 /// This classloader sits between the Platform ClassLoader and SharedLibraryClassLoader,
@@ -53,6 +56,7 @@ import org.slf4j.LoggerFactory;
 ///
 /// @see SharedLibraryClassLoader
 /// @see SliceClassLoader
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
 public class FrameworkClassLoader extends URLClassLoader {
     private static final Logger log = LoggerFactory.getLogger(FrameworkClassLoader.class);
 
@@ -78,8 +82,7 @@ public class FrameworkClassLoader extends URLClassLoader {
     /// @return Result containing FrameworkClassLoader, or error if directory invalid
     public static Result<FrameworkClassLoader> fromDirectory(Path frameworkDir) {
         if (!Files.isDirectory(frameworkDir)) {
-            return Causes.cause("Framework directory does not exist: " + frameworkDir)
-                         .result();
+            return cause("Framework directory does not exist: " + frameworkDir).result();
         }
         try (Stream<Path> jarStream = Files.list(frameworkDir)) {
             var jarUrls = jarStream.filter(path -> path.toString()
@@ -89,13 +92,11 @@ public class FrameworkClassLoader extends URLClassLoader {
                                    .map(Result::unwrap)
                                    .toArray(URL[]::new);
             if (jarUrls.length == 0) {
-                return Causes.cause("No JAR files found in framework directory: " + frameworkDir)
-                             .result();
+                return cause("No JAR files found in framework directory: " + frameworkDir).result();
             }
-            return Result.success(new FrameworkClassLoader(jarUrls));
+            return success(new FrameworkClassLoader(jarUrls));
         } catch (IOException e) {
-            return Causes.cause("Failed to scan framework directory: " + e.getMessage())
-                         .result();
+            return cause("Failed to scan framework directory: " + e.getMessage()).result();
         }
     }
 
@@ -115,10 +116,9 @@ public class FrameworkClassLoader extends URLClassLoader {
                  .onFailure(cause -> errors.add(cause.message()));
         }
         if (!errors.isEmpty()) {
-            return Causes.cause("Failed to load framework JARs: " + String.join(", ", errors))
-                         .result();
+            return cause("Failed to load framework JARs: " + String.join(", ", errors)).result();
         }
-        return Result.success(new FrameworkClassLoader(urls.toArray(URL[]::new)));
+        return success(new FrameworkClassLoader(urls.toArray(URL[]::new)));
     }
 
     /// Get list of JAR names loaded by this classloader.
@@ -128,6 +128,8 @@ public class FrameworkClassLoader extends URLClassLoader {
         return List.copyOf(loadedJars);
     }
 
+    /// JDK override — kept as void/throws per URLClassLoader contract.
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
     @Override
     public void close() throws IOException {
         log.info("Closing FrameworkClassLoader with {} JARs", loadedJars.size());

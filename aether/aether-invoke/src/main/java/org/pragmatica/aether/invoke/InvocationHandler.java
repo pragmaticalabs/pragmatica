@@ -37,14 +37,17 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public interface InvocationHandler {
     /// Handle incoming invocation request.
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
     void onInvokeRequest(InvokeRequest request);
 
     /// Register a slice bridge for handling invocations.
     /// Called when a slice becomes active.
+    @SuppressWarnings("JBCT-RET-01") // Fire-and-forget state mutation
     void registerSlice(Artifact artifact, SliceBridge bridge);
 
     /// Unregister a slice.
     /// Called when a slice is deactivated.
+    @SuppressWarnings("JBCT-RET-01") // Fire-and-forget state mutation
     void unregisterSlice(Artifact artifact);
 
     /// Get a local slice bridge for direct invocation.
@@ -210,12 +213,14 @@ class InvocationHandlerImpl implements InvocationHandler {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void registerSlice(Artifact artifact, SliceBridge bridge) {
         localSlices.put(artifact, bridge);
         log.debug("Registered slice for invocation: {}", artifact);
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void unregisterSlice(Artifact artifact) {
         localSlices.remove(artifact);
         log.debug("Unregistered slice from invocation: {}", artifact);
@@ -241,6 +246,7 @@ class InvocationHandlerImpl implements InvocationHandler {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onInvokeRequest(InvokeRequest request) {
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Received InvokeRequest [{}]: {}.{}",

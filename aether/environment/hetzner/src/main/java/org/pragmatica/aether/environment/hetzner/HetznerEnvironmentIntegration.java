@@ -6,9 +6,12 @@ import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.SecretsProvider;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.aether.environment.hetzner.HetznerComputeProvider.hetznerComputeProvider;
 import static org.pragmatica.aether.environment.hetzner.HetznerLoadBalancerProvider.hetznerLoadBalancerProvider;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
 
 /// Hetzner Cloud implementation of the EnvironmentIntegration SPI.
 /// Provides compute capabilities backed by the Hetzner Cloud API.
@@ -16,29 +19,43 @@ import static org.pragmatica.aether.environment.hetzner.HetznerLoadBalancerProvi
 public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvider,
                                             Option<LoadBalancerProvider> loadBalancerProvider) implements EnvironmentIntegration {
     /// Factory method for creating a HetznerEnvironmentIntegration from configuration.
-    public static HetznerEnvironmentIntegration hetznerEnvironmentIntegration(HetznerEnvironmentConfig config) {
+    public static Result<HetznerEnvironmentIntegration> hetznerEnvironmentIntegration(HetznerEnvironmentConfig config) {
         var client = HetznerClient.hetznerClient(config.hetznerConfig());
         return hetznerEnvironmentIntegration(client, config);
     }
 
     /// Factory method for creating a HetznerEnvironmentIntegration with a custom client.
-    public static HetznerEnvironmentIntegration hetznerEnvironmentIntegration(HetznerClient client,
-                                                                              HetznerEnvironmentConfig config) {
+    public static Result<HetznerEnvironmentIntegration> hetznerEnvironmentIntegration(HetznerClient client,
+                                                                                      HetznerEnvironmentConfig config) {
         var compute = hetznerComputeProvider(client, config);
-        Option<LoadBalancerProvider> lb = config.loadBalancer()
-                                                .map(lbConfig -> createLbProvider(client, lbConfig));
-        return new HetznerEnvironmentIntegration(compute, lb);
+        var lbProvider = resolveLbProvider(client, config);
+        return Result.all(compute, lbProvider)
+                     .map(HetznerEnvironmentIntegration::new);
     }
 
-    // --- Leaf: create load balancer provider from config ---
-    private static LoadBalancerProvider createLbProvider(HetznerClient client,
-                                                         HetznerEnvironmentConfig.HetznerLbConfig lbConfig) {
-        return hetznerLoadBalancerProvider(client, lbConfig.loadBalancerId(), lbConfig.destinationPort());
+    // --- Leaf: resolve optional load balancer provider ---
+    private static Result<Option<LoadBalancerProvider>> resolveLbProvider(HetznerClient client,
+                                                                          HetznerEnvironmentConfig config) {
+        return config.loadBalancer()
+                     .fold(() -> success(Option.empty()),
+                           lbConfig -> toLbOption(client, lbConfig));
+    }
+
+    // --- Leaf: create optional LB provider from config ---
+    private static Result<Option<LoadBalancerProvider>> toLbOption(HetznerClient client,
+                                                                   HetznerEnvironmentConfig.HetznerLbConfig lbConfig) {
+        return hetznerLoadBalancerProvider(client, lbConfig.loadBalancerId(), lbConfig.destinationPort())
+        .map(HetznerEnvironmentIntegration::wrapInSome);
+    }
+
+    // --- Leaf: wrap a LoadBalancerProvider in Option.some ---
+    private static Option<LoadBalancerProvider> wrapInSome(HetznerLoadBalancerProvider provider) {
+        return some(provider);
     }
 
     @Override
     public Option<ComputeProvider> compute() {
-        return Option.some(computeProvider);
+        return some(computeProvider);
     }
 
     @Override

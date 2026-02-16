@@ -3,14 +3,16 @@ package org.pragmatica.aether.infra.http;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.parse.Network;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpRequest.BodyPublishers;
 import java.time.Duration;
 import java.util.Map;
+
+import static org.pragmatica.lang.Option.none;
 
 /// JDK HttpClient-based implementation of HttpClientSlice.
 /// Delegates to pragmatica-lite's JdkHttpOperations.
@@ -34,10 +36,9 @@ final class JdkHttpClientSlice implements HttpClientSlice {
     }
 
     private static HttpOperations createOperations(HttpClientConfig config) {
-        return JdkHttpOperations.jdkHttpOperations(Duration.ofMillis(config.connectTimeout()
-                                                                           .millis()),
-                                                   config.followRedirects(),
-                                                   Option.none());
+        var timeout = Duration.ofMillis(config.connectTimeout()
+                                              .millis());
+        return JdkHttpOperations.jdkHttpOperations(timeout, config.followRedirects(), none());
     }
 
     @Override
@@ -55,8 +56,7 @@ final class JdkHttpClientSlice implements HttpClientSlice {
         var builder = HttpRequest.newBuilder()
                                  .uri(buildUri(path))
                                  .GET()
-                                 .timeout(Duration.ofMillis(config.requestTimeout()
-                                                                  .millis()));
+                                 .timeout(requestTimeout());
         headers.forEach(builder::header);
         return operations.sendString(builder.build());
     }
@@ -72,8 +72,7 @@ final class JdkHttpClientSlice implements HttpClientSlice {
                                  .uri(buildUri(path))
                                  .POST(BodyPublishers.ofString(body))
                                  .header("Content-Type", "application/json")
-                                 .timeout(Duration.ofMillis(config.requestTimeout()
-                                                                  .millis()));
+                                 .timeout(requestTimeout());
         headers.forEach(builder::header);
         return operations.sendString(builder.build());
     }
@@ -89,8 +88,7 @@ final class JdkHttpClientSlice implements HttpClientSlice {
                                  .uri(buildUri(path))
                                  .PUT(BodyPublishers.ofString(body))
                                  .header("Content-Type", "application/json")
-                                 .timeout(Duration.ofMillis(config.requestTimeout()
-                                                                  .millis()));
+                                 .timeout(requestTimeout());
         headers.forEach(builder::header);
         return operations.sendString(builder.build());
     }
@@ -105,8 +103,7 @@ final class JdkHttpClientSlice implements HttpClientSlice {
         var builder = HttpRequest.newBuilder()
                                  .uri(buildUri(path))
                                  .DELETE()
-                                 .timeout(Duration.ofMillis(config.requestTimeout()
-                                                                  .millis()));
+                                 .timeout(requestTimeout());
         headers.forEach(builder::header);
         return operations.sendString(builder.build());
     }
@@ -123,8 +120,7 @@ final class JdkHttpClientSlice implements HttpClientSlice {
                                  .method("PATCH",
                                          BodyPublishers.ofString(body))
                                  .header("Content-Type", "application/json")
-                                 .timeout(Duration.ofMillis(config.requestTimeout()
-                                                                  .millis()));
+                                 .timeout(requestTimeout());
         headers.forEach(builder::header);
         return operations.sendString(builder.build());
     }
@@ -139,20 +135,35 @@ final class JdkHttpClientSlice implements HttpClientSlice {
         var builder = HttpRequest.newBuilder()
                                  .uri(buildUri(path))
                                  .GET()
-                                 .timeout(Duration.ofMillis(config.requestTimeout()
-                                                                  .millis()));
+                                 .timeout(requestTimeout());
         headers.forEach(builder::header);
         return operations.sendBytes(builder.build());
     }
 
+    private Duration requestTimeout() {
+        return Duration.ofMillis(config.requestTimeout()
+                                       .millis());
+    }
+
     private URI buildUri(String path) {
-        return config.baseUrl()
-                     .map(base -> base.endsWith("/") && path.startsWith("/")
-                                  ? base + path.substring(1)
-                                  : base.endsWith("/") || path.startsWith("/")
-                                    ? base + path
-                                    : base + "/" + path)
-                     .map(URI::create)
-                     .or(() -> URI.create(path));
+        var fullUrl = config.baseUrl()
+                            .map(base -> joinUrl(base, path));
+        return fullUrl.map(url -> parseUri(url))
+                      .or(() -> parseUri(path));
+    }
+
+    private static URI parseUri(String uri) {
+        return Network.parseURI(uri)
+                      .unwrap();
+    }
+
+    private static String joinUrl(String base, String path) {
+        if (base.endsWith("/") && path.startsWith("/")) {
+            return base + path.substring(1);
+        }
+        if (base.endsWith("/") || path.startsWith("/")) {
+            return base + path;
+        }
+        return base + "/" + path;
     }
 }

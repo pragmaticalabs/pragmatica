@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
-import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
@@ -28,11 +27,15 @@ final class InMemoryStateMachine<S, E, C> implements StateMachine<S, E, C> {
 
     @Override
     public Promise<StateInfo<S>> create(String machineId, C context) {
-        return option(instances.get(machineId)).map(existing -> StateMachineError.alreadyStarted(machineId,
-                                                                                                 existing.stateInfo.currentState()
-                                                                                                         .toString())
-                                                                                 .<StateInfo<S>> promise())
+        return option(instances.get(machineId)).map(existing -> alreadyStartedError(machineId, existing))
                      .or(() -> createNewInstance(machineId, context));
+    }
+
+    private Promise<StateInfo<S>> alreadyStartedError(String machineId, MachineInstance<S, C> existing) {
+        return StateMachineError.alreadyStarted(machineId,
+                                                existing.stateInfo.currentState()
+                                                        .toString())
+                                .promise();
     }
 
     private Promise<StateInfo<S>> createNewInstance(String machineId, C context) {
@@ -49,11 +52,11 @@ final class InMemoryStateMachine<S, E, C> implements StateMachine<S, E, C> {
 
     private Promise<StateInfo<S>> processEvent(MachineInstance<S, C> instance, E event) {
         var currentState = instance.stateInfo.currentState();
-        return definition.findTransition(currentState, event)
-                         .toResult(StateMachineError.eventNotHandled(currentState.toString(),
-                                                                     event.toString()))
-                         .async()
-                         .flatMap(transition -> executeTransition(instance, transition));
+        var transitionResult = definition.findTransition(currentState, event)
+                                         .toResult(StateMachineError.eventNotHandled(currentState.toString(),
+                                                                                     event.toString()));
+        return transitionResult.async()
+                               .flatMap(transition -> executeTransition(instance, transition));
     }
 
     private Promise<StateInfo<S>> executeTransition(MachineInstance<S, C> instance, Transition<S, E, C> transition) {
@@ -63,20 +66,24 @@ final class InMemoryStateMachine<S, E, C> implements StateMachine<S, E, C> {
                                                           transition.event(),
                                                           instance.userContext);
         if (!transition.isAllowed(context)) {
-            return StateMachineError.invalidTransition(transition.fromState()
-                                                                 .toString(),
-                                                       transition.toState()
-                                                                 .toString(),
-                                                       transition.event()
-                                                                 .toString())
-                                    .promise();
+            return invalidTransitionError(transition);
         }
         return transition.executeAction(context)
-                         .map(unit -> applyTransition(instance,
-                                                      transition.toState()));
+                         .map(unit -> recordTransition(instance,
+                                                       transition.toState()));
     }
 
-    private StateInfo<S> applyTransition(MachineInstance<S, C> instance, S newState) {
+    private Promise<StateInfo<S>> invalidTransitionError(Transition<S, E, C> transition) {
+        var error = StateMachineError.invalidTransition(transition.fromState()
+                                                                  .toString(),
+                                                        transition.toState()
+                                                                  .toString(),
+                                                        transition.event()
+                                                                  .toString());
+        return error.promise();
+    }
+
+    private StateInfo<S> recordTransition(MachineInstance<S, C> instance, S newState) {
         var newStateInfo = instance.stateInfo.transitionTo(newState);
         instances.put(instance.stateInfo.machineId(), new MachineInstance<>(newStateInfo, instance.userContext));
         return newStateInfo;
@@ -94,20 +101,27 @@ final class InMemoryStateMachine<S, E, C> implements StateMachine<S, E, C> {
 
     @Override
     public Promise<Boolean> isComplete(String machineId) {
-        return getState(machineId).map(opt -> opt.map(info -> definition.isFinalState(info.currentState()))
-                                                 .or(false));
+        return getState(machineId).map(this::checkComplete);
+    }
+
+    private boolean checkComplete(Option<StateInfo<S>> opt) {
+        return opt.map(info -> definition.isFinalState(info.currentState()))
+                  .or(false);
     }
 
     @Override
     public Promise<Set<E>> getAvailableEvents(String machineId) {
-        return getState(machineId)
-        .map(opt -> opt.map(info -> definition.getEventsFrom(info.currentState()))
-                       .or(Set.of()));
+        return getState(machineId).map(this::eventsForState);
+    }
+
+    private Set<E> eventsForState(Option<StateInfo<S>> opt) {
+        return opt.map(info -> definition.getEventsFrom(info.currentState()))
+                  .or(Set.of());
     }
 
     @Override
     public Promise<StateInfo<S>> reset(String machineId) {
-        return getInstanceOrFail(machineId).map(instance -> resetInstance(instance));
+        return getInstanceOrFail(machineId).map(this::resetInstance);
     }
 
     private StateInfo<S> resetInstance(MachineInstance<S, C> instance) {

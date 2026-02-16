@@ -23,23 +23,27 @@ final class DefaultLoggingAspectFactory implements LoggingAspectFactory {
     @Override
     @SuppressWarnings("unchecked")
     public <T> Aspect<T> create(LogConfig config) {
-        return instance -> {
-            if (!enabled.get()) {
-                return instance;
-            }
-            var interfaces = instance.getClass()
-                                     .getInterfaces();
-            if (interfaces.length == 0) {
-                log.warn("Cannot create logging proxy for class without interfaces: {}",
-                         instance.getClass()
-                                 .getName());
-                return instance;
-            }
-            return (T) Proxy.newProxyInstance(instance.getClass()
-                                                      .getClassLoader(),
-                                              interfaces,
-                                              new LoggingInvocationHandler<>(instance, config, enabled));
-        };
+        return instance -> createProxy(instance, config);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T createProxy(T instance, LogConfig config) {
+        if (!enabled.get()) {
+            return instance;
+        }
+        var interfaces = instance.getClass()
+                                 .getInterfaces();
+        if (interfaces.length == 0) {
+            log.warn("Cannot create logging proxy for class without interfaces: {}",
+                     instance.getClass()
+                             .getName());
+            return instance;
+        }
+        var handler = new LoggingInvocationHandler<>(instance, config, enabled);
+        return (T) Proxy.newProxyInstance(instance.getClass()
+                                                  .getClassLoader(),
+                                          interfaces,
+                                          handler);
     }
 
     @Override
@@ -53,12 +57,14 @@ final class DefaultLoggingAspectFactory implements LoggingAspectFactory {
         return enabled.get();
     }
 
+    @SuppressWarnings({"JBCT-VO-01", "JBCT-VO-02"})
     private record LoggingInvocationHandler<T>(T delegate,
                                                LogConfig config,
                                                AtomicBoolean enabled) implements InvocationHandler {
         private static final Logger log = LoggerFactory.getLogger(LoggingInvocationHandler.class);
 
         @Override
+        @SuppressWarnings("JBCT-EX-01")
         public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
             if (!enabled.get() || isObjectMethod(method)) {
                 return method.invoke(delegate, args);
@@ -78,6 +84,7 @@ final class DefaultLoggingAspectFactory implements LoggingAspectFactory {
             }
         }
 
+        @SuppressWarnings("JBCT-UTIL-02")
         private void logEntry(String methodName, Object[] args) {
             if (config.logArgs() && args != null && args.length > 0) {
                 log("-> {} args={}",
@@ -90,10 +97,15 @@ final class DefaultLoggingAspectFactory implements LoggingAspectFactory {
         }
 
         private void logExit(String methodName, Object result, double durationMs) {
+            var formattedDuration = String.format("%.2f", durationMs);
+            logExitWithOptions(methodName, result, formattedDuration);
+        }
+
+        private void logExitWithOptions(String methodName, Object result, String formattedDuration) {
             if (config.logResult() && config.logDuration()) {
-                log("<- {} result={} ({}ms)", methodName, summarize(result), String.format("%.2f", durationMs));
+                log("<- {} result={} ({}ms)", methodName, summarize(result), formattedDuration);
             } else if (config.logDuration()) {
-                log("<- {} ({}ms)", methodName, String.format("%.2f", durationMs));
+                log("<- {} ({}ms)", methodName, formattedDuration);
             } else if (config.logResult()) {
                 log("<- {} result={}", methodName, summarize(result));
             } else {
@@ -105,6 +117,7 @@ final class DefaultLoggingAspectFactory implements LoggingAspectFactory {
             log.error("x {} error={} ({}ms)", methodName, t.getMessage(), String.format("%.2f", durationMs));
         }
 
+        @SuppressWarnings("JBCT-SEQ-01")
         private void log(String format, Object... args) {
             switch (config.level()) {
                 case TRACE -> log.trace(format, args);

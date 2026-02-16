@@ -17,10 +17,15 @@ import java.net.URL;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.utils.Causes.cause;
+
+@SuppressWarnings({"JBCT-VO-01", "JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-NEST-01", "JBCT-UTIL-02"})
 public interface SliceStore {
     /// Create a new SliceStore instance with shared library classloader.
     ///
@@ -68,9 +73,9 @@ public interface SliceStore {
         return new ResourceProviderFacade() {
             @Override
             public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                return Causes.cause("Resource provisioning not configured. "
-                                    + "Use AetherNodeConfig.withConfigProvider() to enable resource provisioning.")
-                             .promise();
+                return cause("Resource provisioning not configured. "
+                             + "Use AetherNodeConfig.withConfigProvider() to enable resource provisioning.")
+                .promise();
             }
         };
     }
@@ -192,8 +197,7 @@ public interface SliceStore {
 
         @Override
         public Promise<LoadedSlice> activateSlice(Artifact artifact) {
-            return Option.option(entries.get(artifact))
-                         .toResult(SLICE_NOT_LOADED.apply(artifact.asString()))
+            return option(entries.get(artifact)).toResult(SLICE_NOT_LOADED.apply(artifact.asString()))
                          .async()
                          .flatMap(entryPromise -> entryPromise.flatMap(entry -> activateEntry(artifact, entry)));
         }
@@ -240,8 +244,7 @@ public interface SliceStore {
 
         @Override
         public Promise<LoadedSlice> deactivateSlice(Artifact artifact) {
-            return Option.option(entries.get(artifact))
-                         .toResult(SLICE_NOT_LOADED.apply(artifact.asString()))
+            return option(entries.get(artifact)).toResult(SLICE_NOT_LOADED.apply(artifact.asString()))
                          .async()
                          .flatMap(entryPromise -> entryPromise.flatMap(entry -> deactivateEntry(artifact, entry)));
         }
@@ -274,11 +277,10 @@ public interface SliceStore {
 
         @Override
         public Promise<Unit> unloadSlice(Artifact artifact) {
-            return Option.option(entries.remove(artifact))
-                         .map(entryPromise -> entryPromise.fold(result -> result.fold(cause -> skipFailedUnload(artifact,
-                                                                                                                cause),
-                                                                                      entry -> unloadEntry(artifact,
-                                                                                                           entry))))
+            return option(entries.remove(artifact)).map(entryPromise -> entryPromise.fold(result -> result.fold(cause -> skipFailedUnload(artifact,
+                                                                                                                                          cause),
+                                                                                                                entry -> unloadEntry(artifact,
+                                                                                                                                     entry))))
                          .or(() -> {
                                  log.debug("Slice {} not loaded, nothing to unload", artifact);
                                  return Promise.unitPromise();
@@ -317,8 +319,8 @@ public interface SliceStore {
                           .stream()
                           .filter(Promise::isResolved)
                           .flatMap(promise -> promise.await()
-                                                     .fold(_ -> java.util.stream.Stream.empty(),
-                                                           entry -> java.util.stream.Stream.of(entry.asLoadedSlice())))
+                                                     .fold(_ -> Stream.empty(),
+                                                           entry -> Stream.of(entry.asLoadedSlice())))
                           .toList();
         }
 

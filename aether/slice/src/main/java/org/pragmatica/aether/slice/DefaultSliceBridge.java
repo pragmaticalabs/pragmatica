@@ -15,6 +15,9 @@ import org.pragmatica.serialization.Serializer;
 
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
+
+import static org.pragmatica.lang.Option.option;
 
 /// Default implementation of SliceBridge for Node-Slice communication.
 ///
@@ -40,6 +43,7 @@ import java.util.Map;
 ///
 /// @see SliceBridge
 /// @see Slice
+@SuppressWarnings({"JBCT-VO-01", "JBCT-NAM-01"})
 public record DefaultSliceBridge(Artifact artifact,
                                  Slice slice,
                                  Map<String, InternalMethod> methodMap,
@@ -60,11 +64,11 @@ public record DefaultSliceBridge(Artifact artifact,
                                                         SerializerFactory serializerFactory) {
         var methodMap = slice.methods()
                              .stream()
-                             .collect(java.util.stream.Collectors.toMap(m -> m.name()
-                                                                              .name(),
-                                                                        m -> new InternalMethod(m,
-                                                                                                m.parameterType(),
-                                                                                                m.returnType())));
+                             .collect(Collectors.toMap(m -> m.name()
+                                                             .name(),
+                                                       m -> new InternalMethod(m,
+                                                                               m.parameterType(),
+                                                                               m.returnType())));
         return new DefaultSliceBridge(artifact, slice, Map.copyOf(methodMap), serializerFactory);
     }
 
@@ -119,8 +123,7 @@ public record DefaultSliceBridge(Artifact artifact,
     }
 
     private Result<InternalMethod> lookupMethod(String methodName) {
-        return Option.option(methodMap.get(methodName))
-                     .toResult(METHOD_NOT_FOUND.apply(methodName));
+        return option(methodMap.get(methodName)).toResult(METHOD_NOT_FOUND.apply(methodName));
     }
 
     private Promise<SerializationPair> acquireSerializationPair() {

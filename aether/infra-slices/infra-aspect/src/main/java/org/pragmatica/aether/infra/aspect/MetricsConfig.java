@@ -42,6 +42,7 @@ public record MetricsConfig(String name,
     }
 
     /// Create configuration with additional tags.
+    @SuppressWarnings("JBCT-VO-02")
     public MetricsConfig withTags(String... tags) {
         return new MetricsConfig(name, recordTiming, recordCounts, List.of(tags));
     }

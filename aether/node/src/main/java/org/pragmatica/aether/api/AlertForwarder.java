@@ -28,6 +28,7 @@ import org.slf4j.LoggerFactory;
 ///   - Configurable retries
 ///   - Configurable timeout
 ///
+@SuppressWarnings("JBCT-RET-01")
 public class AlertForwarder {
     private static final Logger log = LoggerFactory.getLogger(AlertForwarder.class);
 

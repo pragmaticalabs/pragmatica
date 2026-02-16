@@ -1,6 +1,6 @@
 package org.pragmatica.aether.ttm.model;
 
-import org.pragmatica.aether.config.TTMConfig;
+import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -14,5 +14,5 @@ public interface TTMPredictorFactory {
     Option<TTMPredictorFactory> INSTANCE = Option.from(ServiceLoader.load(TTMPredictorFactory.class)
                                                                     .findFirst());
 
-    Result<TTMPredictor> ttmPredictor(TTMConfig config);
+    Result<TTMPredictor> ttmPredictor(TtmConfig config);
 }

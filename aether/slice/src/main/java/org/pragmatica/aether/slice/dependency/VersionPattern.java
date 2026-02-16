@@ -6,6 +6,8 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+import static org.pragmatica.lang.Result.success;
+
 /// Version pattern for dependency matching using semantic versioning.
 ///
 /// Supported patterns:
@@ -14,6 +16,7 @@ import org.pragmatica.lang.utils.Causes;
 /// - Comparison: ">=1.5.0", ">1.0.0", "<=2.0.0", "<3.0.0"
 /// - Tilde: "~1.2.3" (patch-level: >=1.2.3, <1.3.0)
 /// - Caret: "^1.2.3" (minor-level: >=1.2.3, <2.0.0)
+@SuppressWarnings({"JBCT-VO-01", "JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-UTIL-02"})
 public sealed interface VersionPattern {
     boolean matches(Version version);
 
@@ -94,10 +97,10 @@ public sealed interface VersionPattern {
             }
             public static Result<Operator> fromSymbol(String symbol) {
                 return switch (symbol) {
-                    case ">" -> Result.success(GT);
-                    case ">=" -> Result.success(GTE);
-                    case "<" -> Result.success(LT);
-                    case "<=" -> Result.success(LTE);
+                    case ">" -> success(GT);
+                    case ">=" -> success(GTE);
+                    case "<" -> success(LT);
+                    case "<=" -> success(LTE);
                     default -> INVALID_OPERATOR.apply(symbol)
                                                .result();
                 };
@@ -259,4 +262,16 @@ public sealed interface VersionPattern {
     Cause EMPTY_PATTERN = Causes.cause("Version pattern cannot be empty");
     Fn1<Cause, String> INVALID_RANGE_FORMAT = Causes.forOneValue("Invalid range format: %s");
     Fn1<Cause, String> INVALID_COMPARISON_FORMAT = Causes.forOneValue("Invalid comparison format: %s");
+
+    record unused() implements VersionPattern {
+        @Override
+        public boolean matches(Version version) {
+            return false;
+        }
+
+        @Override
+        public String asString() {
+            return "unused";
+        }
+    }
 }

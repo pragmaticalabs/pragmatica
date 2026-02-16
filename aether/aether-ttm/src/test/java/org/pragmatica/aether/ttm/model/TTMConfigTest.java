@@ -1,16 +1,16 @@
 package org.pragmatica.aether.ttm.model;
 
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.config.TTMConfig;
+import org.pragmatica.aether.config.TtmConfig;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-class TTMConfigTest {
+class TtmConfigTest {
 
     @Test
     void defaultConfig_providesValidConfig() {
-        var config = TTMConfig.defaultConfig();
+        var config = TtmConfig.ttmConfig();
 
         assertThat(config.enabled()).isFalse(); // Disabled by default - requires explicit opt-in
         assertThat(config.inputWindowMinutes()).isEqualTo(60);
@@ -21,14 +21,14 @@ class TTMConfigTest {
 
     @Test
     void disabled_returnsDisabledConfig() {
-        var config = TTMConfig.disabled();
+        var config = TtmConfig.ttmConfig();
 
         assertThat(config.enabled()).isFalse();
     }
 
     @Test
     void ttmConfig_succeeds_withValidParameters() {
-        TTMConfig.ttmConfig("models/test.onnx", 30, 2, 30_000L, 0.8, true)
+        TtmConfig.ttmConfig("models/test.onnx", 30, 2, 30_000L, 0.8, true)
                  .onFailureRun(() -> fail("Expected success"))
                  .onSuccess(config -> {
                      assertThat(config.modelPath()).isEqualTo("models/test.onnx");
@@ -42,65 +42,65 @@ class TTMConfigTest {
 
     @Test
     void ttmConfig_fails_withBlankModelPathWhenEnabled() {
-        TTMConfig.ttmConfig("", 60, 1, 60_000L, 0.7, true)
+        TtmConfig.ttmConfig("", 60, 1, 60_000L, 0.7, true)
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> assertThat(cause.message()).contains("modelPath"));
     }
 
     @Test
     void ttmConfig_succeeds_withBlankModelPathWhenDisabled() {
-        TTMConfig.ttmConfig("", 60, 1, 60_000L, 0.7, false)
+        TtmConfig.ttmConfig("", 60, 1, 60_000L, 0.7, false)
                  .onFailureRun(() -> fail("Expected success"))
                  .onSuccess(config -> assertThat(config.enabled()).isFalse());
     }
 
     @Test
     void ttmConfig_fails_withInvalidInputWindowMinutes() {
-        TTMConfig.ttmConfig("model.onnx", 0, 1, 60_000L, 0.7, true)
+        TtmConfig.ttmConfig("model.onnx", 0, 1, 60_000L, 0.7, true)
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> assertThat(cause.message()).contains("inputWindowMinutes"));
 
-        TTMConfig.ttmConfig("model.onnx", 121, 1, 60_000L, 0.7, true)
+        TtmConfig.ttmConfig("model.onnx", 121, 1, 60_000L, 0.7, true)
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> assertThat(cause.message()).contains("inputWindowMinutes"));
     }
 
     @Test
     void ttmConfig_fails_withInvalidPredictionHorizon() {
-        TTMConfig.ttmConfig("model.onnx", 60, 0, 60_000L, 0.7, true)
+        TtmConfig.ttmConfig("model.onnx", 60, 0, 60_000L, 0.7, true)
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> assertThat(cause.message()).contains("predictionHorizon"));
 
-        TTMConfig.ttmConfig("model.onnx", 60, 11, 60_000L, 0.7, true)
+        TtmConfig.ttmConfig("model.onnx", 60, 11, 60_000L, 0.7, true)
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> assertThat(cause.message()).contains("predictionHorizon"));
     }
 
     @Test
     void ttmConfig_fails_withInvalidEvaluationInterval() {
-        TTMConfig.ttmConfig("model.onnx", 60, 1, 5_000L, 0.7, true)
+        TtmConfig.ttmConfig("model.onnx", 60, 1, 5_000L, 0.7, true)
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> assertThat(cause.message()).contains("evaluationIntervalMs"));
 
-        TTMConfig.ttmConfig("model.onnx", 60, 1, 400_000L, 0.7, true)
+        TtmConfig.ttmConfig("model.onnx", 60, 1, 400_000L, 0.7, true)
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> assertThat(cause.message()).contains("evaluationIntervalMs"));
     }
 
     @Test
     void ttmConfig_fails_withInvalidConfidenceThreshold() {
-        TTMConfig.ttmConfig("model.onnx", 60, 1, 60_000L, -0.1, true)
+        TtmConfig.ttmConfig("model.onnx", 60, 1, 60_000L, -0.1, true)
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> assertThat(cause.message()).contains("confidenceThreshold"));
 
-        TTMConfig.ttmConfig("model.onnx", 60, 1, 60_000L, 1.1, true)
+        TtmConfig.ttmConfig("model.onnx", 60, 1, 60_000L, 1.1, true)
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> assertThat(cause.message()).contains("confidenceThreshold"));
     }
 
     @Test
     void withModelPath_returnsNewConfigWithUpdatedPath() {
-        var original = TTMConfig.defaultConfig();
+        var original = TtmConfig.ttmConfig();
         var updated = original.withModelPath("new/model.onnx");
 
         assertThat(updated.modelPath()).isEqualTo("new/model.onnx");
@@ -109,7 +109,7 @@ class TTMConfigTest {
 
     @Test
     void withEnabled_returnsNewConfigWithUpdatedEnabled() {
-        var original = TTMConfig.defaultConfig();
+        var original = TtmConfig.ttmConfig();
         var updated = original.withEnabled(false);
 
         assertThat(updated.enabled()).isFalse();

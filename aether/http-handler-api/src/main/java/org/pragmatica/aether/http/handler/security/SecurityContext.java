@@ -6,6 +6,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
+import static org.pragmatica.aether.http.handler.security.Principal.PrincipalType;
+import static org.pragmatica.lang.Result.success;
+
 /// Security context carrying authentication and authorization information.
 ///
 /// Created during security validation and passed to slice handlers
@@ -17,7 +20,7 @@ import java.util.Set;
 public record SecurityContext(Principal principal,
                               Set<Role> roles,
                               Map<String, String> claims) {
-    private static final SecurityContext ANONYMOUS_CONTEXT = new SecurityContext(Principal.ANONYMOUS, Set.of(), Map.of());
+    private static final SecurityContext ANONYMOUS_CONTEXT = securityContext(Principal.ANONYMOUS, Set.of(), Map.of());
 
     /// Canonical constructor with validation.
     public SecurityContext {
@@ -27,7 +30,7 @@ public record SecurityContext(Principal principal,
     }
 
     /// Create anonymous (unauthenticated) context.
-    public static SecurityContext anonymous() {
+    public static SecurityContext securityContext() {
         return ANONYMOUS_CONTEXT;
     }
 
@@ -35,11 +38,11 @@ public record SecurityContext(Principal principal,
     ///
     /// @param keyName the API key identifier
     /// @return Result containing security context with SERVICE role or validation error
-    public static Result<SecurityContext> forApiKey(String keyName) {
-        return Principal.apiKeyPrincipal(keyName)
-                        .map(principal -> new SecurityContext(principal,
-                                                              Set.of(Role.SERVICE),
-                                                              Map.of()));
+    public static Result<SecurityContext> securityContext(String keyName) {
+        return Principal.principal(keyName, PrincipalType.API_KEY)
+                        .map(p -> securityContext(p,
+                                                  Set.of(Role.SERVICE),
+                                                  Map.of()));
     }
 
     /// Create context for API key authentication with custom roles.
@@ -47,11 +50,11 @@ public record SecurityContext(Principal principal,
     /// @param keyName the API key identifier
     /// @param roles   assigned roles
     /// @return Result containing security context with specified roles or validation error
-    public static Result<SecurityContext> forApiKey(String keyName, Set<Role> roles) {
-        return Principal.apiKeyPrincipal(keyName)
-                        .map(principal -> new SecurityContext(principal,
-                                                              roles,
-                                                              Map.of()));
+    public static Result<SecurityContext> securityContext(String keyName, Set<Role> roles) {
+        return Principal.principal(keyName, PrincipalType.API_KEY)
+                        .map(p -> securityContext(p,
+                                                  roles,
+                                                  Map.of()));
     }
 
     /// Create context for bearer token (JWT) authentication.
@@ -60,14 +63,18 @@ public record SecurityContext(Principal principal,
     /// @param roles   assigned roles from token
     /// @param claims  additional claims from token
     /// @return Result containing security context for authenticated user or validation error
-    public static Result<SecurityContext> forBearer(String subject, Set<Role> roles, Map<String, String> claims) {
-        return Principal.userPrincipal(subject)
-                        .map(principal -> new SecurityContext(principal, roles, claims));
+    public static Result<SecurityContext> securityContext(String subject, Set<Role> roles, Map<String, String> claims) {
+        return Principal.principal(subject, PrincipalType.USER)
+                        .map(p -> securityContext(p, roles, claims));
     }
 
-    /// Create context with all parameters.
+    /// Create context with all parameters (pre-validated principal).
     public static SecurityContext securityContext(Principal principal, Set<Role> roles, Map<String, String> claims) {
-        return new SecurityContext(principal, roles, claims);
+        return Result.all(success(principal),
+                          success(roles),
+                          success(claims))
+                     .map(SecurityContext::new)
+                     .unwrap();
     }
 
     /// Check if authenticated (not anonymous).
@@ -90,12 +97,8 @@ public record SecurityContext(Principal principal,
 
     /// Check if context has any of the specified roles.
     public boolean hasAnyRole(Set<Role> requiredRoles) {
-        for (var role : requiredRoles) {
-            if (roles.contains(role)) {
-                return true;
-            }
-        }
-        return false;
+        return requiredRoles.stream()
+                            .anyMatch(roles::contains);
     }
 
     /// Get claim value by key.

@@ -34,10 +34,12 @@ public interface ArtifactMetricsCollector {
 
     /// Handle slice deployment event.
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
     void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
 
     /// Handle slice removal event.
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
     void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
 
     /// Collect all artifact metrics.
@@ -74,11 +76,13 @@ class ArtifactMetricsCollectorImpl implements ArtifactMetricsCollector {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
         deploymentTracker.onValuePut(valuePut);
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
         deploymentTracker.onValueRemove(valueRemove);
     }

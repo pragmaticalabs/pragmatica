@@ -1,10 +1,14 @@
 package org.pragmatica.aether.forge.load.pattern;
 
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
 
 import java.util.concurrent.atomic.AtomicLong;
+
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.Result.unitResult;
 
 /// Generates sequential values starting from a specified number.
 ///
@@ -30,12 +34,15 @@ public final class SequenceGenerator implements PatternGenerator {
 
     /// Parses a sequence specification like "1000".
     public static Result<PatternGenerator> sequenceGenerator(String seqSpec) {
-        return Option.option(seqSpec)
-                     .map(String::trim)
-                     .filter(s -> !s.isBlank())
-                     .map(s -> Number.parseLong(s)
-                                     .<PatternGenerator> map(SequenceGenerator::sequenceGenerator))
-                     .or(Result.success(sequenceGenerator(1)));
+        var trimmed = option(seqSpec).map(String::trim)
+                            .filter(s -> !s.isBlank());
+        return trimmed.map(SequenceGenerator::toLongAndCreate)
+                      .or(success(sequenceGenerator(1)));
+    }
+
+    private static Result<PatternGenerator> toLongAndCreate(String s) {
+        return Number.parseLong(s)
+                     .map(SequenceGenerator::sequenceGenerator);
     }
 
     @Override
@@ -49,8 +56,9 @@ public final class SequenceGenerator implements PatternGenerator {
     }
 
     /// Resets the counter to the initial start value.
-    public void reset() {
+    public Result<Unit> reset() {
         counter.set(start);
+        return unitResult();
     }
 
     /// Returns the current counter value without incrementing.

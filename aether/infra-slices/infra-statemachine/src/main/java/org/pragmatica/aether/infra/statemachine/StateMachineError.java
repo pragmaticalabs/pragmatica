@@ -3,6 +3,9 @@ package org.pragmatica.aether.infra.statemachine;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
+
 /// Error types for state machine operations.
 public sealed interface StateMachineError extends Cause {
     /// Invalid state transition attempted.
@@ -83,14 +86,21 @@ public sealed interface StateMachineError extends Cause {
     }
 
     static ActionFailed actionFailed(String action) {
-        return new ActionFailed(action, Option.none());
+        return new ActionFailed(action, none());
     }
 
     static ActionFailed actionFailed(String action, Throwable cause) {
-        return new ActionFailed(action, Option.option(cause));
+        return new ActionFailed(action, option(cause));
     }
 
     static InvalidConfiguration invalidConfiguration(String reason) {
         return new InvalidConfiguration(reason);
+    }
+
+    record unused() implements StateMachineError {
+        @Override
+        public String message() {
+            return "unused";
+        }
     }
 }

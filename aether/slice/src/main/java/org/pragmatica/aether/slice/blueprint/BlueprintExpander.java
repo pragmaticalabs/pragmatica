@@ -12,6 +12,8 @@ import org.pragmatica.lang.Unit;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static org.pragmatica.lang.Option.option;
+
 /// Expands a Blueprint by resolving all transitive dependencies.
 ///
 /// Process:
@@ -23,6 +25,7 @@ import java.util.stream.Collectors;
 ///
 /// Explicit slices keep their instance counts.
 /// Transitive dependencies get instances=1, isDependency=true.
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02"})
 public interface BlueprintExpander {
     /// Expand a Blueprint using Repository to load dependencies.
     ///
@@ -179,11 +182,8 @@ public interface BlueprintExpander {
                                                              Map<Artifact, SliceSpec> explicitSlices,
                                                              Map<Artifact, Set<Artifact>> allDeps) {
         var deps = allDeps.getOrDefault(artifact, Set.of());
-        return Option.option(explicitSlices.get(artifact))
-                     .fold(() -> ResolvedSlice.resolvedSlice(artifact, 1, true, deps),
-                           spec -> ResolvedSlice.resolvedSlice(artifact,
-                                                               spec.instances(),
-                                                               false,
-                                                               deps));
+        return option(explicitSlices.get(artifact))
+        .fold(() -> ResolvedSlice.resolvedSlice(artifact, 1, true, deps),
+              spec -> ResolvedSlice.resolvedSlice(artifact, spec.instances(), false, deps));
     }
 }

@@ -10,7 +10,6 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
@@ -23,20 +22,24 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
     @Override
     @SuppressWarnings("unchecked")
     public <T> Aspect<T> create(TransactionConfig config) {
-        return instance -> {
-            if (!enabled.get()) {
-                return instance;
-            }
-            var interfaces = instance.getClass()
-                                     .getInterfaces();
-            if (interfaces.length == 0) {
-                return instance;
-            }
-            return (T) Proxy.newProxyInstance(instance.getClass()
-                                                      .getClassLoader(),
-                                              interfaces,
-                                              new TransactionInvocationHandler<>(instance, config, this));
-        };
+        return instance -> createProxy(instance, config);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T createProxy(T instance, TransactionConfig config) {
+        if (!enabled.get()) {
+            return instance;
+        }
+        var interfaces = instance.getClass()
+                                 .getInterfaces();
+        if (interfaces.length == 0) {
+            return instance;
+        }
+        var handler = new TransactionInvocationHandler<>(instance, config, this);
+        return (T) Proxy.newProxyInstance(instance.getClass()
+                                                  .getClassLoader(),
+                                          interfaces,
+                                          handler);
     }
 
     @Override
@@ -46,18 +49,18 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
 
     @Override
     public Promise<TransactionContext> begin(TransactionConfig config) {
-        return currentTransaction().map(existing -> handleExistingTransaction(config, existing))
+        return currentTransaction().map(existing -> routeExistingTransaction(config, existing))
                                  .or(() -> beginNewTransaction(config));
     }
 
     private Promise<TransactionContext> beginNewTransaction(TransactionConfig config) {
-        var context = TransactionContext.transactionContext(config);
-        currentContext.set(context);
-        return Promise.success(context);
+        return TransactionContext.transactionContext(config)
+                                 .async()
+                                 .onSuccess(currentContext::set);
     }
 
-    private Promise<TransactionContext> handleExistingTransaction(TransactionConfig config,
-                                                                  TransactionContext existing) {
+    private Promise<TransactionContext> routeExistingTransaction(TransactionConfig config,
+                                                                 TransactionContext existing) {
         return switch (config.propagation()) {
             case REQUIRED, SUPPORTS -> Promise.success(existing);
             case REQUIRES_NEW -> suspendAndBeginNew(config, existing);
@@ -117,10 +120,10 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
     }
 
     private void restoreParentOrClear(TransactionContext context) {
-        context.parentContext()
-               .filter(TransactionContext::isActive)
-               .onPresent(parent -> currentContext.set(parent.resume()))
-               .onEmpty(currentContext::remove);
+        var activeParent = context.parentContext()
+                                  .filter(TransactionContext::isActive);
+        activeParent.onPresent(parent -> currentContext.set(parent.resume()))
+                    .onEmpty(currentContext::remove);
     }
 
     @Override
@@ -134,10 +137,12 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
         return enabled.get();
     }
 
+    @SuppressWarnings({"JBCT-VO-01", "JBCT-VO-02"})
     private record TransactionInvocationHandler<T>(T delegate,
                                                    TransactionConfig config,
                                                    DefaultTransactionAspectFactory factory) implements InvocationHandler {
         @Override
+        @SuppressWarnings("JBCT-EX-01")
         public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
             if (isObjectMethod(method)) {
                 return method.invoke(delegate, args);
@@ -148,84 +153,79 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
             return invokeWithTransaction(method, args);
         }
 
-        @SuppressWarnings("unchecked")
+        @SuppressWarnings({"unchecked", "JBCT-EX-01"})
         private Object invokeWithTransaction(Method method, Object[] args) throws Throwable {
             var existingTx = factory.currentTransaction();
             return existingTx.isPresent()
-                   ? executeInExistingTransaction(method, args, existingTx.unwrap())
-                   : executeInNewTransaction(method, args);
+                   ? routeByPropagation(method, args, existingTx.unwrap())
+                   : runInNewTransaction(method, args);
         }
 
-        private Promise<?> executeInNewTransaction(Method method, Object[] args) {
-            return factory.begin(config)
-                          .flatMap(ctx -> executeMethod(method, args))
-                          .flatMap(result -> factory.commit()
-                                                    .map(u -> result))
-                          .onFailure(cause -> factory.rollback());
+        private Promise<?> runInNewTransaction(Method method, Object[] args) {
+            var methodResult = factory.begin(config)
+                                      .flatMap(ctx -> safeInvoke(method, args));
+            return commitOrRollback(methodResult);
         }
 
-        private Promise<?> executeInExistingTransaction(Method method,
-                                                        Object[] args,
-                                                        TransactionContext existing) {
-            return handlePropagation(method, args, existing);
+        private Promise<?> commitOrRollback(Promise<?> methodResult) {
+            return methodResult.flatMap(this::commitAndReturn)
+                               .onFailure(cause -> factory.rollback());
         }
 
-        private Promise<?> handlePropagation(Method method,
-                                             Object[] args,
-                                             TransactionContext existing) {
+        private Promise<?> commitAndReturn(Object result) {
+            return factory.commit()
+                          .map(u -> result);
+        }
+
+        private Promise<?> routeByPropagation(Method method,
+                                              Object[] args,
+                                              TransactionContext existing) {
             return switch (config.propagation()) {
-                case REQUIRED, SUPPORTS, MANDATORY -> executeMethod(method, args);
-                case REQUIRES_NEW -> executeInSuspendedContext(method, args, existing);
-                case NOT_SUPPORTED -> executeWithoutTransaction(method, args, existing);
+                case REQUIRED, SUPPORTS, MANDATORY -> safeInvoke(method, args);
+                case REQUIRES_NEW -> runInSuspendedContext(method, args, existing);
+                case NOT_SUPPORTED -> runWithoutTransaction(method, args, existing);
                 case NEVER -> TransactionError.transactionAlreadyActive(method.getName())
                                               .promise();
-                case NESTED -> executeInNestedTransaction(method, args, existing);
+                case NESTED -> runInNestedTransaction(method, args, existing);
             };
         }
 
-        private Promise<?> executeInSuspendedContext(Method method,
-                                                     Object[] args,
-                                                     TransactionContext existing) {
-            return factory.begin(config)
-                          .flatMap(ctx -> executeMethod(method, args))
-                          .flatMap(result -> factory.commit()
-                                                    .map(u -> result))
-                          .onFailure(cause -> factory.rollback())
-                          .map(result -> {
-                              factory.currentContext.set(existing.resume());
-                              return result;
-                          });
+        private Promise<?> runInSuspendedContext(Method method,
+                                                 Object[] args,
+                                                 TransactionContext existing) {
+            var methodResult = factory.begin(config)
+                                      .flatMap(ctx -> safeInvoke(method, args));
+            return commitOrRollback(methodResult).onSuccess(result -> factory.currentContext.set(existing.resume()));
         }
 
-        private Promise<?> executeWithoutTransaction(Method method,
-                                                     Object[] args,
-                                                     TransactionContext existing) {
+        private Promise<?> runWithoutTransaction(Method method,
+                                                 Object[] args,
+                                                 TransactionContext existing) {
             factory.currentContext.set(existing.suspend());
-            return executeMethod(method, args)
-            .map(result -> {
-                factory.currentContext.set(existing.resume());
-                return result;
-            });
+            return safeInvoke(method, args).onSuccess(result -> factory.currentContext.set(existing.resume()));
         }
 
-        private Promise<?> executeInNestedTransaction(Method method,
-                                                      Object[] args,
-                                                      TransactionContext parent) {
+        private Promise<?> runInNestedTransaction(Method method,
+                                                  Object[] args,
+                                                  TransactionContext parent) {
             var nested = TransactionContext.nestedContext(config, parent);
             factory.currentContext.set(nested);
-            return executeMethod(method, args).map(result -> {
-                                                       factory.currentContext.set(nested.commit());
-                                                       factory.currentContext.set(parent);
-                                                       return result;
-                                                   })
-                                .onFailure(cause -> {
-                                               factory.currentContext.set(nested.rollback());
-                                               factory.currentContext.set(parent);
-                                           });
+            return safeInvoke(method, args).onSuccess(result -> commitNested(nested, parent))
+                             .onFailure(cause -> rollbackNested(nested, parent));
+        }
+
+        private void commitNested(TransactionContext nested, TransactionContext parent) {
+            factory.currentContext.set(nested.commit());
+            factory.currentContext.set(parent);
+        }
+
+        private void rollbackNested(TransactionContext nested, TransactionContext parent) {
+            factory.currentContext.set(nested.rollback());
+            factory.currentContext.set(parent);
         }
 
         @SuppressWarnings("unchecked")
-        private Promise<?> executeMethod(Method method, Object[] args) {
+        private Promise<?> safeInvoke(Method method, Object[] args) {
             try{
                 return (Promise<?>) method.invoke(delegate, args);
             } catch (Exception e) {

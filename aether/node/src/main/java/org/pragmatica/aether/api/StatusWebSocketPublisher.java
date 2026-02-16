@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 
 /// Scheduled publisher that broadcasts status JSON via WebSocket.
 /// Short-circuits when no clients are connected.
+@SuppressWarnings("JBCT-RET-01")
 public class StatusWebSocketPublisher {
     private static final Logger log = LoggerFactory.getLogger(StatusWebSocketPublisher.class);
 

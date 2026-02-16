@@ -2,7 +2,12 @@ package org.pragmatica.aether.infra.db;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.utils.Causes.cause;
 
 /// Supported database types with their default ports and driver information.
 public enum DatabaseType {
@@ -82,39 +87,36 @@ public enum DatabaseType {
     /// @param name Database type name (case-insensitive)
     /// @return Result with DatabaseType or failure
     public static Result<DatabaseType> databaseType(String name) {
-        return Option.option(name)
-                     .filter(s -> !s.isBlank())
-                     .toResult(Causes.cause("Database type name is required"))
-                     .flatMap(DatabaseType::findByName);
+        return option(name).filter(s -> !s.isBlank())
+                     .toResult(cause("Database type name is required"))
+                     .flatMap(DatabaseType::lookupByName);
     }
-    private static Result<DatabaseType> findByName(String name) {
+    private static Result<DatabaseType> lookupByName(String name) {
         var normalized = name.trim()
                              .toLowerCase();
         for (var type : values()) {
             if (type.name.equals(normalized) || type.name()
                                                     .equalsIgnoreCase(normalized)) {
-                return Result.success(type);
+                return success(type);
             }
         }
-        return Causes.cause("Unknown database type: " + name)
-                     .result();
+        return cause("Unknown database type: " + name).result();
     }
     /// Try to detect database type from JDBC URL.
     ///
     /// @param jdbcUrl JDBC connection URL
     /// @return Option with detected type
     public static Option<DatabaseType> fromJdbcUrl(String jdbcUrl) {
-        return Option.option(jdbcUrl)
-                     .filter(url -> url.startsWith("jdbc:"))
-                     .flatMap(DatabaseType::findByJdbcUrl);
+        return option(jdbcUrl).filter(url -> url.startsWith("jdbc:"))
+                     .flatMap(DatabaseType::matchByJdbcProtocol);
     }
-    private static Option<DatabaseType> findByJdbcUrl(String jdbcUrl) {
+    private static Option<DatabaseType> matchByJdbcProtocol(String jdbcUrl) {
         var urlLower = jdbcUrl.toLowerCase();
         for (var type : values()) {
             if (urlLower.contains(":" + type.jdbcProtocol + ":")) {
-                return Option.some(type);
+                return some(type);
             }
         }
-        return Option.none();
+        return none();
     }
 }

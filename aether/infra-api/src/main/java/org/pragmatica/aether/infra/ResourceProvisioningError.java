@@ -3,6 +3,8 @@ package org.pragmatica.aether.infra;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
+import static org.pragmatica.lang.Option.some;
+
 /// Error types for resource provisioning operations.
 public sealed interface ResourceProvisioningError extends Cause {
     /// No factory registered for the requested resource type.
@@ -34,7 +36,7 @@ public sealed interface ResourceProvisioningError extends Cause {
 
         @Override
         public Option<Cause> source() {
-            return Option.some(underlying);
+            return some(underlying);
         }
     }
 
@@ -55,7 +57,7 @@ public sealed interface ResourceProvisioningError extends Cause {
 
         @Override
         public Option<Cause> source() {
-            return Option.some(configError);
+            return some(configError);
         }
     }
 
@@ -69,6 +71,13 @@ public sealed interface ResourceProvisioningError extends Cause {
         @Override
         public String message() {
             return "ConfigService not available - call ConfigService.setInstance() first";
+        }
+    }
+
+    record unused() implements ResourceProvisioningError {
+        @Override
+        public String message() {
+            return "unused";
         }
     }
 }

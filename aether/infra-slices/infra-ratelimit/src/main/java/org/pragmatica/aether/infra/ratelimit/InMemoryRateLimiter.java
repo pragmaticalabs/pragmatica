@@ -2,6 +2,7 @@ package org.pragmatica.aether.infra.ratelimit;
 
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.concurrent.ConcurrentHashMap;
@@ -68,15 +69,15 @@ final class InMemoryRateLimiter implements RateLimiter {
                 return createDeniedResult(config, now);
             }
             count += permits;
-            return RateLimitResult.allowed(config.maxRequests() - count);
+            return RateLimitResult.rateLimitResult(config.maxRequests() - count);
         }
 
         synchronized RateLimitResult checkLimit(RateLimitConfig config) {
             var now = System.nanoTime();
             resetIfExpired(now);
             var remaining = Math.max(0, config.maxRequests() - count);
-            if (remaining > 0) {
-                return RateLimitResult.allowed(remaining);
+            if (Verify.Is.positive(remaining)) {
+                return RateLimitResult.rateLimitResult(remaining);
             }
             return createDeniedResult(config, now);
         }
@@ -91,7 +92,7 @@ final class InMemoryRateLimiter implements RateLimiter {
         private RateLimitResult createDeniedResult(RateLimitConfig config, long now) {
             var windowEnd = windowStart + windowNanos;
             var retryNanos = Math.max(0, windowEnd - now);
-            return RateLimitResult.denied(timeSpan(retryNanos).nanos());
+            return RateLimitResult.rateLimitResult(timeSpan(retryNanos).nanos());
         }
     }
 }

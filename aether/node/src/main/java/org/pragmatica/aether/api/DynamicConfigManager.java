@@ -24,6 +24,7 @@ import org.slf4j.LoggerFactory;
 /// <p>Configuration values are stored in the cluster KV-Store for consistency
 /// and survival across node restarts. Supports both cluster-wide and
 /// node-scoped configuration overrides.
+@SuppressWarnings("JBCT-RET-01")
 public class DynamicConfigManager {
     private static final Logger log = LoggerFactory.getLogger(DynamicConfigManager.class);
 

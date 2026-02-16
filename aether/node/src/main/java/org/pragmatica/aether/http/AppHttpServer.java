@@ -62,6 +62,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 ///
 /// Separate from ManagementServer for security isolation.
+@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
 public interface AppHttpServer {
     Promise<Unit> start();
 
@@ -137,6 +138,7 @@ public interface AppHttpServer {
     }
 }
 
+@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
 class AppHttpServerImpl implements AppHttpServer {
     private static final Logger log = LoggerFactory.getLogger(AppHttpServerImpl.class);
     private static final int MAX_CONTENT_LENGTH = 16 * 1024 * 1024;

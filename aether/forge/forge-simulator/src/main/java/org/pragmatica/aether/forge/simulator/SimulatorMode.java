@@ -2,6 +2,9 @@ package org.pragmatica.aether.forge.simulator;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
+
+import static org.pragmatica.lang.Result.success;
 
 /// Simulator operating modes for different testing scenarios.
 /// Each mode provides different defaults for load generation, backend simulation, and chaos testing.
@@ -50,12 +53,14 @@ public enum SimulatorMode {
         return rateMultiplier;
     }
     /// Get the default backend simulation for this mode.
-    public Result<BackendSimulation> defaultBackendSimulation() {
+    public BackendSimulation defaultBackendSimulation() {
         if (!realisticLatency) {
-            return Result.success(BackendSimulation.NoOp.INSTANCE);
+            return BackendSimulation.NoOp.noOp()
+                                    .unwrap();
         }
-        return BackendSimulation.LatencySimulation.withSpikes(10, 5, 0.01, 100)
-                                .map(sim -> (BackendSimulation) sim);
+        return BackendSimulation.LatencySimulation.latencySimulation(10, 5, 0.01, 100)
+                                .map(sim -> (BackendSimulation) sim)
+                                .unwrap();
     }
     /// Create a SimulatorConfig for this mode based on a template config.
     public SimulatorConfig applyTo(SimulatorConfig template) {
@@ -75,15 +80,24 @@ public enum SimulatorMode {
     /// Parse mode from string, case-insensitive.
     /// Returns Result for proper error handling per JBCT patterns.
     public static Result<SimulatorMode> simulatorMode(String value) {
-        if (value == null || value.isBlank()) {
-            return ModeError.Empty.INSTANCE.result();
-        }
+        return ensureNotBlank(value).map(SimulatorMode::normalizeModeName)
+                             .flatMap(SimulatorMode::normalizedMode);
+    }
+    private static Result<String> ensureNotBlank(String value) {
+        return Verify.ensure(value, Verify.Is::notNull, ModeError.Empty.INSTANCE)
+                     .filter(ModeError.Empty.INSTANCE,
+                             v -> !v.isBlank());
+    }
+    private static String normalizeModeName(String value) {
+        return value.toUpperCase()
+                    .replace("-", "_")
+                    .replace(" ", "_");
+    }
+    private static Result<SimulatorMode> normalizedMode(String normalized) {
         try{
-            return Result.success(valueOf(value.toUpperCase()
-                                               .replace("-", "_")
-                                               .replace(" ", "_")));
+            return success(valueOf(normalized));
         } catch (IllegalArgumentException e) {
-            return new ModeError.Unknown(value).result();
+            return new ModeError.Unknown(normalized).result();
         }
     }
     /// Get all modes as JSON array.
@@ -91,7 +105,9 @@ public enum SimulatorMode {
         var sb = new StringBuilder("[");
         var first = true;
         for (var mode : values()) {
-            if (!first) sb.append(",");
+            if (!first) {
+                sb.append(",");
+            }
             first = false;
             sb.append(mode.toJson());
         }
@@ -101,7 +117,11 @@ public enum SimulatorMode {
     /// Mode parsing errors.
     public sealed interface ModeError extends Cause {
         record Empty() implements ModeError {
-            public static final Empty INSTANCE = new Empty();
+            private static final Empty INSTANCE = empty().unwrap();
+
+            public static Result<Empty> empty() {
+                return success(new Empty());
+            }
 
             @Override
             public String message() {
@@ -110,9 +130,20 @@ public enum SimulatorMode {
         }
 
         record Unknown(String value) implements ModeError {
+            public static Result<Unknown> unknown(String value) {
+                return success(new Unknown(value));
+            }
+
             @Override
             public String message() {
                 return "Unknown simulator mode: " + value;
+            }
+        }
+
+        record unused() implements ModeError {
+            @Override
+            public String message() {
+                return "";
             }
         }
     }

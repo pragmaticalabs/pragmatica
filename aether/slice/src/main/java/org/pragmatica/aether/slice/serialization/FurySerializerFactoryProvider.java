@@ -14,6 +14,7 @@ import java.util.List;
 ///
 /// Uses Apache Fury's ThreadSafeFury which is thread-safe and can be safely
 /// shared across concurrent method invocations. No pooling required.
+@SuppressWarnings({"JBCT-VO-01", "JBCT-UC-01", "JBCT-LAM-01", "JBCT-LAM-02"})
 public interface FurySerializerFactoryProvider extends SerializerFactoryProvider {
     static FurySerializerFactoryProvider furySerializerFactoryProvider(ClassRegistrator... registrators) {
         return typeTokens -> {

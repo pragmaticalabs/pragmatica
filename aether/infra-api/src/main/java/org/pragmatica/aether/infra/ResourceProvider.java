@@ -2,6 +2,8 @@ package org.pragmatica.aether.infra;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 /// Provider for infrastructure resources based on configuration.
 ///
@@ -51,15 +53,15 @@ public interface ResourceProvider {
     /// Called by AetherNode during startup.
     ///
     /// @param provider ResourceProvider implementation
-    static void setInstance(ResourceProvider provider) {
-        ResourceProviderHolder.setInstance(provider);
+    static Result<Unit> setInstance(ResourceProvider provider) {
+        return ResourceProviderHolder.setInstance(provider);
     }
 
     /// Clear the global ResourceProvider instance.
     ///
     /// Called during shutdown or in tests.
-    static void clear() {
-        ResourceProviderHolder.clear();
+    static Result<Unit> clear() {
+        return ResourceProviderHolder.clear();
     }
 
     /// Create a default SPI-based ResourceProvider.

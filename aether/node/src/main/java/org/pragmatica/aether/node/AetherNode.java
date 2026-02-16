@@ -98,6 +98,7 @@ import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 
 /// Main entry point for an Aether cluster node.
 /// Assembles all components: consensus, KV-store, slice management, deployment managers.
+@SuppressWarnings("JBCT-RET-01")
 public interface AetherNode {
     String VERSION = "0.16.0";
     NodeId self();
@@ -207,8 +208,8 @@ public interface AetherNode {
 
     static Result<AetherNode> aetherNode(AetherNodeConfig config) {
         var delegateRouter = MessageRouter.DelegateRouter.delegate();
-        var serializer = furySerializer(AetherCustomClasses::configure);
-        var deserializer = furyDeserializer(AetherCustomClasses::configure);
+        var serializer = furySerializer(AetherCustomClasses.INSTANCE);
+        var deserializer = furyDeserializer(AetherCustomClasses.INSTANCE);
         return aetherNode(config, delegateRouter, serializer, deserializer);
     }
 

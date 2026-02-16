@@ -134,13 +134,11 @@ class CircuitBreakerFactoryTest {
 
     @Test
     void circuitBreakerConfig_defaultParameters_hasSensibleDefaults() {
-        CircuitBreakerConfig.circuitBreakerConfig()
-                            .onFailureRun(Assertions::fail)
-                            .onSuccess(config -> {
-                                assertThat(config.failureThreshold()).isEqualTo(5);
-                                assertThat(config.resetTimeout()).isEqualTo(timeSpan(30).seconds());
-                                assertThat(config.testAttempts()).isEqualTo(3);
-                            });
+        var config = CircuitBreakerConfig.circuitBreakerConfig();
+
+        assertThat(config.failureThreshold()).isEqualTo(5);
+        assertThat(config.resetTimeout()).isEqualTo(timeSpan(30).seconds());
+        assertThat(config.testAttempts()).isEqualTo(3);
     }
 
     private Service createSuccessfulService(AtomicInteger counter) {

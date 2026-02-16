@@ -54,6 +54,7 @@ public final class InvocationContext {
     /// Get current request ID or generate a new one.
     ///
     /// @return the current request ID, or a newly generated one
+    @SuppressWarnings("JBCT-RET-03") // Returns non-null String (fallback to generateRequestId)
     public static String getOrGenerateRequestId() {
         return REQUEST_ID.isBound() && REQUEST_ID.get() != null
                ? REQUEST_ID.get()
@@ -81,6 +82,7 @@ public final class InvocationContext {
     ///
     /// @param requestId the request ID to set for this scope
     /// @param runnable  the runnable to execute within the scope
+    @SuppressWarnings("JBCT-RET-01") // ScopedValue.run() requires Runnable — void is inherent
     public static void runWithRequestId(String requestId, Runnable runnable) {
         MDC.put(MDC_KEY, requestId);
         try{
@@ -94,6 +96,7 @@ public final class InvocationContext {
     /// Capture the current context for propagation across async boundaries.
     ///
     /// @return a snapshot that can be used to restore context in another thread
+    @SuppressWarnings("JBCT-RET-03") // Nullable requestId required for ContextSnapshot — null means "no context"
     public static ContextSnapshot captureContext() {
         return new ContextSnapshot(currentRequestId().or((String) null));
     }
@@ -125,6 +128,7 @@ public final class InvocationContext {
         /// Run a runnable with the captured context restored.
         ///
         /// @param runnable the runnable to execute
+        @SuppressWarnings("JBCT-RET-01") // Delegates to Runnable-based API
         public void runWithCaptured(Runnable runnable) {
             if (requestId == null) {
                 runnable.run();

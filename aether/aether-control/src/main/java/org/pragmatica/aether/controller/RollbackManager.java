@@ -43,6 +43,7 @@ import org.slf4j.LoggerFactory;
 ///
 ///
 /// Only the leader node performs rollbacks to avoid conflicts.
+@SuppressWarnings("JBCT-RET-01") // MessageReceiver callbacks — void required by messaging framework
 public interface RollbackManager {
     @MessageReceiver
     void onLeaderChange(LeaderChange leaderChange);

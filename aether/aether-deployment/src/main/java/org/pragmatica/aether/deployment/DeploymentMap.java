@@ -23,6 +23,7 @@ import java.util.stream.Collectors;
 /// Thread safety: ConcurrentHashMap handles concurrent reads (HTTP dashboard)
 /// and writes (consensus thread). Weakly consistent iteration is acceptable
 /// for dashboard display.
+@SuppressWarnings("JBCT-RET-01") // MessageReceiver callbacks — void required by messaging framework
 public sealed interface DeploymentMap {
     @MessageReceiver
     void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
@@ -49,6 +50,7 @@ public sealed interface DeploymentMap {
     }
 }
 
+@SuppressWarnings("JBCT-RET-01")
 final class DeploymentMapImpl implements DeploymentMap {
     private final ConcurrentHashMap<SliceNodeKey, SliceState> index = new ConcurrentHashMap<>();
 

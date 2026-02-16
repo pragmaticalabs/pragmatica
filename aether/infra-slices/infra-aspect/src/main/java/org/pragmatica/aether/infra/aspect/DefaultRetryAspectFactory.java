@@ -21,20 +21,24 @@ final class DefaultRetryAspectFactory implements RetryAspectFactory {
     @Override
     @SuppressWarnings("unchecked")
     public <T> Aspect<T> create(RetryConfig config) {
-        return instance -> {
-            if (!enabled.get()) {
-                return instance;
-            }
-            var interfaces = instance.getClass()
-                                     .getInterfaces();
-            if (interfaces.length == 0) {
-                return instance;
-            }
-            return (T) Proxy.newProxyInstance(instance.getClass()
-                                                      .getClassLoader(),
-                                              interfaces,
-                                              new RetryInvocationHandler<>(instance, config, enabled));
-        };
+        return instance -> createProxy(instance, config);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T createProxy(T instance, RetryConfig config) {
+        if (!enabled.get()) {
+            return instance;
+        }
+        var interfaces = instance.getClass()
+                                 .getInterfaces();
+        if (interfaces.length == 0) {
+            return instance;
+        }
+        var handler = new RetryInvocationHandler<>(instance, config, enabled);
+        return (T) Proxy.newProxyInstance(instance.getClass()
+                                                  .getClassLoader(),
+                                          interfaces,
+                                          handler);
     }
 
     @Override
@@ -48,12 +52,12 @@ final class DefaultRetryAspectFactory implements RetryAspectFactory {
         return enabled.get();
     }
 
-    // Note: InvocationHandler.invoke() requires `throws Throwable` - this is inherent
-    // to the reflection API contract and acceptable for infrastructure code.
+    @SuppressWarnings({"JBCT-VO-01", "JBCT-VO-02"})
     private record RetryInvocationHandler<T>(T delegate,
                                              RetryConfig config,
                                              AtomicBoolean enabled) implements InvocationHandler {
         @Override
+        @SuppressWarnings("JBCT-EX-01")
         public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
             if (!enabled.get() || isObjectMethod(method)) {
                 return method.invoke(delegate, args);
@@ -69,15 +73,18 @@ final class DefaultRetryAspectFactory implements RetryAspectFactory {
             var retry = Retry.retry()
                              .attempts(config.maxAttempts())
                              .strategy(config.backoffStrategy());
-            return retry.execute(() -> {
-                                     try{
-                                         return (Promise<?>) method.invoke(delegate, args);
-                                     } catch (Exception e) {
-                                         return InfraSliceError.RetryFailed.retryFailed("Failed to invoke method: " + method.getName(),
-                                                                                        e)
-                                                               .promise();
-                                     }
-                                 });
+            return retry.execute(() -> safeInvoke(method, args));
+        }
+
+        @SuppressWarnings("unchecked")
+        private Promise<?> safeInvoke(Method method, Object[] args) {
+            try{
+                return (Promise<?>) method.invoke(delegate, args);
+            } catch (Exception e) {
+                return InfraSliceError.retryFailed("Failed to invoke method: " + method.getName(),
+                                                   e)
+                                      .promise();
+            }
         }
 
         private boolean isPromiseReturning(Method method) {

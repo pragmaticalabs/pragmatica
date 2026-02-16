@@ -1,6 +1,8 @@
 package org.pragmatica.aether.forge.simulator;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import java.time.Duration;
@@ -8,12 +10,21 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.Result.unitResult;
+import static org.pragmatica.lang.Unit.unit;
 
 /// Controller for chaos engineering experiments.
 /// Injects failures and disruptions to test system resilience.
@@ -29,11 +40,13 @@ public final class ChaosController {
 
     private ChaosController(Consumer<ChaosEvent> eventExecutor) {
         this.eventExecutor = eventExecutor;
-        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-                                                                        var t = new Thread(r, "chaos-controller");
-                                                                        t.setDaemon(true);
-                                                                        return t;
-                                                                    });
+        this.scheduler = Executors.newSingleThreadScheduledExecutor(ChaosController::createDaemonThread);
+    }
+
+    private static Thread createDaemonThread(Runnable r) {
+        var t = new Thread(r, "chaos-controller");
+        t.setDaemon(true);
+        return t;
     }
 
     public static ChaosController chaosController(Consumer<ChaosEvent> eventExecutor) {
@@ -41,14 +54,20 @@ public final class ChaosController {
     }
 
     /// Enable or disable chaos injection.
-    public void setEnabled(boolean enabled) {
+    public Result<Unit> setEnabled(boolean enabled) {
         this.enabled.set(enabled);
-        log.info("Chaos controller {}", enabled
-                                       ? "enabled"
-                                       : "disabled");
+        logEnabledState(enabled);
         if (!enabled) {
             stopAllChaos();
         }
+        return unitResult();
+    }
+
+    private static void logEnabledState(boolean state) {
+        var action = state
+                     ? "enabled"
+                     : "disabled";
+        log.info("Chaos controller {}", action);
     }
 
     /// Check if chaos is enabled.
@@ -62,61 +81,82 @@ public final class ChaosController {
             log.warn("Chaos injection attempted but controller is disabled");
             return Promise.success("disabled");
         }
-        var eventId = UUID.randomUUID()
-                          .toString()
-                          .substring(0, EVENT_ID_LENGTH);
-        var activeEvent = new ActiveChaosEvent(eventId, event, Instant.now());
-        // Use putIfAbsent and verify still enabled after insertion (race condition fix)
+        var eventId = generateEventId();
+        var activeEvent = ActiveChaosEvent.activeChaosEvent(eventId,
+                                                            event,
+                                                            Instant.now())
+                                          .unwrap();
         if (activeEvents.putIfAbsent(eventId, activeEvent) != null) {
             return Promise.success("disabled");
         }
-        // Double-check enabled after map insertion
         if (!enabled.get()) {
             activeEvents.remove(eventId);
             return Promise.success("disabled");
         }
+        return chaosEventOutcome(eventId, event);
+    }
+
+    private static String generateEventId() {
+        return UUID.randomUUID()
+                   .toString()
+                   .substring(0, EVENT_ID_LENGTH);
+    }
+
+    private Promise<String> chaosEventOutcome(String eventId, ChaosEvent event) {
         log.info("Injecting chaos event {}: {}", eventId, event.description());
-        try{
-            eventExecutor.accept(event);
-        } catch (Exception e) {
-            log.error("Failed to execute chaos event {}: {}", eventId, e.getMessage());
-            activeEvents.remove(eventId);
-            return ChaosError.ExecutionFailed.INSTANCE.promise();
-        }
-        // Schedule removal after duration, track the future for cancellation
+        return liftEventExecution(eventId, event).onSuccess(_ -> scheduleEventRemoval(eventId, event))
+                                 .map(_ -> eventId)
+                                 .async();
+    }
+
+    private Result<Unit> liftEventExecution(String eventId, ChaosEvent event) {
+        return Result.lift(_ -> ChaosError.ExecutionFailed.INSTANCE,
+                           () -> eventExecutor.accept(event))
+                     .onFailure(c -> onEventFailure(eventId, c));
+    }
+
+    private void onEventFailure(String eventId, Cause cause) {
+        log.error("Failed to execute chaos event {}: {}", eventId, cause.message());
+        activeEvents.remove(eventId);
+    }
+
+    private void scheduleEventRemoval(String eventId, ChaosEvent event) {
         event.duration()
              .filter(d -> !d.isZero() && !d.isNegative())
-             .onPresent(d -> {
-                            var future = scheduler.schedule(() -> stopChaos(eventId),
-                                                            d.toMillis(),
-                                                            TimeUnit.MILLISECONDS);
-                            scheduledTasks.put(eventId, future);
-                        });
-        return Promise.success(eventId);
+             .onPresent(d -> scheduleRemoval(eventId, d));
+    }
+
+    private void scheduleRemoval(String eventId, Duration duration) {
+        var future = scheduler.schedule(() -> stopChaos(eventId), duration.toMillis(), TimeUnit.MILLISECONDS);
+        scheduledTasks.put(eventId, future);
     }
 
     /// Stop a specific chaos event.
     public Promise<Unit> stopChaos(String eventId) {
         var event = activeEvents.remove(eventId);
+        cancelScheduledTask(eventId);
+        logStoppedEvent(eventId, event);
+        return Promise.success(unit());
+    }
+
+    private void cancelScheduledTask(String eventId) {
         var future = scheduledTasks.remove(eventId);
-        if (future != null) {
-            future.cancel(false);
-        }
-        if (event != null) {
-            log.info("Stopping chaos event {}: {}",
-                     eventId,
-                     event.event()
-                          .description());
-        }
-        return Promise.success(Unit.unit());
+        option(future).onPresent(f -> f.cancel(false));
+    }
+
+    private static void logStoppedEvent(String eventId, ActiveChaosEvent event) {
+        option(event).onPresent(e -> log.info("Stopping chaos event {}: {}",
+                                              eventId,
+                                              e.event()
+                                               .description()));
     }
 
     /// Stop all active chaos events.
-    public void stopAllChaos() {
+    public Result<Unit> stopAllChaos() {
         log.info("Stopping all {} active chaos events", activeEvents.size());
-        for (var eventId : List.copyOf(activeEvents.keySet())) {
-            stopChaos(eventId);
-        }
+        List.copyOf(activeEvents.keySet())
+            .forEach(this::stopChaos);
+        return unitResult();
     }
 
     /// Schedule a chaos event for later.
@@ -125,9 +165,7 @@ public final class ChaosController {
             log.warn("Chaos scheduling attempted but controller is disabled");
             return "disabled";
         }
-        var scheduleId = "SCH-" + UUID.randomUUID()
-                                     .toString()
-                                     .substring(0, EVENT_ID_LENGTH);
+        var scheduleId = "SCH-" + generateEventId();
         log.info("Scheduling chaos event {} in {}: {}", scheduleId, delay, event.description());
         scheduler.schedule(() -> injectChaos(event), delay.toMillis(), TimeUnit.MILLISECONDS);
         return scheduleId;
@@ -140,13 +178,15 @@ public final class ChaosController {
 
     /// Get chaos controller status.
     public ChaosStatus status() {
-        return new ChaosStatus(enabled.get(),
-                               activeEvents.size(),
-                               List.copyOf(activeEvents.values()));
+        var eventsCopy = List.copyOf(activeEvents.values());
+        return ChaosStatus.chaosStatus(enabled.get(),
+                                       activeEvents.size(),
+                                       eventsCopy)
+                          .unwrap();
     }
 
     /// Shutdown the chaos controller.
-    public void shutdown() {
+    public Result<Unit> shutdown() {
         stopAllChaos();
         scheduler.shutdown();
         try{
@@ -158,15 +198,22 @@ public final class ChaosController {
             Thread.currentThread()
                   .interrupt();
         }
+        return unitResult();
     }
 
     /// Active chaos event with metadata.
     public record ActiveChaosEvent(String eventId,
                                    ChaosEvent event,
                                    Instant startedAt) {
+        public static Result<ActiveChaosEvent> activeChaosEvent(String eventId,
+                                                                ChaosEvent event,
+                                                                Instant startedAt) {
+            return success(new ActiveChaosEvent(eventId, event, startedAt));
+        }
+
         public String toJson() {
             var durationStr = event.duration()
-                                   .map(d -> d.toSeconds() + "s")
+                                   .map(ChaosController::durationText)
                                    .or("indefinite");
             return String.format("{\"eventId\":\"%s\",\"type\":\"%s\",\"description\":\"%s\",\"startedAt\":\"%s\",\"duration\":\"%s\"}",
                                  eventId,
@@ -177,34 +224,62 @@ public final class ChaosController {
         }
     }
 
+    private static String durationText(Duration d) {
+        return d.toSeconds() + "s";
+    }
+
     /// Chaos controller status.
     public record ChaosStatus(boolean enabled,
                               int activeEventCount,
                               List<ActiveChaosEvent> activeEvents) {
+        public static Result<ChaosStatus> chaosStatus(boolean enabled,
+                                                      int activeEventCount,
+                                                      List<ActiveChaosEvent> activeEvents) {
+            return success(new ChaosStatus(enabled, activeEventCount, activeEvents));
+        }
+
         public String toJson() {
-            var eventsJson = new StringBuilder("[");
-            var first = true;
-            for (var event : activeEvents) {
-                if (!first) eventsJson.append(",");
-                first = false;
-                eventsJson.append(event.toJson());
-            }
-            eventsJson.append("]");
+            var eventsJson = buildEventsJson();
             return String.format("{\"enabled\":%b,\"activeEventCount\":%d,\"activeEvents\":%s}",
                                  enabled,
                                  activeEventCount,
                                  eventsJson);
         }
+
+        private String buildEventsJson() {
+            var sb = new StringBuilder("[");
+            var first = true;
+            for (var event : activeEvents) {
+                if (!first) {
+                    sb.append(",");
+                }
+                first = false;
+                sb.append(event.toJson());
+            }
+            sb.append("]");
+            return sb.toString();
+        }
     }
 
     /// Chaos-specific errors.
-    public sealed interface ChaosError extends org.pragmatica.lang.Cause {
+    public sealed interface ChaosError extends Cause {
         record ExecutionFailed() implements ChaosError {
-            public static final ExecutionFailed INSTANCE = new ExecutionFailed();
+            private static final ExecutionFailed INSTANCE = executionFailed().unwrap();
+
+            public static Result<ExecutionFailed> executionFailed() {
+                return success(new ExecutionFailed());
+            }
 
             @Override
             public String message() {
                 return "Failed to execute chaos event";
+            }
+        }
+
+        record unused() implements ChaosError {
+            @Override
+            public String message() {
+                return "";
             }
         }
     }

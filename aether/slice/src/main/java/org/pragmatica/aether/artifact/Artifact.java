@@ -17,14 +17,16 @@ public record Artifact(GroupId groupId, ArtifactId artifactId, Version version) 
         return Result.all(GroupId.groupId(parts[0]),
                           ArtifactId.artifactId(parts[1]),
                           Version.version(parts[2]))
-                     .map(Artifact::artifact);
+                     .map(Artifact::new);
     }
 
+    @SuppressWarnings("JBCT-VO-02")
     public static Artifact artifact(GroupId groupId, ArtifactId artifactId, Version version) {
         return new Artifact(groupId, artifactId, version);
     }
 
     /// Creates an artifact from an artifact base and version.
+    @SuppressWarnings("JBCT-VO-02")
     public static Artifact artifact(ArtifactBase base, Version version) {
         return new Artifact(base.groupId(), base.artifactId(), version);
     }

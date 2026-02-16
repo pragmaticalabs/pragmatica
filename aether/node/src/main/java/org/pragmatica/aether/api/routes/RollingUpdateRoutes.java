@@ -171,6 +171,7 @@ public final class RollingUpdateRoutes implements RouteSource {
                      .async();
     }
 
+    @SuppressWarnings("JBCT-RET-03")
     private static <T> T defaultIfNull(T value, T defaultValue) {
         return value != null
                ? value

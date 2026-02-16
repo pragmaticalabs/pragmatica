@@ -1,7 +1,14 @@
 package org.pragmatica.aether.forge;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
+
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
+
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.Result.unitResult;
 
 /// Aggregates metrics for the Forge dashboard.
 /// Thread-safe and designed for high-frequency updates.
@@ -36,57 +43,69 @@ public final class ForgeMetrics {
     }
 
     /// Record a successful request with latency.
-    public void recordSuccess(long latencyNanos) {
+    public Result<Unit> recordSuccess(long latencyNanos) {
         successCount.increment();
         totalSuccess.incrementAndGet();
         totalLatencyNanos.add(latencyNanos);
         requestCount.increment();
+        return unitResult();
     }
 
     /// Record a failed request.
-    public void recordFailure(long latencyNanos) {
+    public Result<Unit> recordFailure(long latencyNanos) {
         failureCount.increment();
         totalFailures.incrementAndGet();
         totalLatencyNanos.add(latencyNanos);
         requestCount.increment();
+        return unitResult();
     }
 
     /// Take a snapshot and calculate rates.
     /// Should be called periodically (e.g., every 500ms).
-    public synchronized void snapshot() {
+    public synchronized Result<Unit> snapshot() {
         var now = System.currentTimeMillis();
-        var elapsed = now - lastSnapshotTime;
-        if (elapsed <= 0) elapsed = 1;
+        var elapsed = Math.max(now - lastSnapshotTime, 1);
+        updateRates(elapsed);
+        updateLatency();
+        resetWindowCounters();
+        lastSnapshotTime = now;
+        return unitResult();
+    }
+
+    private void updateRates(long elapsed) {
         var currentSuccess = totalSuccess.get();
         var currentFailure = totalFailures.get();
         var successDelta = currentSuccess - lastSuccessSnapshot;
         var failureDelta = currentFailure - lastFailureSnapshot;
         var totalDelta = successDelta + failureDelta;
-        // Calculate rates with EMA smoothing (~5s effective window)
         var instantRps = (totalDelta * 1000.0) / elapsed;
-        requestsPerSecond = requestsPerSecond == 0
-                            ? instantRps
-                            : EMA_ALPHA * instantRps + (1 - EMA_ALPHA) * requestsPerSecond;
-        if (totalDelta > 0) {
+        requestsPerSecond = smoothEma(requestsPerSecond, instantRps);
+        if (Verify.Is.positive(totalDelta)) {
             var instantSuccessRate = (successDelta * 100.0) / totalDelta;
             successRate = EMA_ALPHA * instantSuccessRate + (1 - EMA_ALPHA) * successRate;
         }
-        // Calculate average latency with EMA smoothing
-        var count = requestCount.sumThenReset();
-        var latency = totalLatencyNanos.sumThenReset();
-        if (count > 0) {
-            var instantLatencyMs = (latency / count) / 1_000_000.0;
-            avgLatencyMs = avgLatencyMs == 0
-                           ? instantLatencyMs
-                           : EMA_ALPHA * instantLatencyMs + (1 - EMA_ALPHA) * avgLatencyMs;
-        }
-        // Reset window counters
-        successCount.reset();
-        failureCount.reset();
-        // Update snapshot markers
         lastSuccessSnapshot = currentSuccess;
         lastFailureSnapshot = currentFailure;
-        lastSnapshotTime = now;
+    }
+
+    private static double smoothEma(double current, double instant) {
+        return current == 0
+               ? instant
+               : EMA_ALPHA * instant + (1 - EMA_ALPHA) * current;
+    }
+
+    private void updateLatency() {
+        var count = requestCount.sumThenReset();
+        var latency = totalLatencyNanos.sumThenReset();
+        if (Verify.Is.positive(count)) {
+            var instantLatencyMs = (latency / count) / 1_000_000.0;
+            avgLatencyMs = smoothEma(avgLatencyMs, instantLatencyMs);
+        }
+    }
+
+    private void resetWindowCounters() {
+        successCount.reset();
+        failureCount.reset();
     }
 
     /// Get current metrics for dashboard.
@@ -96,11 +115,12 @@ public final class ForgeMetrics {
                                                successRate,
                                                avgLatencyMs,
                                                totalSuccess.get(),
-                                               totalFailures.get());
+                                               totalFailures.get())
+                              .unwrap();
     }
 
     /// Reset all metrics.
-    public synchronized void reset() {
+    public synchronized Result<Unit> reset() {
         successCount.reset();
         failureCount.reset();
         totalLatencyNanos.reset();
@@ -113,6 +133,7 @@ public final class ForgeMetrics {
         requestsPerSecond = 0;
         successRate = 100.0;
         avgLatencyMs = 0;
+        return unitResult();
     }
 
     /// Metrics snapshot for dashboard.
@@ -121,12 +142,12 @@ public final class ForgeMetrics {
                                   double avgLatencyMs,
                                   long totalSuccess,
                                   long totalFailures) {
-        public static MetricsSnapshot metricsSnapshot(double requestsPerSecond,
-                                                      double successRate,
-                                                      double avgLatencyMs,
-                                                      long totalSuccess,
-                                                      long totalFailures) {
-            return new MetricsSnapshot(requestsPerSecond, successRate, avgLatencyMs, totalSuccess, totalFailures);
+        public static Result<MetricsSnapshot> metricsSnapshot(double requestsPerSecond,
+                                                              double successRate,
+                                                              double avgLatencyMs,
+                                                              long totalSuccess,
+                                                              long totalFailures) {
+            return success(new MetricsSnapshot(requestsPerSecond, successRate, avgLatencyMs, totalSuccess, totalFailures));
         }
 
         public long totalRequests() {

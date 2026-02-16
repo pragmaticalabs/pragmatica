@@ -24,12 +24,15 @@ public record HealthThresholds(double maxErrorRate,
     private static final Cause NEGATIVE_LATENCY = Causes.cause("Latency must be non-negative");
 
     /// Default thresholds: 1% error rate, 500ms latency, no manual approval required.
+    @SuppressWarnings("JBCT-VO-02") // Static constants use pre-validated values
     public static final HealthThresholds DEFAULT = new HealthThresholds(0.01, 500, false);
 
     /// Strict thresholds for critical services: 0.1% error rate, 200ms latency.
+    @SuppressWarnings("JBCT-VO-02") // Static constants use pre-validated values
     public static final HealthThresholds STRICT = new HealthThresholds(0.001, 200, false);
 
     /// Manual-only: always requires manual approval.
+    @SuppressWarnings("JBCT-VO-02") // Static constants use pre-validated values
     public static final HealthThresholds MANUAL_ONLY = new HealthThresholds(0.0, 0, true);
 
     /// Creates health thresholds with validation.
@@ -70,11 +73,13 @@ public record HealthThresholds(double maxErrorRate,
     }
 
     /// Returns a copy with manual approval required.
+    @SuppressWarnings("JBCT-VO-02") // Record copy method with known-valid fields
     public HealthThresholds withManualApproval() {
         return new HealthThresholds(maxErrorRate, maxLatencyMs, true);
     }
 
     /// Returns a copy without manual approval requirement.
+    @SuppressWarnings("JBCT-VO-02") // Record copy method with known-valid fields
     public HealthThresholds withAutoApproval() {
         return new HealthThresholds(maxErrorRate, maxLatencyMs, false);
     }

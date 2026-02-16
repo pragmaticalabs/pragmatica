@@ -4,6 +4,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 import java.util.List;
@@ -12,6 +13,11 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.pragmatica.lang.Promise.promise;
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.Result.unitResult;
+import static org.pragmatica.lang.Unit.unit;
 
 /// Framework for simulating realistic backend behavior including latency and failures.
 /// Used to test system resilience and behavior under various conditions.
@@ -38,7 +44,7 @@ public sealed interface BackendSimulation {
     Cause SIMULATIONS_EMPTY = Causes.cause("simulations cannot be null or empty");
 
     /// Shutdown the scheduler. Should be called on application shutdown.
-    static void shutdown() {
+    static Result<Unit> shutdown() {
         SCHEDULER.shutdown();
         try{
             if (!SCHEDULER.awaitTermination(5, TimeUnit.SECONDS)) {
@@ -49,6 +55,7 @@ public sealed interface BackendSimulation {
             Thread.currentThread()
                   .interrupt();
         }
+        return unitResult();
     }
 
     /// Apply the simulation effect.
@@ -58,11 +65,15 @@ public sealed interface BackendSimulation {
 
     /// No-op simulation that does nothing.
     record NoOp() implements BackendSimulation {
-        public static final NoOp INSTANCE = new NoOp();
+        private static final NoOp INSTANCE = noOp().unwrap();
+
+        public static Result<NoOp> noOp() {
+            return success(new NoOp());
+        }
 
         @Override
         public Promise<Unit> apply() {
-            return Promise.success(Unit.unit());
+            return Promise.success(unit());
         }
     }
 
@@ -72,61 +83,60 @@ public sealed interface BackendSimulation {
         @Override
         public Promise<Unit> apply() {
             var delay = calculateDelay();
-            return delay <= 0
-                   ? Promise.success(Unit.unit())
-                   : scheduleDelay(delay);
+            if (Verify.Is.nonPositive(delay)) {
+                return Promise.success(unit());
+            }
+            return scheduleDelay(delay);
         }
 
         private long calculateDelay() {
             var random = ThreadLocalRandom.current();
             var delay = baseLatencyMs;
-            if (jitterMs > 0) {
-                delay += random.nextLong(jitterMs);
-            }
-            if (spikeChance > 0 && random.nextDouble() < spikeChance) {
-                delay += spikeLatencyMs;
-            }
+            delay += calculateJitter(random);
+            delay += calculateSpike(random);
             return delay;
         }
 
+        private long calculateJitter(ThreadLocalRandom random) {
+            return jitterMs > 0
+                   ? random.nextLong(jitterMs)
+                   : 0;
+        }
+
+        private long calculateSpike(ThreadLocalRandom random) {
+            return spikeChance > 0 && random.nextDouble() < spikeChance
+                   ? spikeLatencyMs
+                   : 0;
+        }
+
         private static Promise<Unit> scheduleDelay(long delayMs) {
-            return Promise.promise(p -> SCHEDULER.schedule(() -> p.succeed(Unit.unit()),
-                                                           delayMs,
-                                                           TimeUnit.MILLISECONDS));
+            return promise(p -> SCHEDULER.schedule(() -> p.succeed(unit()), delayMs, TimeUnit.MILLISECONDS));
         }
 
         public static Result<LatencySimulation> latencySimulation(long baseMs,
                                                                   long jitterMs,
                                                                   double spikeChance,
                                                                   long spikeMs) {
-            if (baseMs < 0) {
-                return BASE_LATENCY_NEGATIVE.result();
-            }
-            if (jitterMs < 0) {
-                return JITTER_NEGATIVE.result();
-            }
-            if (spikeChance < 0 || spikeChance > 1) {
-                return SPIKE_CHANCE_OUT_OF_RANGE.result();
-            }
-            if (spikeMs < 0) {
-                return SPIKE_LATENCY_NEGATIVE.result();
-            }
-            return Result.success(new LatencySimulation(baseMs, jitterMs, spikeChance, spikeMs));
+            return validateTimings(baseMs, jitterMs, spikeMs).flatMap(_ -> Verify.ensure(spikeChance,
+                                                                                         Verify.Is::between,
+                                                                                         0.0,
+                                                                                         1.0,
+                                                                                         SPIKE_CHANCE_OUT_OF_RANGE))
+                                  .map(_ -> new LatencySimulation(baseMs, jitterMs, spikeChance, spikeMs));
+        }
+
+        private static Result<Long> validateTimings(long baseMs, long jitterMs, long spikeMs) {
+            return Verify.ensure(baseMs, Verify.Is::nonNegative, BASE_LATENCY_NEGATIVE)
+                         .flatMap(_ -> Verify.ensure(jitterMs, Verify.Is::nonNegative, JITTER_NEGATIVE))
+                         .flatMap(_ -> Verify.ensure(spikeMs, Verify.Is::nonNegative, SPIKE_LATENCY_NEGATIVE));
         }
 
         public static LatencySimulation latencySimulation(long latencyMs) {
-            return new LatencySimulation(latencyMs, 0, 0, 0);
+            return latencySimulation(latencyMs, 0, 0, 0).unwrap();
         }
 
         public static LatencySimulation latencySimulation(long baseMs, long jitterMs) {
-            return new LatencySimulation(baseMs, jitterMs, 0, 0);
-        }
-
-        public static Result<LatencySimulation> withSpikes(long baseMs,
-                                                           long jitterMs,
-                                                           double spikeChance,
-                                                           long spikeMs) {
-            return latencySimulation(baseMs, jitterMs, spikeChance, spikeMs);
+            return latencySimulation(baseMs, jitterMs, 0, 0).unwrap();
         }
     }
 
@@ -145,7 +155,7 @@ public sealed interface BackendSimulation {
             if (random.nextDouble() < failureRate) {
                 return selectRandomError(random).promise();
             }
-            return Promise.success(Unit.unit());
+            return Promise.success(unit());
         }
 
         private SimulatedError selectRandomError(ThreadLocalRandom random) {
@@ -153,16 +163,18 @@ public sealed interface BackendSimulation {
         }
 
         public static Result<FailureInjection> failureInjection(double rate, List<SimulatedError> errors) {
-            if (rate < 0 || rate > 1) {
-                return FAILURE_RATE_OUT_OF_RANGE.result();
-            }
-            if (errors == null || errors.isEmpty()) {
-                return ERROR_TYPES_EMPTY.result();
-            }
-            return Result.success(new FailureInjection(rate, errors));
+            return Verify.ensure(rate, Verify.Is::between, 0.0, 1.0, FAILURE_RATE_OUT_OF_RANGE)
+                         .flatMap(_ -> ensureNonEmptyErrors(errors))
+                         .map(_ -> new FailureInjection(rate, errors));
         }
 
-        public static Result<FailureInjection> withRate(double rate, SimulatedError... errors) {
+        private static Result<List<SimulatedError>> ensureNonEmptyErrors(List<SimulatedError> errors) {
+            return Verify.ensure(errors, Verify.Is::notNull, ERROR_TYPES_EMPTY)
+                         .filter(ERROR_TYPES_EMPTY,
+                                 list -> !list.isEmpty());
+        }
+
+        public static Result<FailureInjection> failureInjection(double rate, SimulatedError... errors) {
             return failureInjection(rate, List.of(errors));
         }
     }
@@ -178,7 +190,7 @@ public sealed interface BackendSimulation {
 
         @Override
         public Promise<Unit> apply() {
-            var result = Promise.success(Unit.unit());
+            var result = Promise.success(unit());
             for (var simulation : simulations) {
                 result = result.flatMap(_ -> simulation.apply());
             }
@@ -186,10 +198,10 @@ public sealed interface BackendSimulation {
         }
 
         public static Result<Composite> composite(List<BackendSimulation> simulations) {
-            if (simulations == null || simulations.isEmpty()) {
-                return SIMULATIONS_EMPTY.result();
-            }
-            return Result.success(new Composite(simulations));
+            return Verify.ensure(simulations, Verify.Is::notNull, SIMULATIONS_EMPTY)
+                         .filter(SIMULATIONS_EMPTY,
+                                 list -> !list.isEmpty())
+                         .map(Composite::new);
         }
 
         public static Result<Composite> composite(BackendSimulation... simulations) {
@@ -200,6 +212,10 @@ public sealed interface BackendSimulation {
     /// Simulated error types for failure injection.
     sealed interface SimulatedError extends Cause {
         record ServiceUnavailable(String serviceName) implements SimulatedError {
+            public static Result<ServiceUnavailable> serviceUnavailable(String serviceName) {
+                return success(new ServiceUnavailable(serviceName));
+            }
+
             @Override
             public String message() {
                 return "Service unavailable: " + serviceName;
@@ -207,6 +223,10 @@ public sealed interface BackendSimulation {
         }
 
         record Timeout(String operation, long timeoutMs) implements SimulatedError {
+            public static Result<Timeout> timeout(String operation, long timeoutMs) {
+                return success(new Timeout(operation, timeoutMs));
+            }
+
             @Override
             public String message() {
                 return "Timeout after " + timeoutMs + "ms: " + operation;
@@ -214,6 +234,10 @@ public sealed interface BackendSimulation {
         }
 
         record ConnectionRefused(String host, int port) implements SimulatedError {
+            public static Result<ConnectionRefused> connectionRefused(String host, int port) {
+                return success(new ConnectionRefused(host, port));
+            }
+
             @Override
             public String message() {
                 return "Connection refused: " + host + ":" + port;
@@ -221,6 +245,10 @@ public sealed interface BackendSimulation {
         }
 
         record DatabaseError(String query) implements SimulatedError {
+            public static Result<DatabaseError> databaseError(String query) {
+                return success(new DatabaseError(query));
+            }
+
             @Override
             public String message() {
                 return "Database error executing: " + query;
@@ -228,6 +256,10 @@ public sealed interface BackendSimulation {
         }
 
         record RateLimited(int retryAfterSeconds) implements SimulatedError {
+            public static Result<RateLimited> rateLimited(int retryAfterSeconds) {
+                return success(new RateLimited(retryAfterSeconds));
+            }
+
             @Override
             public String message() {
                 return "Rate limited, retry after " + retryAfterSeconds + " seconds";
@@ -235,10 +267,28 @@ public sealed interface BackendSimulation {
         }
 
         record CustomError(String errorType, String errorMessage) implements SimulatedError {
+            public static Result<CustomError> customError(String errorType, String errorMessage) {
+                return success(new CustomError(errorType, errorMessage));
+            }
+
             @Override
             public String message() {
                 return errorType + ": " + errorMessage;
             }
+        }
+
+        record unused() implements SimulatedError {
+            @Override
+            public String message() {
+                return "";
+            }
+        }
+    }
+
+    record unused() implements BackendSimulation {
+        @Override
+        public Promise<Unit> apply() {
+            return Promise.success(unit());
         }
     }
 }

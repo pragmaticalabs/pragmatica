@@ -25,8 +25,7 @@ public interface CircuitBreakerFactory extends Slice {
     /// @param <T> Target type
     /// @return Aspect that wraps the target with circuit breaker logic
     default <T> Aspect<T> create() {
-        return create(CircuitBreakerConfig.circuitBreakerConfig()
-                                          .unwrap());
+        return create(CircuitBreakerConfig.circuitBreakerConfig());
     }
 
     /// Enable or disable circuit breaker logic globally.

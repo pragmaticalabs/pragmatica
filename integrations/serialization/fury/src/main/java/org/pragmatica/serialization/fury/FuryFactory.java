@@ -44,7 +44,8 @@ public sealed interface FuryFactory {
                        .withLanguage(Language.JAVA)
                        .buildThreadSafeFuryPool(coreCount * 2, coreCount * 4);
         Stream.of(registrators)
-              .forEach(registrator -> registrator.registerClasses(fury::register));
+              .flatMap(registrator -> registrator.classesToRegister().stream())
+              .forEach(fury::register);
         return fury;
     }
 

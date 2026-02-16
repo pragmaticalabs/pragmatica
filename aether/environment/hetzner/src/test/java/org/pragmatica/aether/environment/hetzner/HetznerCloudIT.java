@@ -6,6 +6,7 @@ import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
+import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.cloud.hetzner.HetznerClient;
@@ -15,7 +16,6 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.aether.environment.InstanceId.instanceId;
 import static org.pragmatica.cloud.hetzner.HetznerConfig.hetznerConfig;
 
 /// Integration tests for the Hetzner Cloud provider.
@@ -38,9 +38,9 @@ class HetznerCloudIT {
 
         var envConfig = HetznerEnvironmentConfig.hetznerEnvironmentConfig(
             config, "cx22", "ubuntu-24.04", "fsn1",
-            List.of(), List.of(), List.of(), "");
+            List.of(), List.of(), List.of(), "").unwrap();
 
-        provider = HetznerComputeProvider.hetznerComputeProvider(client, envConfig);
+        provider = HetznerComputeProvider.hetznerComputeProvider(client, envConfig).unwrap();
     }
 
     @Test
@@ -65,7 +65,7 @@ class HetznerCloudIT {
     void instanceStatus_returnsInfo() {
         Assumptions.assumeTrue(createdServerId > 0, "No server created in previous test");
 
-        provider.instanceStatus(instanceId(String.valueOf(createdServerId)))
+        provider.instanceStatus(new InstanceId(String.valueOf(createdServerId)))
                 .await()
                 .onFailure(HetznerCloudIT::failWithCause)
                 .onSuccess(HetznerCloudIT::assertMatchesCreatedServer);
@@ -76,7 +76,7 @@ class HetznerCloudIT {
     void terminate_deletesServer() {
         Assumptions.assumeTrue(createdServerId > 0, "No server created");
 
-        provider.terminate(instanceId(String.valueOf(createdServerId)))
+        provider.terminate(new InstanceId(String.valueOf(createdServerId)))
                 .await()
                 .onFailure(HetznerCloudIT::failWithCause);
     }

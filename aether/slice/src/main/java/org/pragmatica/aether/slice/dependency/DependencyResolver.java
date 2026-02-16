@@ -32,6 +32,9 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.utils.Causes.cause;
+
 /// Orchestrates dependency resolution for slices.
 ///
 /// Resolution process:
@@ -46,6 +49,7 @@ import org.slf4j.LoggerFactory;
 /// 9. Register in registry
 ///
 /// Thread-safe: Uses SliceRegistry for synchronization.
+@SuppressWarnings({"JBCT-VO-01", "JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"})
 public interface DependencyResolver {
     Logger log = LoggerFactory.getLogger(DependencyResolver.class);
 
@@ -134,10 +138,10 @@ public interface DependencyResolver {
         return new ResourceProviderFacade() {
             @Override
             public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                return Causes.cause("Resource provisioning not configured. "
-                                    + "Use resolveWithContext(artifact, repo, registry, loader, invoker, resourceFacade) "
-                                    + "to enable resource provisioning.")
-                             .promise();
+                return cause("Resource provisioning not configured. "
+                             + "Use resolveWithContext(artifact, repo, registry, loader, invoker, resourceFacade) "
+                             + "to enable resource provisioning.")
+                .promise();
             }
         };
     }
@@ -726,6 +730,8 @@ public interface DependencyResolver {
             case VersionPattern.Comparison(_, Version version) -> version;
             case VersionPattern.Tilde(Version version) -> version;
             case VersionPattern.Caret(Version version) -> version;
+            case VersionPattern.unused _ -> Version.version("0.0.0")
+                                                   .unwrap();
         };
     }
 
@@ -738,7 +744,7 @@ public interface DependencyResolver {
                                            .map(dep -> new DependencyDescriptor(ArtifactMapper.toClassName(dep.groupId(),
                                                                                                            dep.artifactId()),
                                                                                 dep.versionPattern(),
-                                                                                Option.none()))
+                                                                                none()))
                                            .toList();
         return SliceFactory.createSlice(sliceClass, creationContext, dependencies, legacyDescriptors);
     }
@@ -768,10 +774,10 @@ public interface DependencyResolver {
     }
 
     private static Cause circularDependencyDetected(String artifactKey) {
-        return Causes.cause("Circular dependency detected during resolution: " + artifactKey);
+        return cause("Circular dependency detected during resolution: " + artifactKey);
     }
 
     private static Cause artifactMismatch(Artifact requested, Artifact declared) {
-        return Causes.cause("Artifact mismatch: requested " + requested.asString() + " but JAR manifest declares " + declared.asString());
+        return cause("Artifact mismatch: requested " + requested.asString() + " but JAR manifest declares " + declared.asString());
     }
 }

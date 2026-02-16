@@ -18,9 +18,9 @@ class ConfigurationProviderTest {
         @Test
         void builder_mergesMultipleSources() {
             var defaults = MapConfigSource.mapConfigSource("defaults",
-                Map.of("database.host", "localhost", "database.port", "5432"), -1000);
+                Map.of("database.host", "localhost", "database.port", "5432"), -1000).unwrap();
             var overrides = MapConfigSource.mapConfigSource("overrides",
-                Map.of("database.port", "5433", "server.port", "8080"), 100);
+                Map.of("database.port", "5433", "server.port", "8080"), 100).unwrap();
 
             var provider = ConfigurationProvider.builder()
                                                 .withSource(defaults)
@@ -34,8 +34,8 @@ class ConfigurationProviderTest {
 
         @Test
         void builder_higherPriorityWins() {
-            var low = MapConfigSource.mapConfigSource("low", Map.of("key", "low-value"), 10);
-            var high = MapConfigSource.mapConfigSource("high", Map.of("key", "high-value"), 100);
+            var low = MapConfigSource.mapConfigSource("low", Map.of("key", "low-value"), 10).unwrap();
+            var high = MapConfigSource.mapConfigSource("high", Map.of("key", "high-value"), 100).unwrap();
 
             var provider = ConfigurationProvider.builder()
                                                 .withSource(low)
@@ -47,9 +47,9 @@ class ConfigurationProviderTest {
 
         @Test
         void sources_returnsSortedByPriority() {
-            var low = MapConfigSource.mapConfigSource("low", Map.of(), 10);
-            var medium = MapConfigSource.mapConfigSource("medium", Map.of(), 50);
-            var high = MapConfigSource.mapConfigSource("high", Map.of(), 100);
+            var low = MapConfigSource.mapConfigSource("low", Map.of(), 10).unwrap();
+            var medium = MapConfigSource.mapConfigSource("medium", Map.of(), 50).unwrap();
+            var high = MapConfigSource.mapConfigSource("high", Map.of(), 100).unwrap();
 
             var provider = ConfigurationProvider.builder()
                                                 .withSource(low)
@@ -69,7 +69,7 @@ class ConfigurationProviderTest {
 
         @Test
         void withDefaults_hasLowestPriority() {
-            var override = MapConfigSource.mapConfigSource("override", Map.of("key", "override-value"), 0);
+            var override = MapConfigSource.mapConfigSource("override", Map.of("key", "override-value"), 0).unwrap();
 
             var provider = ConfigurationProvider.builder()
                                                 .withDefaults(Map.of("key", "default-value", "other", "value"))
@@ -111,7 +111,7 @@ class ConfigurationProviderTest {
 
         @Test
         void configurationProvider_wrapsSource() {
-            var source = MapConfigSource.mapConfigSource("single", Map.of("key", "value"));
+            var source = MapConfigSource.mapConfigSource("single", Map.of("key", "value")).unwrap();
 
             var provider = ConfigurationProvider.configurationProvider(source);
 
@@ -125,8 +125,8 @@ class ConfigurationProviderTest {
 
         @Test
         void keys_returnsAllMergedKeys() {
-            var source1 = MapConfigSource.mapConfigSource("s1", Map.of("a", "1"), 0);
-            var source2 = MapConfigSource.mapConfigSource("s2", Map.of("b", "2"), 0);
+            var source1 = MapConfigSource.mapConfigSource("s1", Map.of("a", "1"), 0).unwrap();
+            var source2 = MapConfigSource.mapConfigSource("s2", Map.of("b", "2"), 0).unwrap();
 
             var provider = ConfigurationProvider.builder()
                                                 .withSource(source1)
@@ -138,8 +138,8 @@ class ConfigurationProviderTest {
 
         @Test
         void asMap_returnsMergedValues() {
-            var source1 = MapConfigSource.mapConfigSource("s1", Map.of("a", "1"), 0);
-            var source2 = MapConfigSource.mapConfigSource("s2", Map.of("b", "2"), 0);
+            var source1 = MapConfigSource.mapConfigSource("s1", Map.of("a", "1"), 0).unwrap();
+            var source2 = MapConfigSource.mapConfigSource("s2", Map.of("b", "2"), 0).unwrap();
 
             var provider = ConfigurationProvider.builder()
                                                 .withSource(source1)
@@ -157,7 +157,7 @@ class ConfigurationProviderTest {
 
         @Test
         void reload_returnsNewProvider() {
-            var source = MapConfigSource.mapConfigSource("test", Map.of("key", "value"));
+            var source = MapConfigSource.mapConfigSource("test", Map.of("key", "value")).unwrap();
             var provider = ConfigurationProvider.configurationProvider(source);
 
             var reloaded = provider.reload();
@@ -174,7 +174,7 @@ class ConfigurationProviderTest {
         void name_includesSourceCount() {
             var provider = ConfigurationProvider.builder()
                                                 .withDefaults(Map.of())
-                                                .withSource(MapConfigSource.emptyMapConfigSource("test"))
+                                                .withSource(MapConfigSource.mapConfigSource("test").unwrap())
                                                 .build();
 
             assertThat(provider.name()).contains("2 sources");

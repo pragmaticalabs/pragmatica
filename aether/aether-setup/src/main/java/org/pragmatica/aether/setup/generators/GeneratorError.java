@@ -4,6 +4,7 @@ import org.pragmatica.lang.Cause;
 
 /// Errors that can occur during artifact generation.
 public sealed interface GeneratorError extends Cause {
+    @SuppressWarnings("JBCT-VO-01")
     record IoError(String details) implements GeneratorError {
         @Override
         public String message() {
@@ -11,6 +12,7 @@ public sealed interface GeneratorError extends Cause {
         }
     }
 
+    @SuppressWarnings("JBCT-VO-01")
     record UnsupportedEnvironment(String environment) implements GeneratorError {
         @Override
         public String message() {
@@ -24,5 +26,12 @@ public sealed interface GeneratorError extends Cause {
 
     static GeneratorError unsupportedEnvironment(String environment) {
         return new UnsupportedEnvironment(environment);
+    }
+
+    record unused() implements GeneratorError {
+        @Override
+        public String message() {
+            return "";
+        }
     }
 }

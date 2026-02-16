@@ -11,7 +11,10 @@ import org.pragmatica.lang.Option;
 import java.util.HashSet;
 import java.util.Set;
 
+import static org.pragmatica.lang.Option.none;
+
 /// Value type stored in the consensus KVStore
+@SuppressWarnings({"JBCT-VO-01", "JBCT-NAM-01", "JBCT-STY-04"})
 public sealed interface AetherValue {
     /// Slice target stores runtime scaling configuration for a slice.
     /// This is the "desired state" for how many instances should run and which version.
@@ -31,7 +34,7 @@ public sealed interface AetherValue {
 
         /// Creates a standalone slice target (not part of any app blueprint).
         public static SliceTargetValue sliceTargetValue(Version version, int instances) {
-            return new SliceTargetValue(version, instances, Option.none(), System.currentTimeMillis());
+            return new SliceTargetValue(version, instances, none(), System.currentTimeMillis());
         }
 
         /// Returns a new value with updated instance count.

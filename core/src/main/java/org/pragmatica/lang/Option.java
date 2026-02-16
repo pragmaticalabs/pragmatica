@@ -805,7 +805,8 @@ public sealed interface Option<T> permits Some, None {
     /// @return a created instance.
     @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
     static <T> Option<T> from(Optional<T> optional) {
-        return option(optional.orElse(null));
+        return optional.map(Option::some)
+                       .orElse(Option.none());
     }
 
     /// **[Factory]**

@@ -328,6 +328,8 @@ public final class MetricsRoutes implements RouteSource {
             new StrategyResponse.PerMethod("perMethod", p.defaultThresholdNs() / 1_000_000);
             case ThresholdStrategy.Composite _ ->
             new StrategyResponse.Composite("composite");
+            case ThresholdStrategy.unused _ ->
+            new StrategyResponse.Fixed("none", 0);
         };
     }
 }

@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 
 /// Routes HTTP requests to the appropriate handler (API or static files).
 /// Handles CORS preflight requests.
+@SuppressWarnings("JBCT-RET-01")
 public final class ForgeRequestHandler {
     private static final Logger log = LoggerFactory.getLogger(ForgeRequestHandler.class);
 

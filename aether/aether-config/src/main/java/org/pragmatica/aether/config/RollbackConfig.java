@@ -1,4 +1,9 @@
 package org.pragmatica.aether.config;
+
+import org.pragmatica.lang.Result;
+
+import static org.pragmatica.lang.Result.success;
+
 /// Configuration for automatic rollback on persistent slice failures.
 ///
 ///
@@ -19,23 +24,26 @@ public record RollbackConfig(boolean enabled,
                              boolean triggerOnAllInstancesFailed,
                              int cooldownSeconds,
                              int maxRollbacks) {
-    private static final RollbackConfig DEFAULT = new RollbackConfig(true, true, 300, 2);
+    /// Factory method following JBCT naming convention.
+    public static Result<RollbackConfig> rollbackConfig(boolean enabled,
+                                                        boolean triggerOnAllInstancesFailed,
+                                                        int cooldownSeconds,
+                                                        int maxRollbacks) {
+        return success(new RollbackConfig(enabled, triggerOnAllInstancesFailed, cooldownSeconds, maxRollbacks));
+    }
+
+    private static final RollbackConfig ENABLED = rollbackConfig(true, true, 300, 2).unwrap();
+    private static final RollbackConfig DISABLED = rollbackConfig(false, false, 0, 0).unwrap();
 
     /// Default configuration with automatic rollback enabled.
-    public static RollbackConfig defaultConfig() {
-        return DEFAULT;
+    public static RollbackConfig rollbackConfig() {
+        return ENABLED;
     }
 
-    /// Configuration with rollback disabled.
-    public static RollbackConfig disabled() {
-        return new RollbackConfig(false, false, 0, 0);
-    }
-
-    /// Factory method following JBCT naming convention.
-    public static RollbackConfig rollbackConfig(boolean enabled,
-                                                boolean triggerOnAllInstancesFailed,
-                                                int cooldownSeconds,
-                                                int maxRollbacks) {
-        return new RollbackConfig(enabled, triggerOnAllInstancesFailed, cooldownSeconds, maxRollbacks);
+    /// Configuration based on enabled flag.
+    public static RollbackConfig rollbackConfig(boolean enabled) {
+        return enabled
+               ? ENABLED
+               : DISABLED;
     }
 }

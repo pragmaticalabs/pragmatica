@@ -25,6 +25,7 @@ import org.pragmatica.lang.utils.Causes;
 /// @param warmUpPeriodMs time after ControlLoop activation during which scaling is blocked (must be non-negative)
 /// @param sliceCooldownMs time after slice reaches ACTIVE during which scaling is blocked (must be non-negative)
 /// @param scalingConfig configuration for the Lizard Brain relative change scaling algorithm
+@SuppressWarnings("JBCT-VO-02") // Record copy methods (with*) and DEFAULT constant use new internally — validated by factory
 public record ControllerConfig(double cpuScaleUpThreshold,
                                double cpuScaleDownThreshold,
                                double callRateScaleUpThreshold,

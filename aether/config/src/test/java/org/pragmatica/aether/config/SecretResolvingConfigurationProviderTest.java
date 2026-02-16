@@ -91,7 +91,7 @@ class SecretResolvingConfigurationProviderTest {
 
         @Test
         void resolve_preservesSourceMetadata() {
-            var source = MapConfigSource.mapConfigSource("test-source", Map.of("key", "${secrets:path}"), 42);
+            var source = MapConfigSource.mapConfigSource("test-source", Map.of("key", "${secrets:path}"), 42).unwrap();
             var provider = ConfigurationProvider.configurationProvider(source);
 
             var result = ConfigurationProvider.withSecretResolution(provider,
@@ -126,6 +126,6 @@ class SecretResolvingConfigurationProviderTest {
 
     private static ConfigurationProvider providerWith(Map<String, String> values) {
         return ConfigurationProvider.configurationProvider(
-            MapConfigSource.mapConfigSource("test", values));
+            MapConfigSource.mapConfigSource("test", values).unwrap());
     }
 }

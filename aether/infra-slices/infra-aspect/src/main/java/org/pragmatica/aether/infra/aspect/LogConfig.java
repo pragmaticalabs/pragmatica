@@ -19,18 +19,22 @@ public record LogConfig(String name,
         return ensure(name, Verify.Is::notBlank).map(n -> new LogConfig(n, level, true, true, true));
     }
 
+    @SuppressWarnings("JBCT-VO-02")
     public LogConfig withLevel(LogLevel level) {
         return new LogConfig(name, level, logArgs, logResult, logDuration);
     }
 
+    @SuppressWarnings("JBCT-VO-02")
     public LogConfig withLogArgs(boolean logArgs) {
         return new LogConfig(name, level, logArgs, logResult, logDuration);
     }
 
+    @SuppressWarnings("JBCT-VO-02")
     public LogConfig withLogResult(boolean logResult) {
         return new LogConfig(name, level, logArgs, logResult, logDuration);
     }
 
+    @SuppressWarnings("JBCT-VO-02")
     public LogConfig withLogDuration(boolean logDuration) {
         return new LogConfig(name, level, logArgs, logResult, logDuration);
     }

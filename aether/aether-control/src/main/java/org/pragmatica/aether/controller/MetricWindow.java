@@ -115,6 +115,7 @@ public record MetricWindow(double[] valuesInternal, int head, int count, double 
     ///
     /// @param value New value to record
     /// @return New MetricWindow with the value recorded
+    @SuppressWarnings("JBCT-VO-02") // Immutable record — record() creates new instance with updated circular buffer state
     public MetricWindow record(double value) {
         var newValues = valuesInternal.clone();
         var windowSize = newValues.length;

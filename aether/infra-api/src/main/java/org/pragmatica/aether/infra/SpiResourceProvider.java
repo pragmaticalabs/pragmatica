@@ -1,15 +1,16 @@
 package org.pragmatica.aether.infra;
 
 import org.pragmatica.aether.config.ConfigService;
-import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Functions.Fn2;
 
 import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
+
+import static org.pragmatica.lang.Option.option;
 
 /// SPI-based implementation of ResourceProvider.
 ///
@@ -27,11 +28,11 @@ public final class SpiResourceProvider implements ResourceProvider {
         this.configLoader = configLoader;
         this.promiseCache = new ConcurrentHashMap<>();
         Map<Class<?>, ResourceFactory<?, ?>> factoryMap = new ConcurrentHashMap<>();
-        ServiceLoader.load(ResourceFactory.class)
-                     .stream()
-                     .map(ServiceLoader.Provider::get)
-                     .forEach(factory -> factoryMap.putIfAbsent(factory.resourceType(),
-                                                                factory));
+        var providers = ServiceLoader.load(ResourceFactory.class)
+                                     .stream();
+        providers.map(ServiceLoader.Provider::get)
+                 .forEach(factory -> factoryMap.putIfAbsent(factory.resourceType(),
+                                                            factory));
         this.factories = Map.copyOf(factoryMap);
     }
 
@@ -39,10 +40,13 @@ public final class SpiResourceProvider implements ResourceProvider {
     ///
     /// @return New SpiResourceProvider
     public static SpiResourceProvider spiResourceProvider() {
-        return new SpiResourceProvider((section, configClass) -> ConfigService.instance()
-                                                                              .toResult(ResourceProvisioningError.ConfigServiceNotAvailable.INSTANCE)
-                                                                              .flatMap(configService -> configService.config(section,
-                                                                                                                             configClass)));
+        return new SpiResourceProvider(SpiResourceProvider::loadFromConfigService);
+    }
+
+    private static Result<?> loadFromConfigService(String section, Class<?> configClass) {
+        return ConfigService.instance()
+                            .toResult(ResourceProvisioningError.ConfigServiceNotAvailable.INSTANCE)
+                            .flatMap(svc -> svc.config(section, configClass));
     }
 
     /// Create an SpiResourceProvider with a custom config loader.
@@ -75,12 +79,12 @@ public final class SpiResourceProvider implements ResourceProvider {
 
     @SuppressWarnings("unchecked")
     private <T> Promise<T> createResource(Class<T> resourceType, String configSection) {
-        return Option.option(factories.get(resourceType))
-                     .toResult(ResourceProvisioningError.factoryNotFound(resourceType))
-                     .async()
-                     .flatMap(factory -> loadConfigAndCreate((ResourceFactory<T, ?>) factory,
-                                                             configSection,
-                                                             resourceType));
+        var factoryResult = option(factories.get(resourceType))
+        .toResult(ResourceProvisioningError.factoryNotFound(resourceType));
+        return factoryResult.async()
+                            .flatMap(factory -> loadConfigAndCreate((ResourceFactory<T, ?>) factory,
+                                                                    configSection,
+                                                                    resourceType));
     }
 
     @Override
@@ -92,7 +96,7 @@ public final class SpiResourceProvider implements ResourceProvider {
                                                   String configSection,
                                                   Class<T> resourceType) {
         return loadConfig(configSection, factory.configType())
-        .flatMap(config -> createResource(factory, config, resourceType, configSection));
+        .flatMap(config -> invokeFactory(factory, config, resourceType, configSection));
     }
 
     @SuppressWarnings("unchecked")
@@ -103,10 +107,10 @@ public final class SpiResourceProvider implements ResourceProvider {
                            .async();
     }
 
-    private <T, C> Promise<T> createResource(ResourceFactory<T, C> factory,
-                                             C config,
-                                             Class<T> resourceType,
-                                             String configSection) {
+    private <T, C> Promise<T> invokeFactory(ResourceFactory<T, C> factory,
+                                            C config,
+                                            Class<T> resourceType,
+                                            String configSection) {
         return factory.provision(config)
                       .mapError(cause -> ResourceProvisioningError.creationFailed(resourceType, configSection, cause));
     }

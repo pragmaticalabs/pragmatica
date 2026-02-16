@@ -3,6 +3,8 @@ package org.pragmatica.aether.metrics.invocation;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.lang.Option;
 
+import static org.pragmatica.lang.Option.option;
+
 /// Captured details of a slow invocation for debugging.
 ///
 /// Slow invocations are captured when their duration exceeds the configured threshold.
@@ -38,7 +40,7 @@ public record SlowInvocation(MethodName methodName,
                                                 long durationNs,
                                                 int requestBytes,
                                                 String errorType) {
-        return new SlowInvocation(method, timestampNs, durationNs, requestBytes, 0, false, Option.option(errorType));
+        return new SlowInvocation(method, timestampNs, durationNs, requestBytes, 0, false, option(errorType));
     }
 
     /// Duration in milliseconds for display.

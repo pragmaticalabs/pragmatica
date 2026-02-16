@@ -32,6 +32,7 @@ import org.jooq.SQLDialect;
 /// Combines jOOQ's type-safe query building with R2DBC's reactive execution.
 ///
 /// Uses JooqR2dbcOperations from integrations/db/jooq-r2dbc for Promise-based execution.
+@SuppressWarnings("JBCT-RET-01") // Reactive Streams Subscriber callbacks — void required by specification
 public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
     private final DatabaseConnectorConfig config;
     private final ConnectionFactory connectionFactory;

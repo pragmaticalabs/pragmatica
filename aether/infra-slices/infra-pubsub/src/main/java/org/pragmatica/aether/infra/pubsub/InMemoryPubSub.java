@@ -1,7 +1,6 @@
 package org.pragmatica.aether.infra.pubsub;
 
 import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -12,6 +11,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 
 /// In-memory implementation of PubSub for testing and single-node scenarios.
@@ -21,38 +22,46 @@ final class InMemoryPubSub implements PubSub {
 
     @Override
     public Promise<Unit> publish(String topic, Message message) {
-        if (!topics.contains(topic)) {
+        if (topicMissing(topic)) {
             return new PubSubError.TopicNotFound(topic).promise();
         }
-        return Option.option(subscriptions.get(topic))
-                     .filter(subs -> !subs.isEmpty())
-                     .map(subs -> deliverToSubscribers(subs, message))
-                     .or(Promise.success(unit()));
+        var subs = option(subscriptions.get(topic));
+        return subs.filter(list -> !list.isEmpty())
+                   .map(list -> deliverToSubscribers(list, message))
+                   .or(Promise.success(unit()));
     }
 
     @Override
     public Promise<Subscription> subscribe(String topic, Fn1<Promise<Unit>, Message> handler) {
-        if (!topics.contains(topic)) {
+        if (topicMissing(topic)) {
             return new PubSubError.TopicNotFound(topic).promise();
         }
         var subscriptionId = UUID.randomUUID()
                                  .toString();
-        var entry = new SubscriptionEntry(subscriptionId, topic, handler);
+        var entry = SubscriptionEntry.subscriptionEntry(subscriptionId, topic, handler)
+                                     .unwrap();
         subscriptions.computeIfAbsent(topic,
-                                      k -> new CopyOnWriteArrayList<>())
+                                      _ -> new CopyOnWriteArrayList<>())
                      .add(entry);
-        return Promise.success(createSubscription(entry));
+        return Promise.success(buildSubscription(entry));
     }
 
     @Override
     public Promise<Unit> unsubscribe(Subscription subscription) {
-        return Option.option(subscriptions.get(subscription.topic()))
-                     .toResult(new PubSubError.SubscriptionNotFound(subscription.subscriptionId()))
-                     .flatMap(subs -> subs.removeIf(e -> e.subscriptionId()
-                                                          .equals(subscription.subscriptionId()))
-                                      ? Result.success(unit())
-                                      : new PubSubError.SubscriptionNotFound(subscription.subscriptionId()).result())
-                     .async();
+        var subId = subscription.subscriptionId();
+        var topicSubs = option(subscriptions.get(subscription.topic()));
+        return topicSubs.toResult(new PubSubError.SubscriptionNotFound(subId))
+                        .flatMap(subs -> removeSubscription(subs, subId))
+                        .async();
+    }
+
+    private static Result<Unit> removeSubscription(CopyOnWriteArrayList<SubscriptionEntry> subs, String subId) {
+        var removed = subs.removeIf(e -> e.subscriptionId()
+                                          .equals(subId));
+        if (removed) {
+            return success(unit());
+        }
+        return new PubSubError.SubscriptionNotFound(subId).result();
     }
 
     @Override
@@ -77,19 +86,33 @@ final class InMemoryPubSub implements PubSub {
         return Promise.success(Set.copyOf(topics));
     }
 
+    private boolean topicMissing(String topic) {
+        return ! topics.contains(topic);
+    }
+
+    private static boolean isActive(SubscriptionEntry entry) {
+        return ! entry.paused()
+                     .get();
+    }
+
+    private static void deliverMessage(SubscriptionEntry entry, Message message) {
+        entry.handler()
+             .apply(message);
+    }
+
     private Promise<Unit> deliverToSubscribers(CopyOnWriteArrayList<SubscriptionEntry> subscribers, Message message) {
-        for (var entry : subscribers) {
-            if (!entry.paused()
-                      .get()) {
-                entry.handler()
-                     .apply(message);
-            }
-        }
+        subscribers.stream()
+                   .filter(InMemoryPubSub::isActive)
+                   .map(SubscriptionEntry::handler)
+                   .forEach(handler -> handler.apply(message));
         return Promise.success(unit());
     }
 
-    private Subscription createSubscription(SubscriptionEntry entry) {
-        return new InMemorySubscription(entry.subscriptionId(), entry.topic(), entry.paused());
+    private static Subscription buildSubscription(SubscriptionEntry entry) {
+        return InMemorySubscription.inMemorySubscription(entry.subscriptionId(),
+                                                         entry.topic(),
+                                                         entry.paused())
+                                   .unwrap();
     }
 
     private record SubscriptionEntry(String subscriptionId,
@@ -99,11 +122,23 @@ final class InMemoryPubSub implements PubSub {
         SubscriptionEntry(String subscriptionId, String topic, Fn1<Promise<Unit>, Message> handler) {
             this(subscriptionId, topic, handler, new AtomicBoolean(false));
         }
+
+        static Result<SubscriptionEntry> subscriptionEntry(String subscriptionId,
+                                                           String topic,
+                                                           Fn1<Promise<Unit>, Message> handler) {
+            return success(new SubscriptionEntry(subscriptionId, topic, handler));
+        }
     }
 
     private record InMemorySubscription(String subscriptionId,
                                         String topic,
                                         AtomicBoolean paused) implements Subscription {
+        static Result<InMemorySubscription> inMemorySubscription(String subscriptionId,
+                                                                 String topic,
+                                                                 AtomicBoolean paused) {
+            return success(new InMemorySubscription(subscriptionId, topic, paused));
+        }
+
         @Override
         public Promise<Unit> pause() {
             paused.set(true);

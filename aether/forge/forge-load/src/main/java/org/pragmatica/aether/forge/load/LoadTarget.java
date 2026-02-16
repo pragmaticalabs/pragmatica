@@ -4,6 +4,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 
 import java.time.Duration;
@@ -11,7 +12,9 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
 
 /// Configuration for a single load generation target.
 ///
@@ -79,13 +82,27 @@ public record LoadTarget(Option<String> name,
                 return INVALID_RATE.apply(rateStr)
                                    .result();
             }
-            var value = Integer.parseInt(matcher.group(1));
-            if (value <= 0) {
-                return NON_POSITIVE_RATE.result();
-            }
-            return TimeUnit.fromSymbol(matcher.group(2))
+            return Number.parseInt(matcher.group(1))
+                         .flatMap(Rate::ensurePositive)
+                         .flatMap(val -> rate(val,
+                                              matcher.group(2),
+                                              rateStr));
+        }
+
+        private static Result<Integer> ensurePositive(int value) {
+            return value <= 0
+                   ? NON_POSITIVE_RATE.result()
+                   : success(value);
+        }
+
+        private static Result<Rate> rate(int value, TimeUnit unit) {
+            return success(new Rate(value, unit));
+        }
+
+        private static Result<Rate> rate(int value, String unitSymbol, String rateStr) {
+            return TimeUnit.fromSymbol(unitSymbol)
                            .toResult(INVALID_RATE.apply(rateStr))
-                           .map(unit -> new Rate(value, unit));
+                           .flatMap(unit -> rate(value, unit));
         }
 
         public int requestsPerSecond() {
@@ -104,27 +121,22 @@ public record LoadTarget(Option<String> name,
                                                 Option<Duration> duration,
                                                 Map<String, String> pathVars,
                                                 Option<String> body) {
-        return Option.option(target)
-                     .filter(s -> !s.isBlank())
-                     .toResult(INVALID_TARGET.apply("target is required"))
-                     .flatMap(_ -> Rate.rate(rateStr))
-                     .map(rate -> buildLoadTarget(name, target, rate, duration, pathVars, body));
+        var validTarget = option(target).filter(s -> !s.isBlank())
+                                .toResult(INVALID_TARGET.apply("target is required"));
+        return validTarget.flatMap(_ -> Rate.rate(rateStr))
+                          .flatMap(rate -> loadTarget(name, target, rate, duration, pathVars, body));
     }
 
-    private static LoadTarget buildLoadTarget(Option<String> name,
-                                              String target,
-                                              Rate rate,
-                                              Option<Duration> duration,
-                                              Map<String, String> pathVars,
-                                              Option<String> body) {
-        return new LoadTarget(some(name.or(deriveNameFromTarget(target))),
-                              target,
-                              rate,
-                              duration,
-                              pathVars != null
-                              ? Map.copyOf(pathVars)
-                              : Map.of(),
-                              body);
+    private static Result<LoadTarget> loadTarget(Option<String> name,
+                                                 String target,
+                                                 Rate rate,
+                                                 Option<Duration> duration,
+                                                 Map<String, String> pathVars,
+                                                 Option<String> body) {
+        var resolvedName = some(name.or(deriveNameFromTarget(target)));
+        var safePathVars = option(pathVars).map(Map::copyOf)
+                                 .or(Map.of());
+        return success(new LoadTarget(resolvedName, target, rate, duration, safePathVars, body));
     }
 
     private static final Pattern HTTP_METHOD_PREFIX = Pattern.compile("^(GET|POST|PUT|DELETE|PATCH)\\s+");
@@ -151,22 +163,20 @@ public record LoadTarget(Option<String> name,
 
     /// Derives a name from target, using path up to first variable or method name.
     private static String deriveNameFromTarget(String target) {
-        // Strip HTTP method prefix if present
         var path = HTTP_METHOD_PREFIX.matcher(target)
                                      .replaceFirst("");
-        if (path.startsWith("/")) {
-            // HTTP path: use path up to first {
-            var bracketIdx = path.indexOf('{');
-            var effectivePath = bracketIdx > 0
-                                ? path.substring(0, bracketIdx)
-                                : path;
-            // Remove leading slash and trailing slash
-            effectivePath = effectivePath.replaceAll("^/|/$", "");
-            return effectivePath.replace('/', '-');
-        } else {
-            // SliceName.method format
-            return path;
-        }
+        return path.startsWith("/")
+               ? deriveFromHttpPath(path)
+               : path;
+    }
+
+    private static String deriveFromHttpPath(String path) {
+        var bracketIdx = path.indexOf('{');
+        var effectivePath = bracketIdx > 0
+                            ? path.substring(0, bracketIdx)
+                            : path;
+        effectivePath = effectivePath.replaceAll("^/|/$", "");
+        return effectivePath.replace('/', '-');
     }
 
     /// Returns true if this target should run continuously.
@@ -177,8 +187,17 @@ public record LoadTarget(Option<String> name,
 
     /// Creates a new LoadTarget with the rate scaled by the given multiplier.
     public LoadTarget withScaledRate(double multiplier) {
-        var newRate = new Rate((int) Math.max(1, rate.requestsPerSecond() * multiplier),
-                               Rate.TimeUnit.SECOND);
-        return new LoadTarget(name, target, newRate, duration, pathVars, body);
+        var scaledValue = (int) Math.max(1, rate.requestsPerSecond() * multiplier);
+        return loadTarget(name, target, scaledValue, duration, pathVars, body).unwrap();
+    }
+
+    private static Result<LoadTarget> loadTarget(Option<String> name,
+                                                 String target,
+                                                 int scaledValue,
+                                                 Option<Duration> duration,
+                                                 Map<String, String> pathVars,
+                                                 Option<String> body) {
+        return Rate.rate(scaledValue, Rate.TimeUnit.SECOND)
+                   .flatMap(r -> success(new LoadTarget(name, target, r, duration, pathVars, body)));
     }
 }

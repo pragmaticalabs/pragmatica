@@ -41,9 +41,11 @@ import org.slf4j.LoggerFactory;
 /// Slices automatically publish/unpublish endpoints via consensus.
 public interface EndpointRegistry {
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
     void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
 
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
     void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
 
     /// Find all endpoints for a given artifact and method.
@@ -114,6 +116,7 @@ public interface EndpointRegistry {
             private static final Logger log = LoggerFactory.getLogger(endpointRegistry.class);
 
             @Override
+            @SuppressWarnings("JBCT-RET-01")
             public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
                 var key = valuePut.cause()
                                   .key();
@@ -130,6 +133,7 @@ public interface EndpointRegistry {
             }
 
             @Override
+            @SuppressWarnings("JBCT-RET-01")
             public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
                 var key = valueRemove.cause()
                                      .key();

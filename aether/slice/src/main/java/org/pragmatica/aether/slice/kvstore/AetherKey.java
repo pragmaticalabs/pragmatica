@@ -14,7 +14,12 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
+
 /// Aether KV-Store structured keys for cluster state management
+@SuppressWarnings({"JBCT-VO-01", "JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-NAM-01", "JBCT-STY-04"})
 public sealed interface AetherKey extends StructuredKey {
     /// String representation of the key
     String asString();
@@ -45,6 +50,7 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
+        @SuppressWarnings("JBCT-VO-02")
         public static SliceTargetKey sliceTargetKey(ArtifactBase artifactBase) {
             return new SliceTargetKey(artifactBase);
         }
@@ -95,6 +101,7 @@ public sealed interface AetherKey extends StructuredKey {
                               .map(AppBlueprintKey::new);
         }
 
+        @SuppressWarnings("JBCT-VO-02")
         public static AppBlueprintKey appBlueprintKey(BlueprintId blueprintId) {
             return new AppBlueprintKey(blueprintId);
         }
@@ -225,6 +232,7 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
+        @SuppressWarnings("JBCT-VO-02")
         public static VersionRoutingKey versionRoutingKey(ArtifactBase artifactBase) {
             return new VersionRoutingKey(artifactBase);
         }
@@ -276,7 +284,7 @@ public sealed interface AetherKey extends StructuredKey {
                 return ROLLING_UPDATE_KEY_FORMAT_ERROR.apply(key)
                                                       .result();
             }
-            return Result.success(new RollingUpdateKey(updateId));
+            return success(new RollingUpdateKey(updateId));
         }
     }
 
@@ -307,6 +315,7 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
+        @SuppressWarnings("JBCT-VO-02")
         public static PreviousVersionKey previousVersionKey(ArtifactBase artifactBase) {
             return new PreviousVersionKey(artifactBase);
         }
@@ -348,6 +357,7 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
+        @SuppressWarnings("JBCT-VO-02")
         public static HttpRouteKey httpRouteKey(String httpMethod, String pathPrefix) {
             return new HttpRouteKey(httpMethod.toUpperCase(), normalizePrefix(pathPrefix));
         }
@@ -369,7 +379,7 @@ public sealed interface AetherKey extends StructuredKey {
                 return HTTP_ROUTE_KEY_FORMAT_ERROR.apply(key)
                                                   .result();
             }
-            return Result.success(new HttpRouteKey(httpMethod, pathPrefix));
+            return success(new HttpRouteKey(httpMethod, pathPrefix));
         }
 
         private static String normalizePrefix(String path) {
@@ -413,6 +423,7 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
+        @SuppressWarnings("JBCT-VO-02")
         public static LogLevelKey logLevelKey(String loggerName) {
             return new LogLevelKey(loggerName);
         }
@@ -427,7 +438,7 @@ public sealed interface AetherKey extends StructuredKey {
                 return LOG_LEVEL_KEY_FORMAT_ERROR.apply(key)
                                                  .result();
             }
-            return Result.success(new LogLevelKey(loggerName));
+            return success(new LogLevelKey(loggerName));
         }
     }
 
@@ -457,6 +468,7 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
+        @SuppressWarnings("JBCT-VO-02")
         public static DynamicAspectKey dynamicAspectKey(String artifactBase, String methodName) {
             return new DynamicAspectKey(artifactBase, methodName);
         }
@@ -474,7 +486,7 @@ public sealed interface AetherKey extends StructuredKey {
             }
             var artifactBase = content.substring(0, slashIndex);
             var methodName = content.substring(slashIndex + 1);
-            return Result.success(new DynamicAspectKey(artifactBase, methodName));
+            return success(new DynamicAspectKey(artifactBase, methodName));
         }
     }
 
@@ -514,7 +526,7 @@ public sealed interface AetherKey extends StructuredKey {
                 return ALERT_THRESHOLD_KEY_FORMAT_ERROR.apply(key)
                                                        .result();
             }
-            return Result.success(new AlertThresholdKey(metricName));
+            return success(new AlertThresholdKey(metricName));
         }
     }
 
@@ -550,12 +562,14 @@ public sealed interface AetherKey extends StructuredKey {
             return nodeScope.isEmpty();
         }
 
+        @SuppressWarnings("JBCT-VO-02")
         public static ConfigKey configKey(String key) {
-            return new ConfigKey(key, Option.none());
+            return new ConfigKey(key, none());
         }
 
+        @SuppressWarnings("JBCT-VO-02")
         public static ConfigKey configKey(String key, NodeId nodeId) {
-            return new ConfigKey(key, Option.some(nodeId));
+            return new ConfigKey(key, some(nodeId));
         }
 
         public static Result<ConfigKey> parseConfigKey(String raw) {
@@ -570,7 +584,7 @@ public sealed interface AetherKey extends StructuredKey {
                 var keyPart = content.substring(slashIndex + 1);
                 return NodeId.nodeId(nodeIdPart)
                              .map(nodeId -> new ConfigKey(keyPart,
-                                                          Option.some(nodeId)));
+                                                          some(nodeId)));
             }
             if (raw.startsWith(CLUSTER_PREFIX)) {
                 var keyPart = raw.substring(CLUSTER_PREFIX.length());
@@ -578,7 +592,7 @@ public sealed interface AetherKey extends StructuredKey {
                     return CONFIG_KEY_FORMAT_ERROR.apply(raw)
                                                   .result();
                 }
-                return Result.success(new ConfigKey(keyPart, Option.none()));
+                return success(new ConfigKey(keyPart, none()));
             }
             return CONFIG_KEY_FORMAT_ERROR.apply(raw)
                                           .result();

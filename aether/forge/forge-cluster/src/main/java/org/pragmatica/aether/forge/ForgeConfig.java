@@ -27,6 +27,7 @@ public record ForgeConfig(int nodes,
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
 
     /// Default configuration.
+    @SuppressWarnings("JBCT-VO-02")
     public static final ForgeConfig DEFAULT = new ForgeConfig(DEFAULT_NODES,
                                                               DEFAULT_MANAGEMENT_PORT,
                                                               DEFAULT_DASHBOARD_PORT,

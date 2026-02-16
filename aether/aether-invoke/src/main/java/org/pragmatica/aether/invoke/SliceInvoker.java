@@ -161,14 +161,17 @@ public interface SliceInvoker extends SliceInvokerFacade {
 
     /// Handle response from remote invocation.
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
     void onInvokeResponse(InvokeResponse response);
 
     /// Handle node removal for immediate retry of pending invocations.
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
     void onNodeRemoved(TopologyChangeNotification.NodeRemoved event);
 
     /// Handle node down for immediate retry of pending invocations.
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
     void onNodeDown(TopologyChangeNotification.NodeDown event);
 
     /// Stop the invoker and release resources.
@@ -194,6 +197,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
     /// Listener for slice failure events.
     @FunctionalInterface
     interface SliceFailureListener {
+        @SuppressWarnings("JBCT-RET-01") // FunctionalInterface callback — void required
         void onSliceFailure(SliceFailureEvent event);
     }
 
@@ -703,7 +707,7 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"unchecked", "JBCT-RET-01"})
     public void onInvokeResponse(InvokeResponse response) {
         Option.option(pendingInvocations.remove(response.correlationId()))
               .onEmpty(() -> log.warn("[requestId={}] Received response for unknown correlationId: {}",
@@ -718,11 +722,13 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onNodeRemoved(TopologyChangeNotification.NodeRemoved event) {
         handleNodeDeparture(event.nodeId());
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onNodeDown(TopologyChangeNotification.NodeDown event) {
         handleNodeDeparture(event.nodeId());
     }

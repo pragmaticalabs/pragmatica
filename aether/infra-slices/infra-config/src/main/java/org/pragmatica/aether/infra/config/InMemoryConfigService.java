@@ -14,6 +14,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.unitResult;
+import static org.pragmatica.lang.Unit.unit;
+
 /// In-memory implementation of ConfigService for testing and single-node scenarios.
 final class InMemoryConfigService implements ConfigService {
     private final Map<ConfigScope, TomlDocument> documents = new ConcurrentHashMap<>();
@@ -85,18 +89,20 @@ final class InMemoryConfigService implements ConfigService {
         var current = documents.get(scope);
         documents.put(scope, current.with(section, key, value));
         notifyWatchers(section, key);
-        return Promise.success(Unit.unit());
+        return Promise.success(unit());
     }
 
     @Override
     public Result<Unit> loadToml(ConfigScope scope, String content) {
         return TomlParser.parse(content)
-                         .map(doc -> {
-                             documents.put(scope, doc);
-                             return Unit.unit();
-                         })
+                         .map(doc -> storeDocument(scope, doc))
                          .mapError(cause -> new ConfigError.ParseFailed("string",
                                                                         cause.message()));
+    }
+
+    private Unit storeDocument(ConfigScope scope, TomlDocument doc) {
+        documents.put(scope, doc);
+        return unit();
     }
 
     @Override
@@ -128,14 +134,19 @@ final class InMemoryConfigService implements ConfigService {
 
     private void notifyWatchers(String section, String key) {
         var watchKey = watchKey(section, key);
-        Option.option(watchers.get(watchKey))
-              .onPresent(entries -> {
-                             var currentValue = getHierarchical(section, key, TomlDocument::getString);
-                             entries.stream()
-                                    .filter(WatchEntry::isActive)
-                                    .forEach(entry -> entry.callback()
-                                                           .apply(currentValue));
-                         });
+        option(watchers.get(watchKey)).onPresent(entries -> notifyEntries(entries, section, key));
+    }
+
+    private void notifyEntries(List<WatchEntry> entries, String section, String key) {
+        var currentValue = getHierarchical(section, key, TomlDocument::getString);
+        entries.stream()
+               .filter(WatchEntry::isActive)
+               .forEach(entry -> invokeCallback(entry, currentValue));
+    }
+
+    private static void invokeCallback(WatchEntry entry, Option<String> value) {
+        entry.callback()
+             .apply(value);
     }
 
     private static String watchKey(String section, String key) {
@@ -156,8 +167,9 @@ final class InMemoryConfigService implements ConfigService {
             return active.get();
         }
 
-        void cancel() {
+        Result<Unit> cancel() {
             active.set(false);
+            return unitResult();
         }
     }
 
@@ -171,10 +183,13 @@ final class InMemoryConfigService implements ConfigService {
         }
 
         @Override
-        public void cancel() {
-            entry.cancel();
-            Option.option(watchers.get(watchKey))
-                  .onPresent(entries -> entries.remove(entry));
+        public Result<Unit> cancel() {
+            return entry.cancel()
+                        .onSuccess(_ -> removeEntry());
+        }
+
+        private void removeEntry() {
+            option(watchers.get(watchKey)).onPresent(entries -> entries.remove(entry));
         }
 
         @Override

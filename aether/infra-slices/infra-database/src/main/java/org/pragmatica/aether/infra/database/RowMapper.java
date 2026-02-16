@@ -1,11 +1,12 @@
 package org.pragmatica.aether.infra.database;
 
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import java.util.Map;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
 
 /// Functional interface for mapping database rows to domain objects.
 ///
@@ -36,7 +37,7 @@ public interface RowMapper<T> {
 
     /// Creates a RowMapper that returns the entire row as a Map.
     static RowMapper<Map<String, Object>> asMap() {
-        return (row, idx) -> Result.success(Map.copyOf(row));
+        return (row, idx) -> success(Map.copyOf(row));
     }
 
     private static <V> Result<V> extractColumn(Map<String, Object> row, String columnName, Class<V> type) {
@@ -45,14 +46,17 @@ public interface RowMapper<T> {
     }
 
     private static <V> Result<V> columnNotFound(String columnName) {
-        return DatabaseError.queryFailed("Column not found: " + columnName)
-                            .result();
+        return new DatabaseError.QueryFailed("Column not found: " + columnName, none()).result();
     }
 
     private static <V> Result<V> castColumn(Object value, String columnName, Class<V> type) {
         return type.isInstance(value)
-               ? Result.success(type.cast(value))
-               : DatabaseError.queryFailed("Column " + columnName + " is not of type " + type.getSimpleName())
-                              .result();
+               ? success(type.cast(value))
+               : typeMismatch(columnName, type);
+    }
+
+    private static <V> Result<V> typeMismatch(String columnName, Class<V> type) {
+        return new DatabaseError.QueryFailed("Column " + columnName + " is not of type " + type.getSimpleName(), none())
+        .result();
     }
 }

@@ -1,6 +1,6 @@
 package org.pragmatica.aether.ttm;
 
-import org.pragmatica.aether.config.TTMConfig;
+import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.metrics.MinuteAggregate;
 import org.pragmatica.aether.ttm.model.FeatureIndex;
@@ -25,7 +25,7 @@ public interface ForecastAnalyzer {
                         ControllerConfig currentConfig);
 
     /// Create default analyzer.
-    static ForecastAnalyzer forecastAnalyzer(TTMConfig config) {
+    static ForecastAnalyzer forecastAnalyzer(TtmConfig config) {
         return new ForecastAnalyzerImpl(config);
     }
 }
@@ -45,9 +45,9 @@ final class ForecastAnalyzerImpl implements ForecastAnalyzer {
     private static final double MAX_SCALE_DOWN_THRESHOLD = 0.4;
     private static final double THRESHOLD_ADJUSTMENT_FACTOR = 0.5;
 
-    private final TTMConfig config;
+    private final TtmConfig config;
 
-    ForecastAnalyzerImpl(TTMConfig config) {
+    ForecastAnalyzerImpl(TtmConfig config) {
         this.config = config;
     }
 

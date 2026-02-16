@@ -1,5 +1,7 @@
 package org.pragmatica.aether.metrics.observability;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.metrics.PromiseMetrics;
 
 import java.util.function.Supplier;
@@ -7,7 +9,6 @@ import java.util.function.Supplier;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.binder.jvm.ClassLoaderMetrics;
 import io.micrometer.core.instrument.binder.jvm.JvmGcMetrics;
 import io.micrometer.core.instrument.binder.jvm.JvmMemoryMetrics;
@@ -15,6 +16,8 @@ import io.micrometer.core.instrument.binder.jvm.JvmThreadMetrics;
 import io.micrometer.core.instrument.binder.system.ProcessorMetrics;
 import io.micrometer.prometheusmetrics.PrometheusConfig;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
+
+import static org.pragmatica.lang.Result.unitResult;
 
 /// Central registry for observability metrics using Micrometer.
 ///
@@ -52,15 +55,14 @@ public interface ObservabilityRegistry {
     Counter counter(String name, String... tags);
 
     /// Register cluster node count gauge.
-    void registerNodeCount(Supplier<Number> nodeCountSupplier);
+    Result<Unit> registerNodeCount(Supplier<Number> nodeCountSupplier);
 
     /// Register active slice count gauge.
-    void registerSliceCount(Supplier<Number> sliceCountSupplier);
+    Result<Unit> registerSliceCount(Supplier<Number> sliceCountSupplier);
 
     /// Create an observability registry with Prometheus backend.
     static ObservabilityRegistry prometheus() {
         var prometheusRegistry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
-        // Register JVM metrics
         new ClassLoaderMetrics().bindTo(prometheusRegistry);
         new JvmMemoryMetrics().bindTo(prometheusRegistry);
         new JvmGcMetrics().bindTo(prometheusRegistry);
@@ -118,21 +120,23 @@ public interface ObservabilityRegistry {
         }
 
         @Override
-        public void registerNodeCount(Supplier<Number> nodeCountSupplier) {
+        public Result<Unit> registerNodeCount(Supplier<Number> nodeCountSupplier) {
             Gauge.builder("aether.cluster.nodes",
                           () -> nodeCountSupplier.get()
                                                  .doubleValue())
                  .description("Number of nodes in the cluster")
                  .register(prometheusRegistry);
+            return unitResult();
         }
 
         @Override
-        public void registerSliceCount(Supplier<Number> sliceCountSupplier) {
+        public Result<Unit> registerSliceCount(Supplier<Number> sliceCountSupplier) {
             Gauge.builder("aether.slices.active",
                           () -> sliceCountSupplier.get()
                                                   .doubleValue())
                  .description("Number of active slice instances")
                  .register(prometheusRegistry);
+            return unitResult();
         }
     }
 }

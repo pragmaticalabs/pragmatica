@@ -24,8 +24,9 @@ class ApiKeySecurityValidator implements SecurityValidator {
     @Override
     public Result<SecurityContext> validate(HttpRequestContext request, RouteSecurityPolicy policy) {
         return switch (policy) {
-            case RouteSecurityPolicy.Public() -> Result.success(SecurityContext.anonymous());
+            case RouteSecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());
             case RouteSecurityPolicy.ApiKeyRequired() -> validateApiKey(request);
+            default -> Result.success(SecurityContext.securityContext());
         };
     }
 
@@ -36,7 +37,7 @@ class ApiKeySecurityValidator implements SecurityValidator {
 
     private Result<SecurityContext> checkApiKey(String apiKey) {
         return validKeys.contains(apiKey)
-               ? SecurityContext.forApiKey(apiKey)
+               ? SecurityContext.securityContext(apiKey)
                : SecurityError.INVALID_API_KEY.result();
     }
 

@@ -68,6 +68,7 @@ public record ScalingConfig(int windowSize,
     ///
     ///
     /// @return ScalingConfig with production defaults
+    @SuppressWarnings("JBCT-VO-02") // Named configuration profile — uses new directly with compile-time-verified defaults
     public static ScalingConfig productionDefaults() {
         var weights = new EnumMap<ScalingMetric, Double>(ScalingMetric.class);
         weights.put(ScalingMetric.CPU, 0.4);
@@ -103,6 +104,7 @@ public record ScalingConfig(int windowSize,
     /// Uses smaller window size (5 vs 10) for faster warm-up in testing (25s vs 50s).
     ///
     /// @return ScalingConfig with Forge-appropriate defaults
+    @SuppressWarnings("JBCT-VO-02") // Named configuration profile — uses new directly with compile-time-verified defaults
     public static ScalingConfig forgeDefaults() {
         var weights = new EnumMap<ScalingMetric, Double>(ScalingMetric.class);
         weights.put(ScalingMetric.CPU, 0.0);

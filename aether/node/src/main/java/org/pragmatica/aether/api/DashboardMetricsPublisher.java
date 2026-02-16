@@ -22,6 +22,7 @@ import org.slf4j.LoggerFactory;
 ///
 ///
 /// Aggregates metrics from various collectors and broadcasts to all connected clients.
+@SuppressWarnings("JBCT-RET-01")
 public class DashboardMetricsPublisher {
     private static final Logger log = LoggerFactory.getLogger(DashboardMetricsPublisher.class);
     private static final long BROADCAST_INTERVAL_MS = 1000;

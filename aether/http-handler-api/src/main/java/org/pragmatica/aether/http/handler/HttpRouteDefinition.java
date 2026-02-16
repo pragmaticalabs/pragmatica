@@ -1,8 +1,11 @@
 package org.pragmatica.aether.http.handler;
 
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
+import org.pragmatica.lang.Result;
 
 import java.util.Objects;
+
+import static org.pragmatica.lang.Result.success;
 
 /// Route metadata for KV-Store registration.
 ///
@@ -28,16 +31,22 @@ public record HttpRouteDefinition(String httpMethod,
         Objects.requireNonNull(security, "security");
     }
 
+    /// Validated factory for constructing route definition.
+    public static Result<HttpRouteDefinition> httpRouteDefinition(Result<String> httpMethod,
+                                                                  Result<String> pathPrefix,
+                                                                  Result<String> artifactCoord,
+                                                                  Result<String> sliceMethod,
+                                                                  Result<RouteSecurityPolicy> security) {
+        return Result.all(httpMethod, pathPrefix, artifactCoord, sliceMethod, security)
+                     .map(HttpRouteDefinition::new);
+    }
+
     /// Create public route definition with path normalization.
     public static HttpRouteDefinition httpRouteDefinition(String httpMethod,
                                                           String pathPrefix,
                                                           String artifactCoord,
                                                           String sliceMethod) {
-        return new HttpRouteDefinition(httpMethod,
-                                       normalizePrefix(pathPrefix),
-                                       artifactCoord,
-                                       sliceMethod,
-                                       RouteSecurityPolicy.publicRoute());
+        return httpRouteDefinition(httpMethod, pathPrefix, artifactCoord, sliceMethod, RouteSecurityPolicy.publicRoute());
     }
 
     /// Create route definition with path normalization and security policy.
@@ -46,7 +55,13 @@ public record HttpRouteDefinition(String httpMethod,
                                                           String artifactCoord,
                                                           String sliceMethod,
                                                           RouteSecurityPolicy security) {
-        return new HttpRouteDefinition(httpMethod, normalizePrefix(pathPrefix), artifactCoord, sliceMethod, security);
+        return Result.all(success(httpMethod),
+                          success(normalizePrefix(pathPrefix)),
+                          success(artifactCoord),
+                          success(sliceMethod),
+                          success(security))
+                     .map(HttpRouteDefinition::new)
+                     .unwrap();
     }
 
     private static String normalizePrefix(String path) {

@@ -127,7 +127,7 @@ class RateLimiterTest {
 
     @Test
     void default_config_has_sensible_values() {
-        RateLimitConfig.defaultConfig()
+        RateLimitConfig.rateLimitConfig()
                        .onFailureRun(Assertions::fail)
                        .onSuccess(config -> {
                            assertThat(config.maxRequests()).isEqualTo(100);

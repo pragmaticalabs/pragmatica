@@ -13,6 +13,8 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.pragmatica.aether.slice.repository.maven.LocalRepository.localRepository;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Configuration for slice loading and lifecycle management.
@@ -28,6 +30,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///                            If provided, creates a FrameworkClassLoader with isolated
 ///                            pragmatica-lite, slice-api, and serialization classes.
 ///                            If empty, uses Application ClassLoader (no isolation).
+@SuppressWarnings({"JBCT-VO-01", "JBCT-SEQ-01"})
 public record SliceActionConfig(TimeSpan loadingTimeout,
                                 TimeSpan activatingTimeout,
                                 TimeSpan deactivatingTimeout,
@@ -36,11 +39,12 @@ public record SliceActionConfig(TimeSpan loadingTimeout,
                                 List<Repository> repositories,
                                 SerializerFactoryProvider serializerProvider,
                                 Option<Path> frameworkJarsPath) {
-    public static SliceActionConfig defaultConfiguration() {
-        return defaultConfiguration(null);
+    @SuppressWarnings("JBCT-RET-03")
+    public static SliceActionConfig sliceActionConfig() {
+        return sliceActionConfig((SerializerFactoryProvider) null);
     }
 
-    public static SliceActionConfig defaultConfiguration(SerializerFactoryProvider serializerProvider) {
+    public static SliceActionConfig sliceActionConfig(SerializerFactoryProvider serializerProvider) {
         return new SliceActionConfig(timeSpan(2).minutes(),
                                      timeSpan(1).minutes(),
                                      timeSpan(30).seconds(),
@@ -56,8 +60,8 @@ public record SliceActionConfig(TimeSpan loadingTimeout,
     /// @param serializerProvider Provider for serialization
     /// @param frameworkJarsPath  Path to directory containing framework JARs
     /// @return Configuration with isolation enabled
-    public static SliceActionConfig withIsolation(SerializerFactoryProvider serializerProvider,
-                                                  Path frameworkJarsPath) {
+    public static SliceActionConfig sliceActionConfig(SerializerFactoryProvider serializerProvider,
+                                                      Path frameworkJarsPath) {
         return new SliceActionConfig(timeSpan(2).minutes(),
                                      timeSpan(1).minutes(),
                                      timeSpan(30).seconds(),
@@ -65,15 +69,15 @@ public record SliceActionConfig(TimeSpan loadingTimeout,
                                      timeSpan(5).seconds(),
                                      List.of(localRepository()),
                                      serializerProvider,
-                                     Option.option(frameworkJarsPath));
+                                     option(frameworkJarsPath));
     }
 
     public Result<TimeSpan> timeoutFor(SliceState state) {
         return switch (state) {
-            case SliceState.LOADING -> Result.success(loadingTimeout);
-            case SliceState.ACTIVATING -> Result.success(activatingTimeout);
-            case SliceState.DEACTIVATING -> Result.success(deactivatingTimeout);
-            case SliceState.UNLOADING -> Result.success(unloadingTimeout);
+            case SliceState.LOADING -> success(loadingTimeout);
+            case SliceState.ACTIVATING -> success(activatingTimeout);
+            case SliceState.DEACTIVATING -> success(deactivatingTimeout);
+            case SliceState.UNLOADING -> success(unloadingTimeout);
             default -> NO_TIMEOUT_CONFIGURED.apply(state)
                                             .result();
         };

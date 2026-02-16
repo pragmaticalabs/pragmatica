@@ -1,8 +1,12 @@
 package org.pragmatica.aether.http.handler;
 
+import org.pragmatica.lang.Result;
+
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Objects;
+
+import static org.pragmatica.lang.Result.success;
 
 /// Raw HTTP response data returned through SliceInvoker.
 ///
@@ -34,43 +38,35 @@ public record HttpResponseData(int statusCode,
                : body.clone();
     }
 
-    /// Create successful JSON response.
-    public static HttpResponseData ok(byte[] body) {
-        return new HttpResponseData(200, JSON_HEADERS, body);
+    /// Create validated response with custom headers.
+    public static Result<HttpResponseData> httpResponseData(Result<Integer> statusCode,
+                                                            Result<Map<String, String>> headers,
+                                                            Result<byte[]> body) {
+        return Result.all(statusCode, headers, body)
+                     .map(HttpResponseData::new);
     }
 
-    /// Create successful JSON response from string.
-    public static HttpResponseData ok(String body) {
-        return ok(body.getBytes(StandardCharsets.UTF_8));
+    /// Create response with JSON content type and byte body.
+    public static HttpResponseData httpResponseData(int statusCode, byte[] body) {
+        return httpResponseData(statusCode, JSON_HEADERS, body);
     }
 
-    /// Create 201 Created response.
-    public static HttpResponseData created(byte[] body) {
-        return new HttpResponseData(201, JSON_HEADERS, body);
+    /// Create response with text content type and string body.
+    public static HttpResponseData httpResponseData(int statusCode, String body) {
+        return httpResponseData(statusCode, TEXT_HEADERS, body.getBytes(StandardCharsets.UTF_8));
     }
 
-    /// Create 204 No Content response.
-    public static HttpResponseData noContent() {
-        return new HttpResponseData(204, Map.of(), EMPTY_BODY);
+    /// Create response with no body.
+    public static HttpResponseData httpResponseData(int statusCode) {
+        return httpResponseData(statusCode, Map.of(), EMPTY_BODY);
     }
 
-    /// Create 400 Bad Request response.
-    public static HttpResponseData badRequest(String message) {
-        return new HttpResponseData(400, TEXT_HEADERS, message.getBytes(StandardCharsets.UTF_8));
-    }
-
-    /// Create 404 Not Found response.
-    public static HttpResponseData notFound(String message) {
-        return new HttpResponseData(404, TEXT_HEADERS, message.getBytes(StandardCharsets.UTF_8));
-    }
-
-    /// Create 500 Internal Server Error response.
-    public static HttpResponseData internalError(String message) {
-        return new HttpResponseData(500, TEXT_HEADERS, message.getBytes(StandardCharsets.UTF_8));
-    }
-
-    /// Create custom response.
+    /// Create response with custom headers.
     public static HttpResponseData httpResponseData(int statusCode, Map<String, String> headers, byte[] body) {
-        return new HttpResponseData(statusCode, headers, body);
+        return Result.all(success(statusCode),
+                          success(headers),
+                          success(body))
+                     .map(HttpResponseData::new)
+                     .unwrap();
     }
 }

@@ -40,8 +40,8 @@ final class InMemoryDistributedLock implements DistributedLock {
         if (System.nanoTime() - startTime >= timeoutNanos) {
             return new LockError.AcquisitionTimeout(lockId, timeout).promise();
         }
-        return Promise.<LockHandle>promise(timeSpan(10).millis(),
-                                           promise -> tryAcquireWithRetry(lockId, timeout, startTime, timeoutNanos)
+        return Promise.promise(timeSpan(10).millis(),
+                               promise -> tryAcquireWithRetry(lockId, timeout, startTime, timeoutNanos)
         .onResult(promise::resolve));
     }
 
@@ -60,12 +60,7 @@ final class InMemoryDistributedLock implements DistributedLock {
         var ownerId = UUID.randomUUID()
                           .toString();
         var acquiredRef = new AtomicBoolean(false);
-        var entry = locks.computeIfAbsent(lockId,
-                                          key -> {
-                                              acquiredRef.set(true);
-                                              var token = String.valueOf(tokenCounter.incrementAndGet());
-                                              return new LockEntry(ownerId, token, Instant.now());
-                                          });
+        var entry = locks.computeIfAbsent(lockId, key -> createLockEntry(ownerId, acquiredRef));
         if (acquiredRef.get() && entry.ownerId()
                                       .equals(ownerId)) {
             return some(createHandle(lockId, entry.token(), ownerId, entry.acquiredAt()));
@@ -73,24 +68,33 @@ final class InMemoryDistributedLock implements DistributedLock {
         return none();
     }
 
+    private LockEntry createLockEntry(String ownerId, AtomicBoolean acquiredRef) {
+        acquiredRef.set(true);
+        var token = String.valueOf(tokenCounter.incrementAndGet());
+        return new LockEntry(ownerId, token, Instant.now());
+    }
+
     private LockHandle createHandle(String lockId, String token, String ownerId, Instant acquiredAt) {
         return new InMemoryLockHandle(lockId, token, ownerId, acquiredAt, this);
     }
 
     Promise<Unit> releaseLock(String lockId, String ownerId) {
-        return option(locks.get(lockId)).filter(entry -> entry.ownerId()
-                                                              .equals(ownerId))
-                     .map(entry -> {
-                         locks.remove(lockId, entry);
-                         return Promise.success(unit());
-                     })
-                     .or(() -> new LockError.LockNotHeld(lockId).<Unit>promise());
+        var held = option(locks.get(lockId)).filter(e -> e.ownerId()
+                                                          .equals(ownerId));
+        return held.map(entry -> removeLockEntry(lockId, entry))
+                   .or(() -> new LockError.LockNotHeld(lockId).<Unit>promise());
+    }
+
+    private Promise<Unit> removeLockEntry(String lockId, LockEntry entry) {
+        locks.remove(lockId, entry);
+        return Promise.success(unit());
     }
 
     Promise<Boolean> extendLock(String lockId, String ownerId, TimeSpan extension) {
-        return Promise.success(option(locks.get(lockId)).filter(entry -> entry.ownerId()
-                                                                              .equals(ownerId))
-                                     .isPresent());
+        var isHeld = option(locks.get(lockId)).filter(e -> e.ownerId()
+                                                            .equals(ownerId))
+                           .isPresent();
+        return Promise.success(isHeld);
     }
 
     private record LockEntry(String ownerId, String token, Instant acquiredAt) {}

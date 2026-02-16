@@ -24,6 +24,7 @@ import org.slf4j.LoggerFactory;
 /// <p>Log level overrides are persisted to consensus KV-Store for cluster-wide consistency
 /// and survival across node restarts. The local registry provides fast lock-free
 /// lookups and applies log level changes via Log4j2 Configurator.
+@SuppressWarnings("JBCT-RET-01")
 public class LogLevelRegistry {
     private static final Logger log = LoggerFactory.getLogger(LogLevelRegistry.class);
 

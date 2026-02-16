@@ -1,9 +1,9 @@
 package org.pragmatica.aether.infra.database;
 
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 /// Configuration for database service.
@@ -37,30 +37,37 @@ public record DatabaseConfig(String name,
         .map(n -> new DatabaseConfig(n, DEFAULT_CONNECTION_TIMEOUT, DEFAULT_QUERY_TIMEOUT, DEFAULT_MAX_CONNECTIONS));
     }
 
-    private static Result<String> validateName(String name) {
-        return Option.option(name)
-                     .filter(n -> !n.isBlank())
-                     .map(String::trim)
-                     .toResult(DatabaseError.invalidConfiguration("Service name cannot be null or empty"));
+    /// Creates configuration with all parameters.
+    static Result<DatabaseConfig> databaseConfig(String name,
+                                                 TimeSpan connTimeout,
+                                                 TimeSpan queryTimeout,
+                                                 int maxConn) {
+        return validateName(name).map(n -> new DatabaseConfig(n, connTimeout, queryTimeout, maxConn));
     }
 
     /// Creates a new configuration with the specified name.
-    public DatabaseConfig withName(String name) {
-        return new DatabaseConfig(name, connectionTimeout, queryTimeout, maxConnections);
+    public Result<DatabaseConfig> withName(String newName) {
+        return databaseConfig(newName, connectionTimeout, queryTimeout, maxConnections);
     }
 
     /// Creates a new configuration with the specified connection timeout.
-    public DatabaseConfig withConnectionTimeout(TimeSpan timeout) {
-        return new DatabaseConfig(name, timeout, queryTimeout, maxConnections);
+    public Result<DatabaseConfig> withConnectionTimeout(TimeSpan timeout) {
+        return databaseConfig(name, timeout, queryTimeout, maxConnections);
     }
 
     /// Creates a new configuration with the specified query timeout.
-    public DatabaseConfig withQueryTimeout(TimeSpan timeout) {
-        return new DatabaseConfig(name, connectionTimeout, timeout, maxConnections);
+    public Result<DatabaseConfig> withQueryTimeout(TimeSpan timeout) {
+        return databaseConfig(name, connectionTimeout, timeout, maxConnections);
     }
 
     /// Creates a new configuration with the specified max connections.
-    public DatabaseConfig withMaxConnections(int max) {
-        return new DatabaseConfig(name, connectionTimeout, queryTimeout, max);
+    public Result<DatabaseConfig> withMaxConnections(int max) {
+        return databaseConfig(name, connectionTimeout, queryTimeout, max);
+    }
+
+    private static Result<String> validateName(String name) {
+        return option(name).filter(n -> !n.isBlank())
+                     .map(String::trim)
+                     .toResult(new DatabaseError.InvalidConfiguration("Service name cannot be null or empty"));
     }
 }

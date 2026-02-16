@@ -91,7 +91,7 @@ class ApiKeySecurityValidatorTest {
         validator.validate(request, RouteSecurityPolicy.apiKeyRequired())
                  .onFailureRun(() -> fail("Expected success"))
                  .onSuccess(context -> {
-                     assertThat(context).isEqualTo(SecurityContext.anonymous());
+                     assertThat(context).isEqualTo(SecurityContext.securityContext());
                  });
     }
 

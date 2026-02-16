@@ -47,6 +47,7 @@ import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+@SuppressWarnings("JBCT-RET-01") // MessageReceiver callbacks — void required by messaging framework
 public interface NodeDeploymentManager {
     record SliceDeployment(SliceNodeKey key, SliceState state, long timestamp) {}
 
@@ -692,7 +693,7 @@ public interface NodeDeploymentManager {
                                      cluster,
                                      kvStore,
                                      invocationHandler,
-                                     SliceActionConfig.defaultConfiguration(),
+                                     SliceActionConfig.sliceActionConfig(),
                                      Option.none(),
                                      Option.none());
     }

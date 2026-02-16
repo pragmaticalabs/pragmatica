@@ -250,31 +250,31 @@ public final class ChaosRoutes {
                               .fold(() -> null,
                                     s -> s);
         return switch (type) {
-            case "NODE_KILL" -> ChaosEvent.NodeKill.kill(nodeId, optDuration)
+            case "NODE_KILL" -> ChaosEvent.NodeKill.nodeKill(nodeId, optDuration)
                                           .map(e -> e);
-            case "LATENCY_SPIKE" -> ChaosEvent.LatencySpike.addLatency(nodeId,
-                                                                       request.latencyMs()
-                                                                              .or(500L),
-                                                                       optDuration)
+            case "LATENCY_SPIKE" -> ChaosEvent.LatencySpike.latencySpike(nodeId,
+                                                                         request.latencyMs()
+                                                                                .or(500L),
+                                                                         optDuration)
                                               .map(e -> e);
-            case "SLICE_CRASH" -> ChaosEvent.SliceCrash.crashSlice(artifact,
+            case "SLICE_CRASH" -> ChaosEvent.SliceCrash.sliceCrash(artifact,
                                                                    request.nodeId(),
                                                                    optDuration)
                                             .map(e -> e);
-            case "INVOCATION_FAILURE" -> ChaosEvent.InvocationFailure.forSlice(request.artifact(),
-                                                                               request.failureRate()
-                                                                                      .or(0.5),
-                                                                               optDuration)
+            case "INVOCATION_FAILURE" -> ChaosEvent.InvocationFailure.invocationFailure(request.artifact(),
+                                                                                        request.failureRate()
+                                                                                               .or(0.5),
+                                                                                        optDuration)
                                                    .map(e -> e);
-            case "CPU_SPIKE" -> ChaosEvent.CpuSpike.onNode(nodeId,
-                                                           request.level()
-                                                                  .or(0.8),
-                                                           optDuration)
+            case "CPU_SPIKE" -> ChaosEvent.CpuSpike.cpuSpike(nodeId,
+                                                             request.level()
+                                                                    .or(0.8),
+                                                             optDuration)
                                           .map(e -> e);
-            case "MEMORY_PRESSURE" -> ChaosEvent.MemoryPressure.onNode(nodeId,
-                                                                       request.level()
-                                                                              .or(0.9),
-                                                                       optDuration)
+            case "MEMORY_PRESSURE" -> ChaosEvent.MemoryPressure.memoryPressure(nodeId,
+                                                                               request.level()
+                                                                                      .or(0.9),
+                                                                               optDuration)
                                                 .map(e -> e);
             default -> UNKNOWN_CHAOS_TYPE.apply(type)
                                          .result();

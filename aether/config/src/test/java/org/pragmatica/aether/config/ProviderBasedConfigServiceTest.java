@@ -16,7 +16,7 @@ import static org.pragmatica.aether.config.ProviderBasedConfigService.toSnakeCas
 class ProviderBasedConfigServiceTest {
 
     private static ConfigService serviceFrom(Map<String, String> values) {
-        var source = MapConfigSource.mapConfigSource("test-source", values);
+        var source = MapConfigSource.mapConfigSource("test-source", values).unwrap();
         var provider = ConfigurationProvider.builder().withSource(source).build();
         return providerBasedConfigService(provider);
     }

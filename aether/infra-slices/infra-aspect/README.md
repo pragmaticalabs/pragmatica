@@ -27,7 +27,7 @@ var retry = RetryAspectFactory.retryAspectFactory()
 
 // Circuit Breaker (5 failures, 30s reset)
 var circuitBreaker = CircuitBreakerFactory.circuitBreakerFactory()
-    .<ExternalService>create(CircuitBreakerConfig.circuitBreakerConfig().unwrap());
+    .<ExternalService>create(CircuitBreakerConfig.circuitBreakerConfig());
 
 // Metrics
 var metrics = MetricsAspectFactory.metricsAspectFactory(meterRegistry)

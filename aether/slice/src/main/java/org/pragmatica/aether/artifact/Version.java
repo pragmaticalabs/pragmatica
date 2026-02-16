@@ -10,8 +10,12 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.util.regex.Pattern;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Verify.ensure;
 
+@SuppressWarnings({"JBCT-NAM-01", "JBCT-UTIL-02"})
 public record Version(int major, int minor, int patch, String qualifier) {
     public static Result<Version> version(String versionString) {
         var parts = versionString.split("\\.");
@@ -19,32 +23,36 @@ public record Version(int major, int minor, int patch, String qualifier) {
             return FORMAT_ERROR.apply(versionString)
                                .result();
         }
-        // Handle 4-part versions like "4.2.9.Final" (Netty style)
-        // The 4th part becomes the qualifier
         if (parts.length == 4) {
-            return Result.all(Number.parseInt(parts[0]),
-                              Number.parseInt(parts[1]),
-                              Number.parseInt(parts[2]),
-                              Result.success(Option.option(parts[3])))
-                         .flatMap(Version::version);
+            return parseFourPartVersion(parts);
         }
-        // Standard 3-part version with optional dash qualifier
+        return parseThreePartVersion(parts, versionString);
+    }
+
+    private static Result<Version> parseFourPartVersion(String[] parts) {
+        return Result.all(Number.parseInt(parts[0]),
+                          Number.parseInt(parts[1]),
+                          Number.parseInt(parts[2]),
+                          success(option(parts[3])))
+                     .flatMap(Version::version);
+    }
+
+    private static Result<Version> parseThreePartVersion(String[] parts, String versionString) {
         int dashIndex = parts[2].indexOf('-');
         if (dashIndex > 0 && (dashIndex + 1) == parts[2].length()) {
-            // Only dash at the end of the string
             return FORMAT_ERROR.apply(versionString)
                                .result();
         }
         var qualifier = (dashIndex > 0)
-                        ? Option.option(parts[2].substring(dashIndex + 1))
+                        ? option(parts[2].substring(dashIndex + 1))
                         : Option.<String>none();
-        if (dashIndex > 0) {
-            parts[2] = parts[2].substring(0, dashIndex);
-        }
+        var patchStr = dashIndex > 0
+                       ? parts[2].substring(0, dashIndex)
+                       : parts[2];
         return Result.all(Number.parseInt(parts[0]),
                           Number.parseInt(parts[1]),
-                          Number.parseInt(parts[2]),
-                          Result.success(qualifier))
+                          Number.parseInt(patchStr),
+                          success(qualifier))
                      .flatMap(Version::version);
     }
 

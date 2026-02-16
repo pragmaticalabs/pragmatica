@@ -6,6 +6,9 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+import static org.pragmatica.lang.Result.success;
+
+@SuppressWarnings("JBCT-UTIL-02")
 public record SliceSpec(Artifact artifact, int instances) {
     private static final Fn1<Cause, Integer> INVALID_INSTANCES = Causes.forOneValue("Instance count must be positive: %s");
 
@@ -14,7 +17,7 @@ public record SliceSpec(Artifact artifact, int instances) {
             return INVALID_INSTANCES.apply(instances)
                                     .result();
         }
-        return Result.success(new SliceSpec(artifact, instances));
+        return success(new SliceSpec(artifact, instances));
     }
 
     public static Result<SliceSpec> sliceSpec(Artifact artifact) {

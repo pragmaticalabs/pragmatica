@@ -18,6 +18,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
+
 /// Layered configuration provider that merges multiple sources.
 ///
 /// Sources are merged in priority order (higher priority wins).
@@ -97,7 +100,8 @@ public interface ConfigurationProvider extends ConfigSource {
         /// @param defaults Map of default key-value pairs
         /// @return This builder
         public Builder withDefaults(Map<String, String> defaults) {
-            return withSource(MapConfigSource.mapConfigSource("defaults", defaults, - 1000));
+            return withSource(MapConfigSource.mapConfigSource("defaults", defaults, - 1000)
+                                             .unwrap());
         }
 
         /// Add a TOML file source (priority: 0).
@@ -116,10 +120,7 @@ public interface ConfigurationProvider extends ConfigSource {
         /// @return Result containing this builder or error
         public Result<Builder> withRequiredTomlFile(Path path) {
             return TomlConfigSource.tomlConfigSource(path)
-                                   .map(source -> {
-                                       sources.add(source);
-                                       return this;
-                                   });
+                                   .map(this::includeSourceAndReturn);
         }
 
         /// Add environment variables with prefix (priority: 100).
@@ -155,6 +156,11 @@ public interface ConfigurationProvider extends ConfigSource {
             var mergedMap = DeepMerger.mergeSources(sortedSources);
             return new LayeredConfigurationProvider(sortedSources, mergedMap);
         }
+
+        private Builder includeSourceAndReturn(ConfigSource source) {
+            sources.add(source);
+            return this;
+        }
     }
 }
 
@@ -175,7 +181,7 @@ final class LayeredConfigurationProvider implements ConfigurationProvider {
 
     @Override
     public Option<String> getString(String key) {
-        return Option.option(mergedValues.get(key));
+        return option(mergedValues.get(key));
     }
 
     @Override
@@ -204,6 +210,6 @@ final class LayeredConfigurationProvider implements ConfigurationProvider {
             reloadedSources.add(reloaded.unwrap());
         }
         var newMerged = DeepMerger.mergeSources(reloadedSources);
-        return Result.success(new LayeredConfigurationProvider(reloadedSources, newMerged));
+        return success(new LayeredConfigurationProvider(reloadedSources, newMerged));
     }
 }

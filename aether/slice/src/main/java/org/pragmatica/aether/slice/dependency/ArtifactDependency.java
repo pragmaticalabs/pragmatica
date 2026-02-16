@@ -17,6 +17,7 @@ import org.pragmatica.lang.utils.Causes;
 /// @param groupId        Maven group ID
 /// @param artifactId     Maven artifact ID
 /// @param versionPattern Version pattern for compatibility checking
+@SuppressWarnings("JBCT-UTIL-02")
 public record ArtifactDependency(String groupId,
                                  String artifactId,
                                  VersionPattern versionPattern) {

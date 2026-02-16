@@ -35,9 +35,11 @@ import org.slf4j.LoggerFactory;
 /// Same algorithm as RequestRouter in http-routing module.
 public interface HttpRouteRegistry {
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
     void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
 
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
     void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
 
     /// Find route for HTTP method and path.
@@ -76,6 +78,7 @@ public interface HttpRouteRegistry {
             private static final Logger log = LoggerFactory.getLogger(httpRouteRegistry.class);
 
             @Override
+            @SuppressWarnings("JBCT-RET-01")
             public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
                 var key = valuePut.cause()
                                   .key();
@@ -104,6 +107,7 @@ public interface HttpRouteRegistry {
             }
 
             @Override
+            @SuppressWarnings("JBCT-RET-01")
             public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
                 var key = valueRemove.cause()
                                      .key();

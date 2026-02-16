@@ -17,6 +17,7 @@ import java.util.function.Function;
 ///
 /// Scaling decisions are only made when windows are full, providing
 /// natural warm-up protection without explicit timers.
+@SuppressWarnings("JBCT-RET-01") // Fire-and-forget metric recording — void is intentional
 public interface CompositeLoadFactor {
     /// Compute composite score with given current values.
     /// This allows computing the score with fresh samples before recording them.

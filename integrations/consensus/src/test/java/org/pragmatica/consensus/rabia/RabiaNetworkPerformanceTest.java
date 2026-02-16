@@ -48,7 +48,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Consumer;
 
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -234,35 +233,37 @@ class RabiaNetworkPerformanceTest {
             this.nodeId = nodeId;
             this.allNodes = allNodes;
             this.onDecision = onDecision;
-            this.serializer = FurySerializer.furySerializer(this::registerClasses);
-            this.deserializer = FuryDeserializer.furyDeserializer(this::registerClasses);
+            this.serializer = FurySerializer.furySerializer(this::classesToRegister);
+            this.deserializer = FuryDeserializer.furyDeserializer(this::classesToRegister);
             this.router = MessageRouter.mutable();
         }
 
-        private void registerClasses(Consumer<Class<?>> register) {
-            register.accept(RabiaProtocolMessage.Synchronous.Propose.class);
-            register.accept(RabiaProtocolMessage.Synchronous.VoteRound1.class);
-            register.accept(RabiaProtocolMessage.Synchronous.VoteRound2.class);
-            register.accept(RabiaProtocolMessage.Synchronous.Decision.class);
-            register.accept(RabiaProtocolMessage.Synchronous.SyncResponse.class);
-            register.accept(RabiaProtocolMessage.Asynchronous.SyncRequest.class);
-            register.accept(RabiaProtocolMessage.Asynchronous.NewBatch.class);
-            register.accept(NetworkMessage.Hello.class);
-            register.accept(NetworkMessage.Ping.class);
-            register.accept(NetworkMessage.Pong.class);
-            register.accept(NetworkMessage.DiscoverNodes.class);
-            register.accept(NetworkMessage.DiscoveredNodes.class);
-            register.accept(NodeInfo.class);
-            register.accept(NodeAddress.class);
-            register.accept(SavedState.class);
-            register.accept(Batch.class);
-            register.accept(BatchId.class);
-            register.accept(CorrelationId.class);
-            register.accept(Phase.class);
-            register.accept(StateValue.class);
-            register.accept(NodeId.class);
-            register.accept(TestCommand.class);
-            register.accept(ArrayList.class);
+        private List<Class<?>> classesToRegister() {
+            return List.of(
+                RabiaProtocolMessage.Synchronous.Propose.class,
+                RabiaProtocolMessage.Synchronous.VoteRound1.class,
+                RabiaProtocolMessage.Synchronous.VoteRound2.class,
+                RabiaProtocolMessage.Synchronous.Decision.class,
+                RabiaProtocolMessage.Synchronous.SyncResponse.class,
+                RabiaProtocolMessage.Asynchronous.SyncRequest.class,
+                RabiaProtocolMessage.Asynchronous.NewBatch.class,
+                NetworkMessage.Hello.class,
+                NetworkMessage.Ping.class,
+                NetworkMessage.Pong.class,
+                NetworkMessage.DiscoverNodes.class,
+                NetworkMessage.DiscoveredNodes.class,
+                NodeInfo.class,
+                NodeAddress.class,
+                SavedState.class,
+                Batch.class,
+                BatchId.class,
+                CorrelationId.class,
+                Phase.class,
+                StateValue.class,
+                NodeId.class,
+                TestCommand.class,
+                ArrayList.class
+            );
         }
 
         @SuppressWarnings("unchecked")

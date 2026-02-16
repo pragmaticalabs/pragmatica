@@ -4,8 +4,11 @@ import org.pragmatica.aether.config.ConfigSource;
 import org.pragmatica.lang.Option;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import static org.pragmatica.lang.Option.option;
 
 /// Configuration source backed by environment variables.
 ///
@@ -44,13 +47,13 @@ public final class EnvironmentConfigSource implements ConfigSource {
     /// @param priority Source priority
     /// @return New EnvironmentConfigSource
     public static EnvironmentConfigSource environmentConfigSource(String prefix, int priority) {
-        var values = loadFromEnvironment(prefix);
+        var values = fetchFromEnvironment(prefix);
         return new EnvironmentConfigSource(prefix, priority, values);
     }
 
     @Override
     public Option<String> getString(String key) {
-        return Option.option(values.get(key));
+        return option(values.get(key));
     }
 
     @Override
@@ -73,17 +76,27 @@ public final class EnvironmentConfigSource implements ConfigSource {
         return "EnvironmentConfigSource[prefix=" + prefix + "]";
     }
 
-    private static Map<String, String> loadFromEnvironment(String prefix) {
-        var result = new LinkedHashMap<String, String>();
+    private static Map<String, String> fetchFromEnvironment(String prefix) {
         var env = System.getenv();
-        for (var entry : env.entrySet()) {
-            var key = entry.getKey();
-            if (key.startsWith(prefix)) {
-                var normalizedKey = normalizeKey(key.substring(prefix.length()));
-                result.put(normalizedKey, entry.getValue());
-            }
-        }
+        var result = new LinkedHashMap<String, String>();
+        var filteredKeys = filterKeysByPrefix(env, prefix);
+        filteredKeys.forEach(key -> insertNormalized(result, key, prefix, env));
         return result;
+    }
+
+    private static List<String> filterKeysByPrefix(Map<String, String> env, String prefix) {
+        return env.keySet()
+                  .stream()
+                  .filter(key -> key.startsWith(prefix))
+                  .toList();
+    }
+
+    private static void insertNormalized(Map<String, String> result,
+                                         String key,
+                                         String prefix,
+                                         Map<String, String> env) {
+        result.put(normalizeKey(key.substring(prefix.length())),
+                   env.get(key));
     }
 
     /// Convert SCREAMING_SNAKE_CASE to dot.notation.lowercase.

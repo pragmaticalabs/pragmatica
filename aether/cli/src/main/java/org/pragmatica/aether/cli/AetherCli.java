@@ -2,6 +2,8 @@ package org.pragmatica.aether.cli;
 
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ConfigLoader;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -12,12 +14,18 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.Callable;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
-import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
+
+import static org.pragmatica.lang.Option.empty;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
 
 /// Aether cluster management CLI.
 ///
@@ -43,45 +51,47 @@ import picocli.CommandLine.Parameters;
 /// aether> exit
 /// ```
 @Command(name = "aether",
- mixinStandardHelpOptions = true,
- version = "Aether 0.15.0",
- description = "Command-line interface for Aether cluster management",
- subcommands = {AetherCli.StatusCommand.class,
- AetherCli.NodesCommand.class,
- AetherCli.SlicesCommand.class,
- AetherCli.MetricsCommand.class,
- AetherCli.HealthCommand.class,
- AetherCli.DeployCommand.class,
- AetherCli.ScaleCommand.class,
- AetherCli.UndeployCommand.class,
- AetherCli.BlueprintCommand.class,
- AetherCli.ArtifactCommand.class,
- AetherCli.UpdateCommand.class,
- AetherCli.InvocationMetricsCommand.class,
- AetherCli.ControllerCommand.class,
- AetherCli.AlertsCommand.class,
- AetherCli.ThresholdsCommand.class,
- AetherCli.AspectsCommand.class,
- AetherCli.LoggingCommand.class,
- AetherCli.ConfigCommand.class})
+mixinStandardHelpOptions = true,
+version = "Aether 0.15.0",
+description = "Command-line interface for Aether cluster management",
+subcommands = {AetherCli.StatusCommand.class,
+AetherCli.NodesCommand.class,
+AetherCli.SlicesCommand.class,
+AetherCli.MetricsCommand.class,
+AetherCli.HealthCommand.class,
+AetherCli.DeployCommand.class,
+AetherCli.ScaleCommand.class,
+AetherCli.UndeployCommand.class,
+AetherCli.BlueprintCommand.class,
+AetherCli.ArtifactCommand.class,
+AetherCli.UpdateCommand.class,
+AetherCli.InvocationMetricsCommand.class,
+AetherCli.ControllerCommand.class,
+AetherCli.AlertsCommand.class,
+AetherCli.ThresholdsCommand.class,
+AetherCli.AspectsCommand.class,
+AetherCli.LoggingCommand.class,
+AetherCli.ConfigCommand.class})
+@SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
 
-    @Option(names = {"-c", "--connect"},
+    @CommandLine.Option(names = {"-c", "--connect"},
     description = "Node address to connect to (host:port)")
     private String nodeAddress;
 
-    @Option(names = {"--config"},
+    @CommandLine.Option(names = {"--config"},
     description = "Path to aether.toml config file")
     private Path configPath;
 
     private final HttpClient httpClient = HttpClient.newHttpClient();
 
+    @SuppressWarnings("JBCT-RET-01")
     public static void main(String[] args) {
         var cli = new AetherCli();
         var cmd = new CommandLine(cli);
         // Pre-parse to extract connection info
-        cli.resolveConnection(args);
+        cli.lookupConnection(args);
         // Check if this is REPL mode (no subcommand)
         if (isReplMode(args)) {
             cli.runRepl(cmd);
@@ -97,49 +107,60 @@ public class AetherCli implements Runnable {
         if (args.length == 0) {
             return true;
         }
-        for (String arg : args) {
-            // Skip known non-subcommand options
-            if (arg.startsWith("-c") || arg.startsWith("--connect") ||
-            arg.startsWith("--config") || arg.equals("-h") || arg.equals("--help") ||
-            arg.equals("-V") || arg.equals("--version")) {
-                continue;
-            }
-            // Skip option values (next arg after option)
-            if (!arg.startsWith("-")) {
-                // Could be a subcommand or option value
-                // Check if previous arg was an option expecting value
-                return false;
-            }
-        }
-        return true;
+        return Arrays.stream(args)
+                     .allMatch(AetherCli::isConnectionOption);
     }
 
-    private void resolveConnection(String[] args) {
+    @SuppressWarnings("JBCT-SEQ-01")
+    private static boolean isConnectionOption(String arg) {
+        return arg.startsWith("-c") || arg.startsWith("--connect") || arg.startsWith("--config") || arg.equals("-h") || arg.equals("--help") || arg.equals("-V") || arg.equals("--version");
+    }
+
+    @SuppressWarnings("JBCT-UTIL-02")
+    private void lookupConnection(String[] args) {
         // Parse args manually to get --connect and --config
-        String connectArg = null;
-        Path configArg = null;
+        var connectArg = extractConnectArg(args);
+        var configArg = extractConfigArg(args);
+        // Priority: --connect > config file > default
+        connectArg.onPresent(address -> nodeAddress = address)
+                  .onEmpty(() -> setAddressFromConfigOrDefault(configArg));
+    }
+
+    private void setAddressFromConfigOrDefault(Option<Path> configArg) {
+        configArg.filter(Files::exists)
+                 .onPresent(this::readConfigFromPath)
+                 .onEmpty(() -> nodeAddress = DEFAULT_ADDRESS);
+    }
+
+    private void readConfigFromPath(Path path) {
+        ConfigLoader.load(path)
+                    .onSuccess(this::setAddressFromConfig)
+                    .onFailure(this::onConfigLoadFailure);
+        configPath = path;
+    }
+
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
+    private static Option<String> extractConnectArg(String[] args) {
         for (int i = 0; i < args.length; i++) {
             if ((args[i].equals("-c") || args[i].equals("--connect")) && i + 1 < args.length) {
-                connectArg = args[i + 1];
+                return some(args[i + 1]);
             } else if (args[i].startsWith("--connect=")) {
-                connectArg = args[i].substring("--connect=".length());
-            } else if (args[i].equals("--config") && i + 1 < args.length) {
-                configArg = Path.of(args[i + 1]);
-            } else if (args[i].startsWith("--config=")) {
-                configArg = Path.of(args[i].substring("--config=".length()));
+                return some(args[i].substring("--connect=".length()));
             }
         }
-        // Priority: --connect > config file > default
-        if (connectArg != null) {
-            nodeAddress = connectArg;
-        } else if (configArg != null && Files.exists(configArg)) {
-            ConfigLoader.load(configArg)
-                        .onSuccess(this::setAddressFromConfig)
-                        .onFailure(this::handleConfigLoadFailure);
-            configPath = configArg;
-        } else {
-            nodeAddress = DEFAULT_ADDRESS;
+        return empty();
+    }
+
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
+    private static Option<Path> extractConfigArg(String[] args) {
+        for (int i = 0; i < args.length; i++) {
+            if (args[i].equals("--config") && i + 1 < args.length) {
+                return some(Path.of(args[i + 1]));
+            } else if (args[i].startsWith("--config=")) {
+                return some(Path.of(args[i].substring("--config=".length())));
+            }
         }
+        return empty();
     }
 
     private void setAddressFromConfig(AetherConfig config) {
@@ -149,7 +170,7 @@ public class AetherCli implements Runnable {
         nodeAddress = "localhost:" + port;
     }
 
-    private void handleConfigLoadFailure(org.pragmatica.lang.Cause cause) {
+    private void onConfigLoadFailure(Cause cause) {
         System.err.println("Warning: Failed to load config: " + cause.message());
         nodeAddress = DEFAULT_ADDRESS;
     }
@@ -160,6 +181,7 @@ public class AetherCli implements Runnable {
         CommandLine.usage(this, System.out);
     }
 
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-UTIL-02"})
     private void runRepl(CommandLine cmd) {
         System.out.println("Aether v0.15.0 - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
@@ -170,9 +192,7 @@ public class AetherCli implements Runnable {
                 System.out.print("aether> ");
                 System.out.flush();
                 line = reader.readLine();
-                if (line == null || line.trim()
-                                        .equalsIgnoreCase("exit") || line.trim()
-                                                                         .equalsIgnoreCase("quit")) {
+                if (isExitCommand(line)) {
                     System.out.println("Goodbye!");
                     break;
                 }
@@ -181,101 +201,141 @@ public class AetherCli implements Runnable {
                     continue;
                 }
                 // Parse and execute command
-                String[] replArgs = parseReplCommand(line.trim());
-                if (replArgs.length > 0) {
-                    // Prepend --connect option
-                    String[] fullArgs = new String[replArgs.length + 2];
-                    fullArgs[0] = "--connect";
-                    fullArgs[1] = nodeAddress;
-                    System.arraycopy(replArgs, 0, fullArgs, 2, replArgs.length);
-                    cmd.execute(fullArgs);
-                }
+                sendReplCommand(cmd, line.trim());
             }
         } catch (IOException e) {
             System.err.println("Error reading input: " + e.getMessage());
         }
     }
 
-    private String[] parseReplCommand(String line) {
-        // Simple space-based splitting (could be enhanced for quoted strings)
-        return line.split("\\s+");
+    private static boolean isExitCommand(String line) {
+        return option(line).map(String::trim)
+                     .filter(trimmed -> !isExitKeyword(trimmed))
+                     .isEmpty();
     }
 
+    private static boolean isExitKeyword(String trimmed) {
+        return trimmed.equalsIgnoreCase("exit") || trimmed.equalsIgnoreCase("quit");
+    }
+
+    @SuppressWarnings("JBCT-UTIL-02")
+    private void sendReplCommand(CommandLine cmd, String input) {
+        String[] replArgs = input.split("\\s+");
+        if (replArgs.length > 0) {
+            // Prepend --connect option
+            var fullArgs = buildReplArgs(replArgs);
+            cmd.execute(fullArgs);
+        }
+    }
+
+    private String[] buildReplArgs(String[] replArgs) {
+        var fullArgs = new String[replArgs.length + 2];
+        fullArgs[0] = "--connect";
+        fullArgs[1] = nodeAddress;
+        System.arraycopy(replArgs, 0, fullArgs, 2, replArgs.length);
+        return fullArgs;
+    }
+
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
     String fetchFromNode(String path) {
         try{
             var uri = URI.create("http://" + nodeAddress + path);
-            var request = HttpRequest.newBuilder()
-                                     .uri(uri)
-                                     .GET()
-                                     .build();
+            var request = buildGetRequest(uri);
             var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() == 200) {
-                return response.body();
-            } else {
-                return "{\"error\":\"HTTP " + response.statusCode() + ": " + response.body() + "\"}";
-            }
+            return extractResponseBody(response);
         } catch (Exception e) {
             return "{\"error\":\"" + e.getMessage() + "\"}";
         }
     }
 
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
     String postToNode(String path, String body) {
         try{
             var uri = URI.create("http://" + nodeAddress + path);
-            var request = HttpRequest.newBuilder()
-                                     .uri(uri)
-                                     .header("Content-Type", "application/json")
-                                     .POST(HttpRequest.BodyPublishers.ofString(body))
-                                     .build();
+            var request = buildPostRequest(uri, body);
             var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() == 200) {
-                return response.body();
-            } else {
-                return "{\"error\":\"HTTP " + response.statusCode() + ": " + response.body() + "\"}";
-            }
+            return extractResponseBody(response);
         } catch (Exception e) {
             return "{\"error\":\"" + e.getMessage() + "\"}";
         }
     }
 
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01", "JBCT-UTIL-02"})
     String putToNode(String path, byte[] content, String contentType) {
         try{
             var uri = URI.create("http://" + nodeAddress + path);
-            var request = HttpRequest.newBuilder()
-                                     .uri(uri)
-                                     .header("Content-Type", contentType)
-                                     .PUT(HttpRequest.BodyPublishers.ofByteArray(content))
-                                     .build();
+            var request = buildPutRequest(uri, content, contentType);
             var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() == 200 || response.statusCode() == 201) {
-                return response.body()
-                               .isEmpty()
-                       ? "{\"status\":\"ok\"}"
-                       : response.body();
-            } else {
-                return "{\"error\":\"HTTP " + response.statusCode() + ": " + response.body() + "\"}";
-            }
+            return extractPutResponseBody(response);
         } catch (Exception e) {
             return "{\"error\":\"" + e.getMessage() + "\"}";
         }
     }
 
+    @SuppressWarnings("JBCT-UTIL-01")
     String deleteFromNode(String path) {
         try{
             var uri = URI.create("http://" + nodeAddress + path);
-            var request = HttpRequest.newBuilder()
-                                     .uri(uri)
-                                     .DELETE()
-                                     .build();
+            var request = buildDeleteRequest(uri);
             var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() == 200) {
-                return response.body();
-            } else {
-                return "{\"error\":\"HTTP " + response.statusCode() + ": " + response.body() + "\"}";
-            }
+            return extractResponseBody(response);
         } catch (Exception e) {
             return "{\"error\":\"" + e.getMessage() + "\"}";
         }
+    }
+
+    private static HttpRequest buildGetRequest(URI uri) {
+        return HttpRequest.newBuilder()
+                          .uri(uri)
+                          .GET()
+                          .build();
+    }
+
+    @SuppressWarnings("JBCT-SEQ-01")
+    private static HttpRequest buildPostRequest(URI uri, String body) {
+        return HttpRequest.newBuilder()
+                          .uri(uri)
+                          .header("Content-Type", "application/json")
+                          .POST(HttpRequest.BodyPublishers.ofString(body))
+                          .build();
+    }
+
+    @SuppressWarnings("JBCT-SEQ-01")
+    private static HttpRequest buildPutRequest(URI uri, byte[] content, String contentType) {
+        return HttpRequest.newBuilder()
+                          .uri(uri)
+                          .header("Content-Type", contentType)
+                          .PUT(HttpRequest.BodyPublishers.ofByteArray(content))
+                          .build();
+    }
+
+    private static HttpRequest buildDeleteRequest(URI uri) {
+        return HttpRequest.newBuilder()
+                          .uri(uri)
+                          .DELETE()
+                          .build();
+    }
+
+    private static String extractResponseBody(HttpResponse<String> response) {
+        if (response.statusCode() == 200) {
+            return response.body();
+        }
+        return formatErrorResponse(response);
+    }
+
+    @SuppressWarnings("JBCT-UTIL-02")
+    private static String extractPutResponseBody(HttpResponse<String> response) {
+        if (response.statusCode() == 200 || response.statusCode() == 201) {
+            return response.body()
+                           .isEmpty()
+                   ? "{\"status\":\"ok\"}"
+                   : response.body();
+        }
+        return formatErrorResponse(response);
+    }
+
+    private static String formatErrorResponse(HttpResponse<String> response) {
+        return "{\"error\":\"HTTP " + response.statusCode() + ": " + response.body() + "\"}";
     }
 
     // ===== Subcommands =====
@@ -352,7 +412,7 @@ public class AetherCli implements Runnable {
         @Parameters(index = "0", description = "Artifact coordinates (group:artifact:version)")
         private String artifact;
 
-        @Option(names = {"-n", "--instances"}, description = "Number of instances", defaultValue = "1")
+        @CommandLine.Option(names = {"-n", "--instances"}, description = "Number of instances", defaultValue = "1")
         private int instances;
 
         @Override
@@ -372,7 +432,7 @@ public class AetherCli implements Runnable {
         @Parameters(index = "0", description = "Artifact coordinates (group:artifact:version)")
         private String artifact;
 
-        @Option(names = {"-n", "--instances"}, description = "Target number of instances", required = true)
+        @CommandLine.Option(names = {"-n", "--instances"}, description = "Target number of instances", required = true)
         private int instances;
 
         @Override
@@ -427,16 +487,17 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Path to the JAR file")
             private Path jarPath;
 
-            @Option(names = {"-g", "--group"}, description = "Group ID", required = true)
+            @CommandLine.Option(names = {"-g", "--group"}, description = "Group ID", required = true)
             private String groupId;
 
-            @Option(names = {"-a", "--artifact"}, description = "Artifact ID", required = true)
+            @CommandLine.Option(names = {"-a", "--artifact"}, description = "Artifact ID", required = true)
             private String artifactId;
 
-            @Option(names = {"-v", "--version"}, description = "Version", required = true)
+            @CommandLine.Option(names = {"-v", "--version"}, description = "Version", required = true)
             private String version;
 
             @Override
+            @SuppressWarnings("JBCT-SEQ-01")
             public Integer call() {
                 try{
                     if (!Files.exists(jarPath)) {
@@ -445,21 +506,25 @@ public class AetherCli implements Runnable {
                     }
                     byte[] content = Files.readAllBytes(jarPath);
                     var coordinates = groupId + ":" + artifactId + ":" + version;
-                    var repoPath = "/repository/" + groupId.replace('.', '/') + "/" + artifactId + "/" + version + "/" + artifactId
-                                   + "-" + version + ".jar";
+                    var repoPath = buildArtifactPath(groupId, artifactId, version);
                     var response = artifactParent.parent.putToNode(repoPath, content, "application/java-archive");
-                    if (response.startsWith("{\"error\":")) {
-                        System.out.println("Failed to deploy: " + response);
-                        return 1;
-                    }
-                    System.out.println("Deployed " + coordinates);
-                    System.out.println("  File: " + jarPath);
-                    System.out.println("  Size: " + content.length + " bytes");
-                    return 0;
+                    return reportDeployResult(response, coordinates, content.length);
                 } catch (IOException e) {
                     System.err.println("Error reading file: " + e.getMessage());
                     return 1;
                 }
+            }
+
+            @SuppressWarnings("JBCT-UTIL-02")
+            private Integer reportDeployResult(String response, String coordinates, int size) {
+                if (response.startsWith("{\"error\":")) {
+                    System.out.println("Failed to deploy: " + response);
+                    return 1;
+                }
+                System.out.println("Deployed " + coordinates);
+                System.out.println("  File: " + jarPath);
+                System.out.println("  Size: " + size + " bytes");
+                return 0;
             }
         }
 
@@ -472,6 +537,7 @@ public class AetherCli implements Runnable {
             private String coordinates;
 
             @Override
+            @SuppressWarnings("JBCT-SEQ-01")
             public Integer call() {
                 var parts = coordinates.split(":");
                 if (parts.length != 3) {
@@ -481,21 +547,28 @@ public class AetherCli implements Runnable {
                 var groupId = parts[0];
                 var artifactId = parts[1];
                 var version = parts[2];
-                // Resolve from local Maven repository
-                var m2Home = System.getProperty("user.home") + "/.m2/repository";
-                var localPath = Path.of(m2Home,
-                                        groupId.replace('.', '/'),
-                                        artifactId,
-                                        version,
-                                        artifactId + "-" + version + ".jar");
+                var localPath = findLocalMavenArtifact(groupId, artifactId, version);
                 if (!Files.exists(localPath)) {
                     System.err.println("Artifact not found in local Maven repository: " + localPath);
                     return 1;
                 }
+                return pushArtifactToCluster(groupId, artifactId, version, localPath);
+            }
+
+            private static Path findLocalMavenArtifact(String groupId, String artifactId, String version) {
+                var m2Home = System.getProperty("user.home") + "/.m2/repository";
+                return Path.of(m2Home,
+                               groupId.replace('.', '/'),
+                               artifactId,
+                               version,
+                               artifactId + "-" + version + ".jar");
+            }
+
+            @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"})
+            private Integer pushArtifactToCluster(String groupId, String artifactId, String version, Path localPath) {
                 try{
                     byte[] content = Files.readAllBytes(localPath);
-                    var repoPath = "/repository/" + groupId.replace('.', '/') + "/" + artifactId + "/" + version + "/" + artifactId
-                                   + "-" + version + ".jar";
+                    var repoPath = buildArtifactPath(groupId, artifactId, version);
                     var response = artifactParent.parent.putToNode(repoPath, content, "application/java-archive");
                     if (response.startsWith("{\"error\":")) {
                         System.out.println("Failed to push: " + response);
@@ -562,10 +635,7 @@ public class AetherCli implements Runnable {
                     System.err.println("Invalid coordinates format. Expected: group:artifact:version");
                     return 1;
                 }
-                var groupId = parts[0];
-                var artifactId = parts[1];
-                var version = parts[2];
-                var path = "/repository/info/" + groupId.replace('.', '/') + "/" + artifactId + "/" + version;
+                var path = "/repository/info/" + parts[0].replace('.', '/') + "/" + parts[1] + "/" + parts[2];
                 var response = artifactParent.parent.fetchFromNode(path);
                 System.out.println(formatJson(response));
                 return 0;
@@ -581,16 +651,14 @@ public class AetherCli implements Runnable {
             private String coordinates;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
                 var parts = coordinates.split(":");
                 if (parts.length != 3) {
                     System.err.println("Invalid coordinates format. Expected: group:artifact:version");
                     return 1;
                 }
-                var groupId = parts[0];
-                var artifactId = parts[1];
-                var version = parts[2];
-                var path = "/repository/" + groupId.replace('.', '/') + "/" + artifactId + "/" + version;
+                var path = "/repository/" + parts[0].replace('.', '/') + "/" + parts[1] + "/" + parts[2];
                 var response = artifactParent.parent.deleteFromNode(path);
                 if (response.startsWith("{\"error\":")) {
                     System.out.println("Failed to delete: " + response);
@@ -612,6 +680,11 @@ public class AetherCli implements Runnable {
                 System.out.println(formatJson(response));
                 return 0;
             }
+        }
+
+        private static String buildArtifactPath(String groupId, String artifactId, String version) {
+            return "/repository/" + groupId.replace('.', '/') + "/" + artifactId + "/" + version + "/" + artifactId
+                   + "-" + version + ".jar";
         }
     }
 
@@ -641,6 +714,7 @@ public class AetherCli implements Runnable {
             private Path blueprintPath;
 
             @Override
+            @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"})
             public Integer call() {
                 try{
                     if (!Files.exists(blueprintPath)) {
@@ -667,10 +741,11 @@ public class AetherCli implements Runnable {
             @CommandLine.ParentCommand
             private BlueprintCommand blueprintParent;
 
-            @Option(names = {"--format"}, description = "Output format (table|json)", defaultValue = "table")
+            @CommandLine.Option(names = {"--format"}, description = "Output format (table|json)", defaultValue = "table")
             private String format;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
                 var response = blueprintParent.parent.fetchFromNode("/api/blueprints");
                 if (response.contains("\"error\":")) {
@@ -685,10 +760,11 @@ public class AetherCli implements Runnable {
                 return 0;
             }
 
+            @SuppressWarnings({"JBCT-PAT-01", "JBCT-UTIL-02"})
             private void printBlueprintListTable(String json) {
                 // Simple table output - parse blueprints array
                 System.out.println("ID                                     SLICES");
-                System.out.println("─".repeat(60));
+                System.out.println("\u2500".repeat(60));
                 // Extract blueprints from JSON (simple parsing)
                 var blueprintsStart = json.indexOf("\"blueprints\":");
                 if (blueprintsStart == - 1) {
@@ -708,21 +784,7 @@ public class AetherCli implements Runnable {
                     return;
                 }
                 // Parse each blueprint object
-                var depth = 0;
-                var start = 0;
-                for (int i = 0; i < blueprintsArray.length(); i++) {
-                    var c = blueprintsArray.charAt(i);
-                    if (c == '{') {
-                        if (depth == 0) start = i;
-                        depth++;
-                    } else if (c == '}') {
-                        depth--;
-                        if (depth == 0) {
-                            var obj = blueprintsArray.substring(start, i + 1);
-                            printBlueprintRow(obj);
-                        }
-                    }
-                }
+                extractJsonObjects(blueprintsArray).forEach(this::printBlueprintRow);
             }
 
             private void printBlueprintRow(String json) {
@@ -740,10 +802,11 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Blueprint ID (group:artifact:version)")
             private String blueprintId;
 
-            @Option(names = {"--format"}, description = "Output format (table|json)", defaultValue = "table")
+            @CommandLine.Option(names = {"--format"}, description = "Output format (table|json)", defaultValue = "table")
             private String format;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
                 var encodedId = blueprintId.replace(":", "%3A");
                 var response = blueprintParent.parent.fetchFromNode("/api/blueprint/" + encodedId);
@@ -764,40 +827,27 @@ public class AetherCli implements Runnable {
                 System.out.println("Blueprint: " + id);
                 System.out.println();
                 System.out.println("SLICES:");
-                System.out.println("─".repeat(80));
+                System.out.println("\u2500".repeat(80));
                 System.out.printf("%-50s %10s %12s%n", "ARTIFACT", "INSTANCES", "TYPE");
-                System.out.println("─".repeat(80));
+                System.out.println("\u2500".repeat(80));
                 // Parse slices array
+                printSlicesFromJson(json);
+            }
+
+            private static void printSlicesFromJson(String json) {
                 var slicesStart = json.indexOf("\"slices\":");
                 if (slicesStart != - 1) {
                     var arrayStart = json.indexOf('[', slicesStart);
                     var arrayEnd = findMatchingBracket(json, arrayStart);
                     if (arrayStart != - 1 && arrayEnd != - 1) {
                         var slicesArray = json.substring(arrayStart + 1, arrayEnd);
-                        parseAndPrintSlices(slicesArray);
+                        extractJsonObjects(slicesArray).forEach(GetCommand::printSliceRow);
                     }
                 }
             }
 
-            private void parseAndPrintSlices(String slicesArray) {
-                var depth = 0;
-                var start = 0;
-                for (int i = 0; i < slicesArray.length(); i++) {
-                    var c = slicesArray.charAt(i);
-                    if (c == '{') {
-                        if (depth == 0) start = i;
-                        depth++;
-                    } else if (c == '}') {
-                        depth--;
-                        if (depth == 0) {
-                            var obj = slicesArray.substring(start, i + 1);
-                            printSliceRow(obj);
-                        }
-                    }
-                }
-            }
-
-            private void printSliceRow(String json) {
+            @SuppressWarnings("JBCT-UTIL-02")
+            private static void printSliceRow(String json) {
                 var artifact = extractJsonString(json, "artifact");
                 var instances = extractJsonNumber(json, "instances");
                 var isDep = json.contains("\"isDependency\":true");
@@ -816,23 +866,16 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Blueprint ID (group:artifact:version)")
             private String blueprintId;
 
-            @Option(names = {"--force", "-f"}, description = "Skip confirmation prompt")
+            @CommandLine.Option(names = {"--force", "-f"}, description = "Skip confirmation prompt")
             private boolean force;
 
             @Override
+            @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
             public Integer call() {
                 if (!force) {
-                    System.out.print("Are you sure you want to delete blueprint '" + blueprintId + "'? (y/N) ");
-                    try (var reader = new BufferedReader(new InputStreamReader(System.in))) {
-                        var line = reader.readLine();
-                        if (line == null || !line.trim()
-                                                 .equalsIgnoreCase("y")) {
-                            System.out.println("Cancelled.");
-                            return 0;
-                        }
-                    } catch (IOException e) {
-                        System.err.println("Error reading input: " + e.getMessage());
-                        return 1;
+                    var confirmed = confirmDeletion(blueprintId);
+                    if (!confirmed) {
+                        return 0;
                     }
                 }
                 var encodedId = blueprintId.replace(":", "%3A");
@@ -844,6 +887,19 @@ public class AetherCli implements Runnable {
                 System.out.println("Deleted blueprint: " + blueprintId);
                 return 0;
             }
+
+            @SuppressWarnings("JBCT-SEQ-01")
+            private static boolean confirmDeletion(String id) {
+                System.out.print("Are you sure you want to delete blueprint '" + id + "'? (y/N) ");
+                try (var reader = new BufferedReader(new InputStreamReader(System.in))) {
+                    return option(reader.readLine()).map(String::trim)
+                                 .filter(s -> s.equalsIgnoreCase("y"))
+                                 .isPresent();
+                } catch (IOException e) {
+                    System.err.println("Error reading input: " + e.getMessage());
+                    return false;
+                }
+            }
         }
 
         @Command(name = "status", description = "Show deployment status of a blueprint")
@@ -854,10 +910,11 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Blueprint ID (group:artifact:version)")
             private String blueprintId;
 
-            @Option(names = {"--format"}, description = "Output format (table|json)", defaultValue = "table")
+            @CommandLine.Option(names = {"--format"}, description = "Output format (table|json)", defaultValue = "table")
             private String format;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
                 var encodedId = blueprintId.replace(":", "%3A");
                 var response = blueprintParent.parent.fetchFromNode("/api/blueprint/" + encodedId + "/status");
@@ -880,40 +937,25 @@ public class AetherCli implements Runnable {
                 System.out.println("Status: " + overallStatus);
                 System.out.println();
                 System.out.println("SLICE STATUS:");
-                System.out.println("─".repeat(90));
+                System.out.println("\u2500".repeat(90));
                 System.out.printf("%-50s %8s %8s %12s%n", "ARTIFACT", "TARGET", "ACTIVE", "STATUS");
-                System.out.println("─".repeat(90));
-                // Parse slices array
+                System.out.println("\u2500".repeat(90));
+                printStatusSlicesFromJson(json);
+            }
+
+            private static void printStatusSlicesFromJson(String json) {
                 var slicesStart = json.indexOf("\"slices\":");
                 if (slicesStart != - 1) {
                     var arrayStart = json.indexOf('[', slicesStart);
                     var arrayEnd = findMatchingBracket(json, arrayStart);
                     if (arrayStart != - 1 && arrayEnd != - 1) {
                         var slicesArray = json.substring(arrayStart + 1, arrayEnd);
-                        parseAndPrintStatusSlices(slicesArray);
+                        extractJsonObjects(slicesArray).forEach(StatusCommand::printStatusSliceRow);
                     }
                 }
             }
 
-            private void parseAndPrintStatusSlices(String slicesArray) {
-                var depth = 0;
-                var start = 0;
-                for (int i = 0; i < slicesArray.length(); i++) {
-                    var c = slicesArray.charAt(i);
-                    if (c == '{') {
-                        if (depth == 0) start = i;
-                        depth++;
-                    } else if (c == '}') {
-                        depth--;
-                        if (depth == 0) {
-                            var obj = slicesArray.substring(start, i + 1);
-                            printStatusSliceRow(obj);
-                        }
-                    }
-                }
-            }
-
-            private void printStatusSliceRow(String json) {
+            private static void printStatusSliceRow(String json) {
                 var artifact = extractJsonString(json, "artifact");
                 var target = extractJsonNumber(json, "targetInstances");
                 var active = extractJsonNumber(json, "activeInstances");
@@ -931,6 +973,7 @@ public class AetherCli implements Runnable {
             private Path blueprintPath;
 
             @Override
+            @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
             public Integer call() {
                 try{
                     if (!Files.exists(blueprintPath)) {
@@ -940,30 +983,38 @@ public class AetherCli implements Runnable {
                     var content = Files.readString(blueprintPath);
                     var response = blueprintParent.parent.postToNode("/api/blueprint/validate", content);
                     if (response.contains("\"valid\":false")) {
-                        System.out.println("Validation FAILED");
-                        var errors = extractJsonArray(response, "errors");
-                        if (!errors.isEmpty()) {
-                            System.out.println("Errors:");
-                            for (var error : errors) {
-                                System.out.println("  - " + error);
-                            }
-                        }
-                        return 1;
+                        return reportValidationFailure(response);
                     }
-                    var id = extractJsonString(response, "id");
-                    var sliceCount = extractJsonNumber(response, "sliceCount");
-                    System.out.println("Validation PASSED");
-                    System.out.println("  Blueprint ID: " + id);
-                    System.out.println("  Slices: " + sliceCount);
-                    return 0;
+                    return reportValidationSuccess(response);
                 } catch (IOException e) {
                     System.err.println("Error reading blueprint file: " + e.getMessage());
                     return 1;
                 }
             }
 
-            private java.util.List<String> extractJsonArray(String json, String key) {
-                var result = new java.util.ArrayList<String>();
+            @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"})
+            private static Integer reportValidationFailure(String response) {
+                System.out.println("Validation FAILED");
+                var errors = extractJsonStringArray(response, "errors");
+                if (!errors.isEmpty()) {
+                    System.out.println("Errors:");
+                    errors.forEach(error -> System.out.println("  - " + error));
+                }
+                return 1;
+            }
+
+            private static Integer reportValidationSuccess(String response) {
+                var id = extractJsonString(response, "id");
+                var sliceCount = extractJsonNumber(response, "sliceCount");
+                System.out.println("Validation PASSED");
+                System.out.println("  Blueprint ID: " + id);
+                System.out.println("  Slices: " + sliceCount);
+                return 0;
+            }
+
+            @SuppressWarnings("JBCT-PAT-01")
+            private static List<String> extractJsonStringArray(String json, String key) {
+                var result = new ArrayList<String>();
                 var keyPattern = "\"" + key + "\":";
                 var start = json.indexOf(keyPattern);
                 if (start == - 1) return result;
@@ -971,7 +1022,12 @@ public class AetherCli implements Runnable {
                 var arrayEnd = findMatchingBracket(json, arrayStart);
                 if (arrayStart == - 1 || arrayEnd == - 1) return result;
                 var arrayContent = json.substring(arrayStart + 1, arrayEnd);
-                // Parse string elements
+                parseStringElements(arrayContent, result);
+                return result;
+            }
+
+            @SuppressWarnings("JBCT-PAT-01")
+            private static void parseStringElements(String arrayContent, List<String> result) {
                 var inString = false;
                 var stringStart = - 1;
                 for (int i = 0; i < arrayContent.length(); i++) {
@@ -986,7 +1042,6 @@ public class AetherCli implements Runnable {
                         }
                     }
                 }
-                return result;
             }
         }
 
@@ -1001,6 +1056,7 @@ public class AetherCli implements Runnable {
             return json.substring(start, end);
         }
 
+        @SuppressWarnings("JBCT-PAT-01")
         private static String extractJsonNumber(String json, String key) {
             var pattern = "\"" + key + "\":";
             var start = json.indexOf(pattern);
@@ -1014,6 +1070,7 @@ public class AetherCli implements Runnable {
             return json.substring(start, end);
         }
 
+        @SuppressWarnings("JBCT-PAT-01")
         private static int findMatchingBracket(String json, int openIndex) {
             if (openIndex == - 1 || openIndex >= json.length()) return - 1;
             var openChar = json.charAt(openIndex);
@@ -1034,6 +1091,26 @@ public class AetherCli implements Runnable {
                 }
             }
             return - 1;
+        }
+
+        @SuppressWarnings("JBCT-PAT-01")
+        private static List<String> extractJsonObjects(String arrayContent) {
+            var objects = new ArrayList<String>();
+            var depth = 0;
+            var start = 0;
+            for (int i = 0; i < arrayContent.length(); i++) {
+                var c = arrayContent.charAt(i);
+                if (c == '{') {
+                    if (depth == 0) start = i;
+                    depth++;
+                } else if (c == '}') {
+                    depth--;
+                    if (depth == 0) {
+                        objects.add(arrayContent.substring(start, i + 1));
+                    }
+                }
+            }
+            return objects;
         }
     }
 
@@ -1067,30 +1144,34 @@ public class AetherCli implements Runnable {
             @Parameters(index = "1", description = "New version to deploy")
             private String version;
 
-            @Option(names = {"-n", "--instances"}, description = "Number of new version instances", defaultValue = "1")
+            @CommandLine.Option(names = {"-n", "--instances"}, description = "Number of new version instances", defaultValue = "1")
             private int instances;
 
-            @Option(names = {"--error-rate"}, description = "Max error rate threshold (0.0-1.0)", defaultValue = "0.01")
+            @CommandLine.Option(names = {"--error-rate"}, description = "Max error rate threshold (0.0-1.0)", defaultValue = "0.01")
             private double errorRate;
 
-            @Option(names = {"--latency"}, description = "Max latency threshold in ms", defaultValue = "500")
+            @CommandLine.Option(names = {"--latency"}, description = "Max latency threshold in ms", defaultValue = "500")
             private long latencyMs;
 
-            @Option(names = {"--manual-approval"}, description = "Require manual approval for routing changes")
+            @CommandLine.Option(names = {"--manual-approval"}, description = "Require manual approval for routing changes")
             private boolean manualApproval;
 
-            @Option(names = {"--cleanup"}, description = "Cleanup policy: IMMEDIATE, GRACE_PERIOD, MANUAL", defaultValue = "GRACE_PERIOD")
+            @CommandLine.Option(names = {"--cleanup"}, description = "Cleanup policy: IMMEDIATE, GRACE_PERIOD, MANUAL", defaultValue = "GRACE_PERIOD")
             private String cleanupPolicy;
 
             @Override
             public Integer call() {
-                var body = "{\"artifactBase\":\"" + artifactBase + "\"," + "\"version\":\"" + version + "\","
-                           + "\"instances\":" + instances + "," + "\"maxErrorRate\":" + errorRate + ","
-                           + "\"maxLatencyMs\":" + latencyMs + "," + "\"requireManualApproval\":" + manualApproval + ","
-                           + "\"cleanupPolicy\":\"" + cleanupPolicy + "\"}";
+                var body = buildUpdateStartBody();
                 var response = updateParent.parent.postToNode("/rolling-update/start", body);
                 System.out.println(formatJson(response));
                 return 0;
+            }
+
+            private String buildUpdateStartBody() {
+                return "{\"artifactBase\":\"" + artifactBase + "\"," + "\"version\":\"" + version + "\","
+                       + "\"instances\":" + instances + "," + "\"maxErrorRate\":" + errorRate + ","
+                       + "\"maxLatencyMs\":" + latencyMs + "," + "\"requireManualApproval\":" + manualApproval + ","
+                       + "\"cleanupPolicy\":\"" + cleanupPolicy + "\"}";
             }
         }
 
@@ -1131,7 +1212,7 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Update ID")
             private String updateId;
 
-            @Option(names = {"-r", "--ratio"}, description = "Traffic ratio new:old (e.g., 1:3)", required = true)
+            @CommandLine.Option(names = {"-r", "--ratio"}, description = "Traffic ratio new:old (e.g., 1:3)", required = true)
             private String ratio;
 
             @Override
@@ -1266,40 +1347,43 @@ public class AetherCli implements Runnable {
             private Long param2;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
-                if (type == null) {
-                    // Show current strategy
-                    var response = metricsParent.parent.fetchFromNode("/invocation-metrics/strategy");
-                    System.out.println(formatJson(response));
-                } else {
-                    // Set strategy
-                    String body;
-                    switch (type.toLowerCase()) {
-                        case "fixed" -> {
-                            var thresholdMs = param1 != null
-                                              ? param1
-                                              : 100;
-                            body = "{\"type\":\"fixed\",\"thresholdMs\":" + thresholdMs + "}";
-                        }
-                        case "adaptive" -> {
-                            var minMs = param1 != null
-                                        ? param1
-                                        : 10;
-                            var maxMs = param2 != null
-                                        ? param2
-                                        : 1000;
-                            body = "{\"type\":\"adaptive\",\"minMs\":" + minMs + ",\"maxMs\":" + maxMs + "}";
-                        }
-                        default -> {
-                            System.err.println("Unknown strategy type: " + type);
-                            System.err.println("Supported: fixed, adaptive");
-                            return 1;
-                        }
-                    }
-                    var response = metricsParent.parent.postToNode("/invocation-metrics/strategy", body);
-                    System.out.println(formatJson(response));
-                }
+                option(type).onPresent(this::setStrategy)
+                      .onEmpty(this::showCurrentStrategy);
                 return 0;
+            }
+
+            private void showCurrentStrategy() {
+                var response = metricsParent.parent.fetchFromNode("/invocation-metrics/strategy");
+                System.out.println(formatJson(response));
+            }
+
+            @SuppressWarnings("JBCT-UTIL-02")
+            private void setStrategy(String strategyType) {
+                String body;
+                switch (strategyType.toLowerCase()) {
+                    case "fixed" -> body = buildFixedStrategyBody();
+                    case "adaptive" -> body = buildAdaptiveStrategyBody();
+                    default -> {
+                        System.err.println("Unknown strategy type: " + strategyType);
+                        System.err.println("Supported: fixed, adaptive");
+                        return;
+                    }
+                }
+                var response = metricsParent.parent.postToNode("/invocation-metrics/strategy", body);
+                System.out.println(formatJson(response));
+            }
+
+            private String buildFixedStrategyBody() {
+                var thresholdMs = option(param1).or(100L);
+                return "{\"type\":\"fixed\",\"thresholdMs\":" + thresholdMs + "}";
+            }
+
+            private String buildAdaptiveStrategyBody() {
+                var minMs = option(param1).or(10L);
+                var maxMs = option(param2).or(1000L);
+                return "{\"type\":\"adaptive\",\"minMs\":" + minMs + ",\"maxMs\":" + maxMs + "}";
             }
         }
     }
@@ -1324,48 +1408,24 @@ public class AetherCli implements Runnable {
             @CommandLine.ParentCommand
             private ControllerCommand controllerParent;
 
-            @Option(names = {"--cpu-up"}, description = "CPU scale-up threshold")
+            @CommandLine.Option(names = {"--cpu-up"}, description = "CPU scale-up threshold")
             private Double cpuScaleUp;
 
-            @Option(names = {"--cpu-down"}, description = "CPU scale-down threshold")
+            @CommandLine.Option(names = {"--cpu-down"}, description = "CPU scale-down threshold")
             private Double cpuScaleDown;
 
-            @Option(names = {"--call-rate"}, description = "Call rate scale-up threshold")
+            @CommandLine.Option(names = {"--call-rate"}, description = "Call rate scale-up threshold")
             private Double callRate;
 
-            @Option(names = {"--interval"}, description = "Evaluation interval in ms")
+            @CommandLine.Option(names = {"--interval"}, description = "Evaluation interval in ms")
             private Long intervalMs;
 
             @Override
+            @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"})
             public Integer call() {
-                if (cpuScaleUp != null || cpuScaleDown != null || callRate != null || intervalMs != null) {
-                    // Update configuration
-                    var sb = new StringBuilder("{");
-                    boolean first = true;
-                    if (cpuScaleUp != null) {
-                        sb.append("\"cpuScaleUpThreshold\":")
-                          .append(cpuScaleUp);
-                        first = false;
-                    }
-                    if (cpuScaleDown != null) {
-                        if (!first) sb.append(",");
-                        sb.append("\"cpuScaleDownThreshold\":")
-                          .append(cpuScaleDown);
-                        first = false;
-                    }
-                    if (callRate != null) {
-                        if (!first) sb.append(",");
-                        sb.append("\"callRateScaleUpThreshold\":")
-                          .append(callRate);
-                        first = false;
-                    }
-                    if (intervalMs != null) {
-                        if (!first) sb.append(",");
-                        sb.append("\"evaluationIntervalMs\":")
-                          .append(intervalMs);
-                    }
-                    sb.append("}");
-                    var response = controllerParent.parent.postToNode("/controller/config", sb.toString());
+                if (hasConfigUpdate()) {
+                    var body = buildConfigUpdateBody();
+                    var response = controllerParent.parent.postToNode("/controller/config", body);
                     System.out.println(formatJson(response));
                 } else {
                     // Show current config
@@ -1373,6 +1433,20 @@ public class AetherCli implements Runnable {
                     System.out.println(formatJson(response));
                 }
                 return 0;
+            }
+
+            private boolean hasConfigUpdate() {
+                return option(cpuScaleUp).isPresent() || option(cpuScaleDown).isPresent() || option(callRate).isPresent() || option(intervalMs).isPresent();
+            }
+
+            @SuppressWarnings("JBCT-UTIL-02")
+            private String buildConfigUpdateBody() {
+                var fields = new ArrayList<String>();
+                option(cpuScaleUp).onPresent(v -> fields.add("\"cpuScaleUpThreshold\":" + v));
+                option(cpuScaleDown).onPresent(v -> fields.add("\"cpuScaleDownThreshold\":" + v));
+                option(callRate).onPresent(v -> fields.add("\"callRateScaleUpThreshold\":" + v));
+                option(intervalMs).onPresent(v -> fields.add("\"evaluationIntervalMs\":" + v));
+                return "{" + String.join(",", fields) + "}";
             }
         }
 
@@ -1512,10 +1586,10 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Metric name")
             private String metric;
 
-            @Option(names = {"-w", "--warning"}, description = "Warning threshold", required = true)
+            @CommandLine.Option(names = {"-w", "--warning"}, description = "Warning threshold", required = true)
             private double warning;
 
-            @Option(names = {"-c", "--critical"}, description = "Critical threshold", required = true)
+            @CommandLine.Option(names = {"-c", "--critical"}, description = "Critical threshold", required = true)
             private double critical;
 
             @Override
@@ -1595,11 +1669,15 @@ public class AetherCli implements Runnable {
                 var artifact = target.substring(0, hashIndex);
                 var method = target.substring(hashIndex + 1);
                 var normalizedMode = mode.toUpperCase();
-                var body = "{\"artifact\":\"" + artifact + "\",\"method\":\"" + method + "\",\"mode\":\"" + normalizedMode
-                           + "\"}";
+                var body = buildAspectSetBody(artifact, method, normalizedMode);
                 var response = aspectsParent.parent.postToNode("/api/aspects", body);
                 System.out.println(formatJson(response));
                 return 0;
+            }
+
+            private static String buildAspectSetBody(String artifact, String method, String normalizedMode) {
+                return "{\"artifact\":\"" + artifact + "\",\"method\":\"" + method + "\",\"mode\":\"" + normalizedMode
+                       + "\"}";
             }
         }
 
@@ -1626,28 +1704,44 @@ public class AetherCli implements Runnable {
             }
         }
 
+        @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"})
         private static void printAspectsTable(String json) {
             // Parse JSON map: {"key::mode", ...}
-            if (json == null || json.trim()
-                                    .equals("{}") || json.contains("\"error\":")) {
-                if (json != null && json.contains("\"error\":")) {
-                    System.out.println(formatJson(json));
-                } else {
-                    System.out.println("No active aspects");
-                }
+            var jsonOpt = option(json).map(String::trim)
+                                .filter(s -> !s.equals("{}"))
+                                .filter(s -> !s.contains("\"error\":"));
+            if (jsonOpt.isEmpty()) {
+                printAspectsError(json);
                 return;
             }
             System.out.printf("%-40s %-20s %s%n", "ARTIFACT", "METHOD", "MODE");
             System.out.println("\u2500".repeat(75));
             // Simple JSON map parsing: {"artifactBase/method":"MODE", ...}
-            var content = json.trim();
-            if (content.startsWith("{")) content = content.substring(1);
-            if (content.endsWith("}")) content = content.substring(0, content.length() - 1);
+            var content = extractMapContent(jsonOpt.or(""));
             if (content.trim()
                        .isEmpty()) {
                 System.out.println("No active aspects");
                 return;
             }
+            parseAndPrintAspectEntries(content);
+        }
+
+        @SuppressWarnings("JBCT-UTIL-02")
+        private static void printAspectsError(String json) {
+            option(json).filter(s -> s.contains("\"error\":"))
+                  .onPresent(s -> System.out.println(formatJson(s)))
+                  .onEmpty(() -> System.out.println("No active aspects"));
+        }
+
+        private static String extractMapContent(String json) {
+            var content = json.trim();
+            if (content.startsWith("{")) content = content.substring(1);
+            if (content.endsWith("}")) content = content.substring(0, content.length() - 1);
+            return content;
+        }
+
+        @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
+        private static void parseAndPrintAspectEntries(String content) {
             // Parse key-value pairs
             var inString = false;
             var tokenStart = - 1;
@@ -1666,20 +1760,23 @@ public class AetherCli implements Runnable {
                             key = token;
                             expectValue = true;
                         } else {
-                            // key = "artifactBase/method", token = mode
-                            var slashIndex = key.indexOf('/');
-                            var artifact = slashIndex != - 1
-                                           ? key.substring(0, slashIndex)
-                                           : key;
-                            var method = slashIndex != - 1
-                                         ? key.substring(slashIndex + 1)
-                                         : "";
-                            System.out.printf("%-40s %-20s %s%n", artifact, method, token);
+                            printAspectEntry(key, token);
                             expectValue = false;
                         }
                     }
                 }
             }
+        }
+
+        private static void printAspectEntry(String key, String mode) {
+            var slashIndex = key.indexOf('/');
+            var artifact = slashIndex != - 1
+                           ? key.substring(0, slashIndex)
+                           : key;
+            var method = slashIndex != - 1
+                         ? key.substring(slashIndex + 1)
+                         : "";
+            System.out.printf("%-40s %-20s %s%n", artifact, method, mode);
         }
     }
 
@@ -1804,24 +1901,29 @@ public class AetherCli implements Runnable {
             @Parameters(index = "1", description = "Configuration value")
             private String value;
 
-            @Option(names = {"--node"}, description = "Target node ID (omit for cluster-wide)")
+            @CommandLine.Option(names = {"--node"}, description = "Target node ID (omit for cluster-wide)")
             private String nodeId;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
-                var body = new StringBuilder("{\"key\":\"").append(key)
-                                                           .append("\",\"value\":\"")
-                                                           .append(value)
-                                                           .append("\"");
-                if (nodeId != null) {
-                    body.append(",\"nodeId\":\"")
-                        .append(nodeId)
-                        .append("\"");
-                }
-                body.append("}");
-                var response = configParent.parent.postToNode("/api/config", body.toString());
+                var body = buildConfigSetBody();
+                var response = configParent.parent.postToNode("/api/config", body);
                 System.out.println(formatJson(response));
                 return 0;
+            }
+
+            @SuppressWarnings("JBCT-UTIL-02")
+            private String buildConfigSetBody() {
+                var sb = new StringBuilder("{\"key\":\"").append(key)
+                                                         .append("\",\"value\":\"")
+                                                         .append(value)
+                                                         .append("\"");
+                option(nodeId).onPresent(id -> sb.append(",\"nodeId\":\"")
+                                                 .append(id)
+                                                 .append("\""));
+                sb.append("}");
+                return sb.toString();
             }
         }
 
@@ -1833,27 +1935,32 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Configuration key (dot.notation)")
             private String key;
 
-            @Option(names = {"--node"}, description = "Target node ID (omit for cluster-wide)")
+            @CommandLine.Option(names = {"--node"}, description = "Target node ID (omit for cluster-wide)")
             private String nodeId;
 
             @Override
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
-                String response;
-                if (nodeId != null) {
-                    response = configParent.parent.deleteFromNode("/api/config/node/" + nodeId + "/" + key);
-                } else {
-                    response = configParent.parent.deleteFromNode("/api/config/" + key);
-                }
+                var response = fetchRemoveResponse();
                 System.out.println(formatJson(response));
                 return 0;
+            }
+
+            @SuppressWarnings("JBCT-UTIL-02")
+            private String fetchRemoveResponse() {
+                var path = option(nodeId).map(id -> "/api/config/node/" + id + "/" + key)
+                                 .or("/api/config/" + key);
+                return configParent.parent.deleteFromNode(path);
             }
         }
     }
 
     // Simple JSON formatter for readability
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-UTIL-02"})
     private static String formatJson(String json) {
-        if (json == null || json.isEmpty()) {
-            return json;
+        if (option(json).filter(s -> !s.isEmpty())
+                  .isEmpty()) {
+            return "";
         }
         var sb = new StringBuilder();
         int indent = 0;
@@ -1864,35 +1971,47 @@ public class AetherCli implements Runnable {
                 inString = !inString;
                 sb.append(c);
             } else if (!inString) {
-                switch (c) {
-                    case '{', '[' -> {
-                        sb.append(c);
-                        sb.append('\n');
-                        indent++;
-                        sb.append("  ".repeat(indent));
-                    }
-                    case '}', ']' -> {
-                        sb.append('\n');
-                        indent--;
-                        sb.append("  ".repeat(indent));
-                        sb.append(c);
-                    }
-                    case ',' -> {
-                        sb.append(c);
-                        sb.append('\n');
-                        sb.append("  ".repeat(indent));
-                    }
-                    case ':' -> sb.append(": ");
-                    default -> {
-                        if (!Character.isWhitespace(c)) {
-                            sb.append(c);
-                        }
-                    }
-                }
+                appendFormattedChar(sb, c, indent);
+                indent = updateIndent(c, indent);
             } else {
                 sb.append(c);
             }
         }
         return sb.toString();
+    }
+
+    @SuppressWarnings("JBCT-SEQ-01")
+    private static void appendFormattedChar(StringBuilder sb, char c, int indent) {
+        switch (c) {
+            case '{', '[' -> {
+                sb.append(c);
+                sb.append('\n');
+                sb.append("  ".repeat(indent + 1));
+            }
+            case '}', ']' -> {
+                sb.append('\n');
+                sb.append("  ".repeat(indent - 1));
+                sb.append(c);
+            }
+            case ',' -> {
+                sb.append(c);
+                sb.append('\n');
+                sb.append("  ".repeat(indent));
+            }
+            case ':' -> sb.append(": ");
+            default -> {
+                if (!Character.isWhitespace(c)) {
+                    sb.append(c);
+                }
+            }
+        }
+    }
+
+    private static int updateIndent(char c, int indent) {
+        return switch (c) {
+            case '{', '[' -> indent + 1;
+            case '}', ']' -> indent - 1;
+            default -> indent;
+        };
     }
 }

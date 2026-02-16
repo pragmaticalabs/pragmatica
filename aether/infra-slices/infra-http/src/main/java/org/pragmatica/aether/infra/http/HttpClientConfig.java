@@ -6,6 +6,8 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import java.net.http.HttpClient.Redirect;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 /// Configuration for HTTP client infrastructure slice.
@@ -25,14 +27,11 @@ public record HttpClientConfig(Option<String> baseUrl,
     private static final Redirect DEFAULT_REDIRECT = Redirect.NORMAL;
 
     public static Result<HttpClientConfig> httpClientConfig() {
-        return success(new HttpClientConfig(Option.none(),
-                                            DEFAULT_CONNECT_TIMEOUT,
-                                            DEFAULT_REQUEST_TIMEOUT,
-                                            DEFAULT_REDIRECT));
+        return success(new HttpClientConfig(none(), DEFAULT_CONNECT_TIMEOUT, DEFAULT_REQUEST_TIMEOUT, DEFAULT_REDIRECT));
     }
 
     public static Result<HttpClientConfig> httpClientConfig(String baseUrl) {
-        return success(new HttpClientConfig(Option.option(baseUrl),
+        return success(new HttpClientConfig(option(baseUrl),
                                             DEFAULT_CONNECT_TIMEOUT,
                                             DEFAULT_REQUEST_TIMEOUT,
                                             DEFAULT_REDIRECT));
@@ -41,22 +40,29 @@ public record HttpClientConfig(Option<String> baseUrl,
     public static Result<HttpClientConfig> httpClientConfig(String baseUrl,
                                                             TimeSpan connectTimeout,
                                                             TimeSpan requestTimeout) {
-        return success(new HttpClientConfig(Option.option(baseUrl), connectTimeout, requestTimeout, DEFAULT_REDIRECT));
+        return success(new HttpClientConfig(option(baseUrl), connectTimeout, requestTimeout, DEFAULT_REDIRECT));
+    }
+
+    public static Result<HttpClientConfig> httpClientConfig(Option<String> baseUrl,
+                                                            TimeSpan connectTimeout,
+                                                            TimeSpan requestTimeout,
+                                                            Redirect followRedirects) {
+        return success(new HttpClientConfig(baseUrl, connectTimeout, requestTimeout, followRedirects));
     }
 
     public HttpClientConfig withBaseUrl(String url) {
-        return new HttpClientConfig(Option.option(url), connectTimeout, requestTimeout, followRedirects);
+        return httpClientConfig(option(url), connectTimeout, requestTimeout, followRedirects).unwrap();
     }
 
     public HttpClientConfig withConnectTimeout(TimeSpan timeout) {
-        return new HttpClientConfig(baseUrl, timeout, requestTimeout, followRedirects);
+        return httpClientConfig(baseUrl, timeout, requestTimeout, followRedirects).unwrap();
     }
 
     public HttpClientConfig withRequestTimeout(TimeSpan timeout) {
-        return new HttpClientConfig(baseUrl, connectTimeout, timeout, followRedirects);
+        return httpClientConfig(baseUrl, connectTimeout, timeout, followRedirects).unwrap();
     }
 
     public HttpClientConfig withFollowRedirects(Redirect policy) {
-        return new HttpClientConfig(baseUrl, connectTimeout, requestTimeout, policy);
+        return httpClientConfig(baseUrl, connectTimeout, requestTimeout, policy).unwrap();
     }
 }

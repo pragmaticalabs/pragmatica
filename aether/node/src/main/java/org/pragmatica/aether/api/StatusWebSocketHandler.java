@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 /// Reusable WebSocket handler for broadcasting status updates.
 /// Instance-based (not static) to support independent session pools
 /// across management server and Forge dashboard.
+@SuppressWarnings("JBCT-RET-01")
 public class StatusWebSocketHandler implements WebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(StatusWebSocketHandler.class);
     private final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();

@@ -21,30 +21,34 @@ final class DefaultCircuitBreakerFactory implements CircuitBreakerFactory {
     @Override
     @SuppressWarnings("unchecked")
     public <T> Aspect<T> create(CircuitBreakerConfig config) {
-        return instance -> {
-            if (!enabled.get()) {
-                return instance;
-            }
-            var interfaces = instance.getClass()
-                                     .getInterfaces();
-            if (interfaces.length == 0) {
-                return instance;
-            }
-            var circuitBreaker = buildCircuitBreaker(config);
-            return (T) Proxy.newProxyInstance(instance.getClass()
-                                                      .getClassLoader(),
-                                              interfaces,
-                                              new CircuitBreakerInvocationHandler<>(instance, circuitBreaker, enabled));
-        };
+        return instance -> createProxy(instance, config);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T createProxy(T instance, CircuitBreakerConfig config) {
+        if (!enabled.get()) {
+            return instance;
+        }
+        var interfaces = instance.getClass()
+                                 .getInterfaces();
+        if (interfaces.length == 0) {
+            return instance;
+        }
+        var circuitBreaker = buildCircuitBreaker(config);
+        var handler = new CircuitBreakerInvocationHandler<>(instance, circuitBreaker, enabled);
+        return (T) Proxy.newProxyInstance(instance.getClass()
+                                                  .getClassLoader(),
+                                          interfaces,
+                                          handler);
     }
 
     private CircuitBreaker buildCircuitBreaker(CircuitBreakerConfig config) {
-        return CircuitBreaker.builder()
-                             .failureThreshold(config.failureThreshold())
-                             .resetTimeout(config.resetTimeout())
-                             .testAttempts(config.testAttempts())
-                             .withDefaultShouldTrip()
-                             .withDefaultTimeSource();
+        var builder = CircuitBreaker.builder()
+                                    .failureThreshold(config.failureThreshold())
+                                    .resetTimeout(config.resetTimeout())
+                                    .testAttempts(config.testAttempts());
+        return builder.withDefaultShouldTrip()
+                      .withDefaultTimeSource();
     }
 
     @Override
@@ -58,12 +62,12 @@ final class DefaultCircuitBreakerFactory implements CircuitBreakerFactory {
         return enabled.get();
     }
 
-    // Note: InvocationHandler.invoke() requires `throws Throwable` - this is inherent
-    // to the reflection API contract and acceptable for infrastructure code.
+    @SuppressWarnings({"JBCT-VO-01", "JBCT-VO-02"})
     private record CircuitBreakerInvocationHandler<T>(T delegate,
                                                       CircuitBreaker circuitBreaker,
                                                       AtomicBoolean enabled) implements InvocationHandler {
         @Override
+        @SuppressWarnings("JBCT-EX-01")
         public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
             if (!enabled.get() || isObjectMethod(method)) {
                 return method.invoke(delegate, args);
@@ -84,8 +88,8 @@ final class DefaultCircuitBreakerFactory implements CircuitBreakerFactory {
             try{
                 return (Promise<?>) method.invoke(delegate, args);
             } catch (Exception e) {
-                return InfraSliceError.CircuitBreakerTripped.circuitBreakerTripped("Failed to invoke method: " + method.getName(),
-                                                                                   e)
+                return InfraSliceError.circuitBreakerTripped("Failed to invoke method: " + method.getName(),
+                                                             e)
                                       .promise();
             }
         }

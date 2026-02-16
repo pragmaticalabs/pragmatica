@@ -361,7 +361,7 @@ public final class R2dbcDatabaseConnector implements DatabaseConnector {
             return List.of();
         }
 
-        @SuppressWarnings("unchecked")
+        @SuppressWarnings({"unchecked", "JBCT-RET-01"})
         private <T> org.reactivestreams.Publisher<T> flatMapResult(org.reactivestreams.Publisher<? extends io.r2dbc.spi.Result> resultPublisher,
                                                                    java.util.function.BiFunction<Row, RowMetadata, T> mapper) {
             return subscriber -> resultPublisher.subscribe(new org.reactivestreams.Subscriber<io.r2dbc.spi.Result>() {

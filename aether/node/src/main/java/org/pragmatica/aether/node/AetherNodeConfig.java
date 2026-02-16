@@ -4,7 +4,7 @@ import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.ConfigurationProvider;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.SliceConfig;
-import org.pragmatica.aether.config.TTMConfig;
+import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
@@ -49,7 +49,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                int managementPort,
                                DHTConfig artifactRepo,
                                Option<TlsConfig> tls,
-                               TTMConfig ttm,
+                               TtmConfig ttm,
                                RollbackConfig rollback,
                                AppHttpConfig appHttp,
                                ControllerConfig controllerConfig,
@@ -60,7 +60,7 @@ public record AetherNodeConfig(TopologyConfig topology,
     public static final int MANAGEMENT_DISABLED = 0;
 
     public static SliceActionConfig defaultSliceActionConfig() {
-        return SliceActionConfig.defaultConfiguration(furySerializerFactoryProvider(AetherCustomClasses::configure));
+        return SliceActionConfig.sliceActionConfig(furySerializerFactoryProvider(AetherCustomClasses.INSTANCE));
     }
 
     public static AetherNodeConfig aetherNodeConfig(NodeId self,
@@ -70,7 +70,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                 port,
                                 coreNodes,
                                 defaultSliceActionConfig(),
-                                SliceConfig.defaultConfig(),
+                                SliceConfig.sliceConfig(),
                                 DEFAULT_MANAGEMENT_PORT,
                                 DHTConfig.DEFAULT);
     }
@@ -83,7 +83,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                 port,
                                 coreNodes,
                                 sliceActionConfig,
-                                SliceConfig.defaultConfig(),
+                                SliceConfig.sliceConfig(),
                                 DEFAULT_MANAGEMENT_PORT,
                                 DHTConfig.DEFAULT);
     }
@@ -97,7 +97,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                 port,
                                 coreNodes,
                                 sliceActionConfig,
-                                SliceConfig.defaultConfig(),
+                                SliceConfig.sliceConfig(),
                                 managementPort,
                                 DHTConfig.DEFAULT);
     }
@@ -121,9 +121,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     managementPort,
                                     artifactRepoConfig,
                                     Option.empty(),
-                                    TTMConfig.disabled(),
-                                    RollbackConfig.defaultConfig(),
-                                    AppHttpConfig.disabled(),
+                                    TtmConfig.ttmConfig(),
+                                    RollbackConfig.rollbackConfig(),
+                                    AppHttpConfig.appHttpConfig(),
                                     ControllerConfig.DEFAULT,
                                     Option.empty(),
                                     Option.empty(),
@@ -140,13 +140,13 @@ public record AetherNodeConfig(TopologyConfig topology,
         return new AetherNodeConfig(topology,
                                     ProtocolConfig.testConfig(),
                                     defaultSliceActionConfig(),
-                                    SliceConfig.defaultConfig(),
+                                    SliceConfig.sliceConfig(),
                                     MANAGEMENT_DISABLED,
                                     DHTConfig.FULL,
                                     Option.empty(),
-                                    TTMConfig.disabled(),
-                                    RollbackConfig.defaultConfig(),
-                                    AppHttpConfig.disabled(),
+                                    TtmConfig.ttmConfig(),
+                                    RollbackConfig.rollbackConfig(),
+                                    AppHttpConfig.appHttpConfig(),
                                     ControllerConfig.DEFAULT,
                                     Option.empty(),
                                     Option.empty(),
@@ -164,13 +164,13 @@ public record AetherNodeConfig(TopologyConfig topology,
         return new AetherNodeConfig(topology,
                                     ProtocolConfig.testConfig(),
                                     defaultSliceActionConfig(),
-                                    SliceConfig.defaultConfig(),
+                                    SliceConfig.sliceConfig(),
                                     MANAGEMENT_DISABLED,
                                     DHTConfig.FULL,
                                     Option.empty(),
-                                    TTMConfig.disabled(),
-                                    RollbackConfig.defaultConfig(),
-                                    AppHttpConfig.disabled(),
+                                    TtmConfig.ttmConfig(),
+                                    RollbackConfig.rollbackConfig(),
+                                    AppHttpConfig.appHttpConfig(),
                                     ControllerConfig.forgeDefaults(),
                                     Option.empty(),
                                     Option.empty(),
@@ -205,7 +205,7 @@ public record AetherNodeConfig(TopologyConfig topology,
     }
 
     /// Create a new configuration with TTM enabled.
-    public AetherNodeConfig withTTM(TTMConfig ttmConfig) {
+    public AetherNodeConfig withTtm(TtmConfig ttmConfig) {
         return new AetherNodeConfig(topology,
                                     protocol,
                                     sliceAction,

@@ -4,6 +4,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsEntry;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -89,24 +90,31 @@ DeploymentStatus status) {
     /// Returns empty Option if artifact or nodeId parsing fails (should not happen with valid entries).
     public static Option<DeploymentMetrics> fromEntry(DeploymentMetricsEntry entry) {
         return Artifact.artifact(entry.artifact())
-                       .flatMap(artifact -> NodeId.nodeId(entry.nodeId())
-                                                  .map(nodeId -> new DeploymentMetrics(artifact,
-                                                                                       nodeId,
-                                                                                       entry.startTime(),
-                                                                                       entry.loadTime(),
-                                                                                       entry.loadedTime(),
-                                                                                       entry.activateTime(),
-                                                                                       entry.activeTime(),
-                                                                                       DeploymentStatus.deploymentStatus(entry.status()))))
+                       .flatMap(artifact -> buildFromEntry(artifact, entry))
                        .option();
     }
 
+    @SuppressWarnings("JBCT-VO-02") // Record copy construction from parsed data
+    private static Result<DeploymentMetrics> buildFromEntry(Artifact artifact, DeploymentMetricsEntry entry) {
+        return NodeId.nodeId(entry.nodeId())
+                     .map(nodeId -> new DeploymentMetrics(artifact,
+                                                          nodeId,
+                                                          entry.startTime(),
+                                                          entry.loadTime(),
+                                                          entry.loadedTime(),
+                                                          entry.activateTime(),
+                                                          entry.activeTime(),
+                                                          DeploymentStatus.deploymentStatus(entry.status())));
+    }
+
     /// Create a new in-progress deployment starting now.
+    @SuppressWarnings("JBCT-VO-02") // Factory method - direct construction is intentional
     public static DeploymentMetrics deploymentMetrics(Artifact artifact, NodeId nodeId, long timestamp) {
         return new DeploymentMetrics(artifact, nodeId, timestamp, 0, 0, 0, 0, DeploymentStatus.IN_PROGRESS);
     }
 
     /// Update with LOAD state timestamp.
+    @SuppressWarnings("JBCT-VO-02") // Record copy method
     public DeploymentMetrics withLoadTime(long timestamp) {
         return new DeploymentMetrics(artifact,
                                      nodeId,
@@ -119,16 +127,19 @@ DeploymentStatus status) {
     }
 
     /// Update with LOADED state timestamp.
+    @SuppressWarnings("JBCT-VO-02") // Record copy method
     public DeploymentMetrics withLoadedTime(long timestamp) {
         return new DeploymentMetrics(artifact, nodeId, startTime, loadTime, timestamp, activateTime, activeTime, status);
     }
 
     /// Update with ACTIVATE state timestamp.
+    @SuppressWarnings("JBCT-VO-02") // Record copy method
     public DeploymentMetrics withActivateTime(long timestamp) {
         return new DeploymentMetrics(artifact, nodeId, startTime, loadTime, loadedTime, timestamp, activeTime, status);
     }
 
     /// Mark as completed with ACTIVE state timestamp.
+    @SuppressWarnings("JBCT-VO-02") // Record copy method
     public DeploymentMetrics completed(long timestamp) {
         return new DeploymentMetrics(artifact,
                                      nodeId,
@@ -141,6 +152,7 @@ DeploymentStatus status) {
     }
 
     /// Mark as failed during loading.
+    @SuppressWarnings("JBCT-VO-02") // Record copy method
     public DeploymentMetrics failedLoading(long timestamp) {
         return new DeploymentMetrics(artifact,
                                      nodeId,
@@ -153,6 +165,7 @@ DeploymentStatus status) {
     }
 
     /// Mark as failed during activation.
+    @SuppressWarnings("JBCT-VO-02") // Record copy method
     public DeploymentMetrics failedActivating(long timestamp) {
         return new DeploymentMetrics(artifact,
                                      nodeId,

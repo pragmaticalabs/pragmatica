@@ -22,7 +22,6 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.environment.InstanceId.instanceId;
 import static org.pragmatica.cloud.hetzner.HetznerConfig.hetznerConfig;
 
 class HetznerComputeProviderTest {
@@ -31,7 +30,7 @@ class HetznerComputeProviderTest {
         hetznerConfig("test-token"),
         "cx22", "ubuntu-24.04", "fsn1",
         List.of(1L, 2L), List.of(10L), List.of(5L),
-        "#!/bin/bash\necho hello");
+        "#!/bin/bash\necho hello").unwrap();
 
     private TestHetznerClient testClient;
     private HetznerComputeProvider provider;
@@ -39,7 +38,7 @@ class HetznerComputeProviderTest {
     @BeforeEach
     void setUp() {
         testClient = new TestHetznerClient();
-        provider = HetznerComputeProvider.hetznerComputeProvider(testClient, CONFIG);
+        provider = HetznerComputeProvider.hetznerComputeProvider(testClient, CONFIG).unwrap();
     }
 
     @Nested
@@ -73,7 +72,7 @@ class HetznerComputeProviderTest {
         void terminate_success_returnsUnit() {
             testClient.deleteServerResponse = Promise.success(Unit.unit());
 
-            provider.terminate(instanceId("42"))
+            provider.terminate(new InstanceId("42"))
                     .await()
                     .onFailure(cause -> assertThat(cause).isNull())
                     .onSuccess(unit -> assertThat(unit).isNotNull());
@@ -85,7 +84,7 @@ class HetznerComputeProviderTest {
         void terminate_failure_mapsToEnvironmentError() {
             testClient.deleteServerResponse = new HetznerError.ApiError(404, "not_found", "Not found").promise();
 
-            provider.terminate(instanceId("99"))
+            provider.terminate(new InstanceId("99"))
                     .await()
                     .onSuccess(unit -> assertThat(unit).isNull())
                     .onFailure(HetznerComputeProviderTest::assertTerminateFailedError);
@@ -135,7 +134,7 @@ class HetznerComputeProviderTest {
         void instanceStatus_success_returnsInstanceInfo() {
             testClient.getServerResponse = Promise.success(runningServer(42, "my-server"));
 
-            provider.instanceStatus(instanceId("42"))
+            provider.instanceStatus(new InstanceId("42"))
                     .await()
                     .onFailure(cause -> assertThat(cause).isNull())
                     .onSuccess(HetznerComputeProviderTest::assertRunningInstance42);
@@ -147,7 +146,7 @@ class HetznerComputeProviderTest {
         void instanceStatus_failure_mapsToEnvironmentError() {
             testClient.getServerResponse = new HetznerError.ApiError(404, "not_found", "Not found").promise();
 
-            provider.instanceStatus(instanceId("999"))
+            provider.instanceStatus(new InstanceId("999"))
                     .await()
                     .onSuccess(info -> assertThat(info).isNull())
                     .onFailure(HetznerComputeProviderTest::assertProvisionFailedError);
@@ -226,14 +225,14 @@ class HetznerComputeProviderTest {
 
         @Test
         void compute_returnsProvider() {
-            var integration = HetznerEnvironmentIntegration.hetznerEnvironmentIntegration(testClient, CONFIG);
+            var integration = HetznerEnvironmentIntegration.hetznerEnvironmentIntegration(testClient, CONFIG).unwrap();
 
             assertThat(integration.compute().isPresent()).isTrue();
         }
 
         @Test
         void secrets_returnsEmpty() {
-            var integration = HetznerEnvironmentIntegration.hetznerEnvironmentIntegration(testClient, CONFIG);
+            var integration = HetznerEnvironmentIntegration.hetznerEnvironmentIntegration(testClient, CONFIG).unwrap();
 
             assertThat(integration.secrets().isPresent()).isFalse();
         }

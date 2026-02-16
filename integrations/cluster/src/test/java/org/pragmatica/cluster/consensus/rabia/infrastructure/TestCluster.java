@@ -34,6 +34,9 @@ import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 /// Holds a small Rabia cluster wired over a single LocalNetwork.
 public class TestCluster {
     public record StringKey(String key) implements StructuredKey {
+        private static final List<Class<?>> CLASSES = List.of(StringKey.class);
+        private static final org.pragmatica.serialization.ClassRegistrator REGISTRATOR = () -> CLASSES;
+
         @Override
         public boolean matches(StructuredPattern pattern) {
             return false;
@@ -43,8 +46,8 @@ public class TestCluster {
             return new StringKey(key);
         }
 
-        public static void register(Consumer<Class<?>> consumer) {
-            consumer.accept(StringKey.class);
+        public static org.pragmatica.serialization.ClassRegistrator registrator() {
+            return REGISTRATOR;
         }
     }
 
@@ -53,8 +56,8 @@ public class TestCluster {
     private final Map<NodeId, RabiaEngine<KVCommand<StringKey>>> engines = new LinkedHashMap<>();
     private final Map<NodeId, KVStore<StringKey, String>> stores = new LinkedHashMap<>();
     private final Map<NodeId, MessageRouter.MutableRouter> routers = new LinkedHashMap<>();
-    private final Serializer serializer = furySerializer(CustomClasses::configure, StringKey::register);
-    private final Deserializer deserializer = furyDeserializer(CustomClasses::configure, StringKey::register);
+    private final Serializer serializer = furySerializer(CustomClasses.INSTANCE, StringKey.registrator());
+    private final Deserializer deserializer = furyDeserializer(CustomClasses.INSTANCE, StringKey.registrator());
     private final int size;
 
     public TestCluster(int size) {

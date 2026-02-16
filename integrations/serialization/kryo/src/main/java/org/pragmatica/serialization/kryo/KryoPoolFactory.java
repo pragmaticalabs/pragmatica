@@ -38,7 +38,8 @@ public sealed interface KryoPoolFactory {
             protected Kryo create() {
                 var kryo = new Kryo();
                 Stream.of(registrators)
-                      .forEach(registrator -> registrator.registerClasses(kryo::register));
+                      .flatMap(registrator -> registrator.classesToRegister().stream())
+                      .forEach(kryo::register);
                 return kryo;
             }
         };

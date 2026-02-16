@@ -75,6 +75,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///   - NO separate AllocationEngine - allocation logic embedded here
 ///   - Reconciliation handles topology changes and leader failover
 ///
+@SuppressWarnings("JBCT-RET-01") // MessageReceiver callbacks — void required by messaging framework
 public interface ClusterDeploymentManager {
     @MessageReceiver
     void onLeaderChange(LeaderChange leaderChange);
