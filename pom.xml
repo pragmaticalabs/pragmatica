@@ -230,7 +230,7 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-api</artifactId>
+                <artifactId>resource-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -270,7 +270,7 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-aspect</artifactId>
+                <artifactId>resource-interceptors</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

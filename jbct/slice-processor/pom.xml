@@ -35,10 +35,10 @@
             <artifactId>toml</artifactId>
         </dependency>
 
-        <!-- Aether Infra Aspect (for @Aspect, @Key annotation access) -->
+        <!-- Aether Resource API (for aspect config types) -->
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>infra-aspect</artifactId>
+            <artifactId>resource-api</artifactId>
             <scope>provided</scope>
         </dependency>
 

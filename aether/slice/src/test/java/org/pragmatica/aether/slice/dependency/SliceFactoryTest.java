@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.Aspect;
 import org.pragmatica.aether.slice.MethodHandle;
+import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.ResourceProviderFacade;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceCreationContext;
@@ -34,6 +35,11 @@ class SliceFactoryTest {
     private static final ResourceProviderFacade STUB_RESOURCES = new ResourceProviderFacade() {
         @Override
         public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+            return Causes.cause("Stub resource provider").promise();
+        }
+
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
             return Causes.cause("Stub resource provider").promise();
         }
     };

@@ -24,10 +24,10 @@ import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.HttpRouteRegistry;
-import org.pragmatica.aether.infra.ResourceProvider;
-import org.pragmatica.aether.infra.SpiResourceProvider;
-import org.pragmatica.aether.infra.artifact.ArtifactStore;
-import org.pragmatica.aether.infra.artifact.MavenProtocolHandler;
+import org.pragmatica.aether.resource.ResourceProvider;
+import org.pragmatica.aether.resource.SpiResourceProvider;
+import org.pragmatica.aether.resource.artifact.ArtifactStore;
+import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
 import org.pragmatica.aether.invoke.DynamicAspectInterceptor;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.InvocationMessage;
@@ -73,6 +73,7 @@ import org.pragmatica.dht.DHTNode;
 import org.pragmatica.dht.DHTTopologyListener;
 import org.pragmatica.dht.DistributedDHTClient;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -1161,6 +1162,13 @@ public interface AetherNode {
                                                                                                      return resourceProvider.provide(resourceType,
                                                                                                                                      configSection);
                                                                                                  }
+
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+                                                                                                     return resourceProvider.provide(resourceType,
+                                                                                                                                     configSection,
+                                                                                                                                     context);
+                                                                                                 }
         },
                                                                                                  Option.some(dynamicProvider));
                                                             });
@@ -1169,10 +1177,16 @@ public interface AetherNode {
 
     private static ResourceProviderFacade noOpResourceProviderFacade() {
         return new ResourceProviderFacade() {
+            private static final Cause NOT_CONFIGURED = Causes.cause("Resource provisioning not configured. Use AetherNodeConfig.withConfigProvider() to enable.");
+
             @Override
             public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                return Causes.cause("Resource provisioning not configured. Use AetherNodeConfig.withConfigProvider() to enable.")
-                             .promise();
+                return NOT_CONFIGURED.promise();
+            }
+
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+                return NOT_CONFIGURED.promise();
             }
         };
     }

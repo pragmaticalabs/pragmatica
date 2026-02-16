@@ -1,8 +1,8 @@
 package org.pragmatica.aether.repository;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.infra.artifact.ArtifactStore;
-import org.pragmatica.aether.infra.artifact.ArtifactStore.ResolvedArtifact;
+import org.pragmatica.aether.resource.artifact.ArtifactStore;
+import org.pragmatica.aether.resource.artifact.ArtifactStore.ResolvedArtifact;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.lang.Cause;

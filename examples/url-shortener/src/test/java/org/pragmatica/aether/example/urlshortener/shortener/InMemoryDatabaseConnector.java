@@ -1,16 +1,16 @@
 package org.pragmatica.aether.example.urlshortener.shortener;
 
-import org.pragmatica.aether.infra.db.DatabaseConnector;
-import org.pragmatica.aether.infra.db.DatabaseConnectorConfig;
-import org.pragmatica.aether.infra.db.RowMapper;
-import org.pragmatica.aether.infra.db.TransactionCallback;
-import org.pragmatica.aether.slice.SliceMethod;
+import org.pragmatica.aether.resource.db.DatabaseConnector;
+import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.RowMapper;
+import org.pragmatica.aether.resource.db.TransactionCallback;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
 
-import java.util.ArrayList;
+
+
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -69,21 +69,6 @@ public final class InMemoryDatabaseConnector implements DatabaseConnector {
     @Override
     public Promise<Boolean> isHealthy() {
         return Promise.success(true);
-    }
-
-    @Override
-    public Promise<Unit> start() {
-        return Promise.success(Unit.unit());
-    }
-
-    @Override
-    public Promise<Unit> stop() {
-        return Promise.success(Unit.unit());
-    }
-
-    @Override
-    public List<SliceMethod<?, ?>> methods() {
-        return List.of();
     }
 
     private <T> T executeQueryOne(String sql, RowMapper<T> mapper, Object[] params) {

@@ -71,11 +71,17 @@ public interface SliceStore {
 
     private static ResourceProviderFacade noOpResourceProvider() {
         return new ResourceProviderFacade() {
+            private static final Cause NOT_CONFIGURED = cause("Resource provisioning not configured. "
+                                                              + "Use AetherNodeConfig.withConfigProvider() to enable resource provisioning.");
+
             @Override
             public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                return cause("Resource provisioning not configured. "
-                             + "Use AetherNodeConfig.withConfigProvider() to enable resource provisioning.")
-                .promise();
+                return NOT_CONFIGURED.promise();
+            }
+
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+                return NOT_CONFIGURED.promise();
             }
         };
     }

@@ -134,6 +134,11 @@ public final class SliceLoadingContext implements SliceCreationContext {
         public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
             return NOT_CONFIGURED.promise();
         }
+
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+            return NOT_CONFIGURED.promise();
+        }
     }
 
     /// Internal invoker facade that buffers method handles for later materialization.

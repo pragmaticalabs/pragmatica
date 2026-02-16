@@ -33,9 +33,7 @@ import java.util.Set;
 import com.google.auto.service.AutoService;
 
 @AutoService(Processor.class)
-@SupportedAnnotationTypes({"org.pragmatica.aether.slice.annotation.Slice",
- "org.pragmatica.aether.infra.aspect.Aspect",
- "org.pragmatica.aether.infra.aspect.Key"})
+@SupportedAnnotationTypes("org.pragmatica.aether.slice.annotation.Slice")
 @SupportedOptions({"slice.groupId", "slice.artifactId"})
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class SliceProcessor extends AbstractProcessor {
@@ -63,13 +61,7 @@ public class SliceProcessor extends AbstractProcessor {
 
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
-        // Only process @Slice annotations; @Aspect and @Key are handled during method extraction
         for (var annotation : annotations) {
-            if (!annotation.getQualifiedName()
-                           .toString()
-                           .equals("org.pragmatica.aether.slice.annotation.Slice")) {
-                continue;
-            }
             for (var element : roundEnv.getElementsAnnotatedWith(annotation)) {
                 if (element.getKind() != ElementKind.INTERFACE) {
                     error(element, "@Slice can only be applied to interfaces, found: " + element.getKind());

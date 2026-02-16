@@ -1,6 +1,6 @@
 package org.pragmatica.aether.api.routes;
 
-import org.pragmatica.aether.infra.artifact.MavenProtocolHandler.MavenResponse;
+import org.pragmatica.aether.resource.artifact.MavenProtocolHandler.MavenResponse;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.http.ContentCategory;
 import org.pragmatica.http.ContentType;

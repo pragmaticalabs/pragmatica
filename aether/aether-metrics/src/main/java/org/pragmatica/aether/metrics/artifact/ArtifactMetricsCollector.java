@@ -1,7 +1,7 @@
 package org.pragmatica.aether.metrics.artifact;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.infra.artifact.ArtifactStore;
+import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;

@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.pragmatica-lite.aether</groupId>
+        <artifactId>aether</artifactId>
+        <version>0.16.0</version>
+    </parent>
+
+    <artifactId>resource</artifactId>
+    <packaging>pom</packaging>
+    <name>Aether Resource</name>
+    <description>Infrastructure resource modules for Aether runtime</description>
+
+    <modules>
+        <module>api</module>
+        <module>db-jdbc</module>
+        <module>db-r2dbc</module>
+        <module>db-jooq</module>
+        <module>db-jooq-r2dbc</module>
+        <module>http</module>
+        <module>interceptors</module>
+        <module>services</module>
+    </modules>
+
+    <properties>
+        <jooq.version>3.20.10</jooq.version>
+        <hikari.version>7.0.2</hikari.version>
+        <r2dbc.version>1.0.0.RELEASE</r2dbc.version>
+        <r2dbc-pool.version>1.0.2.RELEASE</r2dbc-pool.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>resource-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.jooq</groupId>
+                <artifactId>jooq</artifactId>
+                <version>${jooq.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.zaxxer</groupId>
+                <artifactId>HikariCP</artifactId>
+                <version>${hikari.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.r2dbc</groupId>
+                <artifactId>r2dbc-spi</artifactId>
+                <version>${r2dbc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.r2dbc</groupId>
+                <artifactId>r2dbc-pool</artifactId>
+                <version>${r2dbc-pool.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <configuration>
+                    <skipPublishing>true</skipPublishing>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

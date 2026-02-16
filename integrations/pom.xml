@@ -29,5 +29,6 @@
         <module>http-routing</module>
         <module>cluster</module>
         <module>cloud</module>
+        <module>statemachine</module>
     </modules>
 </project>

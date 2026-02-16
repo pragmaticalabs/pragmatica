@@ -4,7 +4,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
 import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
-import org.pragmatica.aether.infra.artifact.ArtifactStore;
+import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;

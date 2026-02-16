@@ -7,10 +7,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [0.16.0] - Unreleased
 
 ### Added
+- `aether/resource/` module group consolidating all infrastructure resources
+- `MethodInterceptor` interface in slice-api for per-method concerns (retry, circuit breaker, rate limit, logging, metrics)
+- `ProvisioningContext` in slice-api for passing type tokens and key extractors to resource factories
+- 5 interceptor `ResourceFactory` implementations in `resource-interceptors` module
+- `integrations/statemachine` module (relocated from infra-statemachine)
 
 ### Fixed
 
 ### Changed
+- **BREAKING:** Renamed packages `org.pragmatica.aether.infra.*` → `org.pragmatica.aether.resource.*`
+- **BREAKING:** Resources no longer implement `Slice` interface — `DatabaseConnector`, `HttpClient`, `ConfigService` etc. are pure resource types
+- Consolidated 10 infra-slices + infra-api + infra-services into 8 resource modules (api, db-jdbc, db-r2dbc, db-jooq, db-jooq-r2dbc, http, interceptors, services)
+- Flattened db-connector hierarchy: `infra-db-connector/{api,jdbc,r2dbc,...}` → `resource/{api,db-jdbc,db-r2dbc,...}`
+
+### Removed
+- `aether/infra-api/` — merged into `resource/api`
+- `aether/infra-slices/` — 10 modules dropped or relocated:
+  - `infra-aspect` (unused JDK proxy factories; config types preserved in resource/api)
+  - `infra-database` (toy in-memory SQL, superseded by db-connector)
+  - `infra-scheduler` (thin JDK wrapper)
+  - `infra-ratelimit` (duplicated core/RateLimiter)
+  - `infra-lock` (in-memory only, no distributed backend)
+  - `infra-pubsub` (in-memory only, no distributed backend)
+- `aether/infra-services/` — merged into `resource/services`
 
 ## [0.15.1] - 2026-02-12
 

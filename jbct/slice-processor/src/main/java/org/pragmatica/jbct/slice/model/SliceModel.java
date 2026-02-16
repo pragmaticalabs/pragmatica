@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.slice.model;
 
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import javax.annotation.processing.ProcessingEnvironment;
@@ -8,14 +9,15 @@ import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
+import java.util.HashMap;
 import java.util.List;
 
 public record SliceModel(String packageName,
-                         String simpleName,
-                         String qualifiedName,
-                         List<MethodModel> methods,
-                         List<DependencyModel> dependencies,
-                         ExecutableElement factoryMethod) {
+                          String simpleName,
+                          String qualifiedName,
+                          List<MethodModel> methods,
+                          List<DependencyModel> dependencies,
+                          ExecutableElement factoryMethod) {
     public SliceModel {
         methods = List.copyOf(methods);
         dependencies = List.copyOf(dependencies);
@@ -33,7 +35,8 @@ public record SliceModel(String packageName,
         return extractMethods(element, env)
         .flatMap(methods -> findFactoryMethod(element, simpleName)
         .flatMap(factoryMethod -> extractDependencies(factoryMethod, env)
-        .map(dependencies -> new SliceModel(packageName, simpleName, qualifiedName, methods, dependencies, factoryMethod))));
+        .flatMap(dependencies -> validateNoDuplicateResources(dependencies)
+        .map(_ -> new SliceModel(packageName, simpleName, qualifiedName, methods, dependencies, factoryMethod)))));
     }
 
     private static Result<List<MethodModel>> extractMethods(TypeElement element, ProcessingEnvironment env) {
@@ -68,7 +71,7 @@ public record SliceModel(String packageName,
     }
 
     private static Result<List<DependencyModel>> extractDependencies(ExecutableElement factoryMethod,
-                                                                     ProcessingEnvironment env) {
+                                                                      ProcessingEnvironment env) {
         var results = factoryMethod.getParameters()
                                    .stream()
                                    .map(param -> DependencyModel.dependencyModel(param, env))
@@ -76,20 +79,46 @@ public record SliceModel(String packageName,
         return Result.allOf(results);
     }
 
+    /// Validate that no two resource dependencies share the same (type, config) pair.
+    private static Result<Unit> validateNoDuplicateResources(List<DependencyModel> dependencies) {
+        var seen = new HashMap<String, String>(); // key: "type:config" -> paramName
+        for (var dep : dependencies) {
+            if (dep.isResource()) {
+                var result = checkDuplicateResource(dep, seen);
+                if (result.isFailure()) {
+                    return result;
+                }
+            }
+        }
+        return Result.success(Unit.unit());
+    }
+
+    private static Result<Unit> checkDuplicateResource(DependencyModel dep, HashMap<String, String> seen) {
+        return dep.resourceQualifier()
+                  .toResult(Causes.cause("Resource dep without qualifier: " + dep.parameterName()))
+                  .flatMap(rq -> checkDuplicate(rq, dep.parameterName(), seen));
+    }
+
+    private static Result<Unit> checkDuplicate(ResourceQualifierModel rq, String paramName, HashMap<String, String> seen) {
+        var key = rq.deduplicationKey();
+        var existing = seen.put(key, paramName);
+        if (existing != null) {
+            return Causes.cause("Duplicate resource dependency: parameters '" + existing + "' and '"
+                                + paramName + "' both provision " + rq.resourceTypeSimpleName()
+                                + " with config '" + rq.configSection() + "'")
+                         .result();
+        }
+        return Result.success(Unit.unit());
+    }
+
     public boolean hasDependencies() {
-        return ! dependencies.isEmpty();
+        return !dependencies.isEmpty();
     }
 
-    public boolean hasAspects() {
+    /// Check if any method has interceptors.
+    public boolean hasMethodInterceptors() {
         return methods.stream()
-                      .anyMatch(m -> m.aspects()
-                                      .hasAspects());
-    }
-
-    public boolean hasCache() {
-        return methods.stream()
-                      .anyMatch(m -> m.aspects()
-                                      .hasCache());
+                      .anyMatch(MethodModel::hasInterceptors);
     }
 
     public String factoryMethodName() {

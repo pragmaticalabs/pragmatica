@@ -156,10 +156,10 @@
                 <version>${project.version}</version>
             </dependency>
 
-            <!-- Aether Infra Aspect -->
+            <!-- Aether Resource API -->
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-aspect</artifactId>
+                <artifactId>resource-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

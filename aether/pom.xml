@@ -51,12 +51,10 @@
         <module>slice-api</module>
         <module>environment-integration</module>
         <module>environment</module>
-        <module>infra-api</module>
-        <module>infra-slices</module>
+        <module>resource</module>
         <module>slice</module>
         <module>cli</module>
         <module>forge</module>
-        <module>infra-services</module>
         <!-- e2e-tests requires examples to be installed first, enabled via -Pwith-e2e profile -->
         <module>http-handler-api</module>
         <module>http-routing-adapter</module>
@@ -207,7 +205,7 @@
 
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-api</artifactId>
+                <artifactId>resource-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -219,27 +217,32 @@
 
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-db-connector-api</artifactId>
+                <artifactId>resource-db-jdbc</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-db-connector-jdbc</artifactId>
+                <artifactId>resource-db-r2dbc</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-db-connector-r2dbc</artifactId>
+                <artifactId>resource-db-jooq</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-db-connector-jooq</artifactId>
+                <artifactId>resource-db-jooq-r2dbc</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-db-connector-jooq-r2dbc</artifactId>
+                <artifactId>resource-http</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>resource-interceptors</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

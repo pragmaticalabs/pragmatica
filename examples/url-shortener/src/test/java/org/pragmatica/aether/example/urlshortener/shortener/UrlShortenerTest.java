@@ -7,7 +7,7 @@ import org.pragmatica.aether.example.urlshortener.analytics.Analytics;
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.ResolveRequest;
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.ShortenRequest;
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.UrlError;
-import org.pragmatica.aether.infra.db.DatabaseConnector;
+import org.pragmatica.aether.resource.db.DatabaseConnector;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;

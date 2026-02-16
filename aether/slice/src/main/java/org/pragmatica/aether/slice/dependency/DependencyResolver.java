@@ -2,6 +2,7 @@ package org.pragmatica.aether.slice.dependency;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.ResourceProviderFacade;
 import org.pragmatica.aether.slice.SharedLibraryClassLoader;
 import org.pragmatica.aether.slice.Slice;
@@ -136,12 +137,18 @@ public interface DependencyResolver {
     /// This provider fails for any resource request.
     private static ResourceProviderFacade noOpResourceProvider() {
         return new ResourceProviderFacade() {
+            private static final Cause NOT_CONFIGURED = cause("Resource provisioning not configured. "
+                                                              + "Use resolveWithContext(artifact, repo, registry, loader, invoker, resourceFacade) "
+                                                              + "to enable resource provisioning.");
+
             @Override
             public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                return cause("Resource provisioning not configured. "
-                             + "Use resolveWithContext(artifact, repo, registry, loader, invoker, resourceFacade) "
-                             + "to enable resource provisioning.")
-                .promise();
+                return NOT_CONFIGURED.promise();
+            }
+
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+                return NOT_CONFIGURED.promise();
             }
         };
     }
