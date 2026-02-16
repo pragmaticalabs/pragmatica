@@ -12,7 +12,7 @@ organizeImports = true
 
 [lint]
 failOnWarning = false
-businessPackages = ["{{basePackage}}.usecase.**", "{{basePackage}}.domain.**"]
+# excludePackages = ["some.generated.**"]
 
 # Rule severity overrides
 # Possible values: "error", "warning", "off"

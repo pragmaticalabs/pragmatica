@@ -473,7 +473,7 @@ public final class SliceProjectInitializer {
 
         [lint]
         failOnWarning = false
-        businessPackages = ["{{basePackage}}.**"]
+        # excludePackages = ["some.generated.**"]
         """;
 
     private static final String GITIGNORE_TEMPLATE = """

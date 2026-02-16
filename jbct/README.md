@@ -46,7 +46,7 @@ alignChainedCalls = true
 
 [lint]
 failOnWarning = false
-businessPackages = ["**.usecase.**", "**.domain.**"]
+# excludePackages = ["some.generated.**"]
 ```
 
 ### Lint Rules (36 total)

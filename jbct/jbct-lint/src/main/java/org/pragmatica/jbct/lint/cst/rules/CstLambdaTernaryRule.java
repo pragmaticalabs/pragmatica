@@ -25,7 +25,7 @@ public class CstLambdaTernaryRule implements CstLintRule {
                                                                                             RuleId.QualifiedName.class))
                                    .map(qn -> text(qn, source))
                                    .or("");
-        if (!ctx.isBusinessPackage(packageName)) {
+        if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
         return findAll(root, RuleId.Lambda.class).stream()

@@ -18,11 +18,11 @@ import java.util.stream.Collectors;
 public record JbctConfig(FormatterConfig formatter,
                          LintConfig lint,
                          List<String> sourceDirectories,
-                         List<String> businessPackages,
+                         List<String> excludePackages,
                          List<String> slicePackages) {
     public JbctConfig {
         sourceDirectories = List.copyOf(sourceDirectories);
-        businessPackages = List.copyOf(businessPackages);
+        excludePackages = List.copyOf(excludePackages);
         slicePackages = List.copyOf(slicePackages);
     }
 
@@ -31,16 +31,16 @@ public record JbctConfig(FormatterConfig formatter,
     public static final JbctConfig DEFAULT = jbctConfig(FormatterConfig.DEFAULT,
                                                         LintConfig.DEFAULT,
                                                         List.of("src/main/java"),
-                                                        List.of("**.usecase.**", "**.domain.**"),
+                                                        List.of(),
                                                         List.of());
 
     /// Factory method for creating JbctConfig.
     public static JbctConfig jbctConfig(FormatterConfig formatter,
                                         LintConfig lint,
                                         List<String> sourceDirectories,
-                                        List<String> businessPackages,
+                                        List<String> excludePackages,
                                         List<String> slicePackages) {
-        return new JbctConfig(formatter, lint, sourceDirectories, businessPackages, slicePackages);
+        return new JbctConfig(formatter, lint, sourceDirectories, excludePackages, slicePackages);
     }
 
     /// Create config from parsed TOML document.
@@ -91,12 +91,12 @@ public record JbctConfig(FormatterConfig formatter,
         // Project section
         var sourceDirectories = toml.getStringList("project", "sourceDirectories")
                                     .or(List.of("src/main/java"));
-        var businessPackages = toml.getStringList("lint", "businessPackages")
-                                   .or(List.of("**.usecase.**", "**.domain.**"));
+        var excludePackages = toml.getStringList("lint", "excludePackages")
+                                  .or(List.of());
         // Slice packages - empty by default, must be explicitly configured
         var slicePackages = toml.getStringList("lint", "slicePackages")
                                 .or(List.of());
-        return jbctConfig(formatterConfig, lintConfig, sourceDirectories, businessPackages, slicePackages);
+        return jbctConfig(formatterConfig, lintConfig, sourceDirectories, excludePackages, slicePackages);
     }
 
     /// Merge this config with another, with other taking precedence.
@@ -118,15 +118,15 @@ public record JbctConfig(FormatterConfig formatter,
         var mergedSourceDirs = other.sourceDirectories.equals(List.of("src/main/java"))
                                ? this.sourceDirectories
                                : other.sourceDirectories;
-        // Merge business packages (use other if not default)
-        var mergedBusinessPackages = other.businessPackages.equals(List.of("**.usecase.**", "**.domain.**"))
-                                     ? this.businessPackages
-                                     : other.businessPackages;
+        // Merge exclude packages (use other if not empty)
+        var mergedExcludePackages = other.excludePackages.isEmpty()
+                                    ? this.excludePackages
+                                    : other.excludePackages;
         // Merge slice packages (use other if not empty)
         var mergedSlicePackages = other.slicePackages.isEmpty()
                                   ? this.slicePackages
                                   : other.slicePackages;
-        return jbctConfig(mergedFormatter, mergedLint, mergedSourceDirs, mergedBusinessPackages, mergedSlicePackages);
+        return jbctConfig(mergedFormatter, mergedLint, mergedSourceDirs, mergedExcludePackages, mergedSlicePackages);
     }
 
     /// Generate TOML representation of this config.
@@ -162,10 +162,10 @@ public record JbctConfig(FormatterConfig formatter,
         sb.append("failOnWarning = ")
           .append(lint.failOnWarning())
           .append("\n");
-        sb.append("businessPackages = [");
-        sb.append(businessPackages.stream()
-                                  .map(s -> "\"" + s + "\"")
-                                  .collect(Collectors.joining(", ")));
+        sb.append("excludePackages = [");
+        sb.append(excludePackages.stream()
+                                 .map(s -> "\"" + s + "\"")
+                                 .collect(Collectors.joining(", ")));
         sb.append("]\n");
         sb.append("# Slice packages for JBCT-SLICE-01 rule (required for external slice dependency checking)\n");
         sb.append("# Example: slicePackages = [\"**.usecase.**\"]\n");
