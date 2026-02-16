@@ -31,7 +31,7 @@ public interface OrderService {
 
     // Factory method - not included in API, used for wiring
     static OrderService orderService(InventoryService inventory) {
-        return new OrderServiceImpl(inventory);
+        return OrderServiceImpl.orderServiceImpl(inventory);
     }
 
     // Default methods - not included in API
@@ -54,21 +54,21 @@ public interface BadService {
 @Slice
 public interface BadService {
     Promise<String> doSomething(Request r);
-    static OtherService factory() { return new OtherServiceImpl(); }
+    static OtherService factory() { return OtherServiceImpl.otherServiceImpl(); }
 }
 
 // Method doesn't return Promise
 @Slice
 public interface BadService {
     String doSomething(Request r);  // Must return Promise<T>
-    static BadService factory() { return new BadServiceImpl(); }
+    static BadService factory() { return BadServiceImpl.badServiceImpl(); }
 }
 
 // Method has multiple parameters
 @Slice
 public interface BadService {
     Promise<String> doSomething(String a, int b);  // Must have exactly one param
-    static BadService factory() { return new BadServiceImpl(); }
+    static BadService factory() { return BadServiceImpl.badServiceImpl(); }
 }
 ```
 

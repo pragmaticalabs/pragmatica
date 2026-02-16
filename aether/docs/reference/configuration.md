@@ -14,8 +14,8 @@ AetherNodeConfig.aetherNodeConfig(
     port,              // int - cluster communication port
     coreNodes,         // List<NodeInfo> - cluster peers
     sliceActionConfig, // SliceActionConfig - slice lifecycle settings
+    sliceConfig,       // SliceConfig - slice repository configuration
     managementPort,    // int - HTTP API port (0 to disable)
-    httpRouter,        // Option<RouterConfig> - HTTP routing (empty to disable)
     artifactRepoConfig // DHTConfig - artifact repository settings
 );
 ```
@@ -26,9 +26,22 @@ AetherNodeConfig.aetherNodeConfig(
 | `port` | `int` | required | Cluster communication port |
 | `coreNodes` | `List<NodeInfo>` | required | List of cluster peers |
 | `sliceActionConfig` | `SliceActionConfig` | defaults | Slice lifecycle timeouts |
+| `sliceConfig` | `SliceConfig` | defaults | Slice repository configuration |
 | `managementPort` | `int` | 8080 | HTTP management API port |
-| `httpRouter` | `Option<RouterConfig>` | empty | HTTP routing configuration |
 | `artifactRepoConfig` | `DHTConfig` | DEFAULT | Artifact repository settings |
+
+Additional fields configured via `with*` builder methods:
+
+| Method | Type | Default | Description |
+|--------|------|---------|-------------|
+| `withTls()` | `TlsConfig` | none | TLS for cluster and HTTP |
+| `withAppHttp()` | `AppHttpConfig` | defaults | Application HTTP server for slice routes |
+| `withControllerConfig()` | `ControllerConfig` | DEFAULT | Scaling thresholds and behavior |
+| `withTtm()` | `TtmConfig` | defaults | TTM predictive scaling |
+| `withRollback()` | `RollbackConfig` | defaults | Automatic rollback settings |
+| `withConfigProvider()` | `ConfigurationProvider` | none | Resource provisioning |
+| `withEnvironment()` | `EnvironmentIntegration` | none | Compute/secrets integration |
+| `withAutoHeal()` | `AutoHealConfig` | DEFAULT | Auto-heal retry configuration |
 
 ### Factory Methods
 
@@ -36,17 +49,20 @@ AetherNodeConfig.aetherNodeConfig(
 // Minimal configuration
 AetherNodeConfig.aetherNodeConfig(nodeId, port, peers);
 
-// With custom slice config
-AetherNodeConfig.aetherNodeConfig(nodeId, port, peers, sliceConfig);
+// With custom slice action config
+AetherNodeConfig.aetherNodeConfig(nodeId, port, peers, sliceActionConfig);
 
 // With management port
-AetherNodeConfig.aetherNodeConfig(nodeId, port, peers, sliceConfig, 8080);
+AetherNodeConfig.aetherNodeConfig(nodeId, port, peers, sliceActionConfig, 8080);
 
 // Full configuration
-AetherNodeConfig.aetherNodeConfig(nodeId, port, peers, sliceConfig, 8080, httpRouter, dhtConfig);
+AetherNodeConfig.aetherNodeConfig(nodeId, port, peers, sliceActionConfig, sliceConfig, 8080, dhtConfig);
 
-// Test configuration (shorter timeouts)
+// Test configuration (shorter timeouts, management disabled, full replication)
 AetherNodeConfig.testConfig(nodeId, port, peers);
+
+// Forge simulation configuration (CPU-based scaling disabled)
+AetherNodeConfig.forgeConfig(nodeId, port, peers);
 ```
 
 ### TLS Configuration
@@ -64,8 +80,9 @@ var config = AetherNodeConfig.aetherNodeConfig(...)
 Controls slice lifecycle timeouts and behavior.
 
 ```java
-SliceActionConfig.defaultConfiguration();
-SliceActionConfig.defaultConfiguration(serializerProvider);
+SliceActionConfig.sliceActionConfig();
+SliceActionConfig.sliceActionConfig(serializerProvider);
+SliceActionConfig.sliceActionConfig(serializerProvider, frameworkJarsPath);
 ```
 
 | Parameter | Default | Description |
@@ -74,25 +91,10 @@ SliceActionConfig.defaultConfiguration(serializerProvider);
 | `activatingTimeout` | 1 minute | Max time for slice activation |
 | `deactivatingTimeout` | 30 seconds | Max time for slice deactivation |
 | `unloadingTimeout` | 2 minutes | Max time for slice unloading |
-| `startStopTimeout` | 30 seconds | Max time for start/stop |
-| `repositories` | Maven Central | Artifact repositories |
+| `startStopTimeout` | 5 seconds | Max time for start/stop |
+| `repositories` | Local repository | Artifact repositories |
 | `serializerProvider` | Fury | Serialization provider |
 | `frameworkJarsPath` | none | Custom framework JARs path |
-
-### Custom Configuration
-
-```java
-var sliceConfig = new SliceActionConfig(
-    timeSpan(3).minutes(),     // loadingTimeout
-    timeSpan(2).minutes(),     // activatingTimeout
-    timeSpan(1).minutes(),     // deactivatingTimeout
-    timeSpan(3).minutes(),     // unloadingTimeout
-    timeSpan(1).minutes(),     // startStopTimeout
-    List.of(customRepo),       // repositories
-    furySerializerFactoryProvider(),
-    Option.some(Path.of("/custom/jars"))
-);
-```
 
 ## Controller Configuration
 
@@ -101,30 +103,32 @@ var sliceConfig = new SliceActionConfig(
 Controls automatic scaling behavior.
 
 ```java
-ControllerConfig.defaults();
+ControllerConfig.DEFAULT;  // Pre-validated production defaults
 ControllerConfig.controllerConfig(
     cpuScaleUpThreshold,       // double - CPU % to trigger scale up
     cpuScaleDownThreshold,     // double - CPU % to trigger scale down
     callRateScaleUpThreshold,  // double - calls/sec to trigger scale up
     evaluationIntervalMs       // long - evaluation frequency
-);
+);  // Returns Result<ControllerConfig> with validation
 ```
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `cpuScaleUpThreshold` | 0.8 (80%) | CPU utilization to trigger scale up |
 | `cpuScaleDownThreshold` | 0.2 (20%) | CPU utilization to trigger scale down |
-| `callRateScaleUpThreshold` | 1000 | Calls/sec to trigger scale up |
+| `callRateScaleUpThreshold` | 2000 | Calls/sec to trigger scale up |
 | `evaluationIntervalMs` | 1000 | Evaluation interval (ms) |
+| `warmUpPeriodMs` | 30000 | Warm-up period before scaling (ms) |
+| `sliceCooldownMs` | 10000 | Cooldown between scaling actions (ms) |
 
 ### Runtime Configuration via API
 
 ```bash
 # View current config
-curl http://localhost:8080/controller/config
+curl http://localhost:8080/api/controller/config
 
 # Update config
-curl -X POST http://localhost:8080/controller/config \
+curl -X POST http://localhost:8080/api/controller/config \
   -H "Content-Type: application/json" \
   -d '{
     "cpuScaleUpThreshold": 0.75,
@@ -142,11 +146,13 @@ Cluster topology and node discovery.
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `self` | required | This node's identifier |
+| `clusterSize` | required | Number of nodes in the cluster |
 | `reconciliationInterval` | 5 seconds | Cluster state sync interval |
 | `pingInterval` | 1 second | Health check interval |
-| `helloTimeout` | 30 seconds | Connection handshake timeout |
+| `helloTimeout` | 5 seconds | Connection handshake timeout |
 | `coreNodes` | required | List of cluster peers |
 | `tls` | none | TLS configuration |
+| `backoff` | defaults | Connection backoff configuration |
 
 ### Peer Format
 
@@ -156,7 +162,7 @@ Peers are specified as `NodeInfo` objects:
 NodeInfo.nodeInfo(NodeId.nodeId("node-1"), "192.168.1.1", 8090);
 ```
 
-Or in string format for CLI/Docker:
+Or in string format for CLI/Podman:
 ```
 node-1:192.168.1.1:8090,node-2:192.168.1.2:8090,node-3:192.168.1.3:8090
 ```
@@ -169,15 +175,14 @@ Rabia consensus protocol settings.
 
 ```java
 ProtocolConfig.defaultConfig();   // Production defaults
-ProtocolConfig.testConfig();      // Faster timeouts for tests
+ProtocolConfig.testConfig();      // Faster sync retry for tests
 ```
 
 | Parameter | Production | Test | Description |
 |-----------|------------|------|-------------|
-| `batchSize` | 100 | 10 | Commands per batch |
-| `batchTimeout` | 10ms | 5ms | Max batch wait time |
-| `proposalTimeout` | 500ms | 100ms | Proposal round timeout |
-| `syncTimeout` | 5s | 1s | State sync timeout |
+| `cleanupInterval` | 60s | 60s | Interval for cleaning up old phases |
+| `syncRetryInterval` | 5s | 100ms | State sync retry interval |
+| `removeOlderThanPhases` | 100 | 100 | Remove phases older than N behind current |
 
 ## DHT Configuration
 
@@ -186,19 +191,21 @@ ProtocolConfig.testConfig();      // Faster timeouts for tests
 Distributed hash table for artifact storage.
 
 ```java
-DHTConfig.DEFAULT;  // 3 replicas, default partitions
-DHTConfig.FULL;     // Full replication (all nodes)
+DHTConfig.DEFAULT;      // 3 replicas, quorum of 2
+DHTConfig.FULL;         // Full replication (all nodes)
+DHTConfig.SINGLE_NODE;  // Single-node testing
 ```
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `replicationFactor` | 3 | Number of replicas |
-| `partitions` | 1024 | Hash ring partitions |
-| `virtualNodes` | 100 | Virtual nodes per real node |
+| `replicationFactor` | 3 | Number of replicas (0 = full replication) |
+| `writeQuorum` | 2 | Write quorum size |
+| `readQuorum` | 2 | Read quorum size |
+| `operationTimeout` | 10 seconds | Operation timeout |
 
 ## Environment Variables
 
-For Docker deployment, configuration via environment variables:
+For container deployment, configuration via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -255,29 +262,29 @@ var config = AetherNodeConfig.aetherNodeConfig(
     NodeId.nodeId("node-1"),
     8090,
     peers,
-    SliceActionConfig.defaultConfiguration(),
-    8080,
-    Option.some(routerConfig),
-    DHTConfig.DEFAULT
+    SliceActionConfig.sliceActionConfig(),
+    8080
 ).withTls(TlsConfig.tlsConfig(certPath, keyPath));
 ```
 
 ### Custom Timeouts
 
+Since `SliceActionConfig` is a record, custom timeouts can be constructed directly:
+
 ```java
-var sliceConfig = new SliceActionConfig(
-    timeSpan(5).minutes(),    // Longer loading for large slices
-    timeSpan(2).minutes(),
-    timeSpan(1).minutes(),
-    timeSpan(5).minutes(),
-    timeSpan(2).minutes(),
-    List.of(mavenCentral, privateRepo),
+var sliceActionConfig = new SliceActionConfig(
+    timeSpan(5).minutes(),    // loadingTimeout - longer for large slices
+    timeSpan(2).minutes(),    // activatingTimeout
+    timeSpan(1).minutes(),    // deactivatingTimeout
+    timeSpan(5).minutes(),    // unloadingTimeout
+    timeSpan(2).minutes(),    // startStopTimeout
+    List.of(localRepository()),
     furySerializerFactoryProvider(),
-    Option.empty()
+    Option.empty()            // frameworkJarsPath
 );
 
 var config = AetherNodeConfig.aetherNodeConfig(
-    nodeId, port, peers, sliceConfig
+    nodeId, port, peers, sliceActionConfig
 );
 ```
 

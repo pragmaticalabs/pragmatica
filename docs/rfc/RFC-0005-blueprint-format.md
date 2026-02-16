@@ -1,7 +1,7 @@
 ---
 RFC: 0005
 Title: Blueprint Format
-Status: Draft
+Status: Implemented
 Author: Sergiy Yevtushenko
 Created: 2026-01-16
 Updated: 2026-01-16

@@ -73,8 +73,8 @@
 
 1. **Prepare the server**
    ```bash
-   # Install Java 21+
-   apt install openjdk-21-jre
+   # Install Java 25+
+   apt install openjdk-25-jre
 
    # Create aether user
    useradd -r -s /bin/false aether

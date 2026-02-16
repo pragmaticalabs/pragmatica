@@ -21,7 +21,7 @@ public interface OrderService {
 
     // Add this
     static OrderService orderService() {
-        return new OrderServiceImpl();
+        return OrderServiceImpl.orderServiceImpl();
     }
 }
 ```
@@ -388,7 +388,7 @@ when(inventory.reserve(any())).thenReturn(null);
 
 // Correct
 when(inventory.reserve(any()))
-    .thenReturn(Promise.successful(new ReserveResult("RES-123")));
+    .thenReturn(Promise.success(new ReserveResult("RES-123")));
 ```
 
 ### "Factory requires SliceInvokerFacade"
@@ -402,7 +402,7 @@ Cannot invoke factory - missing invoker parameter
 ```java
 var invoker = mock(SliceInvokerFacade.class);
 when(invoker.invoke(anyString(), anyString(), any(), any()))
-    .thenReturn(Promise.successful(expectedResponse));
+    .thenReturn(Promise.success(expectedResponse));
 
 var slice = OrderServiceFactory.create(Aspect.identity(), invoker)
                                .await()
@@ -418,7 +418,7 @@ var slice = OrderServiceFactory.create(Aspect.identity(), invoker)
 @Override
 public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
     var result = processOrder(request);  // Blocking call
-    return Promise.successful(result);
+    return Promise.success(result);
 }
 
 // Correct - non-blocking
@@ -462,7 +462,7 @@ public class OrderServiceImpl implements OrderService {
     @Override
     public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
         orderCount++;  // Race condition
-        return Promise.successful(new OrderResult("ORD-" + orderCount));
+        return Promise.success(new OrderResult("ORD-" + orderCount));
     }
 }
 

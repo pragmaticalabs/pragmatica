@@ -1,7 +1,7 @@
 ---
 RFC: 0001
 Title: Core Slice Contract
-Status: Draft
+Status: Implemented
 Author: Sergiy Yevtushenko
 Created: 2026-01-15
 Updated: 2026-01-28

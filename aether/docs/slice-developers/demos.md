@@ -104,28 +104,28 @@ CLUSTER_SIZE=7 LOAD_RATE=2000 java -jar forge/forge-core/target/aether-forge.jar
 
 The dashboard opens automatically at `http://localhost:8888`.
 
-### Running with Docker
+### Running with Podman
 
 ```bash
 # Build image
 cd forge
-docker build -t aether-forge .
+podman build -t aether-forge .
 
 # Run container
-docker run -p 8888:8888 aether-forge
+podman run -p 8888:8888 aether-forge
 
 # Or with custom settings
-docker run -p 8888:8888 \
+podman run -p 8888:8888 \
   -e CLUSTER_SIZE=7 \
   -e LOAD_RATE=2000 \
   aether-forge
 ```
 
-### Running with Docker Compose
+### Running with Podman Compose
 
 ```bash
 cd forge
-docker-compose up
+podman-compose up
 ```
 
 ### Environment Variables
@@ -516,7 +516,7 @@ cd examples/ecommerce && mvn install -DskipTests
 
 1. Verify demo is running: `curl http://localhost:8888/api/status`
 2. Check firewall settings
-3. For Docker, ensure port mapping: `-p 8888:8888`
+3. For Podman, ensure port mapping: `-p 8888:8888`
 
 ### Low Success Rate
 

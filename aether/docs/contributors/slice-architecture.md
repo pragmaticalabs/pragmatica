@@ -17,7 +17,7 @@ public interface OrderService {
 
     static OrderService orderService(InventoryService inventory,
                                      PricingEngine pricing) {
-        return new OrderServiceImpl(inventory, pricing);
+        return OrderServiceImpl.orderServiceImpl(inventory, pricing);
     }
 }
 ```
@@ -177,7 +177,7 @@ public final class OrderServiceFactory {
 
         // Call developer's factory
         var instance = OrderService.orderService(validator, inventory);
-        return Promise.successful(aspect.apply(instance));
+        return Promise.success(aspect.apply(instance));
     }
 
     // Returns Slice for Aether runtime

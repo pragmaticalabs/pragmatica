@@ -223,11 +223,11 @@ public class OrderProcessorSlice implements Slice {
     private OrderService createLegacyService() {
         // Wire up your existing service
         // Could be Spring ApplicationContext, manual construction, etc.
-        var inventory = new InventoryRepositoryImpl(dataSource);
-        var pricing = new PricingServiceImpl();
-        var payments = new PaymentGatewayImpl(stripeApiKey);
-        var notifications = new NotificationServiceImpl(emailConfig);
-        var orderRepo = new OrderRepositoryImpl(dataSource);
+        var inventory = InventoryRepositoryImpl.inventoryRepositoryImpl(dataSource);
+        var pricing = PricingServiceImpl.pricingServiceImpl();
+        var payments = PaymentGatewayImpl.paymentGatewayImpl(stripeApiKey);
+        var notifications = NotificationServiceImpl.notificationServiceImpl(emailConfig);
+        var orderRepo = OrderRepositoryImpl.orderRepositoryImpl(dataSource);
 
         return new OrderService(inventory, pricing, payments, notifications, orderRepo);
     }

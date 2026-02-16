@@ -191,19 +191,19 @@ public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
 }
 ```
 
-### Exception Translation
+### Failure Translation
 
-Exceptions are wrapped for network transport:
+Failures are wrapped for network transport using sealed `Cause` types:
 
 ```java
-// Slice throws
-throw new InsufficientStockException("Item out of stock");
+// Slice returns failure
+Promise.failed(Causes.cause("Item out of stock"));
 
 // Client receives
-Promise.failed(new SliceException(
+Promise.failed(SliceCause.sliceCause(
     "org.example:inventory:1.0.0",
     "reserve",
-    "InsufficientStockException: Item out of stock"
+    "Item out of stock"
 ));
 ```
 

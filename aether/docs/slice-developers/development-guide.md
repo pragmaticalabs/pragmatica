@@ -49,7 +49,7 @@ public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
     return inventory.checkStock(new StockRequest(request.items()))
                     .flatMap(stock -> {
                         if (!stock.available()) {
-                            return Promise.failed(new OutOfStockException());
+                            return Promise.failed(Causes.cause("Out of stock"));
                         }
                         return processOrder(request);
                     });
@@ -80,7 +80,7 @@ public interface OrderService {
 
     static OrderService orderService(InventoryService inventory,
                                      PricingEngine pricing) {
-        return new OrderServiceImpl(inventory, pricing);
+        return OrderServiceImpl.orderServiceImpl(inventory, pricing);
     }
 }
 ```
@@ -91,9 +91,13 @@ public class OrderServiceImpl implements OrderService {
     private final InventoryService inventory;
     private final PricingEngine pricing;
 
-    public OrderServiceImpl(InventoryService inventory, PricingEngine pricing) {
+    OrderServiceImpl(InventoryService inventory, PricingEngine pricing) {
         this.inventory = inventory;
         this.pricing = pricing;
+    }
+
+    static OrderServiceImpl orderServiceImpl(InventoryService inventory, PricingEngine pricing) {
+        return new OrderServiceImpl(inventory, pricing);
     }
 
     @Override
@@ -123,7 +127,7 @@ public interface OrderService {
     Promise<OrderResult> placeOrder(PlaceOrderRequest request);
 
     static OrderService orderService(OrderValidator validator) {
-        return new OrderServiceImpl(validator);
+        return OrderServiceImpl.orderServiceImpl(validator);
     }
 }
 ```
@@ -185,7 +189,7 @@ public interface OrderService {
 
     static OrderService orderService(PaymentService payments,
                                      ShippingService shipping) {
-        return new OrderServiceImpl(payments, shipping);
+        return OrderServiceImpl.orderServiceImpl(payments, shipping);
     }
 }
 ```
@@ -221,7 +225,7 @@ Validate in your implementation, not in records:
 @Override
 public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
     if (request.items().isEmpty()) {
-        return Promise.failed(new ValidationException("Order must have items"));
+        return Promise.failed(Causes.cause("Order must have items"));
     }
     // ... process order
 }
@@ -252,11 +256,11 @@ class OrderServiceTest {
         var pricing = mock(PricingEngine.class);
 
         when(inventory.reserve(any()))
-            .thenReturn(Promise.successful(new ReserveResult("RES-123")));
+            .thenReturn(Promise.success(new ReserveResult("RES-123")));
         when(pricing.calculate(any()))
-            .thenReturn(Promise.successful(new PriceResult("ORD-456", 99.99)));
+            .thenReturn(Promise.success(new PriceResult("ORD-456", 99.99)));
 
-        var service = new OrderServiceImpl(inventory, pricing);
+        var service = OrderServiceImpl.orderServiceImpl(inventory, pricing);
         var request = new PlaceOrderRequest("CUST-1", List.of(item), address);
 
         var result = service.placeOrder(request).await();
@@ -277,7 +281,7 @@ class OrderServiceIntegrationTest {
     void should_wire_dependencies() {
         var invoker = mock(SliceInvokerFacade.class);
         when(invoker.invoke(anyString(), eq("reserve"), any(), any()))
-            .thenReturn(Promise.successful(new ReserveResult("RES-123")));
+            .thenReturn(Promise.success(new ReserveResult("RES-123")));
 
         var result = OrderServiceFactory.create(Aspect.identity(), invoker).await();
 
@@ -290,37 +294,43 @@ class OrderServiceIntegrationTest {
 
 ### Use Promise.failed()
 
-For business errors, return failed promises:
+For business errors, return failed promises using sealed `Cause` types:
 
 ```java
 @Override
 public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
     if (request.items().isEmpty()) {
-        return Promise.failed(new EmptyOrderException());
+        return Promise.failed(OrderCause.EMPTY_ORDER);
     }
 
     return inventory.checkStock(stockRequest)
                     .flatMap(stock -> {
                         if (!stock.sufficient()) {
-                            return Promise.failed(new InsufficientStockException(stock));
+                            return Promise.failed(OrderCause.insufficientStock(stock));
                         }
                         return completeOrder(request);
                     });
 }
 ```
 
-### Exception Types
+### Cause Types
 
-Define clear exception hierarchies:
+Define sealed `Cause` hierarchies instead of exceptions:
 
 ```java
-public sealed class OrderException extends RuntimeException {
-    public static final class EmptyOrderException extends OrderException {}
-    public static final class InsufficientStockException extends OrderException {
-        private final StockStatus stock;
-        // ...
+public sealed interface OrderCause extends Cause {
+    OrderCause EMPTY_ORDER = new EmptyOrder();
+    static OrderCause insufficientStock(StockStatus stock) { return new InsufficientStock(stock); }
+
+    record EmptyOrder() implements OrderCause {
+        public String message() { return "Order must have items"; }
     }
-    public static final class PaymentDeclinedException extends OrderException {}
+    record InsufficientStock(StockStatus stock) implements OrderCause {
+        public String message() { return "Insufficient stock: " + stock; }
+    }
+    record PaymentDeclined() implements OrderCause {
+        public String message() { return "Payment was declined"; }
+    }
 }
 ```
 
