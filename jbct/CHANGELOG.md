@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Slice processor: plain interface factory methods with @ResourceQualifier parameters now generate correct resource provisioning and argument passing instead of zero-arg calls
+
 ## [0.6.1] - 2026-02-12
 
 ### Changed

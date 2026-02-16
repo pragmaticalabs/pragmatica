@@ -53,7 +53,7 @@ public class SliceProcessor extends AbstractProcessor {
         var types = processingEnv.getTypeUtils();
         var options = processingEnv.getOptions();
         this.versionResolver = new DependencyVersionResolver(processingEnv);
-        this.factoryGenerator = new FactoryClassGenerator(filer, elements, types, versionResolver);
+        this.factoryGenerator = new FactoryClassGenerator(processingEnv, filer, elements, types, versionResolver);
         this.manifestGenerator = new ManifestGenerator(filer, versionResolver, options);
         this.errorDiscovery = new ErrorTypeDiscovery(processingEnv);
         this.routeGenerator = new RouteSourceGenerator(filer, processingEnv.getMessager(), elements);

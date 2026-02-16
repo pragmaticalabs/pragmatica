@@ -11,6 +11,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import javax.annotation.processing.Filer;
+import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
@@ -25,6 +26,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /// Generates factory class for slice instantiation.
 ///
@@ -39,15 +41,18 @@ import java.util.Map;
 /// Method interceptors (annotations with @ResourceQualifier on methods) use ctx.resources().provide()
 /// and compose via interceptor.intercept(impl::method).
 public class FactoryClassGenerator {
+    private final ProcessingEnvironment processingEnv;
     private final Filer filer;
     private final Elements elements;
     private final Types types;
     private final DependencyVersionResolver versionResolver;
 
-    public FactoryClassGenerator(Filer filer,
+    public FactoryClassGenerator(ProcessingEnvironment processingEnv,
+                                 Filer filer,
                                  Elements elements,
                                  Types types,
                                  DependencyVersionResolver versionResolver) {
+        this.processingEnv = processingEnv;
         this.filer = filer;
         this.elements = elements;
         this.types = types;
@@ -207,6 +212,42 @@ public class FactoryClassGenerator {
 
     private record AllEntry(String varName, String promiseExpression) {}
 
+    private record PlainInterfaceFactoryParam(String varName, ResourceQualifierModel qualifier) {
+        /// Returns the fully qualified resource type name for use in generated source code.
+        String qualifiedResourceTypeName() {
+            return qualifier.resourceType().toString();
+        }
+    }
+
+    /// Analyze a plain interface's factory method for @ResourceQualifier-annotated parameters.
+    private List<PlainInterfaceFactoryParam> analyzePlainInterfaceResourceParams(DependencyModel dep) {
+        var typeElement = elements.getTypeElement(dep.interfaceQualifiedName());
+        if (typeElement == null) {
+            return List.of();
+        }
+        var factoryMethodName = lowercaseFirst(dep.interfaceSimpleName());
+        for (var enclosed : typeElement.getEnclosedElements()) {
+            if (enclosed.getKind() != ElementKind.METHOD) {
+                continue;
+            }
+            var method = (ExecutableElement) enclosed;
+            if (!method.getModifiers().contains(Modifier.STATIC)
+                || !method.getSimpleName().toString().equals(factoryMethodName)) {
+                continue;
+            }
+            var result = new ArrayList<PlainInterfaceFactoryParam>();
+            for (var param : method.getParameters()) {
+                ResourceQualifierModel.fromParameter(param, processingEnv)
+                                      .onPresent(qualifier -> result.add(
+                                          new PlainInterfaceFactoryParam(
+                                              dep.parameterName() + "_" + param.getSimpleName(),
+                                              qualifier)));
+            }
+            return result;
+        }
+        return List.of();
+    }
+
     /// Collect unique interceptor provisions across all methods, deduplicating by (type, config).
     private List<InterceptorEntry> collectUniqueInterceptors(SliceModel model) {
         var seen = new LinkedHashMap<String, InterceptorEntry>();
@@ -251,13 +292,23 @@ public class FactoryClassGenerator {
                 entries.add(new AllEntry(handle.varName(), generateMethodHandleCall(handle)));
             }
         }
-        // Plain interface leaf deps (resources their factory methods need)
-        // For now, plain interfaces are constructed synchronously inside .map()
-        // Their resource deps should already be in the resource deps list
+        // Analyze plain interface factory params and add resource provisions
+        var plainInterfaceParams = new LinkedHashMap<String, List<PlainInterfaceFactoryParam>>();
+        for (var dep : plainDeps) {
+            var params = analyzePlainInterfaceResourceParams(dep);
+            if (!params.isEmpty()) {
+                plainInterfaceParams.put(dep.parameterName(), params);
+                for (var param : params) {
+                    entries.add(new AllEntry(param.varName(),
+                        "ctx.resources().provide(" + param.qualifiedResourceTypeName() + ".class, \""
+                        + escapeJavaString(param.qualifier().configSection()) + "\")"));
+                }
+            }
+        }
 
         if (entries.isEmpty()) {
             // No async deps — plain deps are constructed synchronously
-            generateSyncOnlyBody(out, model, sliceName, plainDeps);
+            generateSyncOnlyBody(out, model, sliceName, plainDeps, plainInterfaceParams);
             return;
         }
         if (entries.size() > 15) {
@@ -292,8 +343,12 @@ public class FactoryClassGenerator {
         // Construct plain interface deps
         for (var dep : plainDeps) {
             var factoryMethodName = lowercaseFirst(dep.interfaceSimpleName());
+            var params = plainInterfaceParams.getOrDefault(dep.parameterName(), List.of());
+            var argList = params.stream()
+                                .map(PlainInterfaceFactoryParam::varName)
+                                .collect(Collectors.joining(", "));
             out.println("            var " + dep.parameterName() + " = " + dep.sourceUsableName() + "."
-                        + factoryMethodName + "();");
+                        + factoryMethodName + "(" + argList + ");");
         }
         // Call factory and wrap
         var factoryArgs = model.dependencies()
@@ -344,7 +399,8 @@ public class FactoryClassGenerator {
     private void generateSyncOnlyBody(PrintWriter out,
                                        SliceModel model,
                                        String sliceName,
-                                       List<DependencyModel> plainDeps) {
+                                       List<DependencyModel> plainDeps,
+                                       Map<String, List<PlainInterfaceFactoryParam>> plainInterfaceParams) {
         if (model.hasMethodInterceptors()) {
             generateNoDepInterceptorBody(out, model, sliceName);
             return;
@@ -352,8 +408,12 @@ public class FactoryClassGenerator {
         // Construct plain interface deps synchronously
         for (var dep : plainDeps) {
             var factoryMethodName = lowercaseFirst(dep.interfaceSimpleName());
+            var params = plainInterfaceParams.getOrDefault(dep.parameterName(), List.of());
+            var argList = params.stream()
+                                .map(PlainInterfaceFactoryParam::varName)
+                                .collect(Collectors.joining(", "));
             out.println("        var " + dep.parameterName() + " = " + dep.sourceUsableName() + "."
-                        + factoryMethodName + "();");
+                        + factoryMethodName + "(" + argList + ");");
         }
         var factoryArgs = buildFactoryArgs(model, plainDeps);
         out.println("        var instance = " + sliceName + "." + model.factoryMethodName() + "("

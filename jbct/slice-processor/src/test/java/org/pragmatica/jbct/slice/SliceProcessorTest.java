@@ -1273,6 +1273,159 @@ class SliceProcessorTest {
         assertThat(factoryContent).contains("implements PaymentGateway.Processor");
     }
 
+    // ========== Plain Interface Factory with @ResourceQualifier Parameters ==========
+
+    @Test
+    void should_generate_resource_provide_for_plain_interface_factory_params() throws Exception {
+        var kycProvider = JavaFileObjects.forSourceString("test.annotation.KycProvider",
+                                                          """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = test.infra.HttpClient.class, config = "http.kyc")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface KycProvider {}
+            """);
+        var httpClient = JavaFileObjects.forSourceString("test.infra.HttpClient",
+                                                          """
+            package test.infra;
+            public interface HttpClient {
+                String get(String url);
+            }
+            """);
+        var kycStep = JavaFileObjects.forSourceString("test.KycStep",
+                                                        """
+            package test;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.KycProvider;
+            import test.infra.HttpClient;
+            public interface KycStep {
+                Promise<Boolean> verify(String customerId);
+                static KycStep kycStep(@KycProvider HttpClient httpClient) { return null; }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.LoanService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            @Slice
+            public interface LoanService {
+                Promise<String> processLoan(String request);
+                static LoanService loanService(KycStep kycStep) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(kycProvider);
+        sources.add(httpClient);
+        sources.add(kycStep);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.LoanServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        // Resource is provisioned for the plain interface's factory param (fully qualified)
+        assertThat(factoryContent).contains("ctx.resources().provide(test.infra.HttpClient.class, \"http.kyc\")");
+        // Factory called WITH the provisioned arg
+        assertThat(factoryContent).contains("KycStep.kycStep(kycStep_httpClient)");
+        // Zero-arg call must NOT appear
+        assertThat(factoryContent).doesNotContain("KycStep.kycStep()");
+        // Async provisioning path used
+        assertThat(factoryContent).contains("Promise.all(");
+    }
+
+    @Test
+    void should_generate_resources_for_multiple_plain_interfaces_with_params() throws Exception {
+        var kycProvider = JavaFileObjects.forSourceString("test.annotation.KycProvider",
+                                                          """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = test.infra.HttpClient.class, config = "http.kyc")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface KycProvider {}
+            """);
+        var fraudProvider = JavaFileObjects.forSourceString("test.annotation.FraudProvider",
+                                                             """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = test.infra.HttpClient.class, config = "http.fraud")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface FraudProvider {}
+            """);
+        var httpClient = JavaFileObjects.forSourceString("test.infra.HttpClient",
+                                                          """
+            package test.infra;
+            public interface HttpClient {
+                String get(String url);
+            }
+            """);
+        var kycStep = JavaFileObjects.forSourceString("test.KycStep",
+                                                        """
+            package test;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.KycProvider;
+            import test.infra.HttpClient;
+            public interface KycStep {
+                Promise<Boolean> verify(String customerId);
+                static KycStep kycStep(@KycProvider HttpClient httpClient) { return null; }
+            }
+            """);
+        var fraudCheck = JavaFileObjects.forSourceString("test.FraudCheck",
+                                                          """
+            package test;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.FraudProvider;
+            import test.infra.HttpClient;
+            public interface FraudCheck {
+                Promise<Boolean> check(String customerId);
+                static FraudCheck fraudCheck(@FraudProvider HttpClient httpClient) { return null; }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.LoanService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            @Slice
+            public interface LoanService {
+                Promise<String> processLoan(String request);
+                static LoanService loanService(KycStep kycStep, FraudCheck fraudCheck) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(kycProvider);
+        sources.add(fraudProvider);
+        sources.add(httpClient);
+        sources.add(kycStep);
+        sources.add(fraudCheck);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.LoanServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        // Both resources provisioned (fully qualified)
+        assertThat(factoryContent).contains("ctx.resources().provide(test.infra.HttpClient.class, \"http.kyc\")");
+        assertThat(factoryContent).contains("ctx.resources().provide(test.infra.HttpClient.class, \"http.fraud\")");
+        // Both factory calls have args
+        assertThat(factoryContent).contains("KycStep.kycStep(kycStep_httpClient)");
+        assertThat(factoryContent).contains("FraudCheck.fraudCheck(fraudCheck_httpClient)");
+        // Async provisioning path
+        assertThat(factoryContent).contains("Promise.all(");
+    }
+
     @Test
     void should_generate_correct_references_for_inner_interface_with_factory_method_cross_package() throws Exception {
         var outerInterface = JavaFileObjects.forSourceString("external.PaymentGateway",
