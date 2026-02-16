@@ -58,6 +58,50 @@ public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
 
 ## Adding Dependencies
 
+### Resource Dependencies (Infrastructure)
+
+To depend on infrastructure resources (databases, HTTP clients, etc.):
+
+1. Define a qualifier annotation with `@ResourceQualifier`:
+```java
+@ResourceQualifier(type = DatabaseConnector.class, config = "database.primary")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+public @interface PrimaryDb {}
+```
+
+2. Annotate the factory parameter:
+```java
+@Slice
+public interface OrderRepository {
+    Promise<OrderResult> findOrder(FindOrderRequest request);
+
+    static OrderRepository orderRepository(@PrimaryDb DatabaseConnector db) {
+        return new orderRepository(db);
+    }
+}
+```
+
+3. Configure the resource in `aether.toml`:
+```toml
+[database.primary]
+driver = "postgresql"
+jdbc_url = "jdbc:postgresql://localhost:5432/orders"
+username = "app"
+password = "secret"
+```
+
+**What happens at build time:**
+- Annotation processor detects `@PrimaryDb` as a `@ResourceQualifier` meta-annotation
+- Extracts resource type (`DatabaseConnector.class`) and config section (`"database.primary"`)
+- Generates `ctx.resources().provide(DatabaseConnector.class, "database.primary")` in the factory
+
+**What happens at runtime:**
+- Aether discovers a `ResourceFactory<DatabaseConnector, ...>` via SPI
+- Loads config from `aether.toml` section `database.primary`
+- Creates and caches the resource instance
+- Injects it into the slice factory
+
 ### External Dependencies (Other Slices)
 
 To depend on another slice:
@@ -137,15 +181,76 @@ Internal dependencies:
 - No proxy generation
 - No network overhead
 
+### Plain Interface Dependencies
+
+Non-`@Slice` interfaces with static factory methods are "plain interface" dependencies. They are constructed by calling their factory method directly.
+
+```java
+// Plain interface - not a @Slice, has a factory method
+public interface OrderValidator {
+    Promise<Boolean> validate(String orderId);
+
+    static OrderValidator orderValidator() {
+        return new orderValidator();
+    }
+}
+
+@Slice
+public interface OrderService {
+    Promise<OrderResult> placeOrder(PlaceOrderRequest request);
+
+    static OrderService orderService(OrderValidator validator) {
+        return new orderService(validator);
+    }
+}
+```
+
+**What happens at build time:**
+- Processor detects `OrderValidator` has a factory method → plain interface
+- Generated factory calls `OrderValidator.orderValidator()` directly
+- No proxy, no network overhead
+
+#### Plain Interfaces with Resource Parameters
+
+If a plain interface's factory method has `@ResourceQualifier`-annotated parameters, those resources are provisioned transitively:
+
+```java
+public interface KycStep {
+    Promise<Boolean> verify(String customerId);
+
+    static KycStep kycStep(@KycProvider HttpClient httpClient) {
+        return new kycStep(httpClient);
+    }
+}
+
+@Slice
+public interface LoanService {
+    Promise<LoanResult> processLoan(LoanRequest request);
+
+    static LoanService loanService(KycStep kycStep) {
+        return new loanService(kycStep);
+    }
+}
+```
+
+The processor introspects `KycStep.kycStep()`, discovers `@KycProvider HttpClient`, provisions the resource, and passes it:
+```java
+// Generated: provisions HttpClient, then passes to KycStep factory
+ctx.resources().provide(HttpClient.class, "http.kyc")
+// ...
+var kycStep = KycStep.kycStep(kycStep_httpClient);
+```
+
 ### Dependency Classification
 
-The processor uses package names to classify:
+The processor classifies factory parameters into three categories:
 
-| Dependency Package | Slice Package | Classification |
-|-------------------|---------------|----------------|
-| `org.example.order.validation` | `org.example.order` | Internal (starts with slice's package) |
-| `org.example.inventory` | `org.example.order` | External (different base) |
-| `com.other.service` | `org.example.order` | External |
+| Dependency | Characteristics | Classification |
+|-----------|----------------|----------------|
+| `@PrimaryDb DatabaseConnector db` | Has @ResourceQualifier annotation | Resource dependency |
+| `InventoryService inventory` | External interface, no factory method | Slice dependency (proxied) |
+| `OrderValidator validator` | Has static factory method | Plain interface dependency |
+| `KycStep kycStep` | Has factory with @ResourceQualifier params | Plain interface (transitive resources) |
 
 ## Multiple Slices in One Module
 

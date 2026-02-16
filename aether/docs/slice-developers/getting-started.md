@@ -8,11 +8,11 @@ modify it to make it your own, and deploy it to a local Forge.
 
 ## Prerequisites
 
-| Tool | Version | Check |
-|------|---------|-------|
-| Java | 25+ | `java --version` |
-| Maven | 3.8+ | `mvn --version` |
-| JBCT CLI | 0.16.0+ | `jbct --version` |
+| Tool     | Version  | Check            |
+|----------|----------|------------------|
+| Java     | 25+      | `java --version` |
+| Maven    | 3.8+     | `mvn --version`  |
+| JBCT CLI | 0.16.0+  | `jbct --version` |
 
 > **Don't have the JBCT CLI?** See [Installing JBCT](../reference/installing-jbct.md).
 
@@ -105,11 +105,6 @@ Your Java version is too old. Aether requires Java 25+. Check with `java --versi
 
 **`jbct: command not found`**
 The JBCT CLI isn't installed or isn't on your PATH. See [Installing JBCT](../reference/installing-jbct.md).
-
-**`Could not resolve dependencies`**
-The Pragmatica Lite and Aether libraries aren't in your local Maven repository.
-Run `mvn install` in the Pragmatica monorepo first, or ensure the libraries are published
-to a repository your project can access.
 
 ## Step 3: Understand the Generated Code
 

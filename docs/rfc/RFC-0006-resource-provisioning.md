@@ -254,16 +254,70 @@ public final class OrderRepositoryFactory {
 **Processing rules:**
 1. Detect all factory parameters
 2. For each parameter:
-   - If type has @ResourceQualifier annotation: extract resource type and config section
-   - If type is @Slice interface: extract slice dependency
+   - If type has @ResourceQualifier annotation: extract resource type and config section → **resource dependency**
+   - If type is @Slice interface: extract slice dependency → **slice dependency** (proxy via `SliceInvokerFacade`)
+   - If type is plain interface with static factory method: → **plain interface dependency** (constructed locally)
    - Otherwise: error (unknown dependency type)
-3. Build Promise.all(...) chain capturing all dependencies
-4. Extract qualifier info:
+3. For plain interface dependencies, introspect their factory method parameters:
+   - If any parameter has @ResourceQualifier: add transitive resource provisioning
+   - Pass provisioned resources as arguments to the plain interface factory
+4. Build Promise.all(...) chain capturing all async dependencies (resources + slice handles)
+5. Extract qualifier info:
    - `@PrimaryDb` → `@ResourceQualifier(type=DatabaseConnector.class, config="database.primary")`
    - `@ReadonlyDb` → `@ResourceQualifier(type=DatabaseConnector.class, config="database.readonly")`
-5. Generate `ctx.resources().provide(type, config)` calls
-6. Generate `ctx.invoker().methodHandle(...)` calls for slice dependencies
-7. Map extracted promises to user factory method
+6. Generate `ctx.resources().provide(type, config)` calls (direct + transitive from plain interfaces)
+7. Generate `ctx.invoker().methodHandle(...)` calls for slice dependencies
+8. Construct plain interface instances by calling their factory methods with provisioned args
+9. Map extracted promises to user factory method
+
+### 7. Transitive Resource Provisioning via Plain Interfaces
+
+When a slice depends on a plain interface (non-`@Slice`, has a static factory method), and that factory method has `@ResourceQualifier`-annotated parameters, the processor provisions those resources transitively.
+
+**Input (plain interface with resource dependency):**
+```java
+// Not a @Slice — just a plain interface with a factory method
+public interface KycVerificationStep {
+    Promise<Boolean> verify(String customerId);
+
+    static KycVerificationStep kycVerificationStep(
+            @KycProvider HttpClient httpClient) {
+        return new kycVerificationStep(httpClient);
+    }
+}
+
+@Slice
+public interface LoanService {
+    Promise<LoanResult> processLoan(LoanRequest request);
+
+    static LoanService loanService(KycVerificationStep kycStep) {
+        return new loanService(kycStep);
+    }
+}
+```
+
+**Generated factory (by slice-processor):**
+```java
+public final class LoanServiceFactory {
+    public static Promise<LoanService> loanService(
+            Aspect<LoanService> aspect,
+            SliceCreationContext ctx) {
+        return Promise.all(
+                ctx.resources().provide(HttpClient.class, "http.kyc"))
+            .map((kycStep_httpClient) -> {
+                var kycStep = KycVerificationStep.kycVerificationStep(kycStep_httpClient);
+                return aspect.apply(LoanService.loanService(kycStep));
+            });
+    }
+}
+```
+
+**Key behavior:**
+- The processor introspects `KycVerificationStep.kycVerificationStep()` and discovers its `@KycProvider HttpClient` parameter
+- It generates a `ctx.resources().provide(HttpClient.class, "http.kyc")` call
+- The provisioned resource is passed as an argument: `kycVerificationStep(kycStep_httpClient)`
+- Variable naming: `{depParamName}_{factoryParamName}` (e.g., `kycStep_httpClient`)
+- Multiple plain interfaces with resource params are all resolved in the same `Promise.all()` call
 
 ### Configuration File Structure (aether.toml)
 
