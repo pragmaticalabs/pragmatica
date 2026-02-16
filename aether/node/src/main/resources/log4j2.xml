@@ -25,5 +25,8 @@
         <Logger name="io.netty" level="warn"/>
         <Logger name="org.h2" level="error"/>
         <Logger name="org.pragmatica.consensus" level="info"/>
+        <Logger name="org.pragmatica.aether.http.AppHttpServer" level="info"/>
+        <Logger name="org.pragmatica.aether.metrics" level="info"/>
+        <Logger name="org.pragmatica.aether.deployment.node" level="info"/>
     </Loggers>
 </Configuration>

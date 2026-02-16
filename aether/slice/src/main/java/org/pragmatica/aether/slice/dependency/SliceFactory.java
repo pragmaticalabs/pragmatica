@@ -40,16 +40,10 @@ public interface SliceFactory {
                                       SliceCreationContext creationContext,
                                       List<Slice> dependencies,
                                       List<DependencyDescriptor> descriptors) {
-        log.info("Creating slice from class {} with {} dependencies", sliceClass.getName(), dependencies.size());
+        log.debug("Creating slice from class {} with {} dependencies", sliceClass.getName(), dependencies.size());
         Result<Method> factoryMethodResult;
         try {
-            log.info("About to call findFactoryMethod for {}", sliceClass.getName());
             factoryMethodResult = findFactoryMethod(sliceClass);
-            log.info("findFactoryMethod for {} returned: {}",
-                     sliceClass.getName(),
-                     factoryMethodResult.isSuccess()
-                     ? "success"
-                     : "failure");
         } catch (Throwable t) {
             log.error("Exception in findFactoryMethod for {}: {}", sliceClass.getName(), t.getMessage(), t);
             return Causes.fromThrowable(t)
@@ -59,9 +53,9 @@ public interface SliceFactory {
                                                                               sliceClass.getName(),
                                                                               cause.message()))
                                                 .flatMap(method -> {
-                                                             log.info("Verifying parameters for method {} with {} dependencies",
-                                                                      method.getName(),
-                                                                      dependencies.size());
+                                                             log.debug("Verifying parameters for method {} with {} dependencies",
+                                                                       method.getName(),
+                                                                       dependencies.size());
                                                              return verifyParameters(method,
                                                                                      sliceClass,
                                                                                      dependencies,
@@ -70,18 +64,8 @@ public interface SliceFactory {
                                                                                                method.getName(),
                                                                                                cause.message()));
                                                          });
-        log.info("verifyParameters for {} result: {}, failure message: {}",
-                 sliceClass.getName(),
-                 verifiedResult.isSuccess()
-                 ? "success"
-                 : "failure",
-                 verifiedResult.fold(cause -> cause.message(), _ -> "n/a"));
         return verifiedResult.async()
-                             .flatMap(method -> {
-                                          log.info("About to invoke factory method {}",
-                                                   method.getName());
-                                          return invokeFactory(method, creationContext, dependencies);
-                                      });
+                             .flatMap(method -> invokeFactory(method, creationContext, dependencies));
     }
 
     private static Result<Method> findFactoryMethod(Class<?> sliceClass) {
@@ -97,13 +81,12 @@ public interface SliceFactory {
                         : className;
         var expectedName = toLowercaseFirst(sliceName) + "Slice";
         log.debug("findFactoryMethod: expectedName={}", expectedName);
-        log.info("findFactoryMethod: About to call getDeclaredMethods on {}", sliceClass.getName());
         Method[] methods;
         try{
             methods = sliceClass.getDeclaredMethods();
-            log.info("findFactoryMethod: getDeclaredMethods returned {} methods for {}",
-                     methods.length,
-                     sliceClass.getName());
+            log.trace("getDeclaredMethods returned {} methods for {}",
+                      methods.length,
+                      sliceClass.getName());
         } catch (Throwable t) {
             log.error("findFactoryMethod: getDeclaredMethods FAILED for {}: {}", sliceClass.getName(), t.getMessage(), t);
             return Causes.fromThrowable(t)
@@ -165,7 +148,7 @@ public interface SliceFactory {
     private static Promise<Slice> invokeFactory(Method method,
                                                 SliceCreationContext creationContext,
                                                 List<Slice> dependencies) {
-        log.info("Invoking factory method {}", method.getName());
+        log.debug("Invoking factory method {}", method.getName());
         return Promise.lift(Causes::fromThrowable,
                             () -> {
                                 method.setAccessible(true);
@@ -179,10 +162,10 @@ public interface SliceFactory {
                       .flatMap(promise -> {
                                    log.info("Factory method {} returned promise, waiting for completion",
                                             method.getName());
-                                   return promise.onSuccess(slice -> log.info("Factory method {} completed successfully, slice class: {}",
-                                                                              method.getName(),
-                                                                              slice.getClass()
-                                                                                   .getName()))
+                                   return promise.onSuccess(slice -> log.debug("Factory method {} completed, slice class: {}",
+                                                                               method.getName(),
+                                                                               slice.getClass()
+                                                                                    .getName()))
                                                  .onFailure(cause -> log.error("Factory method {} failed: {}",
                                                                                method.getName(),
                                                                                cause.message()));

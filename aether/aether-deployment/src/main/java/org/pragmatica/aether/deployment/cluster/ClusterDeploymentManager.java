@@ -135,7 +135,7 @@ public interface ClusterDeploymentManager {
                 deactivated.set(true);
                 cooldownActive.set(false);
                 cancelAutoHeal();
-                log.debug("Active state deactivated, stale callbacks will be suppressed");
+                log.trace("Active state deactivated, stale callbacks will be suppressed");
             }
 
             /// Start auto-heal cooldown for initial cluster formation.
@@ -351,7 +351,7 @@ public interface ClusterDeploymentManager {
                 }
                 // During startup cooldown, suppress provisioning — nodes may still be joining
                 if (cooldownActive.get()) {
-                    log.debug("AUTO-HEAL: Cooldown active, deferring provisioning ({} node deficit)", deficit);
+                    log.trace("AUTO-HEAL: Cooldown active, deferring provisioning ({} node deficit)", deficit);
                     return;
                 }
                 var currentSize = activeNodes.get().size();
@@ -382,7 +382,7 @@ public interface ClusterDeploymentManager {
                 var future = autoHealFuture.getAndSet(null);
                 if (future != null) {
                     future.cancel(false);
-                    log.debug("AUTO-HEAL: Cancelled periodic recheck");
+                    log.trace("AUTO-HEAL: Cancelled periodic recheck");
                 }
             }
 
@@ -439,7 +439,7 @@ public interface ClusterDeploymentManager {
                     var artifact = slice.artifact();
                     var dependencies = slice.dependencies();
                     sliceDependencies.put(artifact, dependencies);
-                    log.debug("buildDependencyMap: Slice {} has {} dependencies: {}",
+                    log.trace("buildDependencyMap: Slice {} has {} dependencies: {}",
                               artifact,
                               dependencies.size(),
                               dependencies);
@@ -488,7 +488,7 @@ public interface ClusterDeploymentManager {
 
             private void trackSliceState(SliceNodeKey sliceKey, SliceState state) {
                 var previousState = sliceStates.put(sliceKey, state);
-                log.debug("Slice {} on {} state: {} -> {}",
+                log.trace("Slice {} on {} state: {} -> {}",
                           sliceKey.artifact(),
                           sliceKey.nodeId(),
                           previousState,

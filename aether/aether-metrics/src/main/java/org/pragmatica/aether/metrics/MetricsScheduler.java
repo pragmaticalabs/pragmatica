@@ -87,7 +87,7 @@ class MetricsSchedulerImpl implements MetricsScheduler {
     @Override
     public void onLeaderChange(LeaderChange leaderChange) {
         if (leaderChange.localNodeIsLeader()) {
-            log.info("Node {} became leader, starting metrics scheduler", self);
+            log.debug("Node {} became leader, starting metrics scheduler", self);
             startPinging();
         } else {
             log.info("Node {} is no longer leader, stopping metrics scheduler", self);

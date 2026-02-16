@@ -17,7 +17,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// Default implementation of LoggingAspectFactory.
 /// Uses JDK dynamic proxies to wrap slice instances.
 final class DefaultLoggingAspectFactory implements LoggingAspectFactory {
-    private static final Logger LOG = LoggerFactory.getLogger(DefaultLoggingAspectFactory.class);
+    private static final Logger log = LoggerFactory.getLogger(DefaultLoggingAspectFactory.class);
     private final AtomicBoolean enabled = new AtomicBoolean(true);
 
     @Override
@@ -30,7 +30,7 @@ final class DefaultLoggingAspectFactory implements LoggingAspectFactory {
             var interfaces = instance.getClass()
                                      .getInterfaces();
             if (interfaces.length == 0) {
-                LOG.warn("Cannot create logging proxy for class without interfaces: {}",
+                log.warn("Cannot create logging proxy for class without interfaces: {}",
                          instance.getClass()
                                  .getName());
                 return instance;
@@ -56,7 +56,7 @@ final class DefaultLoggingAspectFactory implements LoggingAspectFactory {
     private record LoggingInvocationHandler<T>(T delegate,
                                                LogConfig config,
                                                AtomicBoolean enabled) implements InvocationHandler {
-        private static final Logger LOGGER = LoggerFactory.getLogger(LoggingInvocationHandler.class);
+        private static final Logger log = LoggerFactory.getLogger(LoggingInvocationHandler.class);
 
         @Override
         public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
@@ -102,16 +102,16 @@ final class DefaultLoggingAspectFactory implements LoggingAspectFactory {
         }
 
         private void logError(String methodName, Throwable t, double durationMs) {
-            LOGGER.error("x {} error={} ({}ms)", methodName, t.getMessage(), String.format("%.2f", durationMs));
+            log.error("x {} error={} ({}ms)", methodName, t.getMessage(), String.format("%.2f", durationMs));
         }
 
         private void log(String format, Object... args) {
             switch (config.level()) {
-                case TRACE -> LOGGER.trace(format, args);
-                case DEBUG -> LOGGER.debug(format, args);
-                case INFO -> LOGGER.info(format, args);
-                case WARN -> LOGGER.warn(format, args);
-                case ERROR -> LOGGER.error(format, args);
+                case TRACE -> log.trace(format, args);
+                case DEBUG -> log.debug(format, args);
+                case INFO -> log.info(format, args);
+                case WARN -> log.warn(format, args);
+                case ERROR -> log.error(format, args);
             }
         }
 

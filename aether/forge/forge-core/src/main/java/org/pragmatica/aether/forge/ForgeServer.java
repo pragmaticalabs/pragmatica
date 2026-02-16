@@ -264,7 +264,7 @@ public final class ForgeServer {
                                      .build();
             var response = client.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                log.info("Blueprint deployed successfully");
+                log.info("Blueprint deployed");
                 apiHandler.onPresent(h -> h.addEvent("BLUEPRINT_DEPLOYED",
                                                       "Blueprint deployed from " + blueprintPath.getFileName()));
                 // Wait for deployment to propagate

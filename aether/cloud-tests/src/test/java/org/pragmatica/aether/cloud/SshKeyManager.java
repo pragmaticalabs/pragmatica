@@ -34,7 +34,7 @@ import static org.pragmatica.cloud.hetzner.api.SshKey.CreateSshKeyRequest.create
 /// and cleans up both on close.
 public final class SshKeyManager implements AutoCloseable {
 
-    private static final Logger LOG = LoggerFactory.getLogger(SshKeyManager.class);
+    private static final Logger log = LoggerFactory.getLogger(SshKeyManager.class);
 
     private final HetznerClient client;
     private final Path tempDir;
@@ -100,7 +100,7 @@ public final class SshKeyManager implements AutoCloseable {
                 throw new IllegalStateException("ssh-keygen failed with exit code: " + process.exitValue());
             }
 
-            LOG.info("Generated SSH key pair at {}", privateKeyPath);
+            log.info("Generated SSH key pair at {}", privateKeyPath);
         } catch (IOException | InterruptedException e) {
             throw new IllegalStateException("Failed to generate SSH key pair", e);
         }
@@ -116,7 +116,7 @@ public final class SshKeyManager implements AutoCloseable {
                                .fold(SshKeyManager::failUpload, key -> key);
 
             this.hetznerKeyId = sshKey.id();
-            LOG.info("Uploaded SSH key to Hetzner with ID {}", hetznerKeyId);
+            log.info("Uploaded SSH key to Hetzner with ID {}", hetznerKeyId);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to read public key file", e);
         }
@@ -127,9 +127,9 @@ public final class SshKeyManager implements AutoCloseable {
     private void deleteFromHetzner() {
         try {
             client.deleteSshKey(hetznerKeyId).await();
-            LOG.info("Deleted SSH key {} from Hetzner", hetznerKeyId);
+            log.info("Deleted SSH key {} from Hetzner", hetznerKeyId);
         } catch (Exception e) {
-            LOG.warn("Failed to delete SSH key {} from Hetzner: {}", hetznerKeyId, e.getMessage());
+            log.warn("Failed to delete SSH key {} from Hetzner: {}", hetznerKeyId, e.getMessage());
         }
     }
 
@@ -139,7 +139,7 @@ public final class SshKeyManager implements AutoCloseable {
         deleteFileSilently(privateKeyPath);
         deleteFileSilently(publicKeyPath);
         deleteFileSilently(tempDir);
-        LOG.info("Cleaned up local SSH key files");
+        log.info("Cleaned up local SSH key files");
     }
 
     private static <T> T failUpload(Cause cause) {
@@ -150,7 +150,7 @@ public final class SshKeyManager implements AutoCloseable {
         try {
             Files.deleteIfExists(path);
         } catch (IOException e) {
-            LOG.warn("Failed to delete {}: {}", path, e.getMessage());
+            log.warn("Failed to delete {}: {}", path, e.getMessage());
         }
     }
 }

@@ -74,7 +74,7 @@ public final class ForgeH2Server {
                 statement.execute("RUNSCRIPT FROM '" + scriptPath + "'");
             }
         }).mapToUnit()
-          .onSuccess(_ -> log.info("H2 init script completed successfully"))
+          .onSuccess(_ -> log.info("H2 init script completed"))
           .onFailure(cause -> log.error("H2 init script failed: {}", cause.message()));
     }
 

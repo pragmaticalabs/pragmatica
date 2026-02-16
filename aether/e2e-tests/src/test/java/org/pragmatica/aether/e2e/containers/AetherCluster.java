@@ -45,7 +45,7 @@ import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 /// }
 /// }```
 public class AetherCluster implements AutoCloseable {
-    private static final Logger LOG = LoggerFactory.getLogger(AetherCluster.class);
+    private static final Logger log = LoggerFactory.getLogger(AetherCluster.class);
     private static final Duration QUORUM_TIMEOUT = adapt(Duration.ofSeconds(120));
     private static final Duration POLL_INTERVAL = Duration.ofSeconds(2);
 
@@ -530,14 +530,14 @@ public class AetherCluster implements AutoCloseable {
             try {
                 node.stop();
             } catch (Exception e) {
-                LOG.warn("Failed to stop node {}: {}", node.nodeId(), e.getMessage());
+                log.warn("Failed to stop node {}: {}", node.nodeId(), e.getMessage());
             }
         }
         if (network != null) {
             try {
                 network.close();
             } catch (Exception e) {
-                LOG.warn("Failed to close network: {}", e.getMessage());
+                log.warn("Failed to close network: {}", e.getMessage());
             }
         }
     }

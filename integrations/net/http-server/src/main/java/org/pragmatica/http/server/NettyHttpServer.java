@@ -51,7 +51,7 @@ import static org.pragmatica.lang.Unit.unit;
 
 /// Netty-based HTTP server implementation.
 final class NettyHttpServer implements HttpServer {
-    private static final Logger LOG = LoggerFactory.getLogger(NettyHttpServer.class);
+    private static final Logger log = LoggerFactory.getLogger(NettyHttpServer.class);
 
     private final int port;
     private final Option<EventLoopGroup> bossGroup;
@@ -76,7 +76,7 @@ final class NettyHttpServer implements HttpServer {
     @Override
     public Promise<Unit> stop() {
         return Promise.promise(promise -> {
-                                   LOG.info("Stopping HTTP server on port {}", port);
+                                   log.info("Stopping HTTP server on port {}", port);
                                    if (serverChannel.isEmpty()) {
                                        cleanupAndComplete(promise);
                                    } else {
@@ -134,7 +134,7 @@ final class NettyHttpServer implements HttpServer {
         if (future.isSuccess()) {
             var protocol = sslContext.map(_ -> "HTTPS")
                                      .or("HTTP");
-            LOG.info("{} server '{}' started on port {}", protocol, config.name(), config.port());
+            log.info("{} server '{}' started on port {}", protocol, config.name(), config.port());
             promise.succeed(new NettyHttpServer(config.port(),
                                                 Option.option(bossGroup),
                                                 Option.option(workerGroup),
@@ -185,7 +185,7 @@ final class NettyHttpServer implements HttpServer {
     /// Per-channel HTTP request handler.
     /// NOT @Sharable - each channel gets its own instance to maintain WebSocket state safely.
     private static class HttpRequestHandler extends SimpleChannelInboundHandler<Object> {
-        private static final Logger LOG = LoggerFactory.getLogger(HttpRequestHandler.class);
+        private static final Logger log = LoggerFactory.getLogger(HttpRequestHandler.class);
         private static final AttributeKey<Option<WebSocketState>> WS_STATE = AttributeKey.valueOf("wsState");
 
         private final BiConsumer<RequestContext, ResponseWriter> handler;
@@ -231,7 +231,7 @@ final class NettyHttpServer implements HttpServer {
             try{
                 handler.accept(requestContext, responseWriter);
             } catch (Exception e) {
-                LOG.error("Error handling request {}", requestId, e);
+                log.error("Error handling request {}", requestId, e);
                 responseWriter.error(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error");
             }
         }
@@ -282,7 +282,7 @@ final class NettyHttpServer implements HttpServer {
 
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            LOG.error("Error in HTTP handler", cause);
+            log.error("Error in HTTP handler", cause);
             ctx.close();
         }
 

@@ -256,7 +256,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
             if (serverInstance == null) {
                 return Promise.unitPromise();
             }
-            log.info("Stopping {}: notifying view change", serverInstance.name());
+            log.debug("Stopping {}: notifying view change", serverInstance.name());
             processViewChange(SHUTDOWN, self.id());
             return serverInstance.stop(this::onStop);
         }
@@ -268,7 +268,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
         var serverName = serverInstance != null
                          ? serverInstance.name()
                          : "unknown";
-        log.info("Stopping {}: closing peer connections", serverName);
+        log.debug("Stopping {}: closing peer connections", serverName);
         var promises = new ArrayList<Promise<Unit>>();
         for (var link : peerLinks.values()) {
             var promise = Promise.<Unit>promise();

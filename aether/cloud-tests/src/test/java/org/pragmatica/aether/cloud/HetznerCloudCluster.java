@@ -40,7 +40,7 @@ import static org.pragmatica.aether.cloud.CloudNode.cloudNode;
 /// JAR deployment, node startup, health verification, and cleanup.
 public final class HetznerCloudCluster implements AutoCloseable {
 
-    private static final Logger LOG = LoggerFactory.getLogger(HetznerCloudCluster.class);
+    private static final Logger log = LoggerFactory.getLogger(HetznerCloudCluster.class);
     private static final String SERVER_PREFIX = "aether-test-";
     private static final String SERVER_TYPE = "cx22";
     private static final String IMAGE = "ubuntu-24.04";
@@ -111,21 +111,21 @@ public final class HetznerCloudCluster implements AutoCloseable {
     public void close() {
         terminateServers();
         cleanupSshKey();
-        LOG.info("Cloud cluster cleanup complete. Server IDs were: {}", serverIds);
+        log.info("Cloud cluster cleanup complete. Server IDs were: {}", serverIds);
     }
 
     // --- Leaf: create SSH key ---
 
     private void createSshKey() {
-        LOG.info("Creating ephemeral SSH key for cloud test...");
+        log.info("Creating ephemeral SSH key for cloud test...");
         sshKeyManager = SshKeyManager.sshKeyManager(client, SERVER_PREFIX + "key-" + System.currentTimeMillis());
-        LOG.info("SSH key created with Hetzner ID: {}", sshKeyManager.hetznerKeyId());
+        log.info("SSH key created with Hetzner ID: {}", sshKeyManager.hetznerKeyId());
     }
 
     // --- Leaf: create N servers in parallel ---
 
     private void createServers() {
-        LOG.info("Creating {} servers...", size);
+        log.info("Creating {} servers...", size);
         var futures = IntStream.range(0, size)
             .mapToObj(this::createSingleServer)
             .toList();
@@ -133,7 +133,7 @@ public final class HetznerCloudCluster implements AutoCloseable {
         for (var future : futures) {
             var server = requireSuccess(future.await(), "Server creation failed");
             serverIds.add(server.id());
-            LOG.info("Server {} created: id={}, name={}", serverIds.size() - 1, server.id(), server.name());
+            log.info("Server {} created: id={}, name={}", serverIds.size() - 1, server.id(), server.name());
         }
     }
 
@@ -152,14 +152,14 @@ public final class HetznerCloudCluster implements AutoCloseable {
     // --- Leaf: poll until all servers report running ---
 
     private void waitForServersRunning() {
-        LOG.info("Waiting for all servers to reach 'running' state...");
+        log.info("Waiting for all servers to reach 'running' state...");
 
         await().atMost(Duration.ofMinutes(3))
                .pollInterval(Duration.ofSeconds(5))
                .untilAsserted(this::assertAllServersRunning);
 
         populateNodes();
-        LOG.info("All {} servers are running", size);
+        log.info("All {} servers are running", size);
     }
 
     private void assertAllServersRunning() {
@@ -187,7 +187,7 @@ public final class HetznerCloudCluster implements AutoCloseable {
     // --- Leaf: wait for SSH on all nodes ---
 
     private void waitForSshConnectivity() {
-        LOG.info("Waiting for SSH connectivity on all nodes (cloud-init may take ~2-3 min)...");
+        log.info("Waiting for SSH connectivity on all nodes (cloud-init may take ~2-3 min)...");
 
         for (var node : nodes) {
             requireSuccess(
@@ -195,46 +195,46 @@ public final class HetznerCloudCluster implements AutoCloseable {
                 "SSH wait failed for " + node.publicIp());
         }
 
-        LOG.info("SSH connectivity established on all {} nodes", size);
+        log.info("SSH connectivity established on all {} nodes", size);
     }
 
     // --- Leaf: verify Java installed ---
 
     private void verifyJavaInstalled() {
-        LOG.info("Verifying Java installation on all nodes...");
+        log.info("Verifying Java installation on all nodes...");
 
         for (var node : nodes) {
             var output = requireSuccess(
                 RemoteCommandRunner.ssh(node.publicIp(), "java -version", sshKeyManager.privateKeyPath()),
                 "Java not installed on " + node.publicIp());
 
-            LOG.info("[{}] Java verified: {}", node.nodeId(), output.lines().findFirst().orElse(""));
+            log.info("[{}] Java verified: {}", node.nodeId(), output.lines().findFirst().orElse(""));
         }
     }
 
     // --- Leaf: deploy JARs to all nodes ---
 
     private void deployJars() {
-        LOG.info("Deploying aether-node.jar to all nodes...");
+        log.info("Deploying aether-node.jar to all nodes...");
 
         for (var node : nodes) {
             requireSuccess(node.uploadJar(jarPath), "JAR upload failed for " + node.publicIp());
         }
 
-        LOG.info("JAR deployed to all {} nodes", size);
+        log.info("JAR deployed to all {} nodes", size);
     }
 
     // --- Leaf: start all nodes with peer list ---
 
     private void startAllNodes() {
         var peerList = buildPeerList();
-        LOG.info("Starting all nodes with peer list: {}", peerList);
+        log.info("Starting all nodes with peer list: {}", peerList);
 
         for (var node : nodes) {
             requireSuccess(node.startNode(peerList), "Node start failed for " + node.nodeId());
         }
 
-        LOG.info("All {} nodes started", size);
+        log.info("All {} nodes started", size);
     }
 
     private String buildPeerList() {
@@ -281,9 +281,9 @@ public final class HetznerCloudCluster implements AutoCloseable {
         for (var serverId : serverIds) {
             try {
                 client.deleteServer(serverId).await();
-                LOG.info("Terminated server {}", serverId);
+                log.info("Terminated server {}", serverId);
             } catch (Exception e) {
-                LOG.warn("Failed to terminate server {}: {}", serverId, e.getMessage());
+                log.warn("Failed to terminate server {}: {}", serverId, e.getMessage());
             }
         }
     }
@@ -295,7 +295,7 @@ public final class HetznerCloudCluster implements AutoCloseable {
             try {
                 sshKeyManager.close();
             } catch (Exception e) {
-                LOG.warn("Failed to cleanup SSH key: {}", e.getMessage());
+                log.warn("Failed to cleanup SSH key: {}", e.getMessage());
             }
         }
     }

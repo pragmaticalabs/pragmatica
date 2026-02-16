@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Timeout(value = 10, unit = TimeUnit.MINUTES)
 class ClusterFormationCloudIT {
 
-    private static final Logger LOG = LoggerFactory.getLogger(ClusterFormationCloudIT.class);
+    private static final Logger log = LoggerFactory.getLogger(ClusterFormationCloudIT.class);
     private static final int CLUSTER_SIZE = 5;
 
     private static HetznerCloudCluster cluster;
@@ -59,8 +59,8 @@ class ClusterFormationCloudIT {
         var jarPath = Path.of(projectBasedir, "aether", "node", "target", "aether-node.jar");
         Assumptions.assumeTrue(Files.exists(jarPath), "aether-node.jar not found at " + jarPath + ", skipping cloud tests");
 
-        LOG.info("Starting cloud cluster formation test with {} nodes", CLUSTER_SIZE);
-        LOG.info("Using JAR: {}", jarPath);
+        log.info("Starting cloud cluster formation test with {} nodes", CLUSTER_SIZE);
+        log.info("Using JAR: {}", jarPath);
 
         var client = HetznerClient.hetznerClient(HetznerConfig.hetznerConfig(token));
         cluster = HetznerCloudCluster.hetznerCloudCluster(client, CLUSTER_SIZE, jarPath);
@@ -73,7 +73,7 @@ class ClusterFormationCloudIT {
             try {
                 cluster.close();
             } catch (Exception e) {
-                LOG.warn("Cluster cleanup failed: {}", e.getMessage());
+                log.warn("Cluster cleanup failed: {}", e.getMessage());
             }
         }
     }

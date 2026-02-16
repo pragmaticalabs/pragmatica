@@ -227,7 +227,7 @@ public interface NodeDeploymentManager {
             private void handleLoaded(SliceNodeKey sliceKey) {
                 // LOADED is a stable state - do nothing
                 // ACTIVATE must be explicitly requested by ClusterDeploymentManager
-                log.info("Slice {} loaded successfully, awaiting activation", sliceKey.artifact());
+                log.debug("Slice {} loaded, awaiting activation", sliceKey.artifact());
             }
 
             private void handleActivating(SliceNodeKey sliceKey) {
@@ -649,7 +649,7 @@ public interface NodeDeploymentManager {
                     log.debug("Reactivating suspended slice {}", sliceKey.artifact());
                     // Re-register for invocation
                     registerSliceForInvocation(sliceKey).flatMap(_ -> publishEndpointsAndRoutes(sliceKey))
-                                              .onSuccess(_ -> log.debug("Successfully reactivated slice {}",
+                                              .onSuccess(_ -> log.debug("Reactivated slice {}",
                                                                         sliceKey.artifact()))
                                               .onFailure(cause -> handleReactivationFailure(sliceKey, cause));
                 }

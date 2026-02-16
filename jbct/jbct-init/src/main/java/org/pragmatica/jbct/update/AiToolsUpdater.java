@@ -20,7 +20,7 @@ import org.slf4j.LoggerFactory;
 /// Updates AI tools from the coding-technology GitHub repository.
 /// Uses GitHub Tree API to dynamically discover files under ai-tools/.
 public final class AiToolsUpdater {
-    private static final Logger LOG = LoggerFactory.getLogger(AiToolsUpdater.class);
+    private static final Logger log = LoggerFactory.getLogger(AiToolsUpdater.class);
     private static final String REPO = "siy/coding-technology";
     private static final String BRANCH = "main";
     private static final String AI_TOOLS_PREFIX = "ai-tools/";
@@ -114,7 +114,7 @@ public final class AiToolsUpdater {
                                .trim();
             return Option.option(content);
         } catch (IOException e) {
-            LOG.debug("Failed to read version file {}: {}", versionFile, e.getMessage());
+            log.debug("Failed to read version file {}: {}", versionFile, e.getMessage());
             return Option.none();
         }
     }

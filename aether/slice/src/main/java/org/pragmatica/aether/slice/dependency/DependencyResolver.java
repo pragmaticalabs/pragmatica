@@ -161,7 +161,7 @@ public interface DependencyResolver {
                                                                                    loadingContext,
                                                                                    resolutionPath))
                          .onSuccess(_ -> {
-                                        log.info("Successfully resolved artifact {} with context",
+                                        log.info("Resolved artifact {} with context",
                                                  artifact.asString());
                                         resolutionPath.remove(artifactKey);
                                     })
@@ -384,7 +384,7 @@ public interface DependencyResolver {
                                                                          invokerFacade,
                                                                          resolutionPath))
                          .onSuccess(_ -> {
-                                        log.info("Successfully resolved artifact {}",
+                                        log.info("Resolved artifact {}",
                                                  artifact.asString());
                                         resolutionPath.remove(artifactKey);
                                     })

@@ -33,7 +33,7 @@ import java.time.Duration;
 /// Provides operations for JAR deployment, node startup, and health checks.
 public record CloudNode(String nodeId, String publicIp, long serverId, Path privateKeyPath) {
 
-    private static final Logger LOG = LoggerFactory.getLogger(CloudNode.class);
+    private static final Logger log = LoggerFactory.getLogger(CloudNode.class);
     private static final int MANAGEMENT_PORT = 8080;
     private static final int CLUSTER_PORT = 8090;
     private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
@@ -47,7 +47,7 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
 
     /// Uploads the aether-node JAR to the remote server.
     public Result<Unit> uploadJar(Path jarPath) {
-        LOG.info("[{}] Uploading JAR to {}", nodeId, publicIp);
+        log.info("[{}] Uploading JAR to {}", nodeId, publicIp);
         var mkdirResult = RemoteCommandRunner.ssh(publicIp, "mkdir -p /opt/aether", privateKeyPath);
 
         if (mkdirResult.isFailure()) {
@@ -59,7 +59,7 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
 
     /// Starts the aether node with the given peer list.
     public Result<Unit> startNode(String peerList) {
-        LOG.info("[{}] Starting node on {} with peers: {}", nodeId, publicIp, peerList);
+        log.info("[{}] Starting node on {} with peers: {}", nodeId, publicIp, peerList);
         var command = "nohup java -Xmx256m -XX:+UseZGC"
                       + " -jar /opt/aether/aether-node.jar"
                       + " --node-id=" + nodeId

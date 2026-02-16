@@ -18,7 +18,7 @@ import org.slf4j.LoggerFactory;
 
 /// Initializes a new Aether slice project structure.
 public final class SliceProjectInitializer {
-    private static final Logger LOG = LoggerFactory.getLogger(SliceProjectInitializer.class);
+    private static final Logger log = LoggerFactory.getLogger(SliceProjectInitializer.class);
     private static final String TEMPLATES_PATH = "/templates/slice/";
 
     // Default versions - used as fallback when offline
@@ -298,9 +298,9 @@ public final class SliceProjectInitializer {
             perms.add(java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE);
             Files.setPosixFilePermissions(path, perms);
         } catch (UnsupportedOperationException e) {
-            LOG.debug("POSIX permissions not supported on this platform for {}", path);
+            log.debug("POSIX permissions not supported on this platform for {}", path);
         } catch (IOException e) {
-            LOG.debug("Failed to set executable permission on {}: {}", path, e.getMessage());
+            log.debug("Failed to set executable permission on {}: {}", path, e.getMessage());
         }
     }
 

@@ -68,7 +68,7 @@ public interface JooqTransactional {
 
 /// DataSource-based implementation of JooqTransactional.
 final class DataSourceJooqTransactional implements JooqTransactional {
-    private static final Logger LOG = LoggerFactory.getLogger(DataSourceJooqTransactional.class);
+    private static final Logger log = LoggerFactory.getLogger(DataSourceJooqTransactional.class);
 
     private final DataSource dataSource;
     private final SQLDialect dialect;
@@ -126,7 +126,7 @@ final class DataSourceJooqTransactional implements JooqTransactional {
                              try{
                                  c.rollback();
                              } catch (SQLException e) {
-                                 LOG.error("Failed to rollback transaction", e);
+                                 log.error("Failed to rollback transaction", e);
                              }
                          });
     }
@@ -137,12 +137,12 @@ final class DataSourceJooqTransactional implements JooqTransactional {
                              try{
                                  c.setAutoCommit(true);
                              } catch (SQLException e) {
-                                 LOG.warn("Failed to restore autoCommit", e);
+                                 log.warn("Failed to restore autoCommit", e);
                              }
                              try{
                                  c.close();
                              } catch (SQLException e) {
-                                 LOG.error("Failed to close connection", e);
+                                 log.error("Failed to close connection", e);
                              }
                          });
     }

@@ -44,7 +44,7 @@ public final class RouteConfigLoader {
     public static final String CONFIG_FILE = "routes.toml";
     public static final String BASE_CONFIG_FILE = "routes-base.toml";
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(RouteConfigLoader.class);
+    private static final Logger log = LoggerFactory.getLogger(RouteConfigLoader.class);
     private static final Cause FILE_NOT_FOUND = Causes.cause("Route configuration file not found");
     private static final Cause PARSE_ERROR = Causes.cause("Failed to parse route configuration");
 
@@ -150,7 +150,7 @@ public final class RouteConfigLoader {
         for (var entry : explicitSection.entrySet()) {
             var typeName = entry.getKey();
             parseStatusCodeSafely(entry.getValue()).onPresent(statusCode -> mappings.put(typeName, statusCode))
-                                 .onEmpty(() -> LOGGER.warn("Invalid status code for type '{}': {}",
+                                 .onEmpty(() -> log.warn("Invalid status code for type '{}': {}",
                                                           typeName, entry.getValue()));
         }
         return Map.copyOf(mappings);

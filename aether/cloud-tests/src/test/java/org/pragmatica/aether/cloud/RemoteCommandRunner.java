@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit;
 /// All methods use ProcessBuilder with strict host key checking disabled.
 public sealed interface RemoteCommandRunner {
 
-    Logger LOG = LoggerFactory.getLogger(RemoteCommandRunner.class);
+    Logger log = LoggerFactory.getLogger(RemoteCommandRunner.class);
 
     /// Common SSH flags for non-interactive, key-based connections.
     List<String> SSH_FLAGS = List.of(
@@ -71,11 +71,11 @@ public sealed interface RemoteCommandRunner {
             var result = ssh(host, "echo ok", privateKeyPath);
 
             if (result.isSuccess()) {
-                LOG.info("SSH connection established to {}", host);
+                log.info("SSH connection established to {}", host);
                 return Result.unitResult();
             }
 
-            LOG.debug("SSH not yet available on {}, retrying in 5s...", host);
+            log.debug("SSH not yet available on {}, retrying in 5s...", host);
             sleepQuietly(5000);
         }
 

@@ -24,7 +24,7 @@ import org.slf4j.LoggerFactory;
 /// All components (pragmatica-lite, aether, jbct) share the same version.
 /// Caches results for 24 hours to avoid excessive API calls.
 public final class GitHubVersionResolver {
-    private static final Logger LOG = LoggerFactory.getLogger(GitHubVersionResolver.class);
+    private static final Logger log = LoggerFactory.getLogger(GitHubVersionResolver.class);
     private static final Path CACHE_FILE = Path.of(System.getProperty("user.home"),
                                                    ".jbct",
                                                    "cache",
@@ -55,7 +55,7 @@ public final class GitHubVersionResolver {
                 return props.getProperty("version", DEFAULT_VERSION);
             }
         } catch (IOException e) {
-            LOG.debug("Failed to load jbct-version.properties: {}", e.getMessage());
+            log.debug("Failed to load jbct-version.properties: {}", e.getMessage());
         }
         return DEFAULT_VERSION;
     }
@@ -132,7 +132,7 @@ public final class GitHubVersionResolver {
                     return cachedVersion;
                 }
             } catch (NumberFormatException e) {
-                LOG.debug("Invalid timestamp in version cache for {}: {}", cacheKey, timestampStr);
+                log.debug("Invalid timestamp in version cache for {}: {}", cacheKey, timestampStr);
             }
         }
 
@@ -176,7 +176,7 @@ public final class GitHubVersionResolver {
             try (var reader = Files.newBufferedReader(CACHE_FILE)) {
                 props.load(reader);
             } catch (IOException e) {
-                LOG.debug("Failed to load version cache from {}: {}", CACHE_FILE, e.getMessage());
+                log.debug("Failed to load version cache from {}: {}", CACHE_FILE, e.getMessage());
             }
         }
         return props;

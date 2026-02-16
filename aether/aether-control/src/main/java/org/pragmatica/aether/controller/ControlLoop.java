@@ -242,7 +242,7 @@ public interface ControlLoop {
                 var context = new ControlContext(metricsCollector.allMetrics(), Map.copyOf(blueprints), topology.get());
                 controller.evaluate(context)
                           .onSuccess(decisions -> applyDecisionsWithGuards(decisions, loadFactorResult))
-                          .onFailure(cause -> log.error("Controller evaluation failed: {}",
+                          .onFailure(cause -> log.error("Failed to evaluate controller: {}",
                                                         cause.message()));
             }
 

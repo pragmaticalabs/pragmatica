@@ -348,7 +348,7 @@ class InvocationHandlerImpl implements InvocationHandler {
         var durationNs = System.nanoTime() - startTime;
         var errorType = cause.getClass()
                              .getSimpleName();
-        log.error("[requestId={}] Invocation failed [{}]: {}",
+        log.error("[requestId={}] Failed to complete invocation [{}]: {}",
                   request.requestId(),
                   request.correlationId(),
                   cause.message());

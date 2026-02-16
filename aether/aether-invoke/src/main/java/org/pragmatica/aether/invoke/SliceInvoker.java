@@ -728,10 +728,10 @@ class SliceInvokerImpl implements SliceInvoker {
                                                .map(PendingInvocation::requestId)
                                                .limit(5)
                                                .toList();
-        log.info("Node {} departed, triggering immediate retry for {} pending invocations, requestIds={}",
-                 departedNode,
-                 correlationIds.size(),
-                 affectedRequestIds);
+        log.debug("Node {} departed, triggering immediate retry for {} pending invocations, requestIds={}",
+                  departedNode,
+                  correlationIds.size(),
+                  affectedRequestIds);
         for (var correlationId : correlationIds) {
             Option.option(pendingInvocations.remove(correlationId))
                   .onPresent(pending -> retryDepartedInvocation(pending, departedNode));
@@ -788,7 +788,7 @@ class SliceInvokerImpl implements SliceInvoker {
             var errorMessage = new String(response.payload());
             promise.resolve(new SliceInvokerError.RemoteInvocationError(errorMessage).result());
             if (log.isDebugEnabled()) {
-                log.debug("[requestId={}] Invocation failed [{}]: {}", requestId, response.correlationId(), errorMessage);
+                log.debug("[requestId={}] Failed to complete invocation [{}]: {}", requestId, response.correlationId(), errorMessage);
             }
         }
     }
