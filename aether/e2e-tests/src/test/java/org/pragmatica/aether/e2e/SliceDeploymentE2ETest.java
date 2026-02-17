@@ -75,15 +75,16 @@ class SliceDeploymentE2ETest {
         cluster.awaitAllHealthy();
         cluster.awaitLeader();
 
-        // Retry undeploy until clean — handles undeploy lost during leader changes
+        // Retry undeploy until clean — use cluster-wide status to catch slices on any node,
+        // not just local slices (which may miss instances from multi-node scale operations)
         System.out.println("[DEBUG] BeforeEach: cleanup with retry...");
         await().atMost(CLEANUP_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .ignoreExceptions()
                .until(() -> {
-                   var slices = cluster.anyNode().getSlices();
-                   System.out.println("[DEBUG] Cleanup check, local slices: " + slices);
-                   if (slices.contains(TEST_ARTIFACT)) {
+                   var status = cluster.anyNode().getSlicesStatus();
+                   System.out.println("[DEBUG] Cleanup check, cluster slices status: " + status);
+                   if (status.contains(TEST_ARTIFACT)) {
                        tryUndeploy();
                        return false;
                    }
@@ -148,18 +149,9 @@ class SliceDeploymentE2ETest {
         var scaleResponse = scaleLeader.scale(TEST_ARTIFACT, 3);
         assertThat(scaleResponse).doesNotContain("\"error\"");
 
-        // Wait for scale operation to complete
-        await().atMost(DEPLOY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(() -> {
-                   if (sliceHasFailed(TEST_ARTIFACT)) {
-                       throw new AssertionError("Slice scaling failed: " + TEST_ARTIFACT);
-                   }
-               })
-               .until(() -> {
-                   var slices = cluster.anyNode().getSlices();
-                   return slices.contains(TEST_ARTIFACT);
-               });
+        // Wait for scale operation to complete — use cluster-wide sliceIsActive() rather than
+        // local getSlices() since rebalancing may move the slice off the queried node
+        awaitSliceActive(TEST_ARTIFACT);
     }
 
     @Test
