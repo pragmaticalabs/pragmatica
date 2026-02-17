@@ -407,6 +407,31 @@ class VerifyTest {
             assertFalse(Verify.Is.lenBetween("hello", 6, 10));
             assertFalse(Verify.Is.lenBetween("test", 1, 3));
         }
+
+        @Test
+        @DisplayName("present should return true for non-null non-blank CharSequence")
+        void presentShouldReturnTrueForNonNullNonBlankCharSequence() {
+            assertTrue(Verify.Is.present("hello"));
+            assertTrue(Verify.Is.present(" hello "));
+            assertFalse(Verify.Is.present(""));
+            assertFalse(Verify.Is.present(" "));
+            assertFalse(Verify.Is.present("\t\n"));
+            assertFalse(Verify.Is.present(null));
+        }
+
+        @Test
+        @DisplayName("ensure with present predicate should validate CharSequence presence")
+        void ensureWithPresentPredicate() {
+            var cause = Causes.cause("Value must be present");
+
+            Verify.ensure("hello", Verify.Is::present, cause)
+                  .onSuccess(value -> assertEquals("hello", value))
+                  .onFailureRun(() -> fail("Should succeed for non-blank string"));
+
+            Verify.ensure("   ", Verify.Is::present, cause)
+                  .onSuccessRun(() -> fail("Should fail for blank string"))
+                  .onFailure(c -> assertEquals("Value must be present", c.message()));
+        }
     }
 
     @Nested

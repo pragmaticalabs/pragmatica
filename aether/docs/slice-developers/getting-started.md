@@ -16,6 +16,10 @@ modify it to make it your own, and deploy it to a local Forge.
 
 > **Don't have the JBCT CLI?** See [Installing JBCT](../reference/installing-jbct.md).
 
+All JBCT and Aether artifacts (including the annotation processor and Maven plugin) are
+published to Maven Central. The generated POM references them automatically — no additional
+repository configuration needed.
+
 ## Step 1: Create Your Slice Project
 
 ```bash
@@ -73,13 +77,16 @@ mvn clean verify
 This runs the full build pipeline:
 
 1. **Compile** — compiles your source with the slice annotation processor
-2. **Annotation processing** — generates API interface, factory class, and manifest
+2. **Annotation processing** — generates the runtime glue that allows the slice to run
+   in Aether: a factory class (dependency wiring and resource provisioning), a deployment
+   manifest, and HTTP route bindings if `routes.toml` is present
 3. **Test** — runs unit tests
 4. **Package** — creates implementation JAR
 5. **JBCT check** — verifies formatting and linting rules
 6. **Slice packaging** — creates separate API and implementation JARs
 7. **Blueprint generation** — creates `target/blueprint.toml`
-8. **Slice verification** — validates the slice structure
+8. **Slice verification** — checks that manifests are well-formed and that Aether runtime
+   and slice dependencies use `provided` scope (they're supplied by the runtime, not bundled)
 
 You should see output ending with:
 
@@ -120,6 +127,7 @@ import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 /// MyFirstSlice slice interface.
 @Slice
@@ -128,10 +136,8 @@ public interface MyFirstSlice {
     /// Request record.
     record Request(String value) {
         public static Result<Request> request(String value) {
-            if (value == null || value.isBlank()) {
-                return Result.failure(ValidationError.emptyValue());
-            }
-            return Result.success(new Request(value));
+            return Verify.ensure(value, Verify.Is::present, ValidationError.emptyValue())
+                         .map(Request::new);
         }
     }
 
@@ -155,14 +161,7 @@ public interface MyFirstSlice {
     Promise<Response> process(Request request);
 
     static MyFirstSlice myFirstSlice() {
-        record myFirstSlice() implements MyFirstSlice {
-            @Override
-            public Promise<Response> process(Request request) {
-                var response = new Response("Processed: " + request.value());
-                return Promise.success(response);
-            }
-        }
-        return new myFirstSlice();
+        return request -> Promise.success(new Response("Processed: " + request.value()));
     }
 }
 ```
@@ -177,11 +176,12 @@ public interface MyFirstSlice {
 ```
 
 `@Slice` marks this interface as an Aether slice — a deployable unit of business logic.
-The annotation processor reads this at compile time and generates:
+The annotation processor reads this at compile time and generates the runtime glue:
 
-- An **API interface** (what consumers see)
-- A **factory class** (how the runtime wires dependencies)
-- A **manifest** (metadata for packaging and deployment)
+- A **factory class** — wires dependencies, provisions resources, and creates slice instances
+- A **deployment manifest** — metadata at `META-INF/slice/` for packaging and cluster deployment
+- **HTTP route bindings** — if a `routes.toml` is present, generates route classes that map
+  HTTP endpoints to slice methods
 
 Everything that defines this slice — its contract, types, errors, and implementation — lives
 inside this single interface. This is called the **"single-file slice"** pattern.
@@ -191,10 +191,8 @@ inside this single interface. This is called the **"single-file slice"** pattern
 ```java
 record Request(String value) {
     public static Result<Request> request(String value) {
-        if (value == null || value.isBlank()) {
-            return Result.failure(ValidationError.emptyValue());
-        }
-        return Result.success(new Request(value));
+        return Verify.ensure(value, Verify.Is::present, ValidationError.emptyValue())
+                     .map(Request::new);
     }
 }
 ```
@@ -204,10 +202,12 @@ The `Request` record is the input type for your slice. Notice two important thin
 1. **The constructor is not used directly.** Instead, callers use the factory method
    `Request.request(value)` which returns `Result<Request>` — not `Request`.
 
-2. **Validation happens at construction time.** If the input is invalid, you get a
-   `Result.failure(...)` — the `Request` object is never created. This is called
-   **"parse, don't validate"**: instead of creating an object and checking it later,
-   you ensure it's valid *before* it exists.
+2. **Validation uses the `Verify` API.** `Verify.ensure()` validates the value against a
+   predicate (from `Verify.Is`) and produces a failure with a specific `Cause` if the check
+   fails. Here, `Verify.Is::present` is a combined check — it rejects null, empty, and
+   blank strings in one call. The final `map(Request::new)` constructs the record only when
+   the check passes. This is called **"parse, don't validate"**: instead of creating an
+   object and checking it later, you ensure it's valid *before* it exists.
 
 **Why not just use the constructor?** Because constructors can't return errors.
 A constructor either succeeds or throws an exception. In JBCT, we don't use exceptions
@@ -245,8 +245,10 @@ as exceptions.
 
 - **`sealed`** means the compiler knows *every possible error variant*. You can't
   accidentally forget to handle one.
-- **`extends Cause`** integrates with the `Result` type — any `Cause` can be carried
-  inside a `Result.failure(...)`.
+- **`extends Cause`** integrates with `Result` and `Promise`. Any `Cause` has convenience
+  methods: `cause.result()` creates a `Result.failure(cause)`, and `cause.promise()` creates
+  a `Promise.failure(cause)`. You'll see these used instead of calling `Result.failure()`
+  or `Promise.failure()` directly.
 - **Each variant is a record** with a `message()` method that describes what went wrong.
 - **Factory methods** like `emptyValue()` provide clean construction.
 
@@ -260,26 +262,16 @@ the errors are explicit — you can see exactly what can go wrong by looking at 
 Promise<Response> process(Request request);
 ```
 
-This is the slice's entry point — the method that consumers call. Every slice method must:
+This is the slice's entry point — the method that consumers call. Every slice method must
+**return `Promise<T>`** — all operations are async-first. Even if your logic is synchronous
+today, wrapping it in `Promise` means it composes with async operations (database queries,
+other slices) without refactoring.
 
-1. **Return `Promise<T>`** — all operations are async-first. Even if your logic is synchronous
-   today, wrapping it in `Promise` means it composes with async operations (database queries,
-   other slices) without refactoring.
-2. **Take exactly one parameter** — this enables uniform serialization, logging, and metrics.
-   If you need multiple inputs, put them in the request record.
-
-### Factory Method and Inline Implementation
+### Factory Method and Lambda Implementation
 
 ```java
 static MyFirstSlice myFirstSlice() {
-    record myFirstSlice() implements MyFirstSlice {
-        @Override
-        public Promise<Response> process(Request request) {
-            var response = new Response("Processed: " + request.value());
-            return Promise.success(response);
-        }
-    }
-    return new myFirstSlice();
+    return request -> Promise.success(new Response("Processed: " + request.value()));
 }
 ```
 
@@ -289,17 +281,22 @@ This is where the implementation lives. Let's unpack the pattern:
   convention: `TypeName.typeName()` (type name, lowercased first letter). The runtime
   discovers and calls this to create instances.
 
-- **`record myFirstSlice() implements MyFirstSlice`** — the implementation is an *inline record*
-  declared inside the factory method. It's not a separate class in a separate file — it lives
-  right next to the interface it implements. The lowercase name is intentional: it matches
-  the factory method name, making it clear this is the factory's implementation detail.
+- **Lambda implementation** — since `MyFirstSlice` has a single abstract method (`process`),
+  it's a functional interface. The lambda directly implements that method. This is the
+  simplest and preferred form for single-method slices.
 
 - **`Promise.success(response)`** — wraps the result in a successfully resolved `Promise`.
 
-**Why an inline record?** It keeps the implementation private to the factory method.
-No one can instantiate it directly — they *must* go through the factory. When your slice
-needs dependencies (like a database or another slice), they become parameters of the factory
-method and fields of the record:
+**When your slice needs dependencies**, they become parameters of the factory method:
+
+```java
+static MySlice mySlice(SomeDependency dep) {
+    return request -> dep.doSomething(request.value());
+}
+```
+
+**When your slice has multiple methods** (we'll see this in Step 6), lambdas can't work
+because they only implement one method. In that case, you switch to an inline record:
 
 ```java
 static MySlice mySlice(SomeDependency dep) {
@@ -329,11 +326,11 @@ class MyFirstSliceTest {
     @Test
     void should_process_request() {
         MyFirstSlice.Request.request("test")
-            .onFailure(Assertions::fail)
-            .onSuccess(request -> slice.process(request)
-                .await()
-                .onFailure(Assertions::fail)
-                .onSuccess(r -> assertThat(r.result()).isEqualTo("Processed: test")));
+                            .onFailure(Assertions::fail)
+                            .onSuccess(request -> slice.process(request)
+                                                       .await()
+                                                       .onFailure(Assertions::fail)
+                                                       .onSuccess(response -> assertThat(response.result()).isEqualTo("Processed: test")));
     }
 }
 ```
@@ -355,7 +352,7 @@ Let's trace the flow:
    In tests, blocking is fine. In production, you compose `Promise` values with
    `.map()` and `.flatMap()` instead.
 
-7. **`.onSuccess(r -> assertThat(...))`** — verify the response.
+7. **`.onSuccess(response -> assertThat(...))`** — verify the response.
 
 ## Step 5: Make It Your Own
 
@@ -373,19 +370,23 @@ record Request(String name, String language) {
         java.util.Set.of("en", "es", "fr", "de", "ja");
 
     public static Result<Request> request(String name, String language) {
-        if (name == null || name.isBlank()) {
-            return Result.failure(ValidationError.emptyName());
-        }
-        if (language == null || language.isBlank()) {
-            return Result.failure(ValidationError.emptyLanguage());
-        }
-        if (!SUPPORTED_LANGUAGES.contains(language)) {
-            return Result.failure(ValidationError.unsupportedLanguage(language));
-        }
-        return Result.success(new Request(name.trim(), language));
+        var validName = Verify.ensure(name, Verify.Is::present, ValidationError.emptyName())
+                              .map(String::trim);
+
+        var validLanguage = Verify.ensure(language, Verify.Is::present, ValidationError.emptyLanguage())
+                                  .flatMap(lang -> Verify.ensure(lang, SUPPORTED_LANGUAGES::contains,
+                                                                 ValidationError.unsupportedLanguage(lang)));
+
+        return Result.all(validName, validLanguage)
+                     .map(Request::new);
     }
 }
 ```
+
+Notice how multi-field validation works: each field is validated independently into its
+own `Result` using `Verify.Is::present` (null + blank in one check), then combined at the
+end with `Result.all()` which collects all errors. The language field adds an extra `flatMap`
+step to verify it's in the supported set. If any check fails, the overall result is a failure.
 
 ### Update the Response
 
@@ -439,24 +440,26 @@ sealed interface ValidationError extends Cause {
 ### Update the Implementation
 
 ```java
+private static String greetingFor(String name, String language) {
+    return switch (language) {
+        case "en" -> "Hello, " + name + "!";
+        case "es" -> "Hola, " + name + "!";
+        case "fr" -> "Bonjour, " + name + "!";
+        case "de" -> "Hallo, " + name + "!";
+        case "ja" -> "Konnichiwa, " + name + "!";
+        default -> "Hello, " + name + "!";
+    };
+}
+
 static MyFirstSlice myFirstSlice() {
-    record myFirstSlice() implements MyFirstSlice {
-        @Override
-        public Promise<Response> process(Request request) {
-            var greeting = switch (request.language()) {
-                case "en" -> "Hello, " + request.name() + "!";
-                case "es" -> "Hola, " + request.name() + "!";
-                case "fr" -> "Bonjour, " + request.name() + "!";
-                case "de" -> "Hallo, " + request.name() + "!";
-                case "ja" -> "Konnichiwa, " + request.name() + "!";
-                default -> "Hello, " + request.name() + "!";
-            };
-            return Promise.success(new Response(greeting, request.language()));
-        }
-    }
-    return new myFirstSlice();
+    return request -> Promise.success(new Response(greetingFor(request.name(), request.language()),
+                                                   request.language()));
 }
 ```
+
+Notice how `greetingFor` is extracted as a pure Condition function (one `switch`, one pattern),
+while the factory lambda remains a Leaf (wraps the result in a `Promise`). This follows the
+JBCT rule: **one structural pattern per function**.
 
 ### Update the Test
 
@@ -474,9 +477,9 @@ class MyFirstSliceTest {
             .onSuccess(request -> slice.process(request)
                 .await()
                 .onFailure(Assertions::fail)
-                .onSuccess(r -> {
-                    assertThat(r.greeting()).isEqualTo("Hello, Alice!");
-                    assertThat(r.language()).isEqualTo("en");
+                .onSuccess(response -> {
+                    assertThat(response.greeting()).isEqualTo("Hello, Alice!");
+                    assertThat(response.language()).isEqualTo("en");
                 }));
     }
 
@@ -487,7 +490,7 @@ class MyFirstSliceTest {
             .onSuccess(request -> slice.process(request)
                 .await()
                 .onFailure(Assertions::fail)
-                .onSuccess(r -> assertThat(r.greeting()).isEqualTo("Hola, Carlos!")));
+                .onSuccess(response -> assertThat(response.greeting()).isEqualTo("Hola, Carlos!")));
     }
 
     @Test
@@ -537,7 +540,8 @@ Add the method declaration alongside `process()`:
 Promise<StatusResponse> status(StatusRequest request);
 ```
 
-Update the factory method to implement both:
+Now update the factory method. Since the slice has **two methods**, we can no longer use
+a lambda — lambdas implement exactly one method. Instead, we switch to an **inline record**:
 
 ```java
 static MyFirstSlice myFirstSlice() {
@@ -547,15 +551,8 @@ static MyFirstSlice myFirstSlice() {
 
         @Override
         public Promise<Response> process(Request request) {
-            var greeting = switch (request.language()) {
-                case "en" -> "Hello, " + request.name() + "!";
-                case "es" -> "Hola, " + request.name() + "!";
-                case "fr" -> "Bonjour, " + request.name() + "!";
-                case "de" -> "Hallo, " + request.name() + "!";
-                case "ja" -> "Konnichiwa, " + request.name() + "!";
-                default -> "Hello, " + request.name() + "!";
-            };
-            return Promise.success(new Response(greeting, request.language()));
+            return Promise.success(new Response(greetingFor(request.name(), request.language()),
+                                                request.language()));
         }
 
         @Override
@@ -566,6 +563,10 @@ static MyFirstSlice myFirstSlice() {
     return new myFirstSlice();
 }
 ```
+
+The inline record pattern keeps the implementation private to the factory method — no one
+can instantiate it directly. The lowercase name matches the factory method name, making it
+clear this is the factory's implementation detail.
 
 Rebuild:
 
@@ -636,11 +637,13 @@ You've built, tested, modified, and deployed an Aether slice. Here's where to go
 
 | Pattern | Where | Why |
 |---------|-------|-----|
-| Parse, don't validate | `Request.request()` returns `Result<Request>` | Invalid objects can never exist |
+| Parse, don't validate | `Request.request()` uses `Verify.ensure()` | Invalid objects can never exist |
+| Verify API | `Verify.ensure(value, Verify.Is::present, cause)` | Declarative validation with typed errors |
 | Sealed error types | `ValidationError extends Cause` | Compiler-checked exhaustive error handling |
+| `cause.result()` / `cause.promise()` | Error conversion | Idiomatic `Cause` → `Result`/`Promise` conversion |
 | Factory method naming | `MyFirstSlice.myFirstSlice()` | Convention: `TypeName.typeName()` |
-| Inline implementation record | `record myFirstSlice() implements MyFirstSlice` | Encapsulation — only the factory can create instances |
-| Single-parameter methods | `process(Request request)` | Uniform serialization, logging, metrics |
+| Lambda implementation | `return request -> Promise.success(...)` | Simplest form for single-method slices |
+| Inline record | `record mySlice() implements MySlice` | Required for multi-method slices or dependency capture |
 | Promise return types | `Promise<Response>` | Async-first, composable |
 | Nested types | Request, Response, ValidationError inside interface | Cohesion — everything about this slice lives together |
 

@@ -662,7 +662,8 @@ public sealed interface Verify {
         /// @param value the char sequence to check
         /// @return true if the char sequence is blank, false otherwise
         static <T extends CharSequence> boolean blank(T value) {
-            return value.chars()
+            return value.isEmpty() ||
+                   value.chars()
                         .allMatch(Character::isWhitespace);
         }
 
@@ -672,7 +673,16 @@ public sealed interface Verify {
         /// @param value the char sequence to check
         /// @return true if the char sequence is not blank, false otherwise
         static <T extends CharSequence> boolean notBlank(T value) {
-            return ! blank(value);
+            return !blank(value);
+        }
+
+        /// Checks if a char sequence is present, i.e. is not null, not empty and not blank.
+        ///
+        /// @param <T> the type of char sequence being checked
+        /// @param value the char sequence to check
+        /// @return true if the char sequence is not blank, false otherwise
+        static <T extends CharSequence> boolean present(T value) {
+            return notNull(value) && notBlank(value);
         }
 
         /// Checks if a character sequence length is within specified bounds (inclusive).
