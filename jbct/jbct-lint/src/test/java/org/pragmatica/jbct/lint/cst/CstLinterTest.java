@@ -22,8 +22,8 @@ class CstLinterTest {
 
     @BeforeEach
     void setUp() {
-        // Use context that matches business packages
-        context = LintContext.lintContext(List.of("**.usecase.**", "**.domain.**"));
+        // Default context has empty excludes, so all packages are linted
+        context = LintContext.defaultContext();
         linter = CstLinter.cstLinter(context);
     }
 
@@ -1723,26 +1723,13 @@ class CstLinterTest {
     @DisplayName("JBCT-STY-06: Import ordering")
     class ImportOrderingTests {
         @Test
-        void detectsJavaImportAfterJavax() {
+        void detectsJavaImportBeforePragmatica() {
+            // Rule order: org.pragmatica (0) → java/javax (1) → third-party (2) → project (3)
+            // java before pragmatica is wrong
             var diagnostics = lint("""
                 package com.example.usecase.test;
-                import javax.annotation.Nonnull;
                 import java.util.List;
-                public class Test {
-                    public String process(@Nonnull List<String> input) {
-                        return input.toString();
-                    }
-                }
-                """);
-            assertHasRule(diagnostics, "JBCT-STY-06");
-        }
-
-        @Test
-        void detectsJavaImportAfterPragmatica() {
-            var diagnostics = lint("""
-                package com.example.usecase.test;
                 import org.pragmatica.lang.Result;
-                import java.util.List;
                 public class Test {
                     public Result<String> process(List<String> input) {
                         return Result.success(input.toString());
@@ -1753,7 +1740,8 @@ class CstLinterTest {
         }
 
         @Test
-        void detectsJavaImportAfterThirdParty() {
+        void detectsThirdPartyBeforeJava() {
+            // Third-party (2) before java (1) is wrong
             var diagnostics = lint("""
                 package com.example.usecase.test;
                 import org.slf4j.Logger;
@@ -1784,12 +1772,13 @@ class CstLinterTest {
 
         @Test
         void allowsCorrectImportOrder() {
+            // Correct order: org.pragmatica (0) → java/javax (1) → third-party (2) → project (3)
             var diagnostics = lint("""
                 package com.example.usecase.test;
+                import org.pragmatica.lang.Result;
                 import java.util.List;
                 import java.util.Map;
                 import javax.annotation.Nonnull;
-                import org.pragmatica.lang.Result;
                 import org.slf4j.Logger;
                 import com.example.domain.User;
                 public class Test {
@@ -1803,12 +1792,13 @@ class CstLinterTest {
 
         @Test
         void allowsCorrectImportOrderWithStaticImports() {
+            // Correct order: org.pragmatica → java → then static: org.pragmatica → java
             var diagnostics = lint("""
                 package com.example.usecase.test;
-                import java.util.List;
                 import org.pragmatica.lang.Result;
-                import static java.util.Objects.requireNonNull;
+                import java.util.List;
                 import static org.pragmatica.lang.Result.success;
+                import static java.util.Objects.requireNonNull;
                 public class Test {
                     public Result<String> process(List<String> input) {
                         requireNonNull(input);
@@ -1821,12 +1811,13 @@ class CstLinterTest {
 
         @Test
         void detectsOutOfOrderStaticImports() {
+            // Static section: java (1) before org.pragmatica (0) is wrong
             var diagnostics = lint("""
                 package com.example.usecase.test;
-                import java.util.List;
                 import org.pragmatica.lang.Result;
-                import static org.pragmatica.lang.Result.success;
+                import java.util.List;
                 import static java.util.Objects.requireNonNull;
+                import static org.pragmatica.lang.Result.success;
                 public class Test {
                     public Result<String> process(List<String> input) {
                         requireNonNull(input);
@@ -1872,9 +1863,28 @@ class CstLinterTest {
     @Nested
     @DisplayName("Rules should not trigger for non-business packages")
     class NonBusinessPackageTests {
+        private CstLinter excludingLinter;
+
+        @BeforeEach
+        void setUpExclusions() {
+            var excludingContext = LintContext.lintContext(List.of(
+                "**.infrastructure", "**.infrastructure.**",
+                "**.adapter", "**.adapter.**"
+            ));
+            excludingLinter = CstLinter.cstLinter(excludingContext);
+        }
+
+        private List<Diagnostic> lintWithExclusions(String source) {
+            var sourceFile = SourceFile.sourceFile(Path.of("Test.java"), source);
+            var result = excludingLinter.lint(sourceFile);
+            assertTrue(result.isSuccess(), () -> "Parse failed: " + result);
+            return result.onFailure(cause -> fail("Parse failed: " + cause.message()))
+                         .or(List.of());
+        }
+
         @Test
         void noRulesForInfrastructurePackage() {
-            var diagnostics = lint("""
+            var diagnostics = lintWithExclusions("""
                 package com.example.infrastructure;
                 public class Test {
                     public void doSomething() {
@@ -1882,17 +1892,17 @@ class CstLinterTest {
                     }
                 }
                 """);
-            // Should have no diagnostics since infrastructure is not a business package
+            // Should have no diagnostics since infrastructure is excluded
             assertTrue(diagnostics.isEmpty() ||
             diagnostics.stream()
                        .noneMatch(d -> d.ruleId()
                                         .startsWith("JBCT-")),
-                       "No JBCT rules should trigger for non-business packages");
+                       "No JBCT rules should trigger for excluded packages");
         }
 
         @Test
         void noRulesForAdapterPackage() {
-            var diagnostics = lint("""
+            var diagnostics = lintWithExclusions("""
                 package com.example.adapter.http;
                 import java.util.Optional;
                 public class Test {
@@ -1905,7 +1915,7 @@ class CstLinterTest {
             diagnostics.stream()
                        .noneMatch(d -> d.ruleId()
                                         .startsWith("JBCT-")),
-                       "No JBCT rules should trigger for adapter packages");
+                       "No JBCT rules should trigger for excluded packages");
         }
     }
 

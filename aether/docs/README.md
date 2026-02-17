@@ -32,7 +32,6 @@ API specifications, CLI commands, and configuration options.
 - [Management API](reference/management-api.md) - HTTP API for cluster management
 - [CLI](reference/cli.md) - Command-line tools
 - [Configuration](reference/configuration.md) - All configuration options
-- [Examples](reference/examples/) - cURL and Python client examples
 
 ## Operators
 

@@ -14,7 +14,7 @@ modify it to make it your own, and deploy it to a local Forge.
 | Maven    | 3.8+     | `mvn --version`  |
 | JBCT CLI | 0.16.0+  | `jbct --version` |
 
-> **Don't have the JBCT CLI?** See [Installing JBCT](../reference/installing-jbct.md).
+> **Don't have the JBCT CLI?** Install it with `mvn dependency:copy` or download from Maven Central.
 
 All JBCT and Aether artifacts (including the annotation processor and Maven plugin) are
 published to Maven Central. The generated POM references them automatically — no additional
@@ -111,7 +111,7 @@ ls target/
 Your Java version is too old. Aether requires Java 25+. Check with `java --version`.
 
 **`jbct: command not found`**
-The JBCT CLI isn't installed or isn't on your PATH. See [Installing JBCT](../reference/installing-jbct.md).
+The JBCT CLI isn't installed or isn't on your PATH. Install it with `mvn dependency:copy` or download from Maven Central.
 
 ## Step 3: Understand the Generated Code
 
