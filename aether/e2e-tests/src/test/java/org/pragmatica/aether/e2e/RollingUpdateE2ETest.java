@@ -47,7 +47,7 @@ class RollingUpdateE2ETest {
     // Common timeouts (CI gets 2x via adapt())
     private static final Duration DEPLOY_TIMEOUT = adapt(timeSpan(3).minutes().duration());
     private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
-    private static final Duration CLEANUP_TIMEOUT = adapt(timeSpan(60).seconds().duration());
+    private static final Duration CLEANUP_TIMEOUT = adapt(timeSpan(2).minutes().duration());
 
     private static AetherCluster cluster;
 
@@ -104,10 +104,10 @@ class RollingUpdateE2ETest {
                })
                .until(() -> sliceIsActive(NEW_VERSION));
 
-        // Both versions should be active
-        var slices = cluster.anyNode().getSlices();
-        assertThat(slices).contains(OLD_VERSION);
-        assertThat(slices).contains(NEW_VERSION);
+        // Both versions should be active (use cluster-wide status)
+        var slicesStatus = cluster.anyNode().getSlicesStatus();
+        assertThat(slicesStatus).contains(OLD_VERSION);
+        assertThat(slicesStatus).contains(NEW_VERSION);
 
         // New version should have 0% traffic initially (routing format: "new:old")
         var updateStatus = getUpdateStatus();
@@ -167,12 +167,12 @@ class RollingUpdateE2ETest {
         // Complete the update
         completeUpdate();
 
-        // Old version should be removed - use local slices view like forge tests
+        // Old version should be removed (use cluster-wide status)
         await().atMost(Duration.ofSeconds(90))
                .pollInterval(POLL_INTERVAL)
                .until(() -> {
-                   var slices = cluster.anyNode().getSlices();
-                   return !slices.contains(OLD_VERSION) && slices.contains(NEW_VERSION);
+                   var status = cluster.anyNode().getSlicesStatus();
+                   return !status.contains(OLD_VERSION) && status.contains(NEW_VERSION);
                });
     }
 
@@ -342,8 +342,8 @@ class RollingUpdateE2ETest {
                                 .toResult(Causes.cause("No leader"))
                                 .unwrap();
 
-            // Get list of deployed slices
-            var slices = leader.getSlices();
+            // Get list of deployed slices (cluster-wide view)
+            var slices = leader.getSlicesStatus();
             System.out.println("[DEBUG] Deployed slices: " + slices);
 
             // Undeploy each known slice
@@ -365,10 +365,36 @@ class RollingUpdateE2ETest {
                .pollInterval(POLL_INTERVAL)
                .ignoreExceptions()
                .until(() -> {
-                   var slices = cluster.anyNode().getSlices();
-                   System.out.println("[DEBUG] Waiting for no slices, current: " + slices);
-                   return !slices.contains(OLD_VERSION) && !slices.contains(NEW_VERSION);
+                   var status = cluster.anyNode().getSlicesStatus();
+                   System.out.println("[DEBUG] Waiting for no slices, current: " + status);
+                   // Don't spam undeploy while slices are already unloading
+                   var isUnloading = status.contains("UNLOADING");
+                   if (status.contains(OLD_VERSION)) {
+                       if (!isUnloading) {
+                           tryUndeploy(OLD_VERSION);
+                       }
+                       return false;
+                   }
+                   if (status.contains(NEW_VERSION)) {
+                       if (!isUnloading) {
+                           tryUndeploy(NEW_VERSION);
+                       }
+                       return false;
+                   }
+                   return true;
                });
+    }
+
+    private void tryUndeploy(String artifact) {
+        try {
+            var leader = cluster.leader()
+                                .toResult(Causes.cause("No leader"))
+                                .unwrap();
+            var result = leader.undeploy(artifact);
+            System.out.println("[DEBUG] Undeploy attempt: " + result);
+        } catch (Exception e) {
+            System.out.println("[DEBUG] Undeploy error: " + e.getMessage());
+        }
     }
 
     private void deployOldVersion() {

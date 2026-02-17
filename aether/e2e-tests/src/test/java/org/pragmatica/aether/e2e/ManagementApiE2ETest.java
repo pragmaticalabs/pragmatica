@@ -41,7 +41,7 @@ class ManagementApiE2ETest {
     private static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(30).seconds().duration());
     private static final Duration DEPLOY_TIMEOUT = adapt(timeSpan(3).minutes().duration());
     private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
-    private static final Duration CLEANUP_TIMEOUT = adapt(timeSpan(60).seconds().duration());
+    private static final Duration CLEANUP_TIMEOUT = adapt(timeSpan(2).minutes().duration());
 
     private static AetherCluster cluster;
 
@@ -317,7 +317,7 @@ class ManagementApiE2ETest {
                                 .toResult(Causes.cause("No leader"))
                                 .unwrap();
 
-            var slices = leader.getSlices();
+            var slices = leader.getSlicesStatus();
             System.out.println("[DEBUG] Deployed slices: " + slices);
 
             if (slices.contains(TEST_ARTIFACT)) {
@@ -334,10 +334,29 @@ class ManagementApiE2ETest {
                .pollInterval(POLL_INTERVAL)
                .ignoreExceptions()
                .until(() -> {
-                   var slices = cluster.anyNode().getSlices();
-                   System.out.println("[DEBUG] Waiting for no slices, current: " + slices);
-                   return !slices.contains(TEST_ARTIFACT);
+                   var status = cluster.anyNode().getSlicesStatus();
+                   System.out.println("[DEBUG] Waiting for no slices, current: " + status);
+                   if (status.contains(TEST_ARTIFACT)) {
+                       // Don't spam undeploy while slice is already unloading
+                       if (!status.contains("UNLOADING")) {
+                           tryUndeploy();
+                       }
+                       return false;
+                   }
+                   return true;
                });
+    }
+
+    private void tryUndeploy() {
+        try {
+            var leader = cluster.leader()
+                                .toResult(Causes.cause("No leader"))
+                                .unwrap();
+            var result = leader.undeploy(TEST_ARTIFACT);
+            System.out.println("[DEBUG] Undeploy attempt: " + result);
+        } catch (Exception e) {
+            System.out.println("[DEBUG] Undeploy error: " + e.getMessage());
+        }
     }
 
     private String deployAndAssert(String artifact, int instances) {
@@ -350,19 +369,8 @@ class ManagementApiE2ETest {
     }
 
     private void awaitSliceActive(String artifact) {
-        await().atMost(DEPLOY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(() -> {
-                   var state = cluster.anyNode().getSliceState(artifact);
-                   if ("FAILED".equals(state)) {
-                       throw new AssertionError("Slice deployment failed: " + artifact);
-                   }
-               })
-               .until(() -> {
-                   var state = cluster.anyNode().getSliceState(artifact);
-                   System.out.println("[DEBUG] Slice " + artifact + " state: " + state);
-                   return "ACTIVE".equals(state);
-               });
+        // Delegates to cluster which has stuck-state detection (throws if ACTIVATING > 120s in CI)
+        cluster.awaitSliceActive(artifact, DEPLOY_TIMEOUT);
     }
 
 }

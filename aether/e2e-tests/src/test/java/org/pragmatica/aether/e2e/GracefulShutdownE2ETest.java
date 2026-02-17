@@ -115,12 +115,8 @@ class GracefulShutdownE2ETest {
         var deployResponse = leader.deploy(TEST_ARTIFACT, 2);
         assertThat(deployResponse).doesNotContain("\"error\"");
 
-        await().atMost(DEPLOY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> {
-                   var state = cluster.anyNode().getSliceState(TEST_ARTIFACT);
-                   return "ACTIVE".equals(state);
-               });
+        // Delegates to cluster which has stuck-state detection
+        cluster.awaitSliceActive(TEST_ARTIFACT, DEPLOY_TIMEOUT);
 
         // Shutdown one node
         cluster.killNode("node-2");
@@ -133,9 +129,9 @@ class GracefulShutdownE2ETest {
         assertThat(health).doesNotContain("\"error\"");
         assertThat(health).contains("\"nodeCount\":4");
 
-        // Slice should still be accessible
-        var slices = cluster.anyNode().getSlices();
-        assertThat(slices).contains("echo-slice");
+        // Slice should still be accessible (use cluster-wide status)
+        var slicesStatus = cluster.anyNode().getSlicesStatus();
+        assertThat(slicesStatus).contains("echo-slice");
 
         // Cleanup: undeploy slice
         try {
@@ -143,7 +139,7 @@ class GracefulShutdownE2ETest {
             await().atMost(DEFAULT_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
                    .ignoreExceptions()
-                   .until(() -> !cluster.anyNode().getSlices().contains(TEST_ARTIFACT));
+                   .until(() -> !cluster.anyNode().getSlicesStatus().contains(TEST_ARTIFACT));
         } catch (Exception e) {
             System.out.println("[DEBUG] Cleanup undeploy error: " + e.getMessage());
         }
@@ -170,8 +166,8 @@ class GracefulShutdownE2ETest {
                .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    try {
-                       var slices = cluster.anyNode().getSlices();
-                       return slices.contains("echo-slice") || !slices.contains("\"error\"");
+                       var status = cluster.anyNode().getSlicesStatus();
+                       return status.contains("echo-slice") || !status.contains("\"error\"");
                    } catch (Exception e) {
                        return false;
                    }
@@ -187,7 +183,7 @@ class GracefulShutdownE2ETest {
             await().atMost(DEFAULT_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
                    .ignoreExceptions()
-                   .until(() -> !cluster.anyNode().getSlices().contains(TEST_ARTIFACT));
+                   .until(() -> !cluster.anyNode().getSlicesStatus().contains(TEST_ARTIFACT));
         } catch (Exception e) {
             System.out.println("[DEBUG] Cleanup undeploy error: " + e.getMessage());
         }

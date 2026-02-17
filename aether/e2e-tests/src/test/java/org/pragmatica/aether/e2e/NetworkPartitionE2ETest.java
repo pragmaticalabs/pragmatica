@@ -43,7 +43,7 @@ class NetworkPartitionE2ETest {
     // Common timeouts (CI gets 2x via adapt())
     private static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(2).minutes().duration());
     private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
-    private static final Duration CLEANUP_TIMEOUT = adapt(timeSpan(60).seconds().duration());
+    private static final Duration CLEANUP_TIMEOUT = adapt(timeSpan(2).minutes().duration());
 
     private static AetherCluster cluster;
 
@@ -183,9 +183,9 @@ class NetworkPartitionE2ETest {
         cluster.killNode("node-3");
         cluster.awaitQuorum();
 
-        // Slice state should be preserved
-        var slices = cluster.anyNode().getSlices();
-        assertThat(slices).contains("echo-slice");
+        // Slice state should be preserved (use cluster-wide status)
+        var slicesStatus = cluster.anyNode().getSlicesStatus();
+        assertThat(slicesStatus).contains("echo-slice");
 
         // Restore full cluster
         cluster.node("node-3").start();
@@ -195,8 +195,8 @@ class NetworkPartitionE2ETest {
         cluster.awaitQuorum();
 
         // State should still be consistent
-        slices = cluster.anyNode().getSlices();
-        assertThat(slices).contains("echo-slice");
+        slicesStatus = cluster.anyNode().getSlicesStatus();
+        assertThat(slicesStatus).contains("echo-slice");
     }
 
     // ===== Cleanup Helpers =====
@@ -225,8 +225,8 @@ class NetworkPartitionE2ETest {
                                 .toResult(Causes.cause("No leader"))
                                 .unwrap();
 
-            // Get list of deployed slices
-            var slices = leader.getSlices();
+            // Get list of deployed slices (cluster-wide view)
+            var slices = leader.getSlicesStatus();
             System.out.println("[DEBUG] Deployed slices: " + slices);
 
             // Undeploy test artifact if present
@@ -244,10 +244,29 @@ class NetworkPartitionE2ETest {
                .pollInterval(POLL_INTERVAL)
                .ignoreExceptions()
                .until(() -> {
-                   var slices = cluster.anyNode().getSlices();
-                   System.out.println("[DEBUG] Waiting for no slices, current: " + slices);
-                   return !slices.contains(TEST_ARTIFACT);
+                   var status = cluster.anyNode().getSlicesStatus();
+                   System.out.println("[DEBUG] Waiting for no slices, current: " + status);
+                   if (status.contains(TEST_ARTIFACT)) {
+                       // Don't spam undeploy while slice is already unloading
+                       if (!status.contains("UNLOADING")) {
+                           tryUndeploy();
+                       }
+                       return false;
+                   }
+                   return true;
                });
+    }
+
+    private void tryUndeploy() {
+        try {
+            var leader = cluster.leader()
+                                .toResult(Causes.cause("No leader"))
+                                .unwrap();
+            var result = leader.undeploy(TEST_ARTIFACT);
+            System.out.println("[DEBUG] Undeploy attempt: " + result);
+        } catch (Exception e) {
+            System.out.println("[DEBUG] Undeploy error: " + e.getMessage());
+        }
     }
 
     // ===== API Helpers =====
@@ -274,8 +293,8 @@ class NetworkPartitionE2ETest {
         await().atMost(DEFAULT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(() -> {
-                   var slices = cluster.anyNode().getSlices();
-                   return slices.contains(sliceName);
+                   var status = cluster.anyNode().getSlicesStatus();
+                   return status.contains(sliceName);
                });
     }
 

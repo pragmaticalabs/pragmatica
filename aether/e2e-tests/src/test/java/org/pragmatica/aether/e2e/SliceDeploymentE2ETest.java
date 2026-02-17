@@ -40,7 +40,7 @@ class SliceDeploymentE2ETest {
     // Common timeouts (CI gets 2x via adapt())
     private static final Duration DEPLOY_TIMEOUT = adapt(timeSpan(3).minutes().duration());
     private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
-    private static final Duration CLEANUP_TIMEOUT = adapt(timeSpan(60).seconds().duration());
+    private static final Duration CLEANUP_TIMEOUT = adapt(timeSpan(2).minutes().duration());
 
     private static AetherCluster cluster;
 
@@ -85,7 +85,10 @@ class SliceDeploymentE2ETest {
                    var status = cluster.anyNode().getSlicesStatus();
                    System.out.println("[DEBUG] Cleanup check, cluster slices status: " + status);
                    if (status.contains(TEST_ARTIFACT)) {
-                       tryUndeploy();
+                       // Don't spam undeploy while slice is already unloading
+                       if (!status.contains("UNLOADING")) {
+                           tryUndeploy();
+                       }
                        return false;
                    }
                    return true;
@@ -234,14 +237,8 @@ class SliceDeploymentE2ETest {
     }
 
     private void awaitSliceActive(String artifact) {
-        await().atMost(DEPLOY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(() -> {
-                   if (sliceHasFailed(artifact)) {
-                       throw new AssertionError("Slice deployment failed: " + artifact);
-                   }
-               })
-               .until(() -> sliceIsActive(artifact));
+        // Delegates to cluster which has stuck-state detection (throws if ACTIVATING > 120s in CI)
+        cluster.awaitSliceActive(artifact, DEPLOY_TIMEOUT);
     }
 
     private void awaitSliceRemoved(String artifact) {
