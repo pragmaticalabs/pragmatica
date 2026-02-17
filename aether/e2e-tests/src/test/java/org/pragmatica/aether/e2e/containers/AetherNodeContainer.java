@@ -147,8 +147,10 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
                  .withEnv("JAVA_OPTS", "-Xmx256m -XX:+UseZGC");
 
         if (HOST_NETWORKING_SUPPORTED) {
-            container.withNetworkMode("host")
-                     .addExposedPort(managementPort);
+            // Host networking: ports are directly on host, no mapping needed.
+            // Do NOT call addExposedPort — Testcontainers checks for port bindings
+            // which don't exist in host mode, causing a 5-second startup timeout.
+            container.withNetworkMode("host");
         } else {
             container.addFixedExposedPort(managementPort, managementPort);
             container.addFixedExposedPort(clusterPort, clusterPort);
