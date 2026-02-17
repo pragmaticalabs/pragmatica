@@ -272,6 +272,16 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         return null;
     }
 
+    /// With host networking, ports are directly on the host — no Docker port mapping exists.
+    /// The default implementation looks up bindings which are empty in host mode.
+    @Override
+    public Integer getMappedPort(int originalPort) {
+        if (HOST_NETWORKING_SUPPORTED) {
+            return originalPort;
+        }
+        return super.getMappedPort(originalPort);
+    }
+
     /// Returns the node ID for this container.
     public String nodeId() {
         return nodeId;
