@@ -1,7 +1,7 @@
 package org.pragmatica.aether.e2e.containers;
 
+import com.github.dockerjava.api.model.HealthCheck;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.startupcheck.IsRunningStartupCheckStrategy;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.ImageFromDockerfile;
 import org.testcontainers.utility.DockerImageName;
@@ -14,6 +14,7 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.Future;
 
 /// Testcontainer wrapper for Aether Node.
@@ -105,12 +106,12 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     /// @return configured container (not yet started)
     public static AetherNodeContainer aetherNode(String nodeId, Path projectRoot) {
         var container = createContainer(nodeId, projectRoot, MANAGEMENT_PORT, CLUSTER_PORT);
+        disableDockerHealthcheck(container);
         container.withExposedPorts(MANAGEMENT_PORT, CLUSTER_PORT)
                  .withEnv("NODE_ID", nodeId)
                  .withEnv("CLUSTER_PORT", String.valueOf(CLUSTER_PORT))
                  .withEnv("MANAGEMENT_PORT", String.valueOf(MANAGEMENT_PORT))
                  .withEnv("JAVA_OPTS", "-Xmx256m -XX:+UseZGC")
-                 .withStartupCheckStrategy(new IsRunningStartupCheckStrategy())
                  .waitingFor(Wait.forHttp("/api/health")
                                  .forPort(MANAGEMENT_PORT)
                                  .forStatusCode(200)
@@ -154,8 +155,8 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
             container.withNetworkAliases(nodeId);
         }
 
-        container.withStartupCheckStrategy(new IsRunningStartupCheckStrategy())
-                 .waitingFor(Wait.forHttp("/api/health")
+        disableDockerHealthcheck(container);
+        container.waitingFor(Wait.forHttp("/api/health")
                                  .forPort(managementPort)
                                  .forStatusCode(200)
                                  .withStartupTimeout(STARTUP_TIMEOUT));
@@ -185,6 +186,15 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
                 System.err.println("[WARN] Test artifact not found: " + hostPath);
             }
         }
+    }
+
+    /// Disables the Docker HEALTHCHECK inherited from the Dockerfile.
+    /// Testcontainers 1.21+ treats Docker HEALTHCHECK as a startup gate with a 5-second
+    /// default timeout, which is too short for JVM startup. Disabling it lets the explicit
+    /// Wait.forHttp() strategy handle readiness with proper timeouts.
+    private static void disableDockerHealthcheck(AetherNodeContainer container) {
+        container.withCreateContainerCmdModifier(cmd ->
+            cmd.withHealthcheck(new HealthCheck().withTest(List.of("NONE"))));
     }
 
     private static AetherNodeContainer createContainer(String nodeId, Path projectRoot,
