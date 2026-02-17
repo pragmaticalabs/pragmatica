@@ -1,6 +1,7 @@
 package org.pragmatica.aether.e2e.containers;
 
 import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.startupcheck.IsRunningStartupCheckStrategy;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.ImageFromDockerfile;
 import org.testcontainers.utility.DockerImageName;
@@ -109,6 +110,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
                  .withEnv("CLUSTER_PORT", String.valueOf(CLUSTER_PORT))
                  .withEnv("MANAGEMENT_PORT", String.valueOf(MANAGEMENT_PORT))
                  .withEnv("JAVA_OPTS", "-Xmx256m -XX:+UseZGC")
+                 .withStartupCheckStrategy(new IsRunningStartupCheckStrategy())
                  .waitingFor(Wait.forHttp("/api/health")
                                  .forPort(MANAGEMENT_PORT)
                                  .forStatusCode(200)
@@ -152,7 +154,8 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
             container.withNetworkAliases(nodeId);
         }
 
-        container.waitingFor(Wait.forHttp("/api/health")
+        container.withStartupCheckStrategy(new IsRunningStartupCheckStrategy())
+                 .waitingFor(Wait.forHttp("/api/health")
                                  .forPort(managementPort)
                                  .forStatusCode(200)
                                  .withStartupTimeout(STARTUP_TIMEOUT));
