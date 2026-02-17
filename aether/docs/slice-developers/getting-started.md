@@ -452,7 +452,8 @@ private static String greetingFor(String name, String language) {
 }
 
 static MyFirstSlice myFirstSlice() {
-    return request -> Promise.success(new Response(greetingFor(request.name(), request.language()),
+    return request -> Promise.success(new Response(greetingFor(request.name(), 
+                                                               request.language()),
                                                    request.language()));
 }
 ```
@@ -472,25 +473,25 @@ class MyFirstSliceTest {
 
     @Test
     void process_validEnglishRequest_returnsEnglishGreeting() {
-        MyFirstSlice.Request.request("Alice", "en")
-            .onFailure(Assertions::fail)
-            .onSuccess(request -> slice.process(request)
-                .await()
-                .onFailure(Assertions::fail)
-                .onSuccess(response -> {
-                    assertThat(response.greeting()).isEqualTo("Hello, Alice!");
-                    assertThat(response.language()).isEqualTo("en");
-                }));
+        Request.request("Alice", "en")
+               .onFailure(Assertions::fail)
+               .onSuccess(request -> slice.process(request)
+                                          .await()
+                                          .onFailure(Assertions::fail)
+                                          .onSuccess(response -> {
+                                              assertThat(response.greeting()).isEqualTo("Hello, Alice!");
+                                              assertThat(response.language()).isEqualTo("en");
+                                          }));
     }
 
     @Test
     void process_validSpanishRequest_returnsSpanishGreeting() {
-        MyFirstSlice.Request.request("Carlos", "es")
-            .onFailure(Assertions::fail)
-            .onSuccess(request -> slice.process(request)
-                .await()
-                .onFailure(Assertions::fail)
-                .onSuccess(response -> assertThat(response.greeting()).isEqualTo("Hola, Carlos!")));
+        Request.request("Carlos", "es")
+               .onFailure(Assertions::fail)
+                .onSuccess(request -> slice.process(request)
+                                           .await()
+                                           .onFailure(Assertions::fail)
+                                           .onSuccess(response -> assertThat(response.greeting()).isEqualTo("Hola, Carlos!")));
     }
 
     @Test
@@ -551,7 +552,8 @@ static MyFirstSlice myFirstSlice() {
 
         @Override
         public Promise<Response> process(Request request) {
-            return Promise.success(new Response(greetingFor(request.name(), request.language()),
+            return Promise.success(new Response(greetingFor(request.name(), 
+                                                            request.language()),
                                                 request.language()));
         }
 
@@ -583,7 +585,294 @@ cat target/classes/META-INF/slice/MyFirstSlice.manifest
 The manifest now lists both `process` and `status` methods — the annotation processor
 automatically discovered the new method.
 
-## Step 7: Deploy to Forge
+## Step 7: Expose via HTTP
+
+Slices communicate over Aether's internal protocol. To expose your slice as an HTTP API,
+add a `routes.toml` file that maps HTTP endpoints to slice methods. The annotation processor
+reads this file at compile time and generates type-safe route bindings — no hand-written
+controllers or servlet code.
+
+### Create `routes.toml`
+
+Create `src/main/resources/routes.toml`:
+
+```toml
+prefix = "/api/v1/greetings"
+
+[routes]
+process = "POST /"
+status  = "GET /status"
+
+[errors]
+default = 500
+HTTP_400 = ["*Empty*", "*Unsupported*"]
+```
+
+Three sections:
+
+- **`prefix`** — a common URL prefix applied to all routes. Here, every endpoint starts
+  with `/api/v1/greetings`.
+
+- **`[routes]`** — maps slice method names to HTTP endpoints using a compact DSL.
+  The key (`process`, `status`) must exactly match a method declared in the `@Slice` interface.
+  The value describes the HTTP method and path.
+
+- **`[errors]`** — maps your `Cause` types to HTTP status codes using glob patterns.
+  `"*Empty*"` matches any error type whose name contains "Empty" (like `EmptyName` or
+  `EmptyLanguage`). `"*Unsupported*"` matches `UnsupportedLanguage`. Everything else
+  falls through to `default = 500`.
+
+### Route DSL
+
+The route DSL format is:
+
+```
+METHOD /path/{param:Type}?queryParam:Type&anotherQuery
+```
+
+**Path parameters** use `{name}` or `{name:Type}`:
+
+```toml
+getUser    = "GET /{id:Long}"
+getByName  = "GET /{name}"              # defaults to String
+getItem    = "GET /orders/{orderId:Long}/items/{itemId:Long}"
+```
+
+**Query parameters** appear after `?`, separated by `&`:
+
+```toml
+search = "GET /search?query&limit:Integer&offset:Integer"
+```
+
+Query parameters are always optional — they arrive as `Option<T>` in the generated code.
+
+**Body** is implicit for POST, PUT, and PATCH methods — the request record is deserialized
+from the JSON body automatically.
+
+**Supported types:** `String` (default), `Integer`, `Long`, `Double`, `Float`, `Boolean`,
+`BigDecimal`, `LocalDate`, `LocalDateTime`, `LocalTime`, `OffsetDateTime`, `Duration`.
+
+### Error Mapping
+
+The `[errors]` section uses glob patterns to match `Cause` type names to HTTP status codes:
+
+```toml
+[errors]
+default = 500
+HTTP_404 = ["*NotFound*", "*Missing*"]
+HTTP_400 = ["*Invalid*", "*Empty*", "*Unsupported*"]
+HTTP_409 = ["*Duplicate*", "*AlreadyExists*"]
+```
+
+Patterns support `*` wildcards: `*Suffix`, `Prefix*`, `*Contains*`, or `ExactMatch`.
+For ambiguous types that match multiple patterns, add an explicit override:
+
+```toml
+[errors.explicit]
+SomeAmbiguousType = 404
+```
+
+Explicit mappings take priority over pattern matches.
+
+### What Gets Generated
+
+Rebuild with `mvn clean verify`. The annotation processor now generates a
+`MyFirstSliceRoutes` class alongside the factory. This class:
+
+- Implements `RouteSource` — providing HTTP route definitions to the runtime
+- Maps each route to the corresponding slice method with type-safe parameter extraction
+- Generates an `ErrorMapper` function — a `switch` expression that converts your sealed
+  `Cause` types to HTTP error responses with the configured status codes
+
+For our two routes, the generated code creates:
+
+- `POST /api/v1/greetings` → deserializes JSON body as `Request`, calls `process()`
+- `GET /api/v1/greetings/status` → calls `status()` with an empty `StatusRequest`
+
+Error responses follow the pattern mapping:
+
+| Error Type | HTTP Status | Pattern |
+|------------|-------------|---------|
+| `EmptyName` | 400 | `*Empty*` |
+| `EmptyLanguage` | 400 | `*Empty*` |
+| `UnsupportedLanguage` | 400 | `*Unsupported*` |
+| Everything else | 500 | `default` |
+
+### Inheriting Common Configuration
+
+If multiple slices share error mappings or a common prefix, create a
+`src/main/resources/routes-base.toml`:
+
+```toml
+[errors]
+default = 500
+HTTP_404 = ["*NotFound*"]
+HTTP_400 = ["*Invalid*"]
+```
+
+Each slice's `routes.toml` inherits from the base and can override or extend it.
+Child settings take precedence over parent settings.
+
+## Step 8: Add Database Persistence
+
+Aether provisions infrastructure resources — databases, HTTP clients, caches — through a
+compile-time mechanism called **resource qualifiers**. You define a small annotation that says
+"I need *this type* of resource, configured from *this section*," and the annotation processor
+generates the wiring. The runtime provisions the resource, caches it, and injects it into your
+slice factory. No dependency injection framework, no runtime reflection.
+
+Let's extend the greeting service to persist every greeting to an H2 database.
+
+### Define a Resource Qualifier
+
+Create a new annotation in your slice source — it can live in `MyFirstSlice.java` alongside
+everything else, or in a separate file if you prefer:
+
+```java
+import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+import org.pragmatica.aether.resource.db.DatabaseConnector;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+@ResourceQualifier(type = DatabaseConnector.class, config = "database.greetings")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+@interface GreetingDb {}
+```
+
+This is a **meta-annotation** pattern. `@ResourceQualifier` is never placed on parameters
+directly — instead, you create a custom annotation (here `@GreetingDb`) that carries the
+qualifier metadata:
+
+- **`type`** — the resource interface to provision (`DatabaseConnector.class`)
+- **`config`** — the configuration section in `aether.toml` that holds the connection details
+  (`"database.greetings"`)
+
+The annotation processor detects `@ResourceQualifier` on your custom annotation and
+generates a `ctx.resources().provide(DatabaseConnector.class, "database.greetings")` call
+in the factory.
+
+> **Built-in convenience:** Aether ships a `@Database` annotation that points to the
+> top-level `"database"` config section — useful for slices with a single database.
+> Custom qualifiers like `@GreetingDb` let you target specific config sections when you
+> need multiple databases or want descriptive naming.
+
+### Add the Dependency
+
+Update the factory method to accept the annotated `DatabaseConnector`:
+
+```java
+static MyFirstSlice myFirstSlice(@GreetingDb DatabaseConnector db) {
+    record myFirstSlice(DatabaseConnector db) implements MyFirstSlice {
+        // ...
+    }
+    return new myFirstSlice(db);
+}
+```
+
+The `@GreetingDb` annotation tells the annotation processor that this parameter is a
+resource dependency, not a slice dependency. The generated factory will provision the
+`DatabaseConnector` before creating the slice instance.
+
+### Update the Implementation
+
+Use the connector to save each greeting:
+
+```java
+private static String greetingFor(String name, String language) {
+    return switch (language) {
+        case "en" -> "Hello, " + name + "!";
+        case "es" -> "Hola, " + name + "!";
+        case "fr" -> "Bonjour, " + name + "!";
+        case "de" -> "Hallo, " + name + "!";
+        case "ja" -> "Konnichiwa, " + name + "!";
+        default -> "Hello, " + name + "!";
+    };
+}
+
+static MyFirstSlice myFirstSlice(@GreetingDb DatabaseConnector db) {
+    record myFirstSlice(DatabaseConnector db) implements MyFirstSlice {
+        private static final java.util.List<String> LANGUAGES =
+            java.util.List.of("en", "es", "fr", "de", "ja");
+
+        @Override
+        public Promise<Response> process(Request request) {
+            var greeting = greetingFor(request.name(), request.language());
+
+            return db.update(
+                "INSERT INTO greetings (name, language, greeting) VALUES (?, ?, ?)",
+                request.name(), request.language(), greeting
+            ).map(_ -> new Response(greeting, request.language()));
+        }
+
+        @Override
+        public Promise<StatusResponse> status(StatusRequest request) {
+            return Promise.success(new StatusResponse(LANGUAGES, LANGUAGES.size()));
+        }
+    }
+    return new myFirstSlice(db);
+}
+```
+
+The `db.update()` method returns `Promise<Integer>` (affected row count). We chain
+`.map()` to discard the count and return the response. If the insert fails, the
+`Promise` carries the failure automatically — no try/catch needed.
+
+### Configure the Database
+
+The runtime reads database configuration from `aether.toml`, under the section path
+specified in your qualifier — `database.greetings` in our case:
+
+```toml
+[database.greetings]
+jdbc_url = "jdbc:h2:mem:greetings;DB_CLOSE_DELAY=-1"
+username = "sa"
+password = ""
+
+[database.greetings.pool]
+min_connections = 1
+max_connections = 5
+```
+
+The config maps to a `DatabaseConnectorConfig` record. The runtime uses Java SPI to discover
+the appropriate `ResourceFactory` — `JdbcDatabaseConnectorFactory` for JDBC (backed by
+HikariCP), `R2dbcDatabaseConnectorFactory` for reactive — and provisions the connector.
+The result is cached: identical `(type, config)` pairs always return the same instance.
+
+### How Resource Provisioning Works
+
+The `@ResourceQualifier` pattern is not specific to databases. It works for **any**
+infrastructure resource:
+
+```java
+// HTTP client for an external API
+@ResourceQualifier(type = HttpClient.class, config = "http.payment-gateway")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+@interface PaymentGateway {}
+
+// Another database for analytics
+@ResourceQualifier(type = DatabaseConnector.class, config = "database.analytics")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+@interface AnalyticsDb {}
+```
+
+The flow is always the same:
+
+1. **Define** a qualifier annotation with `@ResourceQualifier(type, config)`
+2. **Annotate** a factory method parameter with it
+3. **Configure** the resource in `aether.toml` under the matching section
+4. The annotation processor **generates** the provisioning call at compile time
+5. The runtime **provisions, caches, and injects** the resource at startup
+
+This keeps infrastructure out of your business logic — the slice sees a `DatabaseConnector`
+or `HttpClient` interface, never a connection pool or HTTP library.
+
+## Step 9: Deploy to Forge
 
 Forge is the Aether development server. It reads slices from your local Maven repository
 and runs them.
@@ -620,9 +909,10 @@ The `instances = 3` comes from `src/main/resources/slices/MyFirstSlice.toml`.
 If Forge is running with `repositories=["local"]`, it automatically picks up the slice.
 Your slice is now live and can be called through the Forge API.
 
-## Step 8: What's Next?
+## Step 10: What's Next?
 
-You've built, tested, modified, and deployed an Aether slice. Here's where to go next:
+You've built, tested, modified, deployed, and connected an Aether slice to infrastructure.
+Here's where to go next:
 
 - **[Development Guide](development-guide.md)** — adding dependencies on other slices,
   creating multiple slices in one module, request/response design
@@ -635,17 +925,21 @@ You've built, tested, modified, and deployed an Aether slice. Here's where to go
 
 ### JBCT Patterns Used in This Tutorial
 
-| Pattern | Where | Why |
-|---------|-------|-----|
-| Parse, don't validate | `Request.request()` uses `Verify.ensure()` | Invalid objects can never exist |
-| Verify API | `Verify.ensure(value, Verify.Is::present, cause)` | Declarative validation with typed errors |
-| Sealed error types | `ValidationError extends Cause` | Compiler-checked exhaustive error handling |
-| `cause.result()` / `cause.promise()` | Error conversion | Idiomatic `Cause` → `Result`/`Promise` conversion |
-| Factory method naming | `MyFirstSlice.myFirstSlice()` | Convention: `TypeName.typeName()` |
-| Lambda implementation | `return request -> Promise.success(...)` | Simplest form for single-method slices |
-| Inline record | `record mySlice() implements MySlice` | Required for multi-method slices or dependency capture |
-| Promise return types | `Promise<Response>` | Async-first, composable |
-| Nested types | Request, Response, ValidationError inside interface | Cohesion — everything about this slice lives together |
+| Pattern                              | Where                                               | Why                                                    |
+|--------------------------------------|-----------------------------------------------------|--------------------------------------------------------|
+| Parse, don't validate                | `Request.request()` uses `Verify.ensure()`          | Invalid objects can never exist                        |
+| Verify API                           | `Verify.ensure(value, Verify.Is::present, cause)`   | Declarative validation with typed errors               |
+| Sealed error types                   | `ValidationError extends Cause`                     | Compiler-checked exhaustive error handling             |
+| `cause.result()` / `cause.promise()` | Error conversion                                    | Idiomatic `Cause` → `Result`/`Promise` conversion      |
+| Factory method naming                | `MyFirstSlice.myFirstSlice()`                       | Convention: `TypeName.typeName()`                      |
+| Lambda implementation                | `return request -> Promise.success(...)`            | Simplest form for single-method slices                 |
+| Inline record                        | `record mySlice() implements MySlice`               | Required for multi-method slices or dependency capture |
+| Promise return types                 | `Promise<Response>`                                 | Async-first, composable                                |
+| Nested types                         | Request, Response, ValidationError inside interface | Cohesion — everything about this slice lives together  |
+| Declarative HTTP routing             | `routes.toml` maps endpoints to slice methods       | No hand-written controllers; compile-time generation   |
+| Error-to-HTTP mapping                | `[errors]` section with glob patterns               | Sealed `Cause` types map to HTTP status codes          |
+| Resource qualifiers                  | `@ResourceQualifier(type, config)` meta-annotation  | Compile-time provisioning of databases, HTTP clients   |
+| Dependency capture                   | `record mySlice(DatabaseConnector db)`              | Inline record captures injected resources              |
 
 ### Common Commands
 
