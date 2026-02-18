@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.pragmatica-lite.aether.example.banking</groupId>
+        <artifactId>banking</artifactId>
+        <version>0.16.0</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <groupId>org.pragmatica-lite.aether.example.banking</groupId>
+    <artifactId>banking-transfer</artifactId>
+    <name>Banking Example - Transfer Service</name>
+    <description>Transfer orchestrator with fork-join, compensation, and 3 slice dependencies</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether.example.banking</groupId>
+            <artifactId>banking-shared</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- Slice dependencies - provided scope for inter-slice communication -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether.example.banking</groupId>
+            <artifactId>banking-account</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether.example.banking</groupId>
+            <artifactId>banking-exchange</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether.example.banking</groupId>
+            <artifactId>banking-fraud</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- slice-api, slice-annotations, core inherited from parent with provided scope -->
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.pragmatica-lite</groupId>
+                            <artifactId>slice-processor</artifactId>
+                            <version>${project.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                    <compilerArgs>
+                        <arg>-Aslice.groupId=${project.groupId}</arg>
+                        <arg>-Aslice.artifactId=${project.artifactId}</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jbct-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>collect-deps</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>collect-slice-deps</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>package-slices</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>package-slices</goal>
+                            <goal>generate-blueprint</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>install-slices</id>
+                        <phase>install</phase>
+                        <goals>
+                            <goal>install-slices</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>verify-slice</id>
+                        <goals>
+                            <goal>verify-slice</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

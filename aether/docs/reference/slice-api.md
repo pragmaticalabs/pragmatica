@@ -18,7 +18,6 @@ The annotated interface must:
 2. **Have a static factory method** that returns the interface type
 3. **All non-static, non-default methods** must:
    - Return `Promise<T>` where `T` is the response type
-   - Have exactly one parameter (the request type)
 
 ### Valid Example
 
@@ -64,10 +63,11 @@ public interface BadService {
     static BadService factory() { return BadServiceImpl.badServiceImpl(); }
 }
 
-// Method has multiple parameters
+// Overloaded methods
 @Slice
 public interface BadService {
-    Promise<String> doSomething(String a, int b);  // Must have exactly one param
+    Promise<String> doSomething(String a);
+    Promise<String> doSomething(int b);  // Overloads are rejected at compile time
     static BadService factory() { return BadServiceImpl.badServiceImpl(); }
 }
 ```
@@ -476,7 +476,7 @@ Checks:
 - `@Slice` interface has factory method
 - Factory method returns interface type
 - All methods return `Promise<T>`
-- All methods have one parameter
+- No overloaded method names
 
 ## CLI Commands
 

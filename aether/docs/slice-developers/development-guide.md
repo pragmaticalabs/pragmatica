@@ -23,19 +23,29 @@ public interface OrderService {
 }
 ```
 
-### Single-Parameter Methods
-Every slice method takes exactly one request parameter. This enables:
-- Uniform serialization/deserialization
-- Consistent logging and metrics
-- Versioning via request evolution
+### Method Parameters
+Slice methods support any number of parameters (0, 1, or more). At the transport layer, they are normalized to a single request object:
+
+- **0 parameters**: `Unit` is used at the transport layer; the handler ignores it
+- **1 parameter (record)**: passed directly as the request type
+- **1 parameter (primitive)**: wrapped in a synthetic `{MethodName}Request` record
+- **N parameters**: wrapped in a synthetic `{MethodName}Request` record with all parameters as fields
 
 ```java
-// Correct
+// Zero parameters - Unit at transport layer
+Promise<HealthStatus> healthCheck();
+
+// Single record parameter - direct pass-through
 Promise<OrderResult> placeOrder(PlaceOrderRequest request);
 
-// Wrong - multiple parameters
-Promise<OrderResult> placeOrder(String customerId, List<LineItem> items);
+// Single primitive - synthetic GetStockRequest(String sku) generated
+Promise<Stock> getStock(String sku);
+
+// Multiple parameters - synthetic TransferRequest(String from, String to, BigDecimal amount) generated
+Promise<TransferResult> transfer(String from, String to, BigDecimal amount);
 ```
+
+Method overloads are rejected at compile time. Use distinct method names instead.
 
 ### Promise Return Types
 All methods return `Promise<T>`. This enables:
@@ -515,7 +525,7 @@ Checks:
 - `@Slice` interface has factory method
 - Factory method returns the interface type
 - All methods return `Promise<T>`
-- All methods have exactly one parameter
+- No overloaded method names
 
 ## IDE Setup
 

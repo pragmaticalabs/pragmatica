@@ -135,16 +135,24 @@ The slice wrapper record implements both `Slice` (for Aether runtime) and the sl
 
 ### D6: Proxy Method Parameter Handling
 
-**Decision**: All slice methods require at least one parameter. Multi-parameter methods use synthetic request records (see D8).
+**Decision**: Slice methods support any number of parameters (0, 1, or more). Multi-parameter methods and single primitive parameters use synthetic request records (see D8). Zero-parameter methods accept `Unit` at the transport layer; the handler ignores it.
 
 | Params | Request Argument |
 |--------|------------------|
-| 0 | **Not supported** - methods must have at least one parameter |
+| 0 | `Unit` at transport layer; handler ignores it |
 | 1 (record) | Parameter directly |
 | 1 (primitive) | Synthetic record wrapping the value |
 | 2+ | Synthetic record with all parameters |
 
 ```java
+// Zero params - SliceMethod accepts Unit, handler ignores it
+record healthService(MethodHandle<HealthStatus, Unit> healthCheckHandle) implements HealthService {
+    @Override
+    public Promise<HealthStatus> healthCheck() {
+        return healthCheckHandle.invoke(Unit.unit());
+    }
+}
+
 // Single record param - MethodHandle invoked directly
 record stockService(MethodHandle<Stock, StockRequest> checkStockHandle) implements StockService {
     @Override
@@ -154,22 +162,22 @@ record stockService(MethodHandle<Stock, StockRequest> checkStockHandle) implemen
 }
 
 // Single primitive - MethodHandle with synthetic record
-record stockService(MethodHandle<Stock, GetStock_0_Request> getStockHandle) implements StockService {
-    public record GetStock_0_Request(String sku) {}
+record stockService(MethodHandle<Stock, GetStockRequest> getStockHandle) implements StockService {
+    public record GetStockRequest(String sku) {}
 
     @Override
     public Promise<Stock> getStock(String sku) {
-        return getStockHandle.invoke(new GetStock_0_Request(sku));
+        return getStockHandle.invoke(new GetStockRequest(sku));
     }
 }
 
 // Multiple params - MethodHandle with synthetic record
-record transferService(MethodHandle<Boolean, Transfer_0_Request> transferHandle) implements TransferService {
-    public record Transfer_0_Request(String from, String to, int amount) {}
+record transferService(MethodHandle<Boolean, TransferRequest> transferHandle) implements TransferService {
+    public record TransferRequest(String from, String to, int amount) {}
 
     @Override
     public Promise<Boolean> transfer(String from, String to, int amount) {
-        return transferHandle.invoke(new Transfer_0_Request(from, to, amount));
+        return transferHandle.invoke(new TransferRequest(from, to, amount));
     }
 }
 ```
@@ -297,10 +305,14 @@ public final class OrderProcessorFactory {
 
 Slice API methods must:
 - Return `Promise<T>` where T is the response type
-- Have at least one parameter
+- Have any number of parameters (0, 1, or more)
 - Use simple types or records as request/response
+- Not be overloaded (overloads are rejected at compile time)
 
 ```java
+// CORRECT - zero parameters
+Promise<HealthStatus> healthCheck();
+
 // CORRECT - single record parameter
 Promise<OrderResult> processOrder(ProcessOrderRequest request);
 
@@ -310,9 +322,6 @@ Promise<OrderResult> processOrder(String orderId, int quantity);
 // CORRECT - single primitive
 Promise<Stock> getStock(String sku);
 
-// WRONG - no parameters
-Promise<HealthStatus> healthCheck();
-
 // WRONG - void return
 void processOrder(ProcessOrderRequest request);
 ```
@@ -321,21 +330,30 @@ void processOrder(ProcessOrderRequest request);
 
 ### D8: Synthetic Request Records
 
-**Decision**: For slice methods with multiple parameters or single primitive parameters, the processor generates synthetic request records inside the factory interface.
+**Decision**: For slice methods with multiple parameters or single primitive parameters, the processor generates synthetic request records inside the factory interface. Method overloads are rejected at compile time.
 
-**Naming Convention**: `{MethodName}_{N}_Request` where N is a sequence number.
-
-**Sequence Number Rules**:
-1. Sort all method signatures as strings alphabetically
-2. Assign sequence numbers starting from 0
-3. Always include `_0_` suffix even for non-overloaded methods (consistency)
+**Naming Convention**: `{MethodName}Request` (e.g., `GetStockRequest`, `TransferRequest`).
 
 **Rationale**:
 - Provides deterministic naming across caller and callee
-- Adding method overloads is a breaking change (minor version bump)
 - Same generated record can be used on both sides of the transport
+- Overloads are rejected at compile time, so sequence numbering is unnecessary
 
 ### Examples
+
+**Zero Parameters**:
+```java
+// Slice interface
+Promise<HealthStatus> healthCheck();
+
+// Generated SliceMethod uses Unit as request type
+new SliceMethod<>(
+    MethodName.methodName("healthCheck").unwrap(),
+    _ -> delegate.healthCheck(),
+    new TypeToken<HealthStatus>() {},
+    new TypeToken<Unit>() {}
+)
+```
 
 **Single Primitive Parameter**:
 ```java
@@ -343,14 +361,14 @@ void processOrder(ProcessOrderRequest request);
 Promise<Stock> getStock(String sku);
 
 // Generated synthetic record
-public record GetStock_0_Request(String sku) {}
+public record GetStockRequest(String sku) {}
 
 // Generated SliceMethod uses the synthetic record
 new SliceMethod<>(
     MethodName.methodName("getStock").unwrap(),
     request -> delegate.getStock(request.sku()),
     new TypeToken<Stock>() {},
-    new TypeToken<GetStock_0_Request>() {}
+    new TypeToken<GetStockRequest>() {}
 )
 ```
 
@@ -360,14 +378,14 @@ new SliceMethod<>(
 Promise<TransferResult> transfer(String from, String to, BigDecimal amount);
 
 // Generated synthetic record
-public record Transfer_0_Request(String from, String to, BigDecimal amount) {}
+public record TransferRequest(String from, String to, BigDecimal amount) {}
 
 // Generated SliceMethod
 new SliceMethod<>(
     MethodName.methodName("transfer").unwrap(),
     request -> delegate.transfer(request.from(), request.to(), request.amount()),
     new TypeToken<TransferResult>() {},
-    new TypeToken<Transfer_0_Request>() {}
+    new TypeToken<TransferRequest>() {}
 )
 ```
 
@@ -385,16 +403,12 @@ new SliceMethod<>(
 )
 ```
 
-**Method Overloads**:
+**Method Overloads (rejected)**:
 ```java
-// Slice interface with overloaded methods
+// COMPILE ERROR - overloaded methods are not allowed
 Promise<User> getUser(Long id);
 Promise<User> getUser(String email);
-
-// Signatures sorted: "getUser(Long)" < "getUser(String)"
-// Generated synthetic records
-public record GetUser_0_Request(Long id) {}      // for getUser(Long)
-public record GetUser_1_Request(String email) {} // for getUser(String)
+// error: Overloaded slice method 'getUser' is not supported. Use distinct method names.
 ```
 
 ### Slice Dependency Proxies
@@ -408,38 +422,22 @@ public interface PaymentService {
 }
 
 // Generated proxy record inside factory
-record paymentService(MethodHandle<PaymentResult, ProcessPayment_0_Request> processPaymentHandle)
+record paymentService(MethodHandle<PaymentResult, ProcessPaymentRequest> processPaymentHandle)
         implements PaymentService {
     // Synthetic record for multi-param method
-    public record ProcessPayment_0_Request(String orderId, BigDecimal amount) {}
+    public record ProcessPaymentRequest(String orderId, BigDecimal amount) {}
 
     @Override
     public Promise<PaymentResult> processPayment(String orderId, BigDecimal amount) {
-        return processPaymentHandle.invoke(new ProcessPayment_0_Request(orderId, amount));
+        return processPaymentHandle.invoke(new ProcessPaymentRequest(orderId, amount));
     }
 }
 
 // MethodHandle obtained via:
 ctx.invoker().methodHandle("org.example:payment:1.0.0", "processPayment",
-                            new TypeToken<ProcessPayment_0_Request>() {},
+                            new TypeToken<ProcessPaymentRequest>() {},
                             new TypeToken<PaymentResult>() {}).async()
 ```
-
-### Breaking Change Warning
-
-Adding method overloads changes sequence numbers and is a **breaking change**:
-
-```java
-// Version 1.0.0
-Promise<User> getUser(Long id);  // GetUser_0_Request
-
-// Version 1.1.0 - BREAKING CHANGE
-Promise<User> getUser(Long id);      // Still GetUser_0_Request
-Promise<User> getUser(String email); // NEW: GetUser_1_Request
-// Old clients sending GetUser_0_Request for getUser(String) will fail
-```
-
-**Migration**: Increment minor version when adding overloads; document in changelog.
 
 ### D9: Resource Dependencies
 

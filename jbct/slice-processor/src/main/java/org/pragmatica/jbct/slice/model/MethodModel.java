@@ -21,11 +21,14 @@ import java.util.regex.Pattern;
 public record MethodModel(String name,
                            TypeMirror returnType,
                            TypeMirror responseType,
-                           TypeMirror parameterType,
-                           String parameterName,
+                           List<MethodParameterInfo> parameters,
                            boolean deprecated,
                            List<ResourceQualifierModel> interceptors,
-                           Option<KeyExtractorInfo> keyExtractor) {
+                           Option<KeyExtractorInfo> keyExtractor,
+                           Option<MethodParameterInfo> multiParamKeyParam) {
+
+    public record MethodParameterInfo(String name, TypeMirror type, boolean isKey) {}
+
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("^[a-z][a-zA-Z0-9]*$");
     private static final String KEY_ANNOTATION = "org.pragmatica.aether.resource.aspect.Key";
     private static final String PROMISE_TYPE = "org.pragmatica.lang.Promise";
@@ -33,6 +36,7 @@ public record MethodModel(String name,
 
     public MethodModel {
         interceptors = List.copyOf(interceptors);
+        parameters = List.copyOf(parameters);
     }
 
     public static Result<MethodModel> methodModel(ExecutableElement method, ProcessingEnvironment env) {
@@ -54,29 +58,130 @@ public record MethodModel(String name,
         return !interceptors.isEmpty();
     }
 
+    /// Returns true if this method has zero parameters.
+    public boolean hasNoParams() {
+        return parameters.isEmpty();
+    }
+
+    /// Returns true if this method has exactly one parameter.
+    public boolean hasSingleParam() {
+        return parameters.size() == 1;
+    }
+
+    /// Returns true if this method has more than one parameter.
+    public boolean hasMultipleParams() {
+        return parameters.size() > 1;
+    }
+
+    /// Returns the single parameter type (for backwards compatibility with single-param methods).
+    /// For 0-param methods returns "org.pragmatica.lang.Unit".
+    /// For multi-param methods, this should not be called — use parameters() instead.
+    public String effectiveRequestType() {
+        if (hasNoParams()) {
+            return "org.pragmatica.lang.Unit";
+        }
+        if (hasSingleParam()) {
+            return parameters.getFirst().type().toString();
+        }
+        throw new IllegalStateException("effectiveRequestType() called on multi-param method: " + name);
+    }
+
+    /// Returns the parameter type for single-param methods.
+    /// Used by RouteSourceGenerator for route generation.
+    public TypeMirror parameterType() {
+        if (hasSingleParam()) {
+            return parameters.getFirst().type();
+        }
+        throw new IllegalStateException("parameterType() called on method with " + parameters.size() + " params: " + name);
+    }
+
+    /// Returns the parameter name for single-param methods.
+    /// Used by RouteSourceGenerator for route generation.
+    public String parameterName() {
+        if (hasSingleParam()) {
+            return parameters.getFirst().name();
+        }
+        throw new IllegalStateException("parameterName() called on method with " + parameters.size() + " params: " + name);
+    }
+
     private static Result<MethodModel> validateAndBuildModel(ExecutableElement method,
                                                               ProcessingEnvironment env,
                                                               String name,
                                                               TypeMirror returnType) {
         var responseType = extractPromiseTypeArg(returnType);
         var params = method.getParameters();
-        if (params.size() != 1) {
-            return Causes.cause("Slice methods must have exactly one parameter: " + name)
-                         .result();
-        }
-        var param = params.getFirst();
         var deprecated = method.getAnnotation(Deprecated.class) != null;
         var methodInterceptors = extractMethodInterceptors(method, env);
-        return extractKeyInfo(param.asType(), env, methodInterceptors)
-        .map(keyInfo -> new MethodModel(name,
-                                         returnType,
-                                         responseType,
-                                         param.asType(),
-                                         param.getSimpleName()
-                                              .toString(),
-                                         deprecated,
-                                         methodInterceptors,
-                                         keyInfo));
+        var paramInfos = buildParameterInfos(params, env);
+        return validateKeyAnnotations(paramInfos, name)
+        .flatMap(_ -> resolveKeyInfo(paramInfos, env, methodInterceptors, name))
+        .map(keyResult -> new MethodModel(name,
+                                           returnType,
+                                           responseType,
+                                           paramInfos,
+                                           deprecated,
+                                           methodInterceptors,
+                                           keyResult.keyExtractor(),
+                                           keyResult.multiParamKeyParam()));
+    }
+
+    private record KeyResolution(Option<KeyExtractorInfo> keyExtractor,
+                                  Option<MethodParameterInfo> multiParamKeyParam) {}
+
+    private static List<MethodParameterInfo> buildParameterInfos(
+        List<? extends javax.lang.model.element.VariableElement> params,
+        ProcessingEnvironment env) {
+        var result = new ArrayList<MethodParameterInfo>();
+        for (var param : params) {
+            var isKey = hasKeyAnnotationOnParam(param);
+            result.add(new MethodParameterInfo(param.getSimpleName().toString(), param.asType(), isKey));
+        }
+        return result;
+    }
+
+    private static boolean hasKeyAnnotationOnParam(javax.lang.model.element.VariableElement param) {
+        return param.getAnnotationMirrors()
+                    .stream()
+                    .anyMatch(mirror -> isAnnotationType(mirror, KEY_ANNOTATION));
+    }
+
+    private static Result<Unit> validateKeyAnnotations(List<MethodParameterInfo> paramInfos, String methodName) {
+        var keyCount = paramInfos.stream().filter(MethodParameterInfo::isKey).count();
+        if (keyCount > 1) {
+            return Causes.cause("Multiple @Key annotations found on method '" + methodName
+                                + "'. Only one @Key is allowed per method.")
+                         .result();
+        }
+        return Result.success(Unit.unit());
+    }
+
+    private static Result<KeyResolution> resolveKeyInfo(List<MethodParameterInfo> paramInfos,
+                                                         ProcessingEnvironment env,
+                                                         List<ResourceQualifierModel> interceptors,
+                                                         String methodName) {
+        if (interceptors.isEmpty()) {
+            return Result.success(new KeyResolution(Option.none(), Option.none()));
+        }
+
+        if (paramInfos.isEmpty()) {
+            return Result.success(new KeyResolution(Option.none(), Option.none()));
+        }
+
+        if (paramInfos.size() == 1) {
+            var param = paramInfos.getFirst();
+            if (param.isKey()) {
+                return Result.success(new KeyResolution(Option.none(), Option.none()));
+            }
+            return extractKeyInfoFromRecord(param.type(), env, interceptors)
+            .map(keyInfo -> new KeyResolution(keyInfo, Option.none()));
+        }
+
+        // Multi-param: check for @Key on parameter
+        var keyParam = paramInfos.stream().filter(MethodParameterInfo::isKey).findFirst();
+        if (keyParam.isPresent()) {
+            return Result.success(new KeyResolution(Option.none(), Option.some(keyParam.get())));
+        }
+        return Result.success(new KeyResolution(Option.none(), Option.none()));
     }
 
     private static Result<Unit> validatePromiseReturnType(TypeMirror returnType, String methodName) {
@@ -117,12 +222,12 @@ public record MethodModel(String name,
         return interceptors;
     }
 
-    /// Extract @Key info from the method parameter, but only if interceptors are present.
+    /// Extract @Key info from the method parameter record, but only if interceptors are present.
     /// If no interceptors, keyExtractor is always none.
     /// Key extractors are only generated from explicit @Key annotations on record components.
-    private static Result<Option<KeyExtractorInfo>> extractKeyInfo(TypeMirror paramType,
-                                                                    ProcessingEnvironment env,
-                                                                    List<ResourceQualifierModel> interceptors) {
+    private static Result<Option<KeyExtractorInfo>> extractKeyInfoFromRecord(TypeMirror paramType,
+                                                                              ProcessingEnvironment env,
+                                                                              List<ResourceQualifierModel> interceptors) {
         if (interceptors.isEmpty()) {
             return Result.success(Option.none());
         }

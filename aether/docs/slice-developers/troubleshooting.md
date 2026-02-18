@@ -62,23 +62,24 @@ OrderResult placeOrder(PlaceOrderRequest request);
 Promise<OrderResult> placeOrder(PlaceOrderRequest request);
 ```
 
-### "Method must have exactly one parameter"
+### "Overloaded slice method is not supported"
 
 **Error:**
 ```
-error: Method 'placeOrder' must have exactly one parameter, found: 2
+error: Overloaded slice method 'getUser' is not supported. Use distinct method names.
 ```
 
-**Cause:** Slice methods must have exactly one parameter.
+**Cause:** Slice methods cannot be overloaded. Each method name must be unique within the slice.
 
-**Fix:** Wrap parameters in a request record:
+**Fix:** Use distinct method names:
 ```java
-// Wrong
-Promise<OrderResult> placeOrder(String customerId, List<LineItem> items);
+// Wrong - overloaded methods
+Promise<User> getUser(Long id);
+Promise<User> getUser(String email);
 
-// Correct
-public record PlaceOrderRequest(String customerId, List<LineItem> items) {}
-Promise<OrderResult> placeOrder(PlaceOrderRequest request);
+// Correct - distinct names
+Promise<User> getUserById(Long id);
+Promise<User> getUserByEmail(String email);
 ```
 
 ### "Generated sources not found"

@@ -88,7 +88,7 @@ public record SliceModel(
 
 **Method extraction rules:**
 - Must return `Promise<T>` where `T` is the response type
-- Must have exactly one parameter (the request type)
+- Any number of parameters (0+). Multi-param methods use synthetic request records. Zero-param methods use `Unit` at transport layer.
 - Static methods and default methods are ignored
 
 **Factory method detection:**
@@ -236,12 +236,25 @@ public final class OrderServiceFactory {
 
 ### Proxy Method Generation
 
-Proxy methods always have exactly one parameter (slice contract requirement). Each method delegates to a `MethodHandle<R, I>` field:
+Proxy methods delegate to a `MethodHandle<R, I>` field. The transport layer always uses a single request object; multi-param and zero-param methods are adapted accordingly:
 
 ```java
+// Zero-param method - handler ignores Unit argument
+@Override
+public Promise<HealthStatus> healthCheck() {
+    return healthCheckHandle.invoke(Unit.unit());
+}
+
+// Single-param method - direct delegation
 @Override
 public Promise<Integer> checkStock(String productId) {
     return checkStockHandle.invoke(productId);
+}
+
+// Multi-param method - wraps in synthetic request record
+@Override
+public Promise<Boolean> transfer(String from, String to, int amount) {
+    return transferHandle.invoke(new TransferRequest(from, to, amount));
 }
 ```
 
@@ -466,7 +479,7 @@ public interface ResourceProviderFacade {
 
 | Decision | Trade-off | Rationale |
 |----------|-----------|-----------|
-| Single-param methods | Less flexible API | Enables uniform request/response serialization |
+| Flexible param counts | Synthetic records for multi-param | Enables uniform request/response serialization at transport layer |
 | Local proxy records | Larger generated code | Keeps proxies encapsulated, no class pollution |
 | Separate API/Impl JARs | More artifacts to manage | Clean dependency boundaries |
 | Properties-based manifests | Less structured than JSON/YAML | Simple to parse, no dependencies |

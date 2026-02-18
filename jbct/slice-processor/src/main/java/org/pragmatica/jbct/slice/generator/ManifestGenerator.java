@@ -147,7 +147,7 @@ public class ManifestGenerator {
     private List<String> collectRequestTypes(SliceModel model) {
         return model.methods()
                     .stream()
-                    .map(MethodModel::parameterType)
+                    .flatMap(m -> m.parameters().stream().map(MethodModel.MethodParameterInfo::type))
                     .map(this::getQualifiedTypeName)
                     .filter(name -> !isStandardType(name))
                     .distinct()

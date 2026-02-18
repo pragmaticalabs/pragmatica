@@ -11,6 +11,7 @@ import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import java.util.HashMap;
 import java.util.List;
+import java.util.stream.Collectors;
 
 public record SliceModel(String packageName,
                           String simpleName,
@@ -33,10 +34,11 @@ public record SliceModel(String packageName,
         var qualifiedName = element.getQualifiedName()
                                    .toString();
         return extractMethods(element, env)
-        .flatMap(methods -> findFactoryMethod(element, simpleName)
+        .flatMap(methods -> validateNoOverloads(methods)
+        .flatMap(_ -> findFactoryMethod(element, simpleName)
         .flatMap(factoryMethod -> extractDependencies(factoryMethod, env)
         .flatMap(dependencies -> validateNoDuplicateResources(dependencies)
-        .map(_ -> new SliceModel(packageName, simpleName, qualifiedName, methods, dependencies, factoryMethod)))));
+        .map(_2 -> new SliceModel(packageName, simpleName, qualifiedName, methods, dependencies, factoryMethod))))));
     }
 
     private static Result<List<MethodModel>> extractMethods(TypeElement element, ProcessingEnvironment env) {
@@ -51,6 +53,23 @@ public record SliceModel(String packageName,
                              .map(m -> MethodModel.methodModel(m, env))
                              .toList();
         return Result.allOf(results);
+    }
+
+    private static Result<Unit> validateNoOverloads(List<MethodModel> methods) {
+        var duplicateNames = methods.stream()
+                                    .collect(Collectors.groupingBy(MethodModel::name, Collectors.counting()))
+                                    .entrySet()
+                                    .stream()
+                                    .filter(e -> e.getValue() > 1)
+                                    .map(java.util.Map.Entry::getKey)
+                                    .toList();
+        if (!duplicateNames.isEmpty()) {
+            return Causes.cause("Overloaded slice methods not supported: "
+                                + String.join(", ", duplicateNames)
+                                + ". Use distinct method names — runtime dispatches by name.")
+                         .result();
+        }
+        return Result.success(Unit.unit());
     }
 
     private static Result<ExecutableElement> findFactoryMethod(TypeElement element, String simpleName) {

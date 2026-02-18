@@ -190,7 +190,7 @@ class SliceProcessorTest {
 
             import java.lang.annotation.*;
 
-            @Target(ElementType.RECORD_COMPONENT)
+            @Target({ElementType.RECORD_COMPONENT, ElementType.PARAMETER})
             @Retention(RetentionPolicy.SOURCE)
             public @interface Key {}
             """);
@@ -485,8 +485,11 @@ class SliceProcessorTest {
                                         .get()
                                         .getCharContent(false)
                                         .toString();
-        assertThat(factoryContent).contains("new TypeToken<test.dto.UserResponse>() {}");
-        assertThat(factoryContent).contains("new TypeToken<test.dto.CreateUserRequest>() {}");
+        // Import tracker should resolve these to simple names with imports
+        assertThat(factoryContent).contains("new TypeToken<UserResponse>() {}");
+        assertThat(factoryContent).contains("new TypeToken<CreateUserRequest>() {}");
+        assertThat(factoryContent).contains("import test.dto.UserResponse;");
+        assertThat(factoryContent).contains("import test.dto.CreateUserRequest;");
     }
 
     // ========== Negative Test Cases ==========
@@ -532,7 +535,7 @@ class SliceProcessorTest {
     }
 
     @Test
-    void should_fail_on_method_with_no_parameters() {
+    void should_process_zero_param_method() throws Exception {
         var source = JavaFileObjects.forSourceString("test.TestService",
                                                      """
             package test;
@@ -540,15 +543,20 @@ class SliceProcessorTest {
             import org.pragmatica.lang.Promise;
             @Slice
             public interface TestService {
-                Promise<String> getUser();
+                Promise<String> getStatus();
                 static TestService testService() { return null; }
             }
             """);
         var sources = commonSources();
         sources.add(source);
         Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
-        assertCompilation(compilation).failed();
-        assertCompilation(compilation).hadErrorContaining("must have exactly one parameter");
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.TestServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // createSlice should use Unit for 0-param
+        assertThat(factoryContent).contains("new TypeToken<Unit>() {}");
+        assertThat(factoryContent).contains("_unit -> delegate.getStatus()");
     }
 
     @Test
@@ -596,6 +604,201 @@ class SliceProcessorTest {
         Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
         assertCompilation(compilation).failed();
         assertCompilation(compilation).hadErrorContaining("with type argument");
+    }
+
+    // ========== Multi-param Test Cases ==========
+
+    @Test
+    void should_process_multi_param_method() throws Exception {
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId, int quantity);
+                static OrderService orderService() { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // Should generate request record
+        assertThat(factoryContent).contains("public record PlaceOrderRequest(String orderId, int quantity) {}");
+        // createSlice should use the generated record
+        assertThat(factoryContent).contains("new TypeToken<PlaceOrderRequest>() {}");
+        // Should pass individual args
+        assertThat(factoryContent).contains("request.orderId()");
+        assertThat(factoryContent).contains("request.quantity()");
+    }
+
+    @Test
+    void should_process_mixed_param_counts() throws Exception {
+        var source = JavaFileObjects.forSourceString("test.MixedService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            @Slice
+            public interface MixedService {
+                Promise<String> getStatus();
+                Promise<String> getUser(String userId);
+                Promise<String> createOrder(String userId, int quantity);
+                static MixedService mixedService() { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.MixedServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // 0-param: Unit
+        assertThat(factoryContent).contains("_unit -> delegate.getStatus()");
+        // 1-param: direct delegate
+        assertThat(factoryContent).contains("delegate::getUser");
+        // N-param: request record
+        assertThat(factoryContent).contains("public record CreateOrderRequest(String userId, int quantity) {}");
+    }
+
+    @Test
+    void should_fail_on_overloaded_methods() {
+        var source = JavaFileObjects.forSourceString("test.TestService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            @Slice
+            public interface TestService {
+                Promise<String> doWork(String request);
+                Promise<String> doWork(String request, int count);
+                static TestService testService() { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("Overloaded slice methods not supported");
+    }
+
+    @Test
+    void should_generate_proxy_for_zero_param_dependency() throws Exception {
+        var healthService = JavaFileObjects.forSourceString("external.HealthService",
+                                                             """
+            package external;
+            import org.pragmatica.lang.Promise;
+            public interface HealthService {
+                Promise<String> check();
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.MonitorService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.HealthService;
+            @Slice
+            public interface MonitorService {
+                Promise<String> getStatus(String nodeId);
+                static MonitorService monitorService(HealthService health) { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(healthService);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.MonitorServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // Proxy for 0-param dep should use Unit
+        assertThat(factoryContent).contains("MethodHandle<String, Unit> checkHandle");
+        assertThat(factoryContent).contains("checkHandle.invoke(Unit.unit())");
+    }
+
+    @Test
+    void should_generate_proxy_for_multi_param_dependency() throws Exception {
+        var searchService = JavaFileObjects.forSourceString("external.SearchService",
+                                                             """
+            package external;
+            import org.pragmatica.lang.Promise;
+            public interface SearchService {
+                Promise<String> search(String query, int limit);
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.AggregatorService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.SearchService;
+            @Slice
+            public interface AggregatorService {
+                Promise<String> aggregate(String query);
+                static AggregatorService aggregatorService(SearchService search) { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(searchService);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.AggregatorServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // Proxy for multi-param dep should generate inner request record
+        assertThat(factoryContent).contains("search_SearchRequest");
+        assertThat(factoryContent).contains("searchHandle.invoke(new search_SearchRequest(query, limit))");
+    }
+
+    @Test
+    void should_generate_proper_imports_no_fqcn() throws Exception {
+        var request = JavaFileObjects.forSourceString("test.dto.CreateUserRequest",
+                                                      """
+            package test.dto;
+            public record CreateUserRequest(String name, String email) {}
+            """);
+        var response = JavaFileObjects.forSourceString("test.dto.UserResponse",
+                                                       """
+            package test.dto;
+            public record UserResponse(String id, String name) {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.UserService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.dto.CreateUserRequest;
+            import test.dto.UserResponse;
+            @Slice
+            public interface UserService {
+                Promise<UserResponse> createUser(CreateUserRequest request);
+                static UserService userService() { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(request);
+        sources.add(response);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.UserServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // Should have proper imports
+        assertThat(factoryContent).contains("import test.dto.CreateUserRequest;");
+        assertThat(factoryContent).contains("import test.dto.UserResponse;");
+        // Should use simple names in TypeToken references
+        assertThat(factoryContent).contains("new TypeToken<UserResponse>() {}");
+        assertThat(factoryContent).contains("new TypeToken<CreateUserRequest>() {}");
     }
 
     // ========== @ResourceQualifier Tests ==========
@@ -1038,7 +1241,7 @@ class SliceProcessorTest {
 
         assertThat(factoryContent).contains("record UserServiceWrapper(");
         assertThat(factoryContent).contains("ProvisioningContext.provisioningContext()");
-        assertThat(factoryContent).contains("new TypeToken<test.dto.UserId>() {}");
+        assertThat(factoryContent).contains("new TypeToken<UserId>() {}");
         assertThat(factoryContent).contains("withKeyExtractor");
         assertThat(factoryContent).contains("GetUserRequest::userId");
         assertThat(factoryContent).contains(".intercept(impl::getUser)");
@@ -1474,5 +1677,86 @@ class SliceProcessorTest {
         assertThat(factoryContent).doesNotContain("import external.PaymentGateway.Processor;");
         // Plain interface construction should use source-usable name
         assertThat(factoryContent).contains("PaymentGateway.Processor.processor()");
+    }
+
+    // ========== @Key on multi-param method ==========
+
+    @Test
+    void should_generate_key_extractor_for_multi_param_method() throws Exception {
+        var withCache = JavaFileObjects.forSourceString("test.annotation.WithCache",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.MethodInterceptor;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = MethodInterceptor.class, config = "cache.orders")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface WithCache {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.aether.resource.aspect.Key;
+            import test.annotation.WithCache;
+            @Slice
+            public interface OrderService {
+                @WithCache
+                Promise<String> placeOrder(@Key String orderId, int quantity);
+                static OrderService orderService() { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(withCache);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("public record PlaceOrderRequest(String orderId, int quantity) {}");
+        assertThat(factoryContent).contains("ProvisioningContext.provisioningContext()");
+        assertThat(factoryContent).contains("withKeyExtractor");
+        assertThat(factoryContent).contains("PlaceOrderRequest::orderId");
+    }
+
+    @Test
+    void should_fail_on_multiple_key_params_in_multi_param_method() {
+        var withCache = JavaFileObjects.forSourceString("test.annotation.WithCache",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.MethodInterceptor;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = MethodInterceptor.class, config = "cache.orders")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface WithCache {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.aether.resource.aspect.Key;
+            import test.annotation.WithCache;
+            @Slice
+            public interface OrderService {
+                @WithCache
+                Promise<String> placeOrder(@Key String orderId, @Key int quantity);
+                static OrderService orderService() { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(withCache);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("Multiple @Key annotations");
     }
 }

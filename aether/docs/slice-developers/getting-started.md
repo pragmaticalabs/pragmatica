@@ -263,9 +263,10 @@ Promise<Response> process(Request request);
 ```
 
 This is the slice's entry point — the method that consumers call. Every slice method must
-**return `Promise<T>`** — all operations are async-first. Even if your logic is synchronous
-today, wrapping it in `Promise` means it composes with async operations (database queries,
-other slices) without refactoring.
+**return `Promise<T>`** — all operations are async-first. Methods can have any number of
+parameters (0, 1, or more). Multi-parameter methods use synthetic request records at the
+transport layer. Even if your logic is synchronous today, wrapping it in `Promise` means
+it composes with async operations (database queries, other slices) without refactoring.
 
 ### Factory Method and Lambda Implementation
 
@@ -524,7 +525,8 @@ information about supported languages.
 Add a second request/response pair and method to `MyFirstSlice.java`:
 
 ```java
-/// Status request (no parameters needed, but every method needs a request record).
+/// Status request (zero-param methods use Unit at transport layer, but a request record
+/// is still useful for validation or future parameter additions).
 record StatusRequest() {
     public static Result<StatusRequest> statusRequest() {
         return Result.success(new StatusRequest());
