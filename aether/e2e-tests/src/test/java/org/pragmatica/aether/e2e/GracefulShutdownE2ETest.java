@@ -133,16 +133,8 @@ class GracefulShutdownE2ETest {
         var slicesStatus = cluster.anyNode().getSlicesStatus();
         assertThat(slicesStatus).contains("echo-slice");
 
-        // Cleanup: undeploy slice
-        try {
-            cluster.leader().toResult(Causes.cause("No leader")).unwrap().undeploy(TEST_ARTIFACT);
-            await().atMost(DEFAULT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .ignoreExceptions()
-                   .until(() -> !cluster.anyNode().getSlicesStatus().contains(TEST_ARTIFACT));
-        } catch (Exception e) {
-            System.out.println("[DEBUG] Cleanup undeploy error: " + e.getMessage());
-        }
+        // Cleanup: undeploy slice (handles UNLOADING stuck state)
+        cluster.awaitSliceUndeployed(TEST_ARTIFACT, DEFAULT_TIMEOUT);
     }
 
     @Test
@@ -177,16 +169,8 @@ class GracefulShutdownE2ETest {
         var health = cluster.anyNode().getHealth();
         assertThat(health).doesNotContain("\"error\"");
 
-        // Cleanup: undeploy slice
-        try {
-            cluster.leader().toResult(Causes.cause("No leader")).unwrap().undeploy(TEST_ARTIFACT);
-            await().atMost(DEFAULT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .ignoreExceptions()
-                   .until(() -> !cluster.anyNode().getSlicesStatus().contains(TEST_ARTIFACT));
-        } catch (Exception e) {
-            System.out.println("[DEBUG] Cleanup undeploy error: " + e.getMessage());
-        }
+        // Cleanup: undeploy slice (handles UNLOADING stuck state)
+        cluster.awaitSliceUndeployed(TEST_ARTIFACT, DEFAULT_TIMEOUT);
     }
 
     @Test

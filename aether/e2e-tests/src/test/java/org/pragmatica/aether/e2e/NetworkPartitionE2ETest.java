@@ -240,33 +240,8 @@ class NetworkPartitionE2ETest {
     }
 
     private void awaitNoSlices() {
-        await().atMost(CLEANUP_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .ignoreExceptions()
-               .until(() -> {
-                   var status = cluster.anyNode().getSlicesStatus();
-                   System.out.println("[DEBUG] Waiting for no slices, current: " + status);
-                   if (status.contains(TEST_ARTIFACT)) {
-                       // Don't spam undeploy while slice is already unloading
-                       if (!status.contains("UNLOADING")) {
-                           tryUndeploy();
-                       }
-                       return false;
-                   }
-                   return true;
-               });
-    }
-
-    private void tryUndeploy() {
-        try {
-            var leader = cluster.leader()
-                                .toResult(Causes.cause("No leader"))
-                                .unwrap();
-            var result = leader.undeploy(TEST_ARTIFACT);
-            System.out.println("[DEBUG] Undeploy attempt: " + result);
-        } catch (Exception e) {
-            System.out.println("[DEBUG] Undeploy error: " + e.getMessage());
-        }
+        undeployAllSlices();
+        cluster.awaitSliceUndeployed(TEST_ARTIFACT, CLEANUP_TIMEOUT);
     }
 
     // ===== API Helpers =====

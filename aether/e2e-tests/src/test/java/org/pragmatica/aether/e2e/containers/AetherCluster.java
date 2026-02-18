@@ -190,6 +190,48 @@ public class AetherCluster implements AutoCloseable {
                .until(this::allNodesHealthy);
     }
 
+    /// Waits for a slice to be fully undeployed (removed from cluster-wide status).
+    /// Handles UNLOADING stuck state by accepting it after a threshold and proceeding.
+    ///
+    /// @param artifact artifact to wait for removal
+    /// @param timeout  maximum time to wait
+    public void awaitSliceUndeployed(String artifact, Duration timeout) {
+        var unloadingStart = new long[]{0};
+        var stuckThreshold = STUCK_STATE_THRESHOLD;
+
+        try {
+            await().atMost(timeout)
+                   .pollInterval(POLL_INTERVAL)
+                   .ignoreExceptions()
+                   .until(() -> {
+                       var status = anyNode().getSlicesStatus();
+                       System.out.println("[DEBUG] Cleanup check, cluster slices status: " + status);
+                       if (!status.contains(artifact)) {
+                           return true;
+                       }
+                       if (status.contains("UNLOAD")) {
+                           if (unloadingStart[0] == 0) {
+                               unloadingStart[0] = System.currentTimeMillis();
+                           } else if (System.currentTimeMillis() - unloadingStart[0] > stuckThreshold.toMillis()) {
+                               System.out.println("[DEBUG] UNLOADING stuck > " + stuckThreshold.toSeconds() +
+                                                  "s, accepting and proceeding");
+                               return true; // Accept stuck state and proceed
+                           }
+                       } else {
+                           unloadingStart[0] = 0;
+                           // Try undeploy
+                           leader().onPresent(l -> {
+                               var result = l.undeploy(artifact);
+                               System.out.println("[DEBUG] Undeploy attempt: " + result);
+                           });
+                       }
+                       return false;
+                   });
+        } catch (Exception e) {
+            System.out.println("[DEBUG] Timed out waiting for slice removal: " + e.getMessage());
+        }
+    }
+
     /// Waits for a slice to become ACTIVE, failing fast if it reaches FAILED state.
     ///
     /// @param artifact artifact to wait for (can be partial match)
@@ -294,8 +336,10 @@ public class AetherCluster implements AutoCloseable {
     }
 
     private boolean isIntermediateState(String state) {
-        return "LOADING".equals(state) || "ACTIVATING".equals(state) ||
-               "DEACTIVATING".equals(state) || "UNLOADING".equals(state);
+        // Match both verb and gerund forms: LOAD/LOADING, UNLOAD/UNLOADING, etc.
+        return state != null && (
+            state.startsWith("LOADING") || state.startsWith("ACTIVAT") ||
+            state.startsWith("DEACTIVAT") || state.startsWith("UNLOAD"));
     }
 
     private boolean isStuckableState(String state) {

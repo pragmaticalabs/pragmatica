@@ -361,40 +361,9 @@ class RollingUpdateE2ETest {
     }
 
     private void awaitNoSlices() {
-        await().atMost(CLEANUP_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .ignoreExceptions()
-               .until(() -> {
-                   var status = cluster.anyNode().getSlicesStatus();
-                   System.out.println("[DEBUG] Waiting for no slices, current: " + status);
-                   // Don't spam undeploy while slices are already unloading
-                   var isUnloading = status.contains("UNLOADING");
-                   if (status.contains(OLD_VERSION)) {
-                       if (!isUnloading) {
-                           tryUndeploy(OLD_VERSION);
-                       }
-                       return false;
-                   }
-                   if (status.contains(NEW_VERSION)) {
-                       if (!isUnloading) {
-                           tryUndeploy(NEW_VERSION);
-                       }
-                       return false;
-                   }
-                   return true;
-               });
-    }
-
-    private void tryUndeploy(String artifact) {
-        try {
-            var leader = cluster.leader()
-                                .toResult(Causes.cause("No leader"))
-                                .unwrap();
-            var result = leader.undeploy(artifact);
-            System.out.println("[DEBUG] Undeploy attempt: " + result);
-        } catch (Exception e) {
-            System.out.println("[DEBUG] Undeploy error: " + e.getMessage());
-        }
+        undeployAllSlices();
+        cluster.awaitSliceUndeployed(OLD_VERSION, CLEANUP_TIMEOUT);
+        cluster.awaitSliceUndeployed(NEW_VERSION, CLEANUP_TIMEOUT);
     }
 
     private void deployOldVersion() {

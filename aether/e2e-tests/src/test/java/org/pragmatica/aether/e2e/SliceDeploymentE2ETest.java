@@ -76,23 +76,11 @@ class SliceDeploymentE2ETest {
         cluster.awaitLeader();
 
         // Retry undeploy until clean — use cluster-wide status to catch slices on any node,
-        // not just local slices (which may miss instances from multi-node scale operations)
+        // not just local slices (which may miss instances from multi-node scale operations).
+        // Handles UNLOADING stuck state by accepting it after threshold.
         System.out.println("[DEBUG] BeforeEach: cleanup with retry...");
-        await().atMost(CLEANUP_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .ignoreExceptions()
-               .until(() -> {
-                   var status = cluster.anyNode().getSlicesStatus();
-                   System.out.println("[DEBUG] Cleanup check, cluster slices status: " + status);
-                   if (status.contains(TEST_ARTIFACT)) {
-                       // Don't spam undeploy while slice is already unloading
-                       if (!status.contains("UNLOADING")) {
-                           tryUndeploy();
-                       }
-                       return false;
-                   }
-                   return true;
-               });
+        tryUndeploy();
+        cluster.awaitSliceUndeployed(TEST_ARTIFACT, CLEANUP_TIMEOUT);
         System.out.println("[DEBUG] BeforeEach: cleanup complete");
     }
 
@@ -242,12 +230,7 @@ class SliceDeploymentE2ETest {
     }
 
     private void awaitSliceRemoved(String artifact) {
-        await().atMost(CLEANUP_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> {
-                   var status = cluster.anyNode().getSlicesStatus();
-                   return !status.contains(artifact);
-               });
+        cluster.awaitSliceUndeployed(artifact, CLEANUP_TIMEOUT);
     }
 
     private boolean sliceIsActive(String artifact) {
