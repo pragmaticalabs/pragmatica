@@ -93,10 +93,11 @@ public sealed interface TimeSpan extends Comparable<TimeSpan> {
     /// <p>
     /// If interrupted, restores the interrupt flag and returns immediately.
     default void sleep() {
-        try {
+        try{
             Thread.sleep(millis());
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            Thread.currentThread()
+                  .interrupt();
         }
     }
 

@@ -560,38 +560,9 @@ public record ConfigChange(
 
 ### Secrets Manager
 
-Secure credential storage with encryption.
+> **Superseded:** The standalone SecretsManager has been removed. Secrets are now resolved through the EnvironmentIntegration SecretsProvider pattern via the ResourceProvider config pipeline.
 
-**API:**
-```java
-public interface SecretsManager extends Slice {
-    // Read (decrypts automatically)
-    Promise<Option<Secret>> get(String secretId);
-
-    // Write (encrypts automatically)
-    Promise<Unit> set(String secretId, Secret secret);
-    Promise<Unit> delete(String secretId);
-
-    // Rotation
-    Promise<Unit> rotate(String secretId, Secret newSecret);
-
-    // List (metadata only, not values)
-    Promise<List<SecretMetadata>> list();
-}
-
-public record Secret(
-    byte[] value,
-    Map<String, String> metadata,
-    Option<Instant> expiresAt
-) {}
-
-public record SecretMetadata(
-    String secretId,
-    Instant createdAt,
-    Instant updatedAt,
-    Option<Instant> expiresAt
-) {}
-```
+~~Secure credential storage with encryption.~~
 
 ---
 

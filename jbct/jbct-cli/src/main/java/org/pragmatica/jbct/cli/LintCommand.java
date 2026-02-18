@@ -98,7 +98,7 @@ public class LintCommand implements Callable<Integer> {
         }
         return LintContext.defaultContext()
                           .withConfig(lintConfig)
-                          .withBusinessPackages(jbctConfig.businessPackages());
+                          .withExcludePackages(jbctConfig.excludePackages());
     }
 
     private List<Path> collectJavaFiles() {

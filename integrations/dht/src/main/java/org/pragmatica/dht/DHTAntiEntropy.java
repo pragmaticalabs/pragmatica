@@ -19,8 +19,6 @@ package org.pragmatica.dht;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.utility.KSUID;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -30,6 +28,9 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.CRC32;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /// Periodic anti-entropy process that synchronizes replicas.
 /// Computes partition digests and exchanges them with peer nodes
@@ -49,10 +50,10 @@ public final class DHTAntiEntropy {
         this.network = network;
         this.config = config;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            var thread = new Thread(r, "dht-anti-entropy");
-            thread.setDaemon(true);
-            return thread;
-        });
+                                                                        var thread = new Thread(r, "dht-anti-entropy");
+                                                                        thread.setDaemon(true);
+                                                                        return thread;
+                                                                    });
     }
 
     /// Create an anti-entropy process for the given node.
@@ -86,8 +87,7 @@ public final class DHTAntiEntropy {
         if (config.isFullReplication()) {
             return;
         }
-
-        try {
+        try{
             synchronizePartitions();
         } catch (Exception e) {
             log.error("Anti-entropy cycle failed", e);
@@ -95,34 +95,35 @@ public final class DHTAntiEntropy {
     }
 
     private void synchronizePartitions() {
-        var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
-
+        var replicationFactor = config.effectiveReplicationFactor(node.ring()
+                                                                      .nodeCount());
         for (int p = 0; p < Partition.MAX_PARTITIONS; p++) {
             var partitionKey = ("partition:" + p).getBytes(StandardCharsets.UTF_8);
-            var nodes = node.ring().nodesFor(partitionKey, replicationFactor);
-
+            var nodes = node.ring()
+                            .nodesFor(partitionKey, replicationFactor);
             if (!nodes.contains(node.nodeId())) {
                 continue;
             }
-
             sendDigestRequests(p, nodes);
         }
     }
 
     private void sendDigestRequests(int partitionIndex, List<NodeId> nodes) {
         var partition = Partition.at(partitionIndex);
-
-        node.storage().entriesForPartition(node.ring(), partition)
+        node.storage()
+            .entriesForPartition(node.ring(),
+                                 partition)
             .onSuccess(entries -> {
-                var digest = computeDigest(entries);
-                sendDigestToPeers(partitionIndex, nodes, digest);
-            });
+                           var digest = computeDigest(entries);
+                           sendDigestToPeers(partitionIndex, nodes, digest);
+                       });
     }
 
     private byte[] computeDigest(List<DHTMessage.KeyValue> entries) {
         var crc = new CRC32();
         entries.stream()
-               .sorted((a, b) -> Arrays.compare(a.key(), b.key()))
+               .sorted((a, b) -> Arrays.compare(a.key(),
+                                                b.key()))
                .forEach(kv -> {
                    crc.update(kv.key());
                    crc.update(kv.value());
@@ -135,17 +136,17 @@ public final class DHTAntiEntropy {
             if (peer.equals(node.nodeId())) {
                 continue;
             }
-            var correlationId = KSUID.ksuid().toString();
-            network.send(peer, new DHTMessage.DigestRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex));
+            var correlationId = KSUID.ksuid()
+                                     .toString();
+            network.send(peer,
+                         new DHTMessage.DigestRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex));
         }
     }
 
     private static byte[] longToBytes(long value) {
-        return new byte[]{
-            (byte) (value >>> 56), (byte) (value >>> 48),
-            (byte) (value >>> 40), (byte) (value >>> 32),
-            (byte) (value >>> 24), (byte) (value >>> 16),
-            (byte) (value >>> 8), (byte) value
-        };
+        return new byte[]{(byte)(value>>> 56), (byte)(value>>> 48),
+        (byte)(value>>> 40), (byte)(value>>> 32),
+        (byte)(value>>> 24), (byte)(value>>> 16),
+        (byte)(value>>> 8), (byte) value};
     }
 }

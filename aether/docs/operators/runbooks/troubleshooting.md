@@ -53,7 +53,7 @@ grep -i "load\|activate\|deactivate" /var/log/aether/aether.log | tail -50
    netstat -tlnp | grep -E "8080|8090"
    ```
 
-2. Check Java version (requires Java 21+)
+2. Check Java version (requires Java 25+)
    ```bash
    java -version
    ```

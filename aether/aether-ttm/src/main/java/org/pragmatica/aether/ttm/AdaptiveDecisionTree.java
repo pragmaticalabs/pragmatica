@@ -6,11 +6,12 @@ import org.pragmatica.aether.controller.DecisionTreeController;
 import org.pragmatica.aether.ttm.model.ScalingRecommendation;
 import org.pragmatica.aether.ttm.model.TTMForecast;
 import org.pragmatica.lang.Promise;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /// DecisionTreeController enhanced with TTM predictions.
 ///
@@ -32,8 +33,7 @@ public interface AdaptiveDecisionTree extends ClusterController {
 
     /// Create adaptive controller.
     static AdaptiveDecisionTree adaptiveDecisionTree(DecisionTreeController baseController, TTMManager ttmManager) {
-        record adaptiveDecisionTree(DecisionTreeController baseController, TTMManager ttmManager) implements
-                                                                                                  AdaptiveDecisionTree {
+        record adaptiveDecisionTree(DecisionTreeController baseController, TTMManager ttmManager) implements AdaptiveDecisionTree {
             private static final Logger log = LoggerFactory.getLogger(adaptiveDecisionTree.class);
 
             adaptiveDecisionTree(DecisionTreeController baseController, TTMManager ttmManager) {
@@ -86,16 +86,13 @@ public interface AdaptiveDecisionTree extends ClusterController {
                                  adjust.newCpuScaleDownThreshold());
                         baseController.updateConfiguration(updated);
                     }
-                    case ScalingRecommendation.PreemptiveScaleUp scaleUp -> log.info(
-                            "TTM recommends preemptive scale up: predictedCpu={}, instances={}",
-                            scaleUp.predictedCpuPeak(),
-                            scaleUp.suggestedInstances());
-                    case ScalingRecommendation.PreemptiveScaleDown scaleDown -> log.info(
-                            "TTM recommends preemptive scale down: predictedCpu={}, instances={}",
-                            scaleDown.predictedCpuTrough(),
-                            scaleDown.suggestedInstances());
-                    case ScalingRecommendation.NoAction _ -> {
-                    }
+                    case ScalingRecommendation.PreemptiveScaleUp scaleUp -> log.info("TTM recommends preemptive scale up: predictedCpu={}, instances={}",
+                                                                                     scaleUp.predictedCpuPeak(),
+                                                                                     scaleUp.suggestedInstances());
+                    case ScalingRecommendation.PreemptiveScaleDown scaleDown -> log.info("TTM recommends preemptive scale down: predictedCpu={}, instances={}",
+                                                                                         scaleDown.predictedCpuTrough(),
+                                                                                         scaleDown.suggestedInstances());
+                    case ScalingRecommendation.NoAction _ -> {}
                 }
             }
 
@@ -154,8 +151,6 @@ public interface AdaptiveDecisionTree extends ClusterController {
                 };
             }
         }
-
         return new adaptiveDecisionTree(baseController, ttmManager);
     }
 }
-

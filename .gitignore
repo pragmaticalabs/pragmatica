@@ -29,9 +29,15 @@ CLAUDE.md
 .claude/
 PUBLISHING.md
 
+### NDX Search Index ###
+.ndx/
+
 ### LSP ###
 .jdtls-data/
 .jdt.ls/
 *.jdtls/
 .metadata/
 .mcp.json
+
+### H2 DB ###
+*.mv.db

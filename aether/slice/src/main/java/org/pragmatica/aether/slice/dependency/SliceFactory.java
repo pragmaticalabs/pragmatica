@@ -17,6 +17,9 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.utils.Causes.cause;
+
 /// Creates slice instances via reflection using static factory methods.
 ///
 /// RFC-0001 Factory method convention:
@@ -26,6 +29,7 @@ import org.slf4j.LoggerFactory;
 /// - First parameter: Aspect<SliceType>
 /// - Second parameter: SliceCreationContext
 /// - Remaining parameters: resolved dependency slices in declaration order
+@SuppressWarnings({"JBCT-LAM-01", "JBCT-LAM-02", "JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"})
 public interface SliceFactory {
     Logger log = LoggerFactory.getLogger(SliceFactory.class);
 
@@ -40,16 +44,10 @@ public interface SliceFactory {
                                       SliceCreationContext creationContext,
                                       List<Slice> dependencies,
                                       List<DependencyDescriptor> descriptors) {
-        log.info("Creating slice from class {} with {} dependencies", sliceClass.getName(), dependencies.size());
+        log.debug("Creating slice from class {} with {} dependencies", sliceClass.getName(), dependencies.size());
         Result<Method> factoryMethodResult;
-        try {
-            log.info("About to call findFactoryMethod for {}", sliceClass.getName());
+        try{
             factoryMethodResult = findFactoryMethod(sliceClass);
-            log.info("findFactoryMethod for {} returned: {}",
-                     sliceClass.getName(),
-                     factoryMethodResult.isSuccess()
-                     ? "success"
-                     : "failure");
         } catch (Throwable t) {
             log.error("Exception in findFactoryMethod for {}: {}", sliceClass.getName(), t.getMessage(), t);
             return Causes.fromThrowable(t)
@@ -59,29 +57,19 @@ public interface SliceFactory {
                                                                               sliceClass.getName(),
                                                                               cause.message()))
                                                 .flatMap(method -> {
-                                                             log.info("Verifying parameters for method {} with {} dependencies",
-                                                                      method.getName(),
-                                                                      dependencies.size());
+                                                             log.debug("Verifying parameters for method {} with {} dependencies",
+                                                                       method.getName(),
+                                                                       dependencies.size());
                                                              return verifyParameters(method,
                                                                                      sliceClass,
                                                                                      dependencies,
                                                                                      descriptors)
-                                                                 .onFailure(cause -> log.error("Failed to verify parameters for {}: {}",
-                                                                                               method.getName(),
-                                                                                               cause.message()));
+        .onFailure(cause -> log.error("Failed to verify parameters for {}: {}",
+                                      method.getName(),
+                                      cause.message()));
                                                          });
-        log.info("verifyParameters for {} result: {}, failure message: {}",
-                 sliceClass.getName(),
-                 verifiedResult.isSuccess()
-                 ? "success"
-                 : "failure",
-                 verifiedResult.fold(cause -> cause.message(), _ -> "n/a"));
         return verifiedResult.async()
-                             .flatMap(method -> {
-                                          log.info("About to invoke factory method {}",
-                                                   method.getName());
-                                          return invokeFactory(method, creationContext, dependencies);
-                                      });
+                             .flatMap(method -> invokeFactory(method, creationContext, dependencies));
     }
 
     private static Result<Method> findFactoryMethod(Class<?> sliceClass) {
@@ -97,13 +85,10 @@ public interface SliceFactory {
                         : className;
         var expectedName = toLowercaseFirst(sliceName) + "Slice";
         log.debug("findFactoryMethod: expectedName={}", expectedName);
-        log.info("findFactoryMethod: About to call getDeclaredMethods on {}", sliceClass.getName());
         Method[] methods;
         try{
             methods = sliceClass.getDeclaredMethods();
-            log.info("findFactoryMethod: getDeclaredMethods returned {} methods for {}",
-                     methods.length,
-                     sliceClass.getName());
+            log.trace("getDeclaredMethods returned {} methods for {}", methods.length, sliceClass.getName());
         } catch (Throwable t) {
             log.error("findFactoryMethod: getDeclaredMethods FAILED for {}: {}", sliceClass.getName(), t.getMessage(), t);
             return Causes.fromThrowable(t)
@@ -146,32 +131,33 @@ public interface SliceFactory {
         }
         // Verify first parameter is Aspect
         if (!parameters[0].getType()
-                          .equals(Aspect.class)) {
+                       .equals(Aspect.class)) {
             return firstParameterMustBeAspect(method.getName(),
                                               parameters[0].getType()
-                                                           .getName()).result();
+                                                        .getName()).result();
         }
         // Verify second parameter is SliceCreationContext
         if (!parameters[1].getType()
-                          .equals(SliceCreationContext.class)) {
+                       .equals(SliceCreationContext.class)) {
             return secondParameterMustBeCreationContext(method.getName(),
                                                         parameters[1].getType()
-                                                                     .getName()).result();
+                                                                  .getName()).result();
         }
-        return Result.success(method);
+        return success(method);
     }
 
-    @SuppressWarnings("unchecked")
+    /// Adapter boundary — Method.invoke(null, args) uses null for static invocation per JDK API.
+    @SuppressWarnings({"unchecked", "JBCT-RET-03"})
     private static Promise<Slice> invokeFactory(Method method,
                                                 SliceCreationContext creationContext,
                                                 List<Slice> dependencies) {
-        log.info("Invoking factory method {}", method.getName());
+        log.debug("Invoking factory method {}", method.getName());
         return Promise.lift(Causes::fromThrowable,
                             () -> {
                                 method.setAccessible(true);
                                 // New-style factories take only (Aspect, SliceCreationContext)
-                                // Dependencies are resolved dynamically via SliceCreationContext
-                                var args = new Object[]{Aspect.identity(), creationContext};
+        // Dependencies are resolved dynamically via SliceCreationContext
+        var args = new Object[]{Aspect.identity(), creationContext};
                                 log.debug("Calling factory method {} with args: Aspect, SliceCreationContext",
                                           method.getName());
                                 return (Promise<Slice>) method.invoke(null, args);
@@ -179,10 +165,10 @@ public interface SliceFactory {
                       .flatMap(promise -> {
                                    log.info("Factory method {} returned promise, waiting for completion",
                                             method.getName());
-                                   return promise.onSuccess(slice -> log.info("Factory method {} completed successfully, slice class: {}",
-                                                                              method.getName(),
-                                                                              slice.getClass()
-                                                                                   .getName()))
+                                   return promise.onSuccess(slice -> log.debug("Factory method {} completed, slice class: {}",
+                                                                               method.getName(),
+                                                                               slice.getClass()
+                                                                                    .getName()))
                                                  .onFailure(cause -> log.error("Factory method {} failed: {}",
                                                                                method.getName(),
                                                                                cause.message()));
@@ -197,23 +183,23 @@ public interface SliceFactory {
     }
 
     private static Cause factoryMethodNotFound(String className, String methodName) {
-        return Causes.cause("Factory method not found: " + className + "." + methodName + "() returning Promise<Slice>");
+        return cause("Factory method not found: " + className + "." + methodName + "() returning Promise<Slice>");
     }
 
     private static Cause parameterCountMismatch(String methodName, int expected, int actual) {
-        return Causes.cause("Parameter count mismatch in " + methodName + ": expected " + expected
-                            + " (Aspect, SliceCreationContext), got " + actual);
+        return cause("Parameter count mismatch in " + methodName + ": expected " + expected
+                     + " (Aspect, SliceCreationContext), got " + actual);
     }
 
     private static Cause firstParameterMustBeAspect(String methodName, String actual) {
-        return Causes.cause("First parameter of " + methodName + " must be Aspect, got " + actual);
+        return cause("First parameter of " + methodName + " must be Aspect, got " + actual);
     }
 
     private static Cause secondParameterMustBeCreationContext(String methodName, String actual) {
-        return Causes.cause("Second parameter of " + methodName + " must be SliceCreationContext, got " + actual);
+        return cause("Second parameter of " + methodName + " must be SliceCreationContext, got " + actual);
     }
 
     private static Cause parameterTypeMismatch(int index, String expected, String actual) {
-        return Causes.cause("Parameter type mismatch at index " + index + ": expected " + expected + ", got " + actual);
+        return cause("Parameter type mismatch at index " + index + ": expected " + expected + ", got " + actual);
     }
 }

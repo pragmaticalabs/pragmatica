@@ -23,6 +23,7 @@ import java.util.stream.Collectors;
 /// Thread safety: ConcurrentHashMap handles concurrent reads (HTTP dashboard)
 /// and writes (consensus thread). Weakly consistent iteration is acceptable
 /// for dashboard display.
+@SuppressWarnings("JBCT-RET-01") // MessageReceiver callbacks — void required by messaging framework
 public sealed interface DeploymentMap {
     @MessageReceiver
     void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
@@ -38,7 +39,8 @@ public sealed interface DeploymentMap {
 
     int deploymentCount();
 
-    record SliceDeploymentInfo(String artifact, SliceState aggregateState,
+    record SliceDeploymentInfo(String artifact,
+                               SliceState aggregateState,
                                List<SliceInstanceInfo> instances) {}
 
     record SliceInstanceInfo(String nodeId, SliceState state) {}
@@ -48,20 +50,23 @@ public sealed interface DeploymentMap {
     }
 }
 
+@SuppressWarnings("JBCT-RET-01")
 final class DeploymentMapImpl implements DeploymentMap {
     private final ConcurrentHashMap<SliceNodeKey, SliceState> index = new ConcurrentHashMap<>();
 
     @Override
     public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-        if (valuePut.cause().key() instanceof SliceNodeKey key
-            && valuePut.cause().value() instanceof SliceNodeValue value) {
+        if (valuePut.cause()
+                    .key() instanceof SliceNodeKey key && valuePut.cause()
+                                                                  .value() instanceof SliceNodeValue value) {
             index.put(key, value.state());
         }
     }
 
     @Override
     public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-        if (valueRemove.cause().key() instanceof SliceNodeKey key) {
+        if (valueRemove.cause()
+                       .key() instanceof SliceNodeKey key) {
             index.remove(key);
         }
     }
@@ -70,50 +75,63 @@ final class DeploymentMapImpl implements DeploymentMap {
     public Map<Artifact, SliceState> byNode(NodeId nodeId) {
         return index.entrySet()
                     .stream()
-                    .filter(e -> e.getKey().nodeId().equals(nodeId))
-                    .collect(Collectors.toMap(e -> e.getKey().artifact(),
-                                             Map.Entry::getValue));
+                    .filter(e -> e.getKey()
+                                  .nodeId()
+                                  .equals(nodeId))
+                    .collect(Collectors.toMap(e -> e.getKey()
+                                                    .artifact(),
+                                              Map.Entry::getValue));
     }
 
     @Override
     public Map<NodeId, SliceState> byArtifact(Artifact artifact) {
         return index.entrySet()
                     .stream()
-                    .filter(e -> e.getKey().artifact().equals(artifact))
-                    .collect(Collectors.toMap(e -> e.getKey().nodeId(),
-                                             Map.Entry::getValue));
+                    .filter(e -> e.getKey()
+                                  .artifact()
+                                  .equals(artifact))
+                    .collect(Collectors.toMap(e -> e.getKey()
+                                                    .nodeId(),
+                                              Map.Entry::getValue));
     }
 
     @Override
     public List<SliceDeploymentInfo> allDeployments() {
         return index.entrySet()
                     .stream()
-                    .collect(Collectors.groupingBy(e -> e.getKey().artifact().asString()))
+                    .collect(Collectors.groupingBy(e -> e.getKey()
+                                                         .artifact()
+                                                         .asString()))
                     .entrySet()
                     .stream()
                     .map(group -> {
-                        var instances = group.getValue()
-                                            .stream()
-                                            .map(e -> new SliceInstanceInfo(e.getKey().nodeId().id(),
-                                                                           e.getValue()))
-                                            .toList();
-                        var aggregateState = group.getValue()
+                             var instances = group.getValue()
                                                   .stream()
-                                                  .map(Map.Entry::getValue)
-                                                  .reduce(DeploymentMapImpl::higherState)
-                                                  .orElse(SliceState.FAILED);
-                        return new SliceDeploymentInfo(group.getKey(), aggregateState, instances);
-                    })
+                                                  .map(e -> new SliceInstanceInfo(e.getKey()
+                                                                                   .nodeId()
+                                                                                   .id(),
+                                                                                  e.getValue()))
+                                                  .toList();
+                             var aggregateState = group.getValue()
+                                                       .stream()
+                                                       .map(Map.Entry::getValue)
+                                                       .reduce(DeploymentMapImpl::higherState)
+                                                       .orElse(SliceState.FAILED);
+                             return new SliceDeploymentInfo(group.getKey(),
+                                                            aggregateState,
+                                                            instances);
+                         })
                     .toList();
     }
 
     @Override
     public int deploymentCount() {
         return (int) index.keySet()
-                          .stream()
-                          .map(key -> key.artifact().asString())
-                          .distinct()
-                          .count();
+                         .stream()
+                         .map(key -> key.artifact()
+                                        .asString())
+                         .distinct()
+                         .count();
     }
 
     private static SliceState higherState(SliceState a, SliceState b) {
@@ -126,6 +144,8 @@ final class DeploymentMapImpl implements DeploymentMap {
         if (b == SliceState.FAILED) {
             return a;
         }
-        return a.ordinal() >= b.ordinal() ? a : b;
+        return a.ordinal() >= b.ordinal()
+               ? a
+               : b;
     }
 }

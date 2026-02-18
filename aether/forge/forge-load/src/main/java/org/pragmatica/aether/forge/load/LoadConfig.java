@@ -2,10 +2,11 @@ package org.pragmatica.aether.forge.load;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 import java.util.List;
+
+import static org.pragmatica.lang.Result.success;
 
 /// Root configuration for load generation, containing multiple targets.
 ///
@@ -15,16 +16,15 @@ public record LoadConfig(List<LoadTarget> targets) {
 
     /// Creates a LoadConfig with validation.
     public static Result<LoadConfig> loadConfig(List<LoadTarget> targets) {
-        return Verify.ensure(targets,
-                             list -> list != null && !list.isEmpty(),
-                             EMPTY_CONFIG)
-                     .map(List::copyOf)
-                     .map(LoadConfig::new);
+        return success(targets).filter(EMPTY_CONFIG,
+                                       list -> !list.isEmpty())
+                      .map(List::copyOf)
+                      .map(LoadConfig::new);
     }
 
     /// Creates an empty LoadConfig (for initial state).
-    public static LoadConfig empty() {
-        return new LoadConfig(List.of());
+    public static Result<LoadConfig> loadConfig() {
+        return success(new LoadConfig(List.of()));
     }
 
     /// Returns true if this config has no targets.
@@ -35,16 +35,21 @@ public record LoadConfig(List<LoadTarget> targets) {
     /// Returns the total target requests per second across all targets.
     public int totalRequestsPerSecond() {
         return targets.stream()
-                      .mapToInt(t -> t.rate()
-                                      .requestsPerSecond())
+                      .mapToInt(LoadConfig::targetRequestsPerSecond)
                       .sum();
     }
 
+    private static int targetRequestsPerSecond(LoadTarget t) {
+        return t.rate()
+                .requestsPerSecond();
+    }
+
     /// Creates a new LoadConfig with all target rates scaled by the given multiplier.
-    public LoadConfig withMultiplier(double multiplier) {
-        var scaledTargets = targets.stream()
-                                   .map(t -> t.withScaledRate(multiplier))
-                                   .toList();
-        return new LoadConfig(scaledTargets);
+    public static Result<LoadConfig> loadConfig(LoadConfig config, double multiplier) {
+        var scaledTargets = config.targets()
+                                  .stream()
+                                  .map(t -> t.withScaledRate(multiplier))
+                                  .toList();
+        return success(new LoadConfig(scaledTargets));
     }
 }

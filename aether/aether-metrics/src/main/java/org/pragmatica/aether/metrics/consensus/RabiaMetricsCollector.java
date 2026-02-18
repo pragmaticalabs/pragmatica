@@ -5,13 +5,15 @@ import org.pragmatica.consensus.rabia.ConsensusMetrics;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.consensus.rabia.StateValue;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 
-import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.unitResult;
 
 /// Implementation of ConsensusMetrics that collects Rabia consensus statistics.
 ///
@@ -33,26 +35,32 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue, long durationNs) {
         decisionsCount.incrementAndGet();
         totalDecisionLatencyNs.add(durationNs);
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void recordProposal(NodeId nodeId, Phase phase) {
         proposalsCount.incrementAndGet();
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void recordVoteRound1(NodeId nodeId, Phase phase, StateValue stateValue) {}
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void recordVoteRound2(NodeId nodeId, Phase phase, StateValue stateValue) {}
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void recordFastPath(NodeId nodeId, Phase phase, StateValue value) {}
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void recordSyncAttempt(NodeId nodeId, boolean success) {
         if (success) {
             syncSuccessCount.incrementAndGet();
@@ -62,16 +70,18 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void updatePendingBatches(NodeId nodeId, int count) {
         pendingBatches.set(count);
     }
 
     /// Update the current role (called externally when leader changes).
-    public void updateRole(boolean isLeader, Option<String> currentLeaderId) {
+    public Result<Unit> updateRole(boolean isLeader, Option<String> currentLeaderId) {
         role.set(isLeader
                  ? "LEADER"
                  : "FOLLOWER");
         leaderId.set(currentLeaderId);
+        return unitResult();
     }
 
     /// Take a snapshot of current metrics.

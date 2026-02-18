@@ -11,7 +11,10 @@ import org.pragmatica.lang.Option;
 import java.util.HashSet;
 import java.util.Set;
 
+import static org.pragmatica.lang.Option.none;
+
 /// Value type stored in the consensus KVStore
+@SuppressWarnings({"JBCT-VO-01", "JBCT-NAM-01", "JBCT-STY-04"})
 public sealed interface AetherValue {
     /// Slice target stores runtime scaling configuration for a slice.
     /// This is the "desired state" for how many instances should run and which version.
@@ -31,7 +34,7 @@ public sealed interface AetherValue {
 
         /// Creates a standalone slice target (not part of any app blueprint).
         public static SliceTargetValue sliceTargetValue(Version version, int instances) {
-            return new SliceTargetValue(version, instances, Option.none(), System.currentTimeMillis());
+            return new SliceTargetValue(version, instances, none(), System.currentTimeMillis());
         }
 
         /// Returns a new value with updated instance count.
@@ -237,6 +240,21 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Log level override stored in consensus.
+    /// Stores per-logger log level overrides for runtime toggling.
+    ///
+    /// @param loggerName the logger this override applies to
+    /// @param level the log level (TRACE, DEBUG, INFO, WARN, ERROR, FATAL, OFF)
+    /// @param updatedAt timestamp of last update
+    record LogLevelValue(String loggerName,
+                         String level,
+                         long updatedAt) implements AetherValue {
+        /// Creates a new log level value with current timestamp.
+        public static LogLevelValue logLevelValue(String loggerName, String level) {
+            return new LogLevelValue(loggerName, level, System.currentTimeMillis());
+        }
+    }
+
     /// Dynamic aspect configuration stored in consensus.
     /// Stores per-method aspect mode (logging/metrics) for runtime toggling.
     ///
@@ -251,6 +269,19 @@ public sealed interface AetherValue {
         /// Creates a new dynamic aspect value with current timestamp.
         public static DynamicAspectValue dynamicAspectValue(String artifactBase, String methodName, String mode) {
             return new DynamicAspectValue(artifactBase, methodName, mode, System.currentTimeMillis());
+        }
+    }
+
+    /// Dynamic configuration value stored in consensus.
+    /// Stores a single configuration key-value pair with timestamp.
+    ///
+    /// @param key the configuration key (dot.notation)
+    /// @param value the configuration value
+    /// @param updatedAt timestamp of last update
+    record ConfigValue(String key, String value, long updatedAt) implements AetherValue {
+        /// Creates a new config value with current timestamp.
+        public static ConfigValue configValue(String key, String value) {
+            return new ConfigValue(key, value, System.currentTimeMillis());
         }
     }
 }

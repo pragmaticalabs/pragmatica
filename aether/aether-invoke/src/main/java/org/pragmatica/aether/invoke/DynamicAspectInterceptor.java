@@ -24,15 +24,16 @@ public interface DynamicAspectInterceptor {
     /// @param proceed   The actual invocation to execute
     /// @param <R>       Response type
     /// @return Promise resolving to the invocation result
-    <R> Promise<R> intercept(Artifact slice, MethodName method,
-                             String requestId, Fn0<Promise<R>> proceed);
+    <R> Promise<R> intercept(Artifact slice,
+                             MethodName method,
+                             String requestId,
+                             Fn0<Promise<R>> proceed);
 
     /// Create an interceptor that applies dynamic aspect logging based on mode lookup.
     ///
     /// @param modeLookup     Resolves aspect mode for a given artifactBase and methodName
     /// @return a new interceptor instance
-    static DynamicAspectInterceptor dynamicAspectInterceptor(
-            Fn2<DynamicAspectMode, String, String> modeLookup) {
+    static DynamicAspectInterceptor dynamicAspectInterceptor(Fn2<DynamicAspectMode, String, String> modeLookup) {
         return new DynamicAspectInterceptorImpl(modeLookup);
     }
 
@@ -52,45 +53,65 @@ class DynamicAspectInterceptorImpl implements DynamicAspectInterceptor {
     }
 
     @Override
-    public <R> Promise<R> intercept(Artifact slice, MethodName method,
-                                    String requestId, Fn0<Promise<R>> proceed) {
-        var mode = modeLookup.apply(slice.base().asString(), method.name());
-
+    public <R> Promise<R> intercept(Artifact slice,
+                                    MethodName method,
+                                    String requestId,
+                                    Fn0<Promise<R>> proceed) {
+        var mode = modeLookup.apply(slice.base()
+                                         .asString(),
+                                    method.name());
         if (!mode.isLoggingEnabled()) {
             return proceed.apply();
         }
-
         return interceptWithLogging(slice, method, requestId, proceed);
     }
 
-    private <R> Promise<R> interceptWithLogging(Artifact slice, MethodName method,
-                                                String requestId, Fn0<Promise<R>> proceed) {
+    private <R> Promise<R> interceptWithLogging(Artifact slice,
+                                                MethodName method,
+                                                String requestId,
+                                                Fn0<Promise<R>> proceed) {
         var startTime = System.nanoTime();
         aspectLog.info("[aspect] [requestId={}] ENTER {}.{}", requestId, slice, method);
-
         return proceed.apply()
                       .onSuccess(_ -> logExit(slice, method, requestId, startTime, true, null))
-                      .onFailure(cause -> logExit(slice, method, requestId, startTime, false, cause.message()));
+                      .onFailure(cause -> logExit(slice,
+                                                  method,
+                                                  requestId,
+                                                  startTime,
+                                                  false,
+                                                  cause.message()));
     }
 
-    private void logExit(Artifact slice, MethodName method, String requestId,
-                         long startTime, boolean success, String error) {
+    private void logExit(Artifact slice,
+                         MethodName method,
+                         String requestId,
+                         long startTime,
+                         boolean success,
+                         String error) {
         var durationMs = (System.nanoTime() - startTime) / 1_000_000;
-
         if (success) {
             aspectLog.info("[aspect] [requestId={}] EXIT {}.{} duration={}ms success=true",
-                           requestId, slice, method, durationMs);
+                           requestId,
+                           slice,
+                           method,
+                           durationMs);
         } else {
             aspectLog.info("[aspect] [requestId={}] EXIT {}.{} duration={}ms success=false error={}",
-                           requestId, slice, method, durationMs, error);
+                           requestId,
+                           slice,
+                           method,
+                           durationMs,
+                           error);
         }
     }
 }
 
 class NoOpDynamicAspectInterceptor implements DynamicAspectInterceptor {
     @Override
-    public <R> Promise<R> intercept(Artifact slice, MethodName method,
-                                    String requestId, Fn0<Promise<R>> proceed) {
+    public <R> Promise<R> intercept(Artifact slice,
+                                    MethodName method,
+                                    String requestId,
+                                    Fn0<Promise<R>> proceed) {
         return proceed.apply();
     }
 }

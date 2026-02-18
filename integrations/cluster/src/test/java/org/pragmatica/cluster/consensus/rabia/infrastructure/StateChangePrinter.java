@@ -10,11 +10,11 @@ import java.util.function.Consumer;
 
 @SuppressWarnings("rawtypes")
 public record StateChangePrinter(NodeId id) implements Consumer<StateMachineNotification> {
-    private static final Logger logger = LoggerFactory.getLogger(StateChangePrinter.class);
+    private static final Logger log = LoggerFactory.getLogger(StateChangePrinter.class);
 
     @MessageReceiver
     @Override
     public void accept(StateMachineNotification stateMachineNotification) {
-        logger.trace("Node {} received state change: {}", id, stateMachineNotification);
+        log.trace("Node {} received state change: {}", id, stateMachineNotification);
     }
 }

@@ -18,7 +18,6 @@ The annotated interface must:
 2. **Have a static factory method** that returns the interface type
 3. **All non-static, non-default methods** must:
    - Return `Promise<T>` where `T` is the response type
-   - Have exactly one parameter (the request type)
 
 ### Valid Example
 
@@ -31,7 +30,7 @@ public interface OrderService {
 
     // Factory method - not included in API, used for wiring
     static OrderService orderService(InventoryService inventory) {
-        return new OrderServiceImpl(inventory);
+        return OrderServiceImpl.orderServiceImpl(inventory);
     }
 
     // Default methods - not included in API
@@ -54,23 +53,95 @@ public interface BadService {
 @Slice
 public interface BadService {
     Promise<String> doSomething(Request r);
-    static OtherService factory() { return new OtherServiceImpl(); }
+    static OtherService factory() { return OtherServiceImpl.otherServiceImpl(); }
 }
 
 // Method doesn't return Promise
 @Slice
 public interface BadService {
     String doSomething(Request r);  // Must return Promise<T>
-    static BadService factory() { return new BadServiceImpl(); }
+    static BadService factory() { return BadServiceImpl.badServiceImpl(); }
 }
 
-// Method has multiple parameters
+// Overloaded methods
 @Slice
 public interface BadService {
-    Promise<String> doSomething(String a, int b);  // Must have exactly one param
-    static BadService factory() { return new BadServiceImpl(); }
+    Promise<String> doSomething(String a);
+    Promise<String> doSomething(int b);  // Overloads are rejected at compile time
+    static BadService factory() { return BadServiceImpl.badServiceImpl(); }
 }
 ```
+
+## @ResourceQualifier Meta-Annotation
+
+```java
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.ANNOTATION_TYPE)
+public @interface ResourceQualifier {
+    Class<?> type();    // Resource interface class
+    String config();    // Config section path in aether.toml
+}
+```
+
+### Creating Custom Qualifiers
+
+Define annotations that bind a resource type to a configuration section:
+
+```java
+@ResourceQualifier(type = DatabaseConnector.class, config = "database.primary")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+public @interface PrimaryDb {}
+
+@ResourceQualifier(type = HttpClient.class, config = "http.external")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+public @interface ExternalHttp {}
+```
+
+### Usage in Slice Factory
+
+```java
+@Slice
+public interface OrderRepository {
+    Promise<Order> findOrder(FindOrderRequest request);
+
+    static OrderRepository orderRepository(
+            @PrimaryDb DatabaseConnector db,
+            InventoryService inventory) {
+        return new orderRepository(db, inventory);
+    }
+}
+```
+
+The processor generates:
+- `ctx.resources().provide(DatabaseConnector.class, "database.primary")` for `@PrimaryDb`
+- Proxy record with `MethodHandle` for `InventoryService`
+
+### Transitive Provisioning
+
+When a plain interface (non-@Slice with factory method) has @ResourceQualifier params in its factory, those are provisioned transitively:
+
+```java
+public interface KycStep {
+    static KycStep kycStep(@KycProvider HttpClient httpClient) { ... }
+}
+
+@Slice
+public interface LoanService {
+    static LoanService loanService(KycStep kycStep) { ... }
+}
+// Generated: provisions HttpClient for KycStep, then passes it
+```
+
+### Factory Dependency Types
+
+| Type | Detection | Generated Code |
+|------|-----------|---------------|
+| Resource | @ResourceQualifier on parameter | `ctx.resources().provide(Type.class, "config")` |
+| Slice | External interface, no factory method | Proxy record with `MethodHandle` via `ctx.invoker()` |
+| Plain interface | Has static factory method | `Interface.factoryMethod()` (direct call) |
+| Plain interface (with resources) | Factory has @ResourceQualifier params | Provision resources, then `Interface.factoryMethod(args)` |
 
 ## Generated Artifacts
 
@@ -117,22 +188,22 @@ public final class OrderServiceFactory {
     /**
      * Create typed slice instance.
      */
-    public static Promise<OrderService> create(
+    public static Promise<OrderService> orderService(
             Aspect<OrderService> aspect,
-            SliceInvokerFacade invoker) { ... }
+            SliceCreationContext ctx) { ... }
 
     /**
      * Create Slice wrapper for Aether runtime.
      */
-    public static Promise<Slice> createSlice(
+    public static Promise<Slice> orderServiceSlice(
             Aspect<OrderService> aspect,
-            SliceInvokerFacade invoker) { ... }
+            SliceCreationContext ctx) { ... }
 }
 ```
 
 **Parameters:**
 - `Aspect<T>`: Decorator for cross-cutting concerns (logging, metrics)
-- `SliceInvokerFacade`: Runtime-provided invoker for external dependencies
+- `SliceCreationContext`: Runtime-provided context containing invoker for cross-slice calls and resource provider for infrastructure resources
 
 ### Slice Manifest
 
@@ -405,7 +476,7 @@ Checks:
 - `@Slice` interface has factory method
 - Factory method returns interface type
 - All methods return `Promise<T>`
-- All methods have one parameter
+- No overloaded method names
 
 ## CLI Commands
 
@@ -474,6 +545,32 @@ Implemented by Aether runtime. Handles:
 - Load balancing
 - Retries and circuit breaking
 
+## SliceCreationContext
+
+Unified context for slice creation, providing access to both cross-slice invocation and resource provisioning:
+
+```java
+public interface SliceCreationContext {
+    SliceInvokerFacade invoker();
+    ResourceProviderFacade resources();
+}
+```
+
+Implemented by Aether runtime. Passed to generated factory methods.
+
+## ResourceProviderFacade
+
+Interface for resource provisioning:
+
+```java
+public interface ResourceProviderFacade {
+    <T> Promise<T> provide(Class<T> resourceType, String configSection);
+    <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context);
+}
+```
+
+Resources are discovered via SPI (`ResourceFactory` implementations), configured via `aether.toml`, and cached by (type, config) key.
+
 ## Aspect Interface
 
 Decorator for slice instances:
@@ -500,7 +597,7 @@ public class LoggingAspect<T> implements Aspect<T> {
 
 // When creating slice
 var logging = new LoggingAspect<OrderService>();
-OrderServiceFactory.create(logging, invoker);
+OrderServiceFactory.orderService(logging, ctx);
 ```
 
 ## Slice Interface
@@ -520,7 +617,7 @@ public record SliceMethod<Req, Resp>(
 ) {}
 ```
 
-Created by `createSlice()` factory method. Used internally by Aether for routing.
+Created by `orderServiceSlice()` factory method. Used internally by Aether for routing.
 
 ## POM Configuration
 
@@ -536,9 +633,9 @@ Generated by `jbct init --slice` with all configuration inlined:
     <packaging>jar</packaging>
 
     <properties>
-        <java.version>21</java.version>
-        <pragmatica-lite.version>0.9.10</pragmatica-lite.version>
-        <jbct.version>0.4.8</jbct.version>
+        <java.version>25</java.version>
+        <pragmatica-lite.version>0.16.0</pragmatica-lite.version>
+        <jbct.version>0.16.0</jbct.version>
     </properties>
 
     <dependencies>

@@ -3,6 +3,7 @@ package org.pragmatica.aether.config;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 /// Service for loading typed configuration sections from aether.toml.
 ///
@@ -16,7 +17,6 @@ import org.pragmatica.lang.Result;
 ///     .onSuccess(config -> // use config);
 /// }```
 public interface ConfigService {
-
     /// Load a configuration section and bind it to the specified type.
     ///
     /// @param section     Dot-separated section path (e.g., "database.primary")
@@ -60,7 +60,6 @@ public interface ConfigService {
     Option<Boolean> getBoolean(String key);
 
     // Static accessor pattern
-
     /// Get the global ConfigService instance.
     ///
     /// @return ConfigService if configured, empty otherwise
@@ -73,14 +72,16 @@ public interface ConfigService {
     /// Called by AetherNode during startup.
     ///
     /// @param service ConfigService implementation
-    static void setInstance(ConfigService service) {
-        ConfigServiceHolder.setInstance(service);
+    /// @return Result indicating success
+    static Result<Unit> setInstance(ConfigService service) {
+        return ConfigServiceHolder.setInstance(service);
     }
 
     /// Clear the global ConfigService instance.
     ///
     /// Called during shutdown or in tests.
-    static void clear() {
-        ConfigServiceHolder.clear();
+    /// @return Result indicating success
+    static Result<Unit> clear() {
+        return ConfigServiceHolder.clear();
     }
 }

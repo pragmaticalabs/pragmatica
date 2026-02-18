@@ -1,0 +1,3 @@
+# Hetzner Cloud environment integration requires configuration.
+# Use HetznerEnvironmentIntegration.hetznerEnvironmentIntegration(config) for programmatic construction.
+# ServiceLoader discovery is reserved for future config-based initialization.

@@ -85,7 +85,9 @@ public final class QuorumCollector<T> {
         }
         // For Option values: prefer present (non-empty) over absent (empty)
         if (existing instanceof Option<?> existingOpt && incoming instanceof Option<?> incomingOpt) {
-            return incomingOpt.isPresent() && existingOpt.isEmpty() ? incoming : existing;
+            return incomingOpt.isPresent() && existingOpt.isEmpty()
+                   ? incoming
+                   : existing;
         }
         return existing;
     }

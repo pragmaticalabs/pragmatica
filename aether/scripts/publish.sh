@@ -28,7 +28,6 @@ MODULES=(
     "infra-slices/infra-pubsub"
     "infra-slices/infra-ratelimit"
     "infra-slices/infra-scheduler"
-    "infra-slices/infra-secrets"
     "infra-slices/infra-server"
     "infra-slices/infra-statemachine"
     "infra-slices/infra-streaming"

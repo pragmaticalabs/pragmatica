@@ -63,11 +63,11 @@ cd aether && mvn package -DskipTests
 
 | Category | Documents |
 |----------|-----------|
-| **Start Here** | [What is Aether?](docs/aether-overview.md), [Introduction](docs/guide/introduction.md), [Getting Started](docs/guide/getting-started.md), [Migration Guide](docs/guide/migration-guide.md) |
-| **Core Concepts** | [Scaling](docs/guide/scaling.md), [Slice Lifecycle](docs/slice-lifecycle.md), [Architecture](docs/architecture-overview.md) |
-| **Reference** | [CLI Reference](docs/guide/cli-reference.md), [Forge Guide](docs/guide/forge-guide.md), [Configuration](docs/guide/configuration-reference.md), [Management API](docs/api/management-api.md) |
-| **Operations** | [Rolling Updates](docs/guide/rolling-updates.md), [Alerts](docs/guide/alerts-and-thresholds.md), [Docker](docs/guide/docker-deployment.md) |
-| **Design** | [Vision & Goals](docs/vision-and-goals.md), [Metrics & Control](docs/metrics-and-control.md), [Typed Slice APIs](docs/typed-slice-api-design.md) |
+| **Start Here** | [What is Aether?](docs/aether-overview.md), [Introduction](docs/articles/aether-introduction.md), [Getting Started](docs/slice-developers/getting-started.md), [Migration Guide](docs/slice-developers/migration-guide.md) |
+| **Core Concepts** | [Scaling](docs/operators/scaling.md), [Slice Lifecycle](docs/contributors/slice-lifecycle.md), [Architecture](docs/contributors/architecture.md) |
+| **Reference** | [CLI Reference](docs/reference/cli.md), [Forge Guide](docs/slice-developers/forge-guide.md), [Configuration](docs/reference/configuration.md), [Management API](docs/reference/management-api.md) |
+| **Operations** | [Rolling Updates](docs/operators/rolling-updates.md), [Monitoring](docs/operators/monitoring.md), [Docker](docs/operators/docker-deployment.md) |
+| **Design** | [Vision & Goals](docs/archive/vision-and-goals.md), [Metrics & Control](docs/contributors/metrics-control.md), [Slice API](docs/reference/slice-api.md) |
 
 ## Project Structure
 

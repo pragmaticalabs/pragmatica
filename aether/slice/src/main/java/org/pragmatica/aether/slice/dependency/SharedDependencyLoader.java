@@ -20,6 +20,7 @@ import static org.pragmatica.lang.Unit.unit;
 
 /// Handles loading of shared dependencies into SharedLibraryClassLoader
 /// and creates SliceClassLoader with appropriate parent and conflict overrides.
+@SuppressWarnings({"JBCT-VO-01", "JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-ZONE-02"})
 public interface SharedDependencyLoader {
     Logger log = LoggerFactory.getLogger(SharedDependencyLoader.class);
 
@@ -153,6 +154,7 @@ public interface SharedDependencyLoader {
             logCompatibleDependency(dependency, loadedVersion);
             case CompatibilityResult.Conflict(var loadedVersion, _) ->
             handleConflictingDependency(dependency, loadedVersion, repository, conflictUrls);
+            case CompatibilityResult.unused() -> Promise.success(unit());
         };
     }
 
@@ -185,11 +187,10 @@ public interface SharedDependencyLoader {
     }
 
     private static Promise<Unit> registerAsRuntimeProvided(ArtifactDependency dependency,
-                                                            SharedLibraryClassLoader sharedLibraryLoader) {
+                                                           SharedLibraryClassLoader sharedLibraryLoader) {
         var version = extractVersion(dependency.versionPattern());
         sharedLibraryLoader.registerRuntimeProvided(dependency.groupId(), dependency.artifactId(), version);
-        log.info("Shared dependency {} not found in repositories, registered as runtime-provided",
-                 dependency.asString());
+        log.info("Shared dependency {} not found in repositories, registered as runtime-provided", dependency.asString());
         return Promise.success(unit());
     }
 
@@ -230,6 +231,8 @@ public interface SharedDependencyLoader {
             case VersionPattern.Comparison(_, Version version) -> version;
             case VersionPattern.Tilde(Version version) -> version;
             case VersionPattern.Caret(Version version) -> version;
+            case VersionPattern.unused _ -> Version.version("0.0.0")
+                                                   .unwrap();
         };
     }
 }

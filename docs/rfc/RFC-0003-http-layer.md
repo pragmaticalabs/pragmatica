@@ -1,7 +1,7 @@
 ---
 RFC: 0003
 Title: HTTP Layer
-Status: Draft
+Status: Implemented
 Author: Sergiy Yevtushenko
 Created: 2026-01-15
 Updated: 2026-01-15

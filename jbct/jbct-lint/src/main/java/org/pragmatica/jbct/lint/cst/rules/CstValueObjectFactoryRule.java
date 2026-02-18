@@ -25,7 +25,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
                                                                                             RuleId.QualifiedName.class))
                                    .map(qn -> text(qn, source))
                                    .or("");
-        if (!ctx.isBusinessPackage(packageName)) {
+        if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
         // Check records
@@ -39,10 +39,14 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         var recordName = childByRule(record, RuleId.Identifier.class).map(id -> text(id, source))
                                     .or("");
         if (recordName.isEmpty()) return false;
+        // Skip 'unused' records (sealed interface utility pattern marker)
+        if ("unused".equals(recordName)) return false;
         // Check if has Result-returning static method
         var recordText = text(record, source);
-        return ! recordText.contains("Result<" + recordName + ">") &&
-        !recordText.contains("Result<" + recordName + " ");
+        var resultPrefix = "Result<" + recordName;
+        return !recordText.contains(resultPrefix + ">") &&
+        !recordText.contains(resultPrefix + " ") &&
+        !recordText.contains(resultPrefix + "<");
     }
 
     private Diagnostic createDiagnostic(CstNode record, String source, LintContext ctx) {

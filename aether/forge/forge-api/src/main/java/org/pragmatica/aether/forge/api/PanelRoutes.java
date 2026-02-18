@@ -16,37 +16,13 @@ public final class PanelRoutes {
     ///
     /// @return RouteSource containing panel routes
     public static RouteSource panelRoutes() {
-        return in("/api/panel").serve(chaosPanelRoute(), loadPanelRoute());
-    }
-
-    private static Route<String> chaosPanelRoute() {
-        return Route.<String> get("/chaos")
-                    .to(_ -> Promise.success(chaosPanelHtml()))
-                    .as(CommonContentTypes.TEXT_HTML);
+        return in("/api/panel").serve(loadPanelRoute());
     }
 
     private static Route<String> loadPanelRoute() {
         return Route.<String> get("/load")
                     .to(_ -> Promise.success(loadPanelHtml()))
                     .as(CommonContentTypes.TEXT_HTML);
-    }
-
-    private static String chaosPanelHtml() {
-        return """
-            <div class="panel panel-full-width panel-chaos">
-                <h2>Chaos Controls</h2>
-                <div class="control-section">
-                    <div class="control-buttons">
-                        <button id="btn-kill-node" class="btn btn-danger btn-small" onclick="showNodeModal(false)">Kill Node</button>
-                        <button id="btn-kill-leader" class="btn btn-warning btn-small" onclick="killLeader()">Kill Leader</button>
-                        <button id="btn-rolling-restart" class="btn btn-secondary btn-small" onclick="toggleRollingRestart()">Rolling Restart</button>
-                        <button class="btn btn-success btn-small" hx-post="/api/cluster/resize/up" hx-swap="none">+ Node</button>
-                        <button class="btn btn-danger btn-small" hx-post="/api/cluster/resize/down" hx-swap="none">- Node</button>
-                        <button id="btn-reset" class="btn btn-secondary btn-small" onclick="resetMetrics()">Reset Metrics</button>
-                    </div>
-                </div>
-            </div>
-            """;
     }
 
     private static String loadPanelHtml() {

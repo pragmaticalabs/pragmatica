@@ -2,7 +2,7 @@ package org.pragmatica.aether.repository;
 
 import org.pragmatica.aether.config.RepositoryType;
 import org.pragmatica.aether.config.SliceConfig;
-import org.pragmatica.aether.infra.artifact.ArtifactStore;
+import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.slice.repository.Repository;
 
 import java.util.List;

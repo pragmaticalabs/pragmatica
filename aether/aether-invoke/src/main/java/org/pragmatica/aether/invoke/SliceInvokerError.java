@@ -9,7 +9,9 @@ public sealed interface SliceInvokerError extends Cause {
     /// All available instances of the target slice failed to respond.
     record AllInstancesFailedError(Artifact artifact, MethodName method, String details) implements SliceInvokerError {
         /// Factory method following JBCT naming convention. */
-        public static AllInstancesFailedError allInstancesFailedError(Artifact artifact, MethodName method, String details) {
+        public static AllInstancesFailedError allInstancesFailedError(Artifact artifact,
+                                                                      MethodName method,
+                                                                      String details) {
             return new AllInstancesFailedError(artifact, method, details);
         }
 

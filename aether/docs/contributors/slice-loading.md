@@ -358,7 +358,7 @@ public interface OrderService extends Slice {
     // Factory method: lowercase-first class name
     static OrderService orderService(InventoryService inventory,
                                      PricingService pricing) {
-        return new OrderServiceImpl(inventory, pricing);
+        return OrderServiceImpl.orderServiceImpl(inventory, pricing);
     }
 }
 ```

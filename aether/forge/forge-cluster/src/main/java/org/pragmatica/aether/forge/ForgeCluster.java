@@ -4,9 +4,14 @@ import org.pragmatica.aether.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
-import org.pragmatica.aether.provider.AutoHealConfig;
-import org.pragmatica.aether.provider.InstanceType;
-import org.pragmatica.aether.provider.NodeProvider;
+import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.EnvironmentIntegration;
+import org.pragmatica.aether.environment.InstanceId;
+import org.pragmatica.aether.environment.InstanceInfo;
+import org.pragmatica.aether.environment.InstanceStatus;
+import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -49,6 +54,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 /// Manages a cluster of AetherNodes for Forge.
 /// Supports starting, stopping, adding, and killing nodes.
+@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
 public final class ForgeCluster {
     private static final Logger log = LoggerFactory.getLogger(ForgeCluster.class);
 
@@ -74,20 +80,57 @@ public final class ForgeCluster {
     private final AtomicReference<ScheduledFuture<?>> rollingRestartTask = new AtomicReference<>();
     private final Random random = new Random();
 
+    // Aether invocation metrics EMA state
+    private long lastTotalInvocations = 0;
+    private long lastTotalSuccess = 0;
+    private double emaRps = 0.0;
+    private double emaSuccessRate = 1.0;
+    private double emaAvgLatencyMs = 0.0;
+    private static final double EMA_ALPHA = 0.2;
+
     private final int targetClusterSize;
     private final AtomicInteger effectiveSize;
 
     // Configuration provider for nodes
     private final Option<ConfigurationProvider> configProvider;
 
-    // Node provider for auto-healing (CDM provisions replacements via this)
-    private final NodeProvider forgeNodeProvider;
+    // Environment integration for auto-healing (CDM provisions replacements via compute facet)
+    private final EnvironmentIntegration forgeEnvironment;
 
-    /// NodeProvider implementation that provisions nodes via ForgeCluster.addNode().
-    private final class ForgeNodeProvider implements NodeProvider {
+    /// ComputeProvider implementation that provisions nodes via ForgeCluster.addNode().
+    private final class ForgeComputeProvider implements ComputeProvider {
         @Override
-        public Promise<Unit> provision(InstanceType instanceType) {
-            return addNode().mapToUnit();
+        public Promise<InstanceInfo> provision(InstanceType instanceType) {
+            return addNode().map(nodeId -> toInstanceInfo(nodeId.id()));
+        }
+
+        @Override
+        public Promise<Unit> terminate(InstanceId instanceId) {
+            return killNode(instanceId.value());
+        }
+
+        @Override
+        public Promise<List<InstanceInfo>> listInstances() {
+            var infos = nodes.keySet()
+                             .stream()
+                             .map(this::toInstanceInfo)
+                             .toList();
+            return Promise.success(infos);
+        }
+
+        @Override
+        public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
+            return Option.option(nodes.get(instanceId.value()))
+                         .map(_ -> toInstanceInfo(instanceId.value()))
+                         .async(EnvironmentError.instanceNotFound(instanceId));
+        }
+
+        private InstanceInfo toInstanceInfo(String nodeIdStr) {
+            var addresses = Option.option(nodeInfos.get(nodeIdStr))
+                                  .map(info -> List.of("localhost:" + info.address()
+                                                                         .port()))
+                                  .or(List.of());
+            return new InstanceInfo(new InstanceId(nodeIdStr), InstanceStatus.RUNNING, addresses, InstanceType.ON_DEMAND);
         }
     }
 
@@ -105,7 +148,7 @@ public final class ForgeCluster {
         this.targetClusterSize = initialClusterSize;
         this.effectiveSize = new AtomicInteger(initialClusterSize);
         this.configProvider = configProvider;
-        this.forgeNodeProvider = new ForgeNodeProvider();
+        this.forgeEnvironment = EnvironmentIntegration.withCompute(new ForgeComputeProvider());
     }
 
     public static ForgeCluster forgeCluster() {
@@ -139,7 +182,12 @@ public final class ForgeCluster {
     /// @param baseMgmtPort  Base port for management HTTP API (each node uses baseMgmtPort + nodeIndex)
     /// @param nodeIdPrefix  Prefix for node IDs (e.g., "cf" creates nodes "cf-1", "cf-2", etc.)
     public static ForgeCluster forgeCluster(int initialSize, int basePort, int baseMgmtPort, String nodeIdPrefix) {
-        return new ForgeCluster(initialSize, basePort, baseMgmtPort, DEFAULT_BASE_APP_HTTP_PORT, nodeIdPrefix, Option.empty());
+        return new ForgeCluster(initialSize,
+                                basePort,
+                                baseMgmtPort,
+                                DEFAULT_BASE_APP_HTTP_PORT,
+                                nodeIdPrefix,
+                                Option.empty());
     }
 
     /// Create a ForgeCluster with custom port ranges including app HTTP.
@@ -391,7 +439,8 @@ public final class ForgeCluster {
     public void setClusterSize(int newSize) {
         effectiveSize.set(newSize);
         var message = new TopologyManagementMessage.SetClusterSize(newSize);
-        nodes.values().forEach(node -> node.route(message));
+        nodes.values()
+             .forEach(node -> node.route(message));
         log.info("SetClusterSize({}) routed to {} nodes", newSize, nodes.size());
     }
 
@@ -484,16 +533,16 @@ public final class ForgeCluster {
         var config = new AetherNodeConfig(topology,
                                           ProtocolConfig.testConfig(),
                                           defaultSliceActionConfig(),
-                                          org.pragmatica.aether.config.SliceConfig.defaultConfig(),
+                                          org.pragmatica.aether.config.SliceConfig.sliceConfig(),
                                           mgmtPort,
                                           DHTConfig.FULL,
                                           Option.empty(),
-                                          org.pragmatica.aether.config.TTMConfig.disabled(),
-                                          RollbackConfig.defaultConfig(),
-                                          AppHttpConfig.enabledOnPort(appHttpPort),
+                                          org.pragmatica.aether.config.TtmConfig.ttmConfig(),
+                                          RollbackConfig.rollbackConfig(),
+                                          AppHttpConfig.appHttpConfig(appHttpPort),
                                           ControllerConfig.forgeDefaults(),
                                           configProvider,
-                                          Option.some(forgeNodeProvider),
+                                          Option.some(forgeEnvironment),
                                           AutoHealConfig.DEFAULT);
         return AetherNode.aetherNode(config)
                          .unwrap();
@@ -519,10 +568,73 @@ public final class ForgeCluster {
                                    .allMetrics();
         return allMetrics.entrySet()
                          .stream()
-                         .map(entry -> toNodeMetrics(entry.getKey().id(),
+                         .map(entry -> toNodeMetrics(entry.getKey()
+                                                          .id(),
                                                      entry.getValue(),
                                                      leaderId))
                          .toList();
+    }
+
+    /// Compute EMA-smoothed Aether invocation aggregates from cluster-wide gossip data.
+    /// Uses inv|artifact|method|* entries from MetricsCollector.allMetrics() which
+    /// aggregates all nodes via MetricsPing/MetricsPong gossip protocol.
+    public AetherAggregates aetherAggregates() {
+        var leaderId = currentLeader().or("");
+        var leaderNode = nodes.get(leaderId);
+        if (leaderNode == null) {
+            if (nodes.isEmpty()) {
+                return new AetherAggregates(0, 1.0, 0, 0, 0, 0);
+            }
+            leaderNode = nodes.values()
+                              .iterator()
+                              .next();
+        }
+        var allNodeMetrics = leaderNode.metricsCollector()
+                                       .allMetrics();
+        long totalInvocations = 0;
+        long totalSuccess = 0;
+        long totalFailure = 0;
+        double totalDurationNs = 0.0;
+        for (var nodeMetrics : allNodeMetrics.values()) {
+            for (var entry : nodeMetrics.entrySet()) {
+                var key = entry.getKey();
+                if (!key.startsWith("inv|")) {
+                    continue;
+                }
+                if (key.endsWith("|count")) {
+                    totalInvocations += entry.getValue()
+                                             .longValue();
+                } else if (key.endsWith("|success")) {
+                    totalSuccess += entry.getValue()
+                                         .longValue();
+                } else if (key.endsWith("|failure")) {
+                    totalFailure += entry.getValue()
+                                         .longValue();
+                } else if (key.endsWith("|totalNs")) {
+                    totalDurationNs += entry.getValue();
+                }
+            }
+        }
+        long deltaInvocations = totalInvocations - lastTotalInvocations;
+        long deltaSuccess = totalSuccess - lastTotalSuccess;
+        double instantRps = deltaInvocations;
+        double instantSuccessRate = deltaInvocations > 0
+                                    ? (double) deltaSuccess / deltaInvocations
+                                    : 1.0;
+        double avgLatencyMs = totalInvocations > 0
+                              ? totalDurationNs / totalInvocations / 1_000_000.0
+                              : 0.0;
+        emaRps = EMA_ALPHA * instantRps + (1 - EMA_ALPHA) * emaRps;
+        emaSuccessRate = EMA_ALPHA * instantSuccessRate + (1 - EMA_ALPHA) * emaSuccessRate;
+        emaAvgLatencyMs = EMA_ALPHA * avgLatencyMs + (1 - EMA_ALPHA) * emaAvgLatencyMs;
+        lastTotalInvocations = totalInvocations;
+        lastTotalSuccess = totalSuccess;
+        return new AetherAggregates(emaRps,
+                                    emaSuccessRate * 100.0,
+                                    emaAvgLatencyMs,
+                                    totalInvocations,
+                                    totalSuccess,
+                                    totalFailure);
     }
 
     private NodeMetrics toNodeMetrics(String nodeId, Map<String, Double> metrics, String leaderId) {
@@ -532,8 +644,8 @@ public final class ForgeCluster {
         return new NodeMetrics(nodeId,
                                leaderId.equals(nodeId),
                                cpuUsage,
-                               (long) (heapUsed / 1024 / 1024),
-                               (long) (heapMax / 1024 / 1024));
+                               (long)(heapUsed / 1024 / 1024),
+                               (long)(heapMax / 1024 / 1024));
     }
 
     /// Status of a single node.
@@ -571,6 +683,14 @@ public final class ForgeCluster {
 
     /// Response from rolling restart status check.
     public record RollingRestartStatusResponse(boolean active) {}
+
+    /// Aggregated Aether invocation metrics with EMA smoothing.
+    public record AetherAggregates(double rps,
+                                   double successRate,
+                                   double avgLatencyMs,
+                                   long totalInvocations,
+                                   long totalSuccess,
+                                   long totalFailures) {}
 
     /// Get slice status from the DeploymentMap.
     /// Uses event-driven index instead of KV store scan — zero allocations per poll.
@@ -616,8 +736,8 @@ public final class ForgeCluster {
             return;
         }
         rollingRestartTask.set(rollingRestartExecutor.schedule(() -> performRollingRestartCycle(eventLogger),
-                                                                ROLLING_RESTART_DELAY_MS,
-                                                                TimeUnit.MILLISECONDS));
+                                                               ROLLING_RESTART_DELAY_MS,
+                                                               TimeUnit.MILLISECONDS));
     }
 
     private void performRollingRestartCycle(Consumer<EventLogEntry> eventLogger) {
@@ -629,7 +749,7 @@ public final class ForgeCluster {
         var targetNodeId = nodeIds.get(random.nextInt(nodeIds.size()));
         log.info("Rolling restart: killing node {}", targetNodeId);
         eventLogger.accept(new EventLogEntry("ROLLING_RESTART", "Killing node " + targetNodeId));
-        // CDM auto-heal handles replacement via NodeProvider, wait 2x delay to maintain pace
+        // CDM auto-heal handles replacement via ComputeProvider, wait 2x delay to maintain pace
         killNode(targetNodeId).onSuccess(_ -> {
                                              eventLogger.accept(new EventLogEntry("ROLLING_RESTART",
                                                                                   "CDM auto-heal will replace node"));
@@ -643,8 +763,8 @@ public final class ForgeCluster {
             return;
         }
         rollingRestartTask.set(rollingRestartExecutor.schedule(() -> performRollingRestartCycle(eventLogger),
-                                                                delayMs,
-                                                                TimeUnit.MILLISECONDS));
+                                                               delayMs,
+                                                               TimeUnit.MILLISECONDS));
     }
 
     private void handleRollingRestartFailure(Consumer<EventLogEntry> eventLogger, String operation, Cause cause) {

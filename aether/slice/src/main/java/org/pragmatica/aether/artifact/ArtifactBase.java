@@ -28,10 +28,11 @@ public record ArtifactBase(GroupId groupId, ArtifactId artifactId) {
         }
         return Result.all(GroupId.groupId(parts[0]),
                           ArtifactId.artifactId(parts[1]))
-                     .map(ArtifactBase::artifactBase);
+                     .map(ArtifactBase::new);
     }
 
     /// Creates an artifact base from components.
+    @SuppressWarnings("JBCT-VO-02")
     public static ArtifactBase artifactBase(GroupId groupId, ArtifactId artifactId) {
         return new ArtifactBase(groupId, artifactId);
     }
@@ -40,6 +41,7 @@ public record ArtifactBase(GroupId groupId, ArtifactId artifactId) {
     ///
     /// @param artifact the full artifact with version
     /// @return the version-agnostic artifact base
+    @SuppressWarnings("JBCT-VO-02")
     public static ArtifactBase artifactBase(Artifact artifact) {
         return new ArtifactBase(artifact.groupId(), artifact.artifactId());
     }

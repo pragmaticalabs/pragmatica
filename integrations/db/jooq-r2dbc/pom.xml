@@ -5,7 +5,7 @@
     <parent>
         <artifactId>db</artifactId>
         <groupId>org.pragmatica-lite</groupId>
-        <version>0.15.1</version>
+        <version>0.16.0</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -36,7 +36,7 @@
         <dependency>
             <groupId>jakarta.xml.bind</groupId>
             <artifactId>jakarta.xml.bind-api</artifactId>
-            <version>4.0.4</version>
+            <version>4.0.5</version>
             <scope>compile</scope>
         </dependency>
 
@@ -57,13 +57,8 @@
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>org.tinylog</groupId>
-            <artifactId>slf4j-tinylog</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.tinylog</groupId>
-            <artifactId>tinylog-impl</artifactId>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>test-logging</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

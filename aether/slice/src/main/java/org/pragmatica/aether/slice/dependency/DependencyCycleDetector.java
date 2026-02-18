@@ -8,10 +8,13 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.util.*;
 
+import static org.pragmatica.lang.utils.Causes.cause;
+
 /// Detects circular dependencies in slice dependency graphs.
 ///
 /// Uses depth-first search with visited/visiting tracking to detect cycles.
 /// A cycle exists if we encounter a node that is currently being visited (in the current DFS path).
+@SuppressWarnings("JBCT-UTIL-02")
 public interface DependencyCycleDetector {
     /// Check for circular dependencies in the dependency graph.
     ///
@@ -47,8 +50,7 @@ public interface DependencyCycleDetector {
             if (visiting.contains(dep)) {
                 // Found a cycle
                 var cyclePath = buildCyclePath(path, dep);
-                return Causes.cause("Circular dependency detected: " + cyclePath)
-                             .result();
+                return cause("Circular dependency detected: " + cyclePath).result();
             }
             if (!visited.contains(dep)) {
                 var result = dfs(dep, dependencies, visited, visiting, path);

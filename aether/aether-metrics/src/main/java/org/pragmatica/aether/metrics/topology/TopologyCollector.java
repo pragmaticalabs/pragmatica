@@ -10,6 +10,8 @@ import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -21,6 +23,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.unitResult;
 
 /// Collects cluster topology information from various sources.
 ///
@@ -48,50 +51,52 @@ public final class TopologyCollector {
     }
 
     /// Set the topology manager reference.
-    public void setTopologyManager(TopologyManager manager) {
+    public Result<Unit> setTopologyManager(TopologyManager manager) {
         topologyManager.set(manager);
-        // Register self
-        option(manager).onPresent(m -> {
-            var self = m.self();
-            knownNodes.put(self.id()
-                               .id(),
-                           self);
-        });
+        option(manager).onPresent(this::registerSelf);
+        return unitResult();
     }
 
     /// Set the leader manager reference.
-    public void setLeaderManager(LeaderManager manager) {
+    public Result<Unit> setLeaderManager(LeaderManager manager) {
         leaderManager.set(manager);
+        return unitResult();
     }
 
     /// Set the KV store reference.
-    public void setKVStore(KVStore<AetherKey, AetherValue> store) {
+    @SuppressWarnings("JBCT-ACR-01")
+    public Result<Unit> setKVStore(KVStore<AetherKey, AetherValue> store) {
         kvStore.set(store);
+        return unitResult();
     }
 
     /// Register a node as known.
-    public void registerNode(NodeInfo node) {
+    public Result<Unit> registerNode(NodeInfo node) {
         knownNodes.put(node.id()
                            .id(),
                        node);
         nodeSuspectTimes.remove(node.id()
                                     .id());
+        return unitResult();
     }
 
     /// Unregister a node.
-    public void unregisterNode(NodeId nodeId) {
+    public Result<Unit> unregisterNode(NodeId nodeId) {
         knownNodes.remove(nodeId.id());
         nodeSuspectTimes.remove(nodeId.id());
+        return unitResult();
     }
 
     /// Mark a node as suspected.
-    public void markSuspected(String nodeId) {
+    public Result<Unit> markSuspected(String nodeId) {
         nodeSuspectTimes.put(nodeId, System.currentTimeMillis());
+        return unitResult();
     }
 
     /// Clear suspected status for a node.
-    public void clearSuspected(String nodeId) {
+    public Result<Unit> clearSuspected(String nodeId) {
         nodeSuspectTimes.remove(nodeId);
+        return unitResult();
     }
 
     /// Take a snapshot of current cluster topology.
@@ -103,28 +108,10 @@ public final class TopologyCollector {
             log.trace("TopologyManager not set, returning empty topology");
             return ClusterTopology.EMPTY;
         }
-        // Get leader info using Option properly
         Option<String> leaderId = leader.flatMap(LeaderManager::leader)
                                         .map(NodeId::id);
-        // Build node info from known nodes
-        var nodeInfos = new ArrayList<ClusterTopology.NodeInfo>();
-        int healthyCount = 0;
-        for (var entry : knownNodes.entrySet()) {
-            String nodeIdStr = entry.getKey();
-            NodeInfo node = entry.getValue();
-            String address = node.address()
-                                 .host() + ":" + node.address()
-                                                    .port();
-            boolean isLeader = leaderId.map(id -> id.equals(nodeIdStr))
-                                       .or(false);
-            if (nodeSuspectTimes.containsKey(nodeIdStr)) {
-                nodeInfos.add(ClusterTopology.NodeInfo.suspectedNodeInfo(nodeIdStr, address));
-            } else {
-                nodeInfos.add(ClusterTopology.NodeInfo.nodeInfo(nodeIdStr, address, isLeader));
-                healthyCount++;
-            }
-        }
-        // Get slice info from KV store
+        var nodeInfos = buildNodeInfos(leaderId);
+        int healthyCount = countHealthyNodes();
         Map<String, ClusterTopology.SliceInfo> sliceInfos = store.map(this::collectSliceInfo)
                                                                  .or(Map.of());
         int totalNodes = nodeInfos.size();
@@ -134,32 +121,65 @@ public final class TopologyCollector {
         return new ClusterTopology(totalNodes, healthyCount, quorumSize, hasQuorum, leaderId, nodeInfos, sliceInfos);
     }
 
+    private void registerSelf(TopologyManager m) {
+        var self = m.self();
+        knownNodes.put(self.id()
+                           .id(),
+                       self);
+    }
+
+    private ArrayList<ClusterTopology.NodeInfo> buildNodeInfos(Option<String> leaderId) {
+        var nodeInfos = new ArrayList<ClusterTopology.NodeInfo>();
+        knownNodes.forEach((nodeIdStr, node) -> nodeInfos.add(buildNodeInfo(nodeIdStr, node, leaderId)));
+        return nodeInfos;
+    }
+
+    private ClusterTopology.NodeInfo buildNodeInfo(String nodeIdStr, NodeInfo node, Option<String> leaderId) {
+        String address = node.address()
+                             .host() + ":" + node.address()
+                                                .port();
+        boolean isLeader = leaderId.map(id -> id.equals(nodeIdStr))
+                                   .or(false);
+        return nodeSuspectTimes.containsKey(nodeIdStr)
+               ? ClusterTopology.NodeInfo.suspectedNodeInfo(nodeIdStr, address)
+               : ClusterTopology.NodeInfo.nodeInfo(nodeIdStr, address, isLeader);
+    }
+
+    private int countHealthyNodes() {
+        return (int) knownNodes.keySet()
+                              .stream()
+                              .filter(id -> !nodeSuspectTimes.containsKey(id))
+                              .count();
+    }
+
     private Map<String, ClusterTopology.SliceInfo> collectSliceInfo(KVStore<AetherKey, AetherValue> store) {
         Map<String, ClusterTopology.SliceInfo> sliceInfos = new HashMap<>();
-        try {
+        try{
             var sliceCounts = new HashMap<String, Map<String, Integer>>();
-            // Count slices per artifact per node
-            store.forEach(SliceNodeKey.class, SliceNodeValue.class,
-                          (key, _) -> countSlice(sliceCounts, key));
-            // Build SliceInfo for each artifact
-            sliceCounts.forEach((artifact, distribution) -> {
-                int totalInstances = distribution.values()
-                                                 .stream()
-                                                 .mapToInt(Integer::intValue)
-                                                 .sum();
-                sliceInfos.put(artifact,
-                               new ClusterTopology.SliceInfo(artifact, totalInstances, totalInstances, distribution));
-            });
+            store.forEach(SliceNodeKey.class, SliceNodeValue.class, (key, _) -> countSlice(sliceCounts, key));
+            sliceCounts.forEach((artifact, distribution) -> sliceInfos.put(artifact,
+                                                                           buildSliceInfo(artifact, distribution)));
         } catch (Exception e) {
             log.debug("Failed to collect slice info: {}", e.getMessage());
         }
         return sliceInfos;
     }
 
+    private ClusterTopology.SliceInfo buildSliceInfo(String artifact, Map<String, Integer> distribution) {
+        int totalInstances = distribution.values()
+                                         .stream()
+                                         .mapToInt(Integer::intValue)
+                                         .sum();
+        return new ClusterTopology.SliceInfo(artifact, totalInstances, totalInstances, distribution);
+    }
+
     private void countSlice(Map<String, Map<String, Integer>> sliceCounts, SliceNodeKey sliceKey) {
-        String artifact = sliceKey.artifact().asString();
-        String nodeId = sliceKey.nodeId().id();
-        sliceCounts.computeIfAbsent(artifact, _ -> new HashMap<>())
+        String artifact = sliceKey.artifact()
+                                  .asString();
+        String nodeId = sliceKey.nodeId()
+                                .id();
+        sliceCounts.computeIfAbsent(artifact,
+                                    _ -> new HashMap<>())
                    .merge(nodeId, 1, Integer::sum);
     }
 }

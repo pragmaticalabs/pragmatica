@@ -501,12 +501,12 @@ public interface Functions {
                                                                                           T14 param14,
                                                                                           T15 param15) {}
 
-    /// Utility function that ignores input and always returns null. Used in functional contexts where a null value is needed.
+    /// Utility function that ignores input and always returns null. Used in side-effect fold branches.
     ///
     /// @param value Input value (ignored)
     ///
     /// @return null
-    @SuppressWarnings("SameReturnValue")
+    @SuppressWarnings("JBCT-RET-03")
     static <R, T1> R toNull(T1 value) {
         return null;
     }

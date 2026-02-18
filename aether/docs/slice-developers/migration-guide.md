@@ -153,12 +153,12 @@ Create a new Maven module for the slice:
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>slice-api</artifactId>
-            <version>0.15.1</version>
+            <version>0.16.0</version>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
-            <version>0.15.1</version>
+            <version>0.16.0</version>
         </dependency>
         <!-- Your existing dependencies for database, etc. -->
     </dependencies>
@@ -223,11 +223,11 @@ public class OrderProcessorSlice implements Slice {
     private OrderService createLegacyService() {
         // Wire up your existing service
         // Could be Spring ApplicationContext, manual construction, etc.
-        var inventory = new InventoryRepositoryImpl(dataSource);
-        var pricing = new PricingServiceImpl();
-        var payments = new PaymentGatewayImpl(stripeApiKey);
-        var notifications = new NotificationServiceImpl(emailConfig);
-        var orderRepo = new OrderRepositoryImpl(dataSource);
+        var inventory = InventoryRepositoryImpl.inventoryRepositoryImpl(dataSource);
+        var pricing = PricingServiceImpl.pricingServiceImpl();
+        var payments = PaymentGatewayImpl.paymentGatewayImpl(stripeApiKey);
+        var notifications = NotificationServiceImpl.notificationServiceImpl(emailConfig);
+        var orderRepo = OrderRepositoryImpl.orderRepositoryImpl(dataSource);
 
         return new OrderService(inventory, pricing, payments, notifications, orderRepo);
     }

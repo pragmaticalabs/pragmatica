@@ -30,6 +30,7 @@ import static org.pragmatica.http.routing.Route.post;
 ///   - Simulated order operations (place, status, cancel)
 ///   - Simulated inventory and pricing queries
 ///
+@SuppressWarnings("JBCT-RET-01")
 public sealed interface SimulatorRoutes {
     /// State holder for inventory simulation.
     record InventoryState(AtomicLong reservations,

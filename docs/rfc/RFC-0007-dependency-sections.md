@@ -45,12 +45,12 @@ INI-style sections with Maven coordinates:
 
 ```
 [shared]
-org.pragmatica-lite:core:^0.11.2
+org.pragmatica-lite:core:^0.16.0
 com.fasterxml.jackson.core:jackson-databind:^2.15.0
 
 [infra]
-org.pragmatica-lite.aether:infra-cache:^0.7.5
-org.pragmatica-lite.aether:infra-metrics:^0.7.5
+org.pragmatica-lite.aether:infra-cache:^0.16.0
+org.pragmatica-lite.aether:infra-metrics:^0.16.0
 
 [slices]
 org.example:inventory-service:^1.0.0
@@ -86,8 +86,8 @@ Semver ranges following npm/Cargo conventions:
 **Example:**
 ```
 [shared]
-org.pragmatica-lite:core:^0.11.2
-org.pragmatica-lite:json:^0.11.2
+org.pragmatica-lite:core:^0.16.0
+org.pragmatica-lite:json:^0.16.0
 ```
 
 **Usage:** Libraries like pragmatica-lite core are used by multiple slices without duplication.
@@ -108,8 +108,8 @@ org.pragmatica-lite:json:^0.11.2
 **Example:**
 ```
 [infra]
-org.pragmatica-lite.aether:infra-cache:^0.7.5
-org.pragmatica-lite.aether:infra-database:^0.7.5
+org.pragmatica-lite.aether:infra-cache:^0.16.0
+org.pragmatica-lite.aether:infra-database:^0.16.0
 ```
 
 **InfraStore Pattern:**
@@ -118,7 +118,7 @@ public static CacheService cacheService() {
     return InfraStore.instance()
         .getOrCreate(
             "org.pragmatica-lite.aether:infra-cache",
-            Version.version("0.7.5").unwrap(),
+            Version.version("0.16.0").unwrap(),
             CacheService.class,
             () -> InMemoryCacheService.create()
         );
@@ -238,13 +238,13 @@ The following are NOT included in dependency file (always provided by platform):
 
 ```
 [shared]
-org.pragmatica-lite:core:^0.11.2
-org.pragmatica-lite:json:^0.11.2
-org.pragmatica-lite:http-client:^0.11.2
+org.pragmatica-lite:core:^0.16.0
+org.pragmatica-lite:json:^0.16.0
+org.pragmatica-lite:http-client:^0.16.0
 
 [infra]
-org.pragmatica-lite.aether:infra-cache:^0.7.5
-org.pragmatica-lite.aether:infra-metrics:^0.7.5
+org.pragmatica-lite.aether:infra-cache:^0.16.0
+org.pragmatica-lite.aether:infra-metrics:^0.16.0
 
 [slices]
 org.example:inventory-service:^1.0.0
@@ -272,11 +272,11 @@ public static Promise<OrderService> create(...) {
 When multiple slices declare different versions of a shared library:
 
 ```
-Slice A: org.pragmatica-lite:core:^0.11.0
-Slice B: org.pragmatica-lite:core:^0.11.2
+Slice A: org.pragmatica-lite:core:^0.15.0
+Slice B: org.pragmatica-lite:core:^0.16.0
 ```
 
-Aether resolves to highest compatible: `0.11.2` (satisfies both `^0.11.0` and `^0.11.2`)
+Aether resolves to highest compatible: `0.16.0` (satisfies both `^0.15.0` and `^0.16.0`)
 
 ## Edge Cases
 
@@ -297,7 +297,7 @@ If slice has no external dependencies, dependency file may only contain `[shared
 
 ```
 [shared]
-org.pragmatica-lite:core:^0.11.2
+org.pragmatica-lite:core:^0.16.0
 ```
 
 ### Circular Dependencies

@@ -1,0 +1,5 @@
+org.pragmatica.aether.resource.interceptor.RetryInterceptorFactory
+org.pragmatica.aether.resource.interceptor.CircuitBreakerInterceptorFactory
+org.pragmatica.aether.resource.interceptor.RateLimitInterceptorFactory
+org.pragmatica.aether.resource.interceptor.LoggingInterceptorFactory
+org.pragmatica.aether.resource.interceptor.MetricsInterceptorFactory

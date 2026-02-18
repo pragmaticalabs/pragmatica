@@ -4,20 +4,23 @@ import java.util.List;
 import java.util.regex.Pattern;
 
 /// Context for lint analysis providing configuration.
-public record LintContext(List<Pattern> businessPackagePatterns,
+public record LintContext(List<Pattern> excludedPackagePatterns,
                           List<Pattern> slicePackagePatterns,
                           LintConfig config,
                           String fileName) {
     public LintContext {
-        businessPackagePatterns = List.copyOf(businessPackagePatterns);
+        excludedPackagePatterns = List.copyOf(excludedPackagePatterns);
         slicePackagePatterns = List.copyOf(slicePackagePatterns);
     }
 
-    /// Check if a package name matches any business package pattern.
-    public boolean isBusinessPackage(String packageName) {
-        return businessPackagePatterns.stream()
-                                      .anyMatch(pattern -> pattern.matcher(packageName)
-                                                                  .matches());
+    /// Check if a package should be linted (not in excluded list).
+    public boolean shouldLint(String packageName) {
+        if (excludedPackagePatterns.isEmpty()) {
+            return true;
+        }
+        return excludedPackagePatterns.stream()
+                                      .noneMatch(pattern -> pattern.matcher(packageName)
+                                                                   .matches());
     }
 
     /// Check if a package name matches any slice package pattern.
@@ -46,19 +49,18 @@ public record LintContext(List<Pattern> businessPackagePatterns,
 
     /// Factory method with default configuration.
     public static LintContext defaultContext() {
-        return new LintContext(List.of(Pattern.compile(".*\\.usecase\\..*"), Pattern.compile(".*\\.domain\\..*")),
+        return new LintContext(List.of(),
                                List.of(),
-                               // No slice packages by default
-        LintConfig.defaultConfig(),
+                               LintConfig.defaultConfig(),
                                "Unknown.java");
     }
 
-    /// Factory method with custom business package patterns.
-    public static LintContext lintContext(List<String> businessPackagePatterns) {
-        var patterns = businessPackagePatterns.stream()
-                                              .map(LintContext::globToRegex)
-                                              .map(Pattern::compile)
-                                              .toList();
+    /// Factory method with custom excluded package patterns.
+    public static LintContext lintContext(List<String> excludePackages) {
+        var patterns = excludePackages.stream()
+                                      .map(LintContext::globToRegex)
+                                      .map(Pattern::compile)
+                                      .toList();
         return new LintContext(patterns, List.of(), LintConfig.defaultConfig(), "Unknown.java");
     }
 
@@ -71,16 +73,16 @@ public record LintContext(List<Pattern> businessPackagePatterns,
 
     /// Builder-style method to set config.
     public LintContext withConfig(LintConfig config) {
-        return new LintContext(businessPackagePatterns, slicePackagePatterns, config, fileName);
+        return new LintContext(excludedPackagePatterns, slicePackagePatterns, config, fileName);
     }
 
     /// Builder-style method to set file name.
     public LintContext withFileName(String fileName) {
-        return new LintContext(businessPackagePatterns, slicePackagePatterns, config, fileName);
+        return new LintContext(excludedPackagePatterns, slicePackagePatterns, config, fileName);
     }
 
-    /// Builder-style method to set business package patterns from glob strings.
-    public LintContext withBusinessPackages(List<String> patterns) {
+    /// Builder-style method to set excluded package patterns from glob strings.
+    public LintContext withExcludePackages(List<String> patterns) {
         var compiledPatterns = patterns.stream()
                                        .map(LintContext::globToRegex)
                                        .map(Pattern::compile)
@@ -94,12 +96,12 @@ public record LintContext(List<Pattern> businessPackagePatterns,
                                        .map(LintContext::globToRegex)
                                        .map(Pattern::compile)
                                        .toList();
-        return new LintContext(businessPackagePatterns, compiledPatterns, config, fileName);
+        return new LintContext(excludedPackagePatterns, compiledPatterns, config, fileName);
     }
 
     /// Factory method from JbctConfig.
     public static LintContext fromConfig(org.pragmatica.jbct.config.JbctConfig jbctConfig) {
-        return lintContext(jbctConfig.businessPackages()).withSlicePackages(jbctConfig.slicePackages())
+        return lintContext(jbctConfig.excludePackages()).withSlicePackages(jbctConfig.slicePackages())
                           .withConfig(jbctConfig.lint());
     }
 }

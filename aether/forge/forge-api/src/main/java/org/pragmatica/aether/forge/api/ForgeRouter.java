@@ -46,13 +46,12 @@ public final class ForgeRouter {
         return RequestRouter.with(StatusRoutes.statusRoutes(cluster, metrics, events, startTime, loadRunner),
                                   ChaosRoutes.chaosRoutes(cluster, chaosController, events, inventoryState, eventLogger),
                                   LoadRoutes.loadRoutes(loadRunner),
-                                  SimulatorRoutes.simulatorRoutes(configSupplier,
-                                                                  inventoryState,
-                                                                  eventLogger),
+                                  SimulatorRoutes.simulatorRoutes(configSupplier, inventoryState, eventLogger),
                                   DeploymentRoutes.deploymentRoutes(cluster, eventLogger),
                                   PanelRoutes.panelRoutes(),
                                   AlertProxyRoutes.alertProxyRoutes(cluster),
-                                  ClusterSizeRoutes.clusterSizeRoutes(cluster),
+                                  AspectProxyRoutes.aspectProxyRoutes(cluster),
+                                  MetricsProxyRoutes.metricsProxyRoutes(cluster),
                                   ViewRoutes.viewRoutes(cluster, loadConfigPath));
     }
 }

@@ -242,15 +242,16 @@ public class PackageSlicesMojo extends AbstractMojo {
 
     private ArtifactInfo toSliceArtifactInfo(Artifact artifact) {
         // Read slice artifact from manifest (has correct naming: groupId:artifactId-sliceName)
-        return readFirstSliceManifest(artifact).flatMap(props -> extractSliceArtifactInfo(props, artifact.getVersion()))
-                                               .or(() -> toArtifactInfo(artifact));
+        return readFirstSliceManifest(artifact).flatMap(props -> extractSliceArtifactInfo(props,
+                                                                                          artifact.getVersion()))
+                                     .or(() -> toArtifactInfo(artifact));
     }
 
     private Option<ArtifactInfo> extractSliceArtifactInfo(java.util.Properties props, String version) {
         return Option.option(props.getProperty("slice.artifactId"))
                      .flatMap(sliceArtifactId -> Option.option(props.getProperty("base.artifact"))
                                                        .filter(base -> base.contains(":"))
-                                                       .map(base -> new ArtifactInfo(base.split(":")[0],
+                                                       .map(base -> new ArtifactInfo(base.split(":") [0],
                                                                                      sliceArtifactId,
                                                                                      toSemverRange(version))));
     }
@@ -439,7 +440,8 @@ public class PackageSlicesMojo extends AbstractMojo {
     throws IOException {
         var factoryClassName = manifest.slicePackage() + "." + manifest.sliceName() + "Factory";
         var tempFile = Files.createTempFile("deps-", ".txt");
-        tempFile.toFile().deleteOnExit();
+        tempFile.toFile()
+                .deleteOnExit();
         Files.writeString(tempFile, content);
         archiver.addFile(tempFile.toFile(), "META-INF/dependencies/" + factoryClassName);
     }
@@ -460,7 +462,8 @@ public class PackageSlicesMojo extends AbstractMojo {
                                      .toList();
             if (!filteredLines.isEmpty()) {
                 var tempService = Files.createTempFile("service-", ".txt");
-                tempService.toFile().deleteOnExit();
+                tempService.toFile()
+                           .deleteOnExit();
                 Files.writeString(tempService, String.join("\n", filteredLines));
                 archiver.addFile(tempService.toFile(),
                                  "META-INF/services/org.pragmatica.aether.http.adapter.SliceRouterFactory");
@@ -587,7 +590,8 @@ public class PackageSlicesMojo extends AbstractMojo {
                         var transformedBytes = transformFactoryBytecode(classFile, versionMap);
                         // Write transformed bytecode to temp file for archiving
                         var tempClass = Files.createTempFile("factory-", ".class");
-                        tempClass.toFile().deleteOnExit();
+                        tempClass.toFile()
+                                 .deleteOnExit();
                         Files.write(tempClass, transformedBytes);
                         archiver.addFile(tempClass.toFile(), relativePath);
                         getLog().info("Transformed bytecode: " + className);

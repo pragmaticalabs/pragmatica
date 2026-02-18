@@ -27,56 +27,66 @@ import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.MetricsMessage;
 import org.pragmatica.cluster.node.rabia.CustomClasses;
 import org.pragmatica.lang.Option;
+import org.pragmatica.serialization.ClassRegistrator;
 
-import java.util.function.Consumer;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Stream;
 
 import static org.pragmatica.utility.HierarchyScanner.concreteSubtypes;
 
 /// Registers Aether-specific classes for serialization.
-public interface AetherCustomClasses {
-    static void configure(Consumer<Class<?>> consumer) {
+public interface AetherCustomClasses extends ClassRegistrator {
+    AetherCustomClasses INSTANCE = new AetherCustomClasses() {};
+
+    @Override
+    default List<Class<?>> classesToRegister() {
+        var classes = new ArrayList<Class<?>>();
         // Include base Rabia classes
-        CustomClasses.configure(consumer);
+        classes.addAll(CustomClasses.INSTANCE.classesToRegister());
         // Option types (needed for SliceTargetValue.owningBlueprint)
-        concreteSubtypes(Option.class).forEach(consumer);
+        classes.addAll(concreteSubtypes(Option.class));
         // Aether key/value types
-        concreteSubtypes(AetherKey.class).forEach(consumer);
-        concreteSubtypes(AetherValue.class).forEach(consumer);
-        concreteSubtypes(AetherKey.AetherKeyPattern.class).forEach(consumer);
+        classes.addAll(concreteSubtypes(AetherKey.class));
+        classes.addAll(concreteSubtypes(AetherValue.class));
+        classes.addAll(concreteSubtypes(AetherKey.AetherKeyPattern.class));
         // Artifact types
-        consumer.accept(Artifact.class);
-        consumer.accept(ArtifactBase.class);
-        consumer.accept(GroupId.class);
-        consumer.accept(ArtifactId.class);
-        consumer.accept(Version.class);
-        // Slice types
-        consumer.accept(SliceState.class);
-        consumer.accept(MethodName.class);
-        // Blueprint types
-        consumer.accept(BlueprintId.class);
-        consumer.accept(ExpandedBlueprint.class);
-        consumer.accept(ResolvedSlice.class);
+        Stream.of(Artifact.class,
+                  ArtifactBase.class,
+                  GroupId.class,
+                  ArtifactId.class,
+                  Version.class,
+                  // Slice types
+        SliceState.class,
+                  MethodName.class,
+                  // Blueprint types
+        BlueprintId.class,
+                  ExpandedBlueprint.class,
+                  ResolvedSlice.class)
+              .forEach(classes::add);
         // Metrics types
-        concreteSubtypes(MetricsMessage.class).forEach(consumer);
-        concreteSubtypes(DeploymentMetricsMessage.class).forEach(consumer);
-        consumer.accept(DeploymentMetricsMessage.DeploymentMetricsEntry.class);
+        classes.addAll(concreteSubtypes(MetricsMessage.class));
+        classes.addAll(concreteSubtypes(DeploymentMetricsMessage.class));
+        classes.add(DeploymentMetricsMessage.DeploymentMetricsEntry.class);
         // Invocation types
-        concreteSubtypes(InvocationMessage.class).forEach(consumer);
+        classes.addAll(concreteSubtypes(InvocationMessage.class));
         // HTTP forwarding types
-        concreteSubtypes(HttpForwardMessage.class).forEach(consumer);
+        classes.addAll(concreteSubtypes(HttpForwardMessage.class));
         // Leader election types (for consensus-based leader election)
-        consumer.accept(LeaderKey.class);
-        consumer.accept(LeaderKey.LeaderKeyPattern.class);
-        consumer.accept(LeaderValue.class);
-        // HTTP handler types (for remote slice invocation)
-        consumer.accept(HttpRequestContext.class);
-        consumer.accept(HttpResponseData.class);
-        consumer.accept(SecurityContext.class);
-        consumer.accept(Principal.class);
-        consumer.accept(Role.class);
+        Stream.of(LeaderKey.class,
+                  LeaderKey.LeaderKeyPattern.class,
+                  LeaderValue.class,
+                  // HTTP handler types (for remote slice invocation)
+        HttpRequestContext.class,
+                  HttpResponseData.class,
+                  SecurityContext.class,
+                  Principal.class,
+                  Role.class)
+              .forEach(classes::add);
         // DHT message types
-        concreteSubtypes(DHTMessage.class).forEach(consumer);
-        consumer.accept(DHTMessage.KeyValue.class);
-        consumer.accept(Partition.class);
+        classes.addAll(concreteSubtypes(DHTMessage.class));
+        classes.add(DHTMessage.KeyValue.class);
+        classes.add(Partition.class);
+        return List.copyOf(classes);
     }
 }

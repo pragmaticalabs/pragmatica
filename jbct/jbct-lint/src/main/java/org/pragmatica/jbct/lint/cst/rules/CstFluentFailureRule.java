@@ -25,7 +25,7 @@ public class CstFluentFailureRule implements CstLintRule {
                                                                                             RuleId.QualifiedName.class))
                                    .map(qn -> text(qn, source))
                                    .or("");
-        if (!ctx.isBusinessPackage(packageName)) {
+        if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
         // Find Result.failure patterns (Primary doesn't include the parenthesis)

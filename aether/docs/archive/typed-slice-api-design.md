@@ -1092,7 +1092,7 @@ org.example:pricing-service:api:^1.0.0
 [shared]
 # Libraries shared across all slices
 # Loaded into SharedLibraryClassLoader
-org.pragmatica-lite:core:^0.9.0
+org.pragmatica-lite:core:^0.16.0
 com.fasterxml.jackson.core:jackson-databind:^2.15.0
 
 [slices]

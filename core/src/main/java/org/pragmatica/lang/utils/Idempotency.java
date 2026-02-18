@@ -173,7 +173,8 @@ public interface Idempotency {
     /// @return Result containing the Idempotency instance, or failure if TTL is invalid
     static Result<Idempotency> idempotency(org.pragmatica.lang.io.TimeSpan ttl, TimeSource timeSource) {
         if (ttl.nanos() <= 0) {
-            return IdempotencyError.InvalidTtl.invalidTtl(ttl).result();
+            return IdempotencyError.InvalidTtl.invalidTtl(ttl)
+                                   .result();
         }
         return Result.success(newIdempotency(ttl, timeSource));
     }
@@ -254,15 +255,14 @@ public interface Idempotency {
         // When the entries map is GC'd, the cleanup task becomes a no-op.
         var log = LoggerFactory.getLogger(Idempotency.class);
         var entriesRef = new WeakReference<>(entries);
-        SharedScheduler.scheduleAtFixedRate(() -> cleanupExpiredEntries(entriesRef, timeSource, log),
-                                            cleanupInterval);
+        SharedScheduler.scheduleAtFixedRate(() -> cleanupExpiredEntries(entriesRef, timeSource, log), cleanupInterval);
         return new idempotency(ttl.nanos(), timeSource, entries);
     }
 
     private static void cleanupExpiredEntries(WeakReference<ConcurrentHashMap<String, CachedEntry<?>>> entriesRef,
                                               TimeSource timeSource,
                                               Logger log) {
-        try {
+        try{
             var map = entriesRef.get();
             if (map == null) {
                 return;
@@ -270,7 +270,8 @@ public interface Idempotency {
             var sizeBefore = map.size();
             long now = timeSource.nanoTime();
             map.entrySet()
-               .removeIf(e -> e.getValue().shouldReplace(now));
+               .removeIf(e -> e.getValue()
+                               .shouldReplace(now));
             var removed = sizeBefore - map.size();
             if (removed > 0) {
                 log.trace("Cleanup removed {} expired entries", removed);

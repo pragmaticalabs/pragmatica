@@ -62,14 +62,15 @@ public final class StatusRoutes {
 
     // ==================== Handler Methods ====================
     public static FullStatusResponse buildFullStatus(ForgeCluster cluster,
-                                                      ForgeMetrics metrics,
-                                                      long startTime,
-                                                      ConfigurableLoadRunner loadRunner) {
+                                                     ForgeMetrics metrics,
+                                                     long startTime,
+                                                     ConfigurableLoadRunner loadRunner) {
         var clusterStatus = cluster.status();
         var metricsSnapshot = metrics.currentMetrics();
         var nodeInfos = buildNodeInfos(clusterStatus);
         var clusterInfo = new ClusterInfo(nodeInfos, clusterStatus.leaderId(), nodeInfos.size());
         var metricsInfo = buildMetricsInfo(metricsSnapshot);
+        var aetherMetrics = buildAetherMetrics(cluster);
         var loadInfo = buildLoadInfo(loadRunner);
         var uptimeSeconds = uptimeSeconds(startTime);
         var sliceCount = countSlices(cluster);
@@ -77,8 +78,16 @@ public final class StatusRoutes {
         var nodeMetrics = buildNodeMetrics(cluster);
         var slices = buildSliceStatusInfos(cluster);
         var loadTargets = buildLoadTargets(loadRunner);
-        return new FullStatusResponse(clusterInfo, metricsInfo, loadInfo, uptimeSeconds, sliceCount,
-                                      targetClusterSize, nodeMetrics, slices, loadTargets);
+        return new FullStatusResponse(clusterInfo,
+                                      metricsInfo,
+                                      aetherMetrics,
+                                      loadInfo,
+                                      uptimeSeconds,
+                                      sliceCount,
+                                      targetClusterSize,
+                                      nodeMetrics,
+                                      slices,
+                                      loadTargets);
     }
 
     private static List<NodeInfo> buildNodeInfos(ForgeCluster.ClusterStatus clusterStatus) {
@@ -99,10 +108,24 @@ public final class StatusRoutes {
                                snapshot.totalFailures());
     }
 
+    private static AetherAggregates buildAetherMetrics(ForgeCluster cluster) {
+        var agg = cluster.aetherAggregates();
+        return new AetherAggregates(agg.rps(),
+                                    agg.successRate(),
+                                    agg.avgLatencyMs(),
+                                    agg.totalInvocations(),
+                                    agg.totalSuccess(),
+                                    agg.totalFailures());
+    }
+
     private static LoadInfo buildLoadInfo(ConfigurableLoadRunner loadRunner) {
-        return new LoadInfo(loadRunner.state().name(),
-                            loadRunner.config().totalRequestsPerSecond(),
-                            loadRunner.config().targets().size());
+        return new LoadInfo(loadRunner.state()
+                                      .name(),
+                            loadRunner.config()
+                                      .totalRequestsPerSecond(),
+                            loadRunner.config()
+                                      .targets()
+                                      .size());
     }
 
     private static int countSlices(ForgeCluster cluster) {
@@ -136,7 +159,8 @@ public final class StatusRoutes {
                                                     s.state(),
                                                     s.instances()
                                                      .stream()
-                                                     .map(i -> new SliceInstanceInfo(i.nodeId(), i.state()))
+                                                     .map(i -> new SliceInstanceInfo(i.nodeId(),
+                                                                                     i.state()))
                                                      .toList()))
                       .toList();
     }
@@ -154,7 +178,7 @@ public final class StatusRoutes {
                                                             t.avgLatencyMs(),
                                                             t.successRate(),
                                                             t.remainingDuration()
-                                                             .map(Object::toString)))
+                                                             .map(ForgeApiResponses::formatDuration)))
                          .toList();
     }
 

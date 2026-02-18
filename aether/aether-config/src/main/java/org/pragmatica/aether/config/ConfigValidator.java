@@ -1,14 +1,17 @@
 package org.pragmatica.aether.config;
 
-import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
+
+import static org.pragmatica.lang.Result.success;
 
 /// Validates Aether configuration.
 ///
@@ -31,21 +34,28 @@ public final class ConfigValidator {
     /// Validate configuration, returning all validation errors.
     public static Result<AetherConfig> validate(AetherConfig config) {
         var errors = new ArrayList<String>();
-        validateCluster(config.cluster(), errors);
-        validateNode(config.node(), errors);
+        clusterErrors(config.cluster(), errors);
+        nodeErrors(config.node(), errors);
         if (config.tlsEnabled()) {
             config.tls()
-                  .onPresent(tls -> validateTls(tls, errors));
+                  .onPresent(tls -> tlsErrors(tls, errors));
         }
-        if (errors.isEmpty()) {
-            return Result.success(config);
-        }
-        return ConfigError.validationFailed(errors)
-                          .result();
+        return toResult(config, errors);
     }
 
-    private static void validateCluster(ClusterConfig cluster, List<String> errors) {
-        // Node count validation
+    private static Result<AetherConfig> toResult(AetherConfig config, List<String> errors) {
+        return errors.size() == 0
+               ? success(config)
+               : ConfigError.validationFailed(errors)
+                            .result();
+    }
+
+    private static void clusterErrors(ClusterConfig cluster, List<String> errors) {
+        nodeCountErrors(cluster, errors);
+        portErrors(cluster, errors);
+    }
+
+    private static void nodeCountErrors(ClusterConfig cluster, List<String> errors) {
         int nodes = cluster.nodes();
         if (nodes < 3) {
             errors.add("Minimum 3 nodes required for fault tolerance. Got: " + nodes);
@@ -55,7 +65,9 @@ public final class ConfigValidator {
             errors.add("Maximum recommended node count is 7. Got: " + nodes
                        + ". More nodes add overhead without proportional benefit.");
         }
-        // Port validation
+    }
+
+    private static void portErrors(ClusterConfig cluster, List<String> errors) {
         var ports = cluster.ports();
         if (ports.management() == ports.cluster()) {
             errors.add("Management port and cluster port must be different. Both are: " + ports.management());
@@ -66,8 +78,12 @@ public final class ConfigValidator {
         if (ports.cluster() < 1 || ports.cluster() > 65535) {
             errors.add("Cluster port must be between 1 and 65535. Got: " + ports.cluster());
         }
-        // Check for port range overlap with node count
+        portRangeOverlapErrors(cluster, errors);
+    }
+
+    private static void portRangeOverlapErrors(ClusterConfig cluster, List<String> errors) {
         int nodeCount = cluster.nodes();
+        var ports = cluster.ports();
         int mgmtEnd = ports.management() + nodeCount - 1;
         int clusterStart = ports.cluster();
         if (mgmtEnd >= clusterStart && ports.management() <= clusterStart + nodeCount - 1) {
@@ -76,62 +92,95 @@ public final class ConfigValidator {
         }
     }
 
-    private static void validateNode(NodeConfig node, List<String> errors) {
-        // Heap validation
+    private static void nodeErrors(NodeConfig node, List<String> errors) {
+        heapErrors(node, errors);
+        gcErrors(node, errors);
+        durationErrors(node, errors);
+    }
+
+    private static void heapErrors(NodeConfig node, List<String> errors) {
         String heap = node.heap();
         if (!HEAP_PATTERN.matcher(heap)
                          .matches()) {
             errors.add("Invalid heap format: " + heap + ". Use: 256m, 512m, 1g, 2g, 4g");
         }
-        // GC validation
-        String gc = node.gc()
-                        .toLowerCase();
-        if (!VALID_GC.contains(gc)) {
+    }
+
+    private static void gcErrors(NodeConfig node, List<String> errors) {
+        var gc = node.gc()
+                     .toLowerCase();
+        var isValid = VALID_GC.stream()
+                              .anyMatch(gc::equals);
+        if (!isValid) {
             errors.add("Invalid GC: " + node.gc() + ". Valid options: zgc, g1");
         }
-        // Interval validation
-        if (node.metricsInterval()
-                .isNegative() || node.metricsInterval()
-                                     .isZero()) {
-            errors.add("Metrics interval must be positive. Got: " + node.metricsInterval());
-        }
-        if (node.reconciliation()
-                .isNegative() || node.reconciliation()
-                                     .isZero()) {
-            errors.add("Reconciliation interval must be positive. Got: " + node.reconciliation());
+    }
+
+    private static void durationErrors(NodeConfig node, List<String> errors) {
+        positiveDurationError(node.metricsInterval(), "Metrics interval", errors);
+        positiveDurationError(node.reconciliation(), "Reconciliation interval", errors);
+    }
+
+    private static void positiveDurationError(Duration duration, String name, List<String> errors) {
+        if (duration.isNegative() || duration.isZero()) {
+            errors.add(name + " must be positive. Got: " + duration);
         }
     }
 
-    private static void validateTls(TlsConfig tls, List<String> errors) {
+    private static void tlsErrors(TlsConfig tls, List<String> errors) {
         if (!tls.autoGenerate()) {
-            // User-provided certificates - check paths exist
-            tls.certFile()
-               .onPresent(path -> validateFileExists(path, "Certificate file", errors));
-            tls.keyFile()
-               .onPresent(path -> validateFileExists(path, "Private key file", errors));
-            tls.caFile()
-               .onPresent(path -> validateFileExists(path, "CA certificate file", errors));
-            // If not auto-generating, cert and key are required
-            if (tls.certPath()
-                   .isBlank()) {
-                errors.add("TLS enabled but no certificate path provided. Set tls.auto_generate = true or provide tls.cert_path");
-            }
-            if (tls.keyPath()
-                   .isBlank()) {
-                errors.add("TLS enabled but no key path provided. Set tls.auto_generate = true or provide tls.key_path");
-            }
+            tlsPathErrors(tls, errors);
+            tlsRequiredErrors(tls, errors);
         }
     }
 
-    private static void validateFileExists(java.nio.file.Path path, String fileType, List<String> errors) {
-        if (!java.nio.file.Files.exists(path)) {
+    private static void tlsPathErrors(TlsConfig tls, List<String> errors) {
+        tls.certFile()
+           .onPresent(path -> fileExistsError(path, "Certificate file", errors));
+        tls.keyFile()
+           .onPresent(path -> fileExistsError(path, "Private key file", errors));
+        tls.caFile()
+           .onPresent(path -> fileExistsError(path, "CA certificate file", errors));
+    }
+
+    private static void tlsRequiredErrors(TlsConfig tls, List<String> errors) {
+        missingCertPathError(tls, errors);
+        missingKeyPathError(tls, errors);
+    }
+
+    private static void missingCertPathError(TlsConfig tls, List<String> errors) {
+        tls.certFile()
+           .onEmpty(() -> errors.add("TLS enabled but no certificate path provided."
+                                     + " Set tls.auto_generate = true or provide tls.cert_path"));
+    }
+
+    private static void missingKeyPathError(TlsConfig tls, List<String> errors) {
+        tls.keyFile()
+           .onEmpty(() -> errors.add("TLS enabled but no key path provided."
+                                     + " Set tls.auto_generate = true or provide tls.key_path"));
+    }
+
+    private static void fileExistsError(Path path, String fileType, List<String> errors) {
+        if (!Files.exists(path)) {
             errors.add(fileType + " not found: " + path);
         }
     }
 
     /// Configuration validation error.
     public sealed interface ConfigError extends Cause {
+        record unused() implements ConfigError {
+            @Override
+            public String message() {
+                return "unused";
+            }
+        }
+
         record ValidationFailed(List<String> errors) implements ConfigError {
+            /// Factory method following JBCT naming convention.
+            public static Result<ValidationFailed> validationFailed(List<String> errors, boolean validated) {
+                return success(new ValidationFailed(List.copyOf(errors)));
+            }
+
             @Override
             public String message() {
                 return "Configuration validation failed:\n- " + String.join("\n- ", errors);
@@ -139,7 +188,9 @@ public final class ConfigValidator {
         }
 
         static ConfigError validationFailed(List<String> errors) {
-            return new ValidationFailed(List.copyOf(errors));
+            return ValidationFailed.validationFailed(List.copyOf(errors),
+                                                     true)
+                                   .unwrap();
         }
     }
 }

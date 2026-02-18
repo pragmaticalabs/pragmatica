@@ -115,10 +115,10 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @SuppressWarnings("unchecked")
     public <KK, VV> void forEach(Class<KK> keyClass, Class<VV> valueClass, BiConsumer<KK, VV> consumer) {
         storage.forEach((key, value) -> {
-            if (keyClass.isInstance(key) && valueClass.isInstance(value)) {
-                consumer.accept((KK) key, (VV) value);
-            }
-        });
+                            if (keyClass.isInstance(key) && valueClass.isInstance(value)) {
+                                consumer.accept((KK) key, (VV) value);
+                            }
+                        });
     }
 
     @MessageReceiver

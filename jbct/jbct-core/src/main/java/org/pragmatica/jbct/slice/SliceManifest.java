@@ -99,13 +99,13 @@ public record SliceManifest(String sliceName,
                      .or("");
     }
 
-    private static final Logger LOG = LoggerFactory.getLogger(SliceManifest.class);
+    private static final Logger log = LoggerFactory.getLogger(SliceManifest.class);
 
     private static List<SliceDependency> parseDependencies(Properties props) {
         return Option.option(props.getProperty("dependencies.count", "0"))
                      .flatMap(SliceManifest::parseCount)
                      .map(count -> buildDependencyList(props, count))
-                     .onEmpty(() -> LOG.warn("Invalid dependencies.count in manifest, using 0"))
+                     .onEmpty(() -> log.warn("Invalid dependencies.count in manifest, using 0"))
                      .or(List.of());
     }
 
@@ -199,7 +199,7 @@ public record SliceManifest(String sliceName,
 
     private static List<String> findInnerClasses(Path baseFile, Path classesDir) {
         return lift(Causes::fromThrowable,
-                    () -> listInnerClassPaths(baseFile, classesDir)).onFailure(cause -> LOG.debug("Failed to list inner classes: {}",
+                    () -> listInnerClassPaths(baseFile, classesDir)).onFailure(cause -> log.debug("Failed to list inner classes: {}",
                                                                                                   cause.message()))
                    .or(List.of());
     }

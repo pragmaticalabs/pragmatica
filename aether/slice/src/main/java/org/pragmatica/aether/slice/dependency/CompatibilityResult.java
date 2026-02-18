@@ -6,6 +6,7 @@ import org.pragmatica.aether.artifact.Version;
 ///
 /// Used when a slice requests a shared dependency that's already loaded in the
 /// SharedLibraryClassLoader to determine if the loaded version is compatible.
+@SuppressWarnings({"JBCT-VO-01", "JBCT-UTIL-02"})
 public sealed interface CompatibilityResult {
     /// The loaded version is compatible with the requested pattern.
     /// The slice can use the already-loaded version.
@@ -41,4 +42,6 @@ public sealed interface CompatibilityResult {
         }
         return new Conflict(loadedVersion, required);
     }
+
+    record unused() implements CompatibilityResult {}
 }

@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>pragmatica</artifactId>
-        <version>0.15.1</version>
+        <version>0.16.0</version>
     </parent>
 
     <artifactId>examples</artifactId>
@@ -19,6 +19,7 @@
         <module>pragmatica-lite</module>
         <module>url-shortener</module>
         <module>ecommerce</module>
+        <module>banking</module>
     </modules>
 
     <build>

@@ -48,7 +48,6 @@ import java.lang.annotation.Target;
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.ANNOTATION_TYPE)
 public @interface ResourceQualifier {
-
     /// The resource type to provision.
     ///
     /// This should be the interface type (e.g., DatabaseConnector.class),

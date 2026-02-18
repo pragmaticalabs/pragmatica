@@ -17,7 +17,7 @@ public interface OrderService {
 
     static OrderService orderService(InventoryService inventory,
                                      PricingEngine pricing) {
-        return new OrderServiceImpl(inventory, pricing);
+        return OrderServiceImpl.orderServiceImpl(inventory, pricing);
     }
 }
 ```
@@ -88,7 +88,7 @@ public record SliceModel(
 
 **Method extraction rules:**
 - Must return `Promise<T>` where `T` is the response type
-- Must have exactly one parameter (the request type)
+- Any number of parameters (0+). Multi-param methods use synthetic request records. Zero-param methods use `Unit` at transport layer.
 - Static methods and default methods are ignored
 
 **Factory method detection:**
@@ -98,26 +98,38 @@ public record SliceModel(
 
 ## Dependency Classification
 
-Dependencies are classified as **internal** or **external** based on package:
+Factory method parameters are classified into three categories:
 
 ```mermaid
 flowchart TD
-    D["Dependency Interface"] --> C{"Same base package?"}
-    C -->|Yes| I["Internal"]
-    C -->|No| E["External"]
-    I --> IF["Call factory directly"]
-    E --> EP["Create proxy record"]
+    D["Dependency Interface"] --> RQ{"Has @ResourceQualifier?"}
+    RQ -->|Yes| R["Resource Dependency"]
+    RQ -->|No| FM{"Has factory method?"}
+    FM -->|Yes| P["Plain Interface"]
+    FM -->|No| S["Slice Dependency"]
+    R --> RP["ctx.resources().provide()"]
+    P --> PF["Call factory directly"]
+    P --> PT{"Factory has @ResourceQualifier params?"}
+    PT -->|Yes| TR["Transitive resource provisioning"]
+    S --> SP["Proxy record with MethodHandle"]
 ```
 
-**Internal dependency** (same module):
-- Package starts with slice's base package
-- Factory calls the dependency's factory method directly
-- Example: `org.example.order.validation.Validator` is internal to `org.example.order.OrderService`
+**Resource dependency:**
+- Parameter annotated with a `@ResourceQualifier` meta-annotation
+- Provisioned via `ctx.resources().provide(Type.class, "config.section")`
+- Example: a `DataSource` parameter annotated with `@DatabaseResource("orders")`
 
-**External dependency** (different module):
-- Package doesn't match slice's base package
-- Generates a local proxy record that delegates to `SliceInvokerFacade`
-- Example: `org.example.inventory.InventoryService` is external to `org.example.order.OrderService`
+**Slice dependency** (external slice):
+- An interface without a static factory method (resolved via Aether runtime)
+- Generates a local proxy record with `MethodHandle<R, I>` fields
+- Handles resolved via `ctx.invoker().methodHandle(...)`
+- Example: `org.example.inventory.InventoryService` is a slice dependency of `org.example.order.OrderService`
+
+**Plain interface dependency:**
+- A non-`@Slice` interface that has a static factory method
+- Called directly: `PlainInterface.plainInterface()`
+- If the plain interface's factory has `@ResourceQualifier` parameters, those resources are provisioned transitively
+- Example: `org.example.order.validation.OrderValidator` is a plain interface dependency of `OrderService`
 
 ## Generated Code Deep Dive
 
@@ -149,41 +161,47 @@ public interface OrderService {
 
 ### Factory Class Generation
 
-The factory provides two entry points:
+The factory provides two entry points. The generated factory method signature is:
+
+```java
+public static Promise<SliceName> sliceName(Aspect<SliceName> aspect, SliceCreationContext ctx)
+```
+
+Full example:
 
 ```java
 public final class OrderServiceFactory {
     private OrderServiceFactory() {}
 
-    // Returns typed slice instance
-    public static Promise<OrderService> create(
+    public static Promise<OrderService> orderService(
             Aspect<OrderService> aspect,
-            SliceInvokerFacade invoker) {
-        // Internal deps: call factory directly
-        var validator = OrderValidator.orderValidator();
-
-        // External deps: create proxy record
-        record inventoryService(SliceInvokerFacade invoker)
+            SliceCreationContext ctx) {
+        // Local proxy for slice dependency
+        record inventoryService(MethodHandle<Integer, String> checkStockHandle)
                 implements InventoryService {
-            private static final String ARTIFACT = "org.example:inventory:1.0.0";
-
             @Override
             public Promise<Integer> checkStock(String productId) {
-                return invoker.invoke(ARTIFACT, "checkStock",
-                                      productId, Integer.class);
+                return checkStockHandle.invoke(productId);
             }
         }
-        var inventory = new inventoryService(invoker);
 
-        // Call developer's factory
-        var instance = OrderService.orderService(validator, inventory);
-        return Promise.successful(aspect.apply(instance));
+        return Promise.all(
+                ctx.invoker().methodHandle("org.example:inventory:1.0.0", "checkStock",
+                                            new TypeToken<String>() {},
+                                            new TypeToken<Integer>() {}).async())
+            .map((inventory_checkStock) -> {
+                // Plain interface dep - call factory directly
+                var validator = OrderValidator.orderValidator();
+                // Slice dep - instantiate proxy from method handle
+                var inventory = new inventoryService(inventory_checkStock);
+                return aspect.apply(
+                    OrderService.orderService(validator, inventory));
+            });
     }
 
-    // Returns Slice for Aether runtime
-    public static Promise<Slice> createSlice(
+    public static Promise<Slice> orderServiceSlice(
             Aspect<OrderService> aspect,
-            SliceInvokerFacade invoker) {
+            SliceCreationContext ctx) {
         record orderServiceSlice(OrderService delegate) implements Slice {
             @Override
             public List<SliceMethod<?, ?>> methods() {
@@ -198,7 +216,7 @@ public final class OrderServiceFactory {
             }
         }
 
-        return create(aspect, invoker)
+        return orderService(aspect, ctx)
                    .map(orderServiceSlice::new);
     }
 }
@@ -206,30 +224,53 @@ public final class OrderServiceFactory {
 
 **Key design decisions:**
 
-1. **Local proxy records**: External dependency proxies are generated as local records inside the `create()` method, not as separate classes. This keeps the implementation encapsulated.
+1. **Local proxy records**: Slice dependency proxies are generated as local records with `MethodHandle<R, I>` fields inside the factory method, not as separate classes. This keeps the implementation encapsulated.
 
 2. **Aspect support**: The `Aspect<T>` parameter allows runtime decoration (logging, metrics, etc.) without modifying slice code.
 
-3. **SliceInvokerFacade**: Proxies delegate to this interface, which the Aether runtime implements to route calls across the cluster.
+3. **SliceCreationContext**: The runtime provides a `SliceCreationContext` which bundles the `SliceInvokerFacade` (for cross-slice calls) and `ResourceProviderFacade` (for infrastructure resources). Proxy records obtain method handles via `ctx.invoker().methodHandle(...)`.
 
 4. **TypeToken usage**: Preserves generic type information for serialization/deserialization at runtime.
 
+5. **Async handle resolution**: Method handles are resolved asynchronously via `Promise.all(...)`, ensuring all dependencies are available before the slice is instantiated.
+
 ### Proxy Method Generation
 
-Proxy methods always have exactly one parameter (slice contract requirement):
+Proxy methods delegate to a `MethodHandle<R, I>` field. The transport layer always uses a single request object; multi-param and zero-param methods are adapted accordingly:
 
 ```java
+// Zero-param method - handler ignores Unit argument
+@Override
+public Promise<HealthStatus> healthCheck() {
+    return healthCheckHandle.invoke(Unit.unit());
+}
+
+// Single-param method - direct delegation
 @Override
 public Promise<Integer> checkStock(String productId) {
-    return invoker.invoke(ARTIFACT, "checkStock", productId, Integer.class);
+    return checkStockHandle.invoke(productId);
+}
+
+// Multi-param method - wraps in synthetic request record
+@Override
+public Promise<Boolean> transfer(String from, String to, int amount) {
+    return transferHandle.invoke(new TransferRequest(from, to, amount));
 }
 ```
 
-The `invoke` call includes:
-- **ARTIFACT**: Maven coordinates of the target slice
+Method handles are obtained during factory initialization via:
+
+```java
+ctx.invoker().methodHandle("org.example:inventory:1.0.0", "checkStock",
+                            new TypeToken<String>() {},
+                            new TypeToken<Integer>() {}).async()
+```
+
+The `methodHandle` call includes:
+- **Artifact**: Maven coordinates of the target slice
 - **Method name**: String identifier for routing
-- **Request**: The single parameter value
-- **Response type**: For deserialization
+- **Request type token**: `TypeToken<I>` for serialization
+- **Response type token**: `TypeToken<R>` for deserialization
 
 ## Manifest Generation
 
@@ -400,16 +441,37 @@ public class LoggingAspect<T> implements Aspect<T> {
 }
 ```
 
+### SliceCreationContext
+
+The runtime provides a `SliceCreationContext` to each factory, bundling both the invoker (for cross-slice calls) and the resource provider (for infrastructure resources):
+
+```java
+public interface SliceCreationContext {
+    SliceInvokerFacade invoker();
+    ResourceProviderFacade resources();
+}
+```
+
 ### SliceInvokerFacade
 
-The runtime implements this to route inter-slice calls:
+The invoker routes inter-slice calls and provides method handles:
 
 ```java
 public interface SliceInvokerFacade {
-    <R> Promise<R> invoke(String sliceArtifact,
-                          String methodName,
-                          Object request,
-                          Class<R> responseType);
+    <R, I> MethodHandle<R, I> methodHandle(String sliceArtifact,
+                                            String methodName,
+                                            TypeToken<I> requestType,
+                                            TypeToken<R> responseType);
+}
+```
+
+### ResourceProviderFacade
+
+The resource provider supplies infrastructure dependencies (databases, caches, etc.):
+
+```java
+public interface ResourceProviderFacade {
+    <T> T provide(Class<T> type, String qualifier);
 }
 ```
 
@@ -417,8 +479,9 @@ public interface SliceInvokerFacade {
 
 | Decision | Trade-off | Rationale |
 |----------|-----------|-----------|
-| Single-param methods | Less flexible API | Enables uniform request/response serialization |
+| Flexible param counts | Synthetic records for multi-param | Enables uniform request/response serialization at transport layer |
 | Local proxy records | Larger generated code | Keeps proxies encapsulated, no class pollution |
 | Separate API/Impl JARs | More artifacts to manage | Clean dependency boundaries |
 | Properties-based manifests | Less structured than JSON/YAML | Simple to parse, no dependencies |
 | Compile-time wiring | No runtime discovery | Fail-fast, explicit dependencies |
+| Resource provisioning via @ResourceQualifier | Requires annotation definitions | Type-safe, compile-time verified, auto-cached |

@@ -36,7 +36,7 @@ import org.slf4j.LoggerFactory;
 ///
 /// @see TlsConfig
 public final class TlsContextFactory {
-    private static final Logger LOG = LoggerFactory.getLogger(TlsContextFactory.class);
+    private static final Logger log = LoggerFactory.getLogger(TlsContextFactory.class);
 
     private TlsContextFactory() {}
 
@@ -170,7 +170,7 @@ public final class TlsContextFactory {
                 builder.trustManager(caPath.toFile());
             }
             case TlsConfig.Trust.InsecureTrustAll() -> {
-                LOG.warn("Using InsecureTrustAll - FOR DEVELOPMENT ONLY! Certificate verification is disabled.");
+                log.warn("Using InsecureTrustAll - FOR DEVELOPMENT ONLY! Certificate verification is disabled.");
                 builder.trustManager(InsecureTrustManagerFactory.INSTANCE);
             }
         }

@@ -4,10 +4,10 @@ import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.ConfigurationProvider;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.SliceConfig;
-import org.pragmatica.aether.config.TTMConfig;
+import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
-import org.pragmatica.aether.provider.AutoHealConfig;
-import org.pragmatica.aether.provider.NodeProvider;
+import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider;
 import org.pragmatica.consensus.NodeId;
@@ -40,7 +40,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param appHttp          Application HTTP server configuration for slice routes
 /// @param controllerConfig Controller configuration for scaling thresholds and behavior
 /// @param configProvider   Configuration provider for resource provisioning (empty to disable)
-/// @param nodeProvider     Node provider for cluster auto-healing (empty to disable)
+/// @param environment      Environment integration for compute/secrets (empty to disable)
 /// @param autoHeal         Auto-heal retry configuration
 public record AetherNodeConfig(TopologyConfig topology,
                                ProtocolConfig protocol,
@@ -49,18 +49,18 @@ public record AetherNodeConfig(TopologyConfig topology,
                                int managementPort,
                                DHTConfig artifactRepo,
                                Option<TlsConfig> tls,
-                               TTMConfig ttm,
+                               TtmConfig ttm,
                                RollbackConfig rollback,
                                AppHttpConfig appHttp,
                                ControllerConfig controllerConfig,
                                Option<ConfigurationProvider> configProvider,
-                               Option<NodeProvider> nodeProvider,
+                               Option<EnvironmentIntegration> environment,
                                AutoHealConfig autoHeal) {
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;
     public static final int MANAGEMENT_DISABLED = 0;
 
     public static SliceActionConfig defaultSliceActionConfig() {
-        return SliceActionConfig.defaultConfiguration(furySerializerFactoryProvider(AetherCustomClasses::configure));
+        return SliceActionConfig.sliceActionConfig(furySerializerFactoryProvider(AetherCustomClasses.INSTANCE));
     }
 
     public static AetherNodeConfig aetherNodeConfig(NodeId self,
@@ -70,7 +70,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                 port,
                                 coreNodes,
                                 defaultSliceActionConfig(),
-                                SliceConfig.defaultConfig(),
+                                SliceConfig.sliceConfig(),
                                 DEFAULT_MANAGEMENT_PORT,
                                 DHTConfig.DEFAULT);
     }
@@ -83,7 +83,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                 port,
                                 coreNodes,
                                 sliceActionConfig,
-                                SliceConfig.defaultConfig(),
+                                SliceConfig.sliceConfig(),
                                 DEFAULT_MANAGEMENT_PORT,
                                 DHTConfig.DEFAULT);
     }
@@ -97,7 +97,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                 port,
                                 coreNodes,
                                 sliceActionConfig,
-                                SliceConfig.defaultConfig(),
+                                SliceConfig.sliceConfig(),
                                 managementPort,
                                 DHTConfig.DEFAULT);
     }
@@ -121,9 +121,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     managementPort,
                                     artifactRepoConfig,
                                     Option.empty(),
-                                    TTMConfig.disabled(),
-                                    RollbackConfig.defaultConfig(),
-                                    AppHttpConfig.disabled(),
+                                    TtmConfig.ttmConfig(),
+                                    RollbackConfig.rollbackConfig(),
+                                    AppHttpConfig.appHttpConfig(),
                                     ControllerConfig.DEFAULT,
                                     Option.empty(),
                                     Option.empty(),
@@ -140,13 +140,13 @@ public record AetherNodeConfig(TopologyConfig topology,
         return new AetherNodeConfig(topology,
                                     ProtocolConfig.testConfig(),
                                     defaultSliceActionConfig(),
-                                    SliceConfig.defaultConfig(),
+                                    SliceConfig.sliceConfig(),
                                     MANAGEMENT_DISABLED,
                                     DHTConfig.FULL,
                                     Option.empty(),
-                                    TTMConfig.disabled(),
-                                    RollbackConfig.defaultConfig(),
-                                    AppHttpConfig.disabled(),
+                                    TtmConfig.ttmConfig(),
+                                    RollbackConfig.rollbackConfig(),
+                                    AppHttpConfig.appHttpConfig(),
                                     ControllerConfig.DEFAULT,
                                     Option.empty(),
                                     Option.empty(),
@@ -164,13 +164,13 @@ public record AetherNodeConfig(TopologyConfig topology,
         return new AetherNodeConfig(topology,
                                     ProtocolConfig.testConfig(),
                                     defaultSliceActionConfig(),
-                                    SliceConfig.defaultConfig(),
+                                    SliceConfig.sliceConfig(),
                                     MANAGEMENT_DISABLED,
                                     DHTConfig.FULL,
                                     Option.empty(),
-                                    TTMConfig.disabled(),
-                                    RollbackConfig.defaultConfig(),
-                                    AppHttpConfig.disabled(),
+                                    TtmConfig.ttmConfig(),
+                                    RollbackConfig.rollbackConfig(),
+                                    AppHttpConfig.appHttpConfig(),
                                     ControllerConfig.forgeDefaults(),
                                     Option.empty(),
                                     Option.empty(),
@@ -200,12 +200,12 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
-                                    nodeProvider,
+                                    environment,
                                     autoHeal);
     }
 
     /// Create a new configuration with TTM enabled.
-    public AetherNodeConfig withTTM(TTMConfig ttmConfig) {
+    public AetherNodeConfig withTtm(TtmConfig ttmConfig) {
         return new AetherNodeConfig(topology,
                                     protocol,
                                     sliceAction,
@@ -218,7 +218,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
-                                    nodeProvider,
+                                    environment,
                                     autoHeal);
     }
 
@@ -236,7 +236,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
-                                    nodeProvider,
+                                    environment,
                                     autoHeal);
     }
 
@@ -254,7 +254,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
-                                    nodeProvider,
+                                    environment,
                                     autoHeal);
     }
 
@@ -272,7 +272,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttpConfig,
                                     controllerConfig,
                                     configProvider,
-                                    nodeProvider,
+                                    environment,
                                     autoHeal);
     }
 
@@ -290,7 +290,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttp,
                                     newControllerConfig,
                                     configProvider,
-                                    nodeProvider,
+                                    environment,
                                     autoHeal);
     }
 
@@ -308,12 +308,12 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttp,
                                     controllerConfig,
                                     Option.some(provider),
-                                    nodeProvider,
+                                    environment,
                                     autoHeal);
     }
 
-    /// Create a new configuration with a NodeProvider for cluster auto-healing.
-    public AetherNodeConfig withNodeProvider(NodeProvider provider) {
+    /// Create a new configuration with an EnvironmentIntegration for compute/secrets.
+    public AetherNodeConfig withEnvironment(EnvironmentIntegration env) {
         return new AetherNodeConfig(topology,
                                     protocol,
                                     sliceAction,
@@ -326,7 +326,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
-                                    Option.some(provider),
+                                    Option.some(env),
                                     autoHeal);
     }
 
@@ -344,7 +344,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
-                                    nodeProvider,
+                                    environment,
                                     autoHealConfig);
     }
 

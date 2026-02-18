@@ -9,7 +9,7 @@ class ConfigValidatorTest {
 
     @Test
     void validate_succeeds_withValidConfig() {
-        var config = AetherConfig.forEnvironment(Environment.DOCKER);
+        var config = AetherConfig.aetherConfig(Environment.DOCKER);
 
         ConfigValidator.validate(config)
             .onFailureRun(Assertions::fail);
@@ -18,7 +18,7 @@ class ConfigValidatorTest {
     @Test
     void validate_succeeds_withAllEnvironments() {
         for (var env : Environment.values()) {
-            var config = AetherConfig.forEnvironment(env);
+            var config = AetherConfig.aetherConfig(env);
 
             ConfigValidator.validate(config)
                 .onFailure(cause -> Assertions.fail("Failed for " + env + ": " + cause.message()));
@@ -28,7 +28,7 @@ class ConfigValidatorTest {
     @Test
     void validate_fails_whenNodeCountTooLow() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .nodes(1)
             .build();
 
@@ -41,7 +41,7 @@ class ConfigValidatorTest {
     @Test
     void validate_fails_whenNodeCountEven() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .nodes(4)
             .build();
 
@@ -54,7 +54,7 @@ class ConfigValidatorTest {
     @Test
     void validate_fails_whenNodeCountTooHigh() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .nodes(9)
             .build();
 
@@ -68,7 +68,7 @@ class ConfigValidatorTest {
     void validate_succeeds_withValidNodeCounts() {
         for (int nodes : new int[]{3, 5, 7}) {
             var config = AetherConfig.builder()
-                .environment(Environment.DOCKER)
+                .withEnvironment(Environment.DOCKER)
                 .nodes(nodes)
                 .build();
 
@@ -80,7 +80,7 @@ class ConfigValidatorTest {
     @Test
     void validate_fails_whenInvalidHeapFormat() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .heap("invalid")
             .build();
 
@@ -94,7 +94,7 @@ class ConfigValidatorTest {
     void validate_succeeds_withValidHeapFormats() {
         for (String heap : new String[]{"256m", "512M", "1g", "2G", "4g"}) {
             var config = AetherConfig.builder()
-                .environment(Environment.DOCKER)
+                .withEnvironment(Environment.DOCKER)
                 .heap(heap)
                 .build();
 
@@ -106,7 +106,7 @@ class ConfigValidatorTest {
     @Test
     void validate_fails_whenInvalidGc() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .gc("invalid")
             .build();
 
@@ -120,7 +120,7 @@ class ConfigValidatorTest {
     void validate_succeeds_withValidGcOptions() {
         for (String gc : new String[]{"zgc", "ZGC", "g1", "G1"}) {
             var config = AetherConfig.builder()
-                .environment(Environment.DOCKER)
+                .withEnvironment(Environment.DOCKER)
                 .gc(gc)
                 .build();
 
@@ -132,8 +132,8 @@ class ConfigValidatorTest {
     @Test
     void validate_fails_whenPortsConflict() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
-            .ports(PortsConfig.portsConfig(8080, 8080))
+            .withEnvironment(Environment.DOCKER)
+            .ports(PortsConfig.portsConfig(8080, 8080).unwrap())
             .build();
 
         ConfigValidator.validate(config)
@@ -145,8 +145,8 @@ class ConfigValidatorTest {
     @Test
     void validate_fails_whenPortOutOfRange() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
-            .ports(PortsConfig.portsConfig(0, 8090))
+            .withEnvironment(Environment.DOCKER)
+            .ports(PortsConfig.portsConfig(0, 8090).unwrap())
             .build();
 
         ConfigValidator.validate(config)
@@ -159,9 +159,9 @@ class ConfigValidatorTest {
     void validate_fails_whenPortRangesOverlap() {
         // With 5 nodes: management 8080-8084 would overlap with cluster 8083-8087
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .nodes(5)
-            .ports(PortsConfig.portsConfig(8080, 8083))
+            .ports(PortsConfig.portsConfig(8080, 8083).unwrap())
             .build();
 
         ConfigValidator.validate(config)
@@ -173,7 +173,7 @@ class ConfigValidatorTest {
     @Test
     void validate_collectsMultipleErrors() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .nodes(2)
             .heap("bad")
             .gc("invalid")
@@ -192,9 +192,9 @@ class ConfigValidatorTest {
     @Test
     void validate_fails_whenTlsEnabledWithoutCerts() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .tls(true)
-            .tlsConfig(TlsConfig.tlsConfig(false, "", "", ""))
+            .tlsConfig(TlsConfig.tlsConfig(false, "", "", "").unwrap())
             .build();
 
         ConfigValidator.validate(config)
@@ -209,9 +209,9 @@ class ConfigValidatorTest {
     @Test
     void validate_succeeds_whenTlsAutoGenerateEnabled() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .tls(true)
-            .tlsConfig(TlsConfig.autoGenerated())
+            .tlsConfig(TlsConfig.tlsConfig())
             .build();
 
         ConfigValidator.validate(config)

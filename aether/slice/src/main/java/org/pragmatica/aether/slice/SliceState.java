@@ -11,10 +11,13 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 // Note: Enum timeouts are default values. SliceActionConfig is the single source of truth
 // for actual timeout configuration and can override these defaults.
+@SuppressWarnings("JBCT-SEQ-01")
 public enum SliceState {
     LOAD,
     LOADING(timeSpan(2).minutes()),
@@ -75,15 +78,15 @@ public enum SliceState {
     }
     public Result<SliceState> nextState() {
         return switch (this) {
-            case LOAD -> Result.success(LOADING);
-            case LOADING, DEACTIVATING -> Result.success(LOADED);
-            case LOADED -> Result.success(ACTIVATE);
-            case ACTIVATE -> Result.success(ACTIVATING);
-            case ACTIVATING -> Result.success(ACTIVE);
-            case ACTIVE -> Result.success(DEACTIVATE);
-            case DEACTIVATE -> Result.success(DEACTIVATING);
-            case FAILED -> Result.success(UNLOAD);
-            case UNLOAD -> Result.success(UNLOADING);
+            case LOAD -> success(LOADING);
+            case LOADING, DEACTIVATING -> success(LOADED);
+            case LOADED -> success(ACTIVATE);
+            case ACTIVATE -> success(ACTIVATING);
+            case ACTIVATING -> success(ACTIVE);
+            case ACTIVE -> success(DEACTIVATE);
+            case DEACTIVATE -> success(DEACTIVATING);
+            case FAILED -> success(UNLOAD);
+            case UNLOAD -> success(UNLOADING);
             case UNLOADING -> TERMINAL_STATE_ERROR.result();
         };
     }
@@ -104,8 +107,7 @@ public enum SliceState {
         STRING_TO_STATE = Map.copyOf(map);
     }
     public static Result<SliceState> sliceState(String stateString) {
-        return Option.option(STRING_TO_STATE.get(stateString.toUpperCase()))
-                     .toResult(UNKNOWN_STATE.apply(stateString));
+        return option(STRING_TO_STATE.get(stateString.toUpperCase())).toResult(UNKNOWN_STATE.apply(stateString));
     }
     private static final Fn1<Cause, String> UNKNOWN_STATE = Causes.forOneValue("Unknown slice state [{}]");
     private static final Cause TERMINAL_STATE_ERROR = Causes.cause("Cannot transition from UNLOADING terminal state");

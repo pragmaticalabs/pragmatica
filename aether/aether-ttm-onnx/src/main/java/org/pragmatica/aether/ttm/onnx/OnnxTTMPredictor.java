@@ -1,18 +1,12 @@
 package org.pragmatica.aether.ttm.onnx;
 
-import ai.onnxruntime.OnnxTensor;
-import ai.onnxruntime.OrtEnvironment;
-import ai.onnxruntime.OrtException;
-import ai.onnxruntime.OrtSession;
-import org.pragmatica.aether.config.TTMConfig;
+import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.ttm.error.TTMError;
 import org.pragmatica.aether.ttm.model.FeatureIndex;
 import org.pragmatica.aether.ttm.model.TTMPredictor;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.nio.FloatBuffer;
 import java.nio.file.Files;
@@ -21,17 +15,25 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import ai.onnxruntime.OnnxTensor;
+import ai.onnxruntime.OrtEnvironment;
+import ai.onnxruntime.OrtException;
+import ai.onnxruntime.OrtSession;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.lang.Unit.unit;
 
 /// ONNX Runtime implementation of {@link TTMPredictor}.
+@SuppressWarnings("JBCT-EX-01")
 record OnnxTTMPredictor(OrtEnvironment env,
                         OrtSession session,
-                        TTMConfig config,
+                        TtmConfig config,
                         AtomicReference<Double> lastConfidenceRef,
                         AtomicBoolean ready) implements TTMPredictor {
     private static final Logger log = LoggerFactory.getLogger(OnnxTTMPredictor.class);
 
-    static Result<TTMPredictor> onnxTTMPredictor(TTMConfig config) {
+    static Result<TTMPredictor> onnxTTMPredictor(TtmConfig config) {
         return checkModelExists(config).flatMap(OnnxTTMPredictor::loadModel);
     }
 
@@ -116,7 +118,8 @@ record OnnxTTMPredictor(OrtEnvironment env,
             }
             return flat;
         }
-        throw new OrtException("Unexpected output tensor type: " + value.getClass().getName());
+        throw new OrtException("Unexpected output tensor type: " + value.getClass()
+                                                                       .getName());
     }
 
     private double calculateConfidence(float[] output) {
@@ -140,28 +143,32 @@ record OnnxTTMPredictor(OrtEnvironment env,
         return unit();
     }
 
-    private static Result<TTMConfig> checkModelExists(TTMConfig config) {
+    private static Result<TtmConfig> checkModelExists(TtmConfig config) {
         var modelPath = Path.of(config.modelPath());
         return Files.exists(modelPath)
                ? Result.success(config)
                : new TTMError.ModelLoadFailed(config.modelPath(), "File not found").result();
     }
 
-    private static Result<TTMPredictor> loadModel(TTMConfig config) {
+    private static Result<TTMPredictor> loadModel(TtmConfig config) {
         return Result.lift(e -> new TTMError.ModelLoadFailed(config.modelPath(), e.getMessage()),
                            () -> createPredictor(config));
     }
 
-    private static TTMPredictor createPredictor(TTMConfig config) throws OrtException {
+    private static TTMPredictor createPredictor(TtmConfig config) throws OrtException {
         var env = OrtEnvironment.getEnvironment();
         var sessionOptions = new OrtSession.SessionOptions();
-        try {
+        try{
             sessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
             sessionOptions.setIntraOpNumThreads(2);
             var session = env.createSession(config.modelPath(), sessionOptions);
             logModelMetadata(session);
             validateInputSchema(session);
-            var predictor = new OnnxTTMPredictor(env, session, config, new AtomicReference<>(0.0), new AtomicBoolean(true));
+            var predictor = new OnnxTTMPredictor(env,
+                                                 session,
+                                                 config,
+                                                 new AtomicReference<>(0.0),
+                                                 new AtomicBoolean(true));
             runWarmupInference(predictor, config);
             return predictor;
         } catch (OrtException e) {
@@ -174,11 +181,19 @@ record OnnxTTMPredictor(OrtEnvironment env,
         log.info("TTM model metadata:");
         log.info("  Input names: {}", session.getInputNames());
         log.info("  Output names: {}", session.getOutputNames());
-        for (var entry : session.getInputInfo().entrySet()) {
-            log.info("  Input '{}': {}", entry.getKey(), entry.getValue().getInfo());
+        for (var entry : session.getInputInfo()
+                                .entrySet()) {
+            log.info("  Input '{}': {}",
+                     entry.getKey(),
+                     entry.getValue()
+                          .getInfo());
         }
-        for (var entry : session.getOutputInfo().entrySet()) {
-            log.info("  Output '{}': {}", entry.getKey(), entry.getValue().getInfo());
+        for (var entry : session.getOutputInfo()
+                                .entrySet()) {
+            log.info("  Output '{}': {}",
+                     entry.getKey(),
+                     entry.getValue()
+                          .getInfo());
         }
     }
 
@@ -193,12 +208,13 @@ record OnnxTTMPredictor(OrtEnvironment env,
         }
     }
 
-    private static void runWarmupInference(OnnxTTMPredictor predictor, TTMConfig config) {
+    private static void runWarmupInference(OnnxTTMPredictor predictor, TtmConfig config) {
         log.info("Running warm-up inference...");
         var warmupInput = new float[config.inputWindowMinutes()][FeatureIndex.FEATURE_COUNT];
         Result.lift(e -> new TTMError.InferenceFailed("Warm-up inference failed: " + e.getMessage()),
                     () -> predictor.runInference(warmupInput))
               .onSuccess(output -> log.info("  Warm-up complete, output length: {}", output.length))
-              .onFailure(cause -> log.warn("  Warm-up inference failed: {}", cause.message()));
+              .onFailure(cause -> log.warn("  Warm-up inference failed: {}",
+                                           cause.message()));
     }
 }

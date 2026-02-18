@@ -2,10 +2,13 @@ package org.pragmatica.aether.http.handler;
 
 import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.lang.Result;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+
+import static org.pragmatica.lang.Result.success;
 
 /// Raw HTTP request data passed through SliceInvoker.
 ///
@@ -51,19 +54,31 @@ public record HttpRequestContext(String path,
                : body.clone();
     }
 
+    /// Validated factory for constructing request context.
+    public static Result<HttpRequestContext> httpRequestContext(Result<String> path,
+                                                                Result<String> method,
+                                                                Result<Map<String, List<String>>> queryParams,
+                                                                Result<Map<String, List<String>>> headers,
+                                                                Result<byte[]> body,
+                                                                Result<String> requestId,
+                                                                Result<SecurityContext> security) {
+        return Result.all(path, method, queryParams, headers, body, requestId, security)
+                     .map(HttpRequestContext::new);
+    }
+
     /// Create context with empty body and anonymous security.
     public static HttpRequestContext httpRequestContext(String path,
                                                         String method,
                                                         Map<String, List<String>> queryParams,
                                                         Map<String, List<String>> headers,
                                                         String requestId) {
-        return new HttpRequestContext(path,
-                                      method,
-                                      queryParams,
-                                      headers,
-                                      EMPTY_BODY,
-                                      requestId,
-                                      SecurityContext.anonymous());
+        return httpRequestContext(path,
+                                  method,
+                                  queryParams,
+                                  headers,
+                                  EMPTY_BODY,
+                                  requestId,
+                                  SecurityContext.securityContext());
     }
 
     /// Create context with body and anonymous security.
@@ -73,7 +88,7 @@ public record HttpRequestContext(String path,
                                                         Map<String, List<String>> headers,
                                                         byte[] body,
                                                         String requestId) {
-        return new HttpRequestContext(path, method, queryParams, headers, body, requestId, SecurityContext.anonymous());
+        return httpRequestContext(path, method, queryParams, headers, body, requestId, SecurityContext.securityContext());
     }
 
     /// Create context with body and security context.
@@ -84,12 +99,20 @@ public record HttpRequestContext(String path,
                                                         byte[] body,
                                                         String requestId,
                                                         SecurityContext security) {
-        return new HttpRequestContext(path, method, queryParams, headers, body, requestId, security);
+        return Result.all(success(path),
+                          success(method),
+                          success(queryParams),
+                          success(headers),
+                          success(body),
+                          success(requestId),
+                          success(security))
+                     .map(HttpRequestContext::new)
+                     .unwrap();
     }
 
     /// Create new context with updated security (immutable copy).
     public HttpRequestContext withSecurity(SecurityContext newSecurity) {
-        return new HttpRequestContext(path, method, queryParams, headers, body, requestId, newSecurity);
+        return httpRequestContext(path, method, queryParams, headers, body, requestId, newSecurity);
     }
 
     /// Check if request is authenticated (not anonymous).

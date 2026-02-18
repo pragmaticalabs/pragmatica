@@ -18,7 +18,7 @@ import org.slf4j.LoggerFactory;
 
 /// Initializes a new Aether slice project structure.
 public final class SliceProjectInitializer {
-    private static final Logger LOG = LoggerFactory.getLogger(SliceProjectInitializer.class);
+    private static final Logger log = LoggerFactory.getLogger(SliceProjectInitializer.class);
     private static final String TEMPLATES_PATH = "/templates/slice/";
 
     // Default versions - used as fallback when offline
@@ -185,7 +185,7 @@ public final class SliceProjectInitializer {
 
     private Result<List<Path>> createTestResources() {
         var srcTestResources = projectDir.resolve("src/test/resources");
-        return createFile("tinylog.properties.template", srcTestResources.resolve("tinylog.properties")).map(path -> List.of(path));
+        return createFile("log4j2-test.xml.template", srcTestResources.resolve("log4j2-test.xml")).map(path -> List.of(path));
     }
 
     private Result<List<Path>> createDeployScripts() {
@@ -256,7 +256,7 @@ public final class SliceProjectInitializer {
             case "CLAUDE.md" -> Option.some(CLAUDE_MD_TEMPLATE);
             case "Slice.java.template" -> Option.some(SLICE_INTERFACE_TEMPLATE);
             case "SliceTest.java.template" -> Option.some(SLICE_TEST_TEMPLATE);
-            case "tinylog.properties.template" -> Option.some(TINYLOG_PROPERTIES_TEMPLATE);
+            case "log4j2-test.xml.template" -> Option.some(LOG4J2_TEST_XML_TEMPLATE);
             case "deploy-forge.sh.template" -> Option.some(DEPLOY_FORGE_TEMPLATE);
             case "deploy-test.sh.template" -> Option.some(DEPLOY_TEST_TEMPLATE);
             case "deploy-prod.sh.template" -> Option.some(DEPLOY_PROD_TEMPLATE);
@@ -298,9 +298,9 @@ public final class SliceProjectInitializer {
             perms.add(java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE);
             Files.setPosixFilePermissions(path, perms);
         } catch (UnsupportedOperationException e) {
-            LOG.debug("POSIX permissions not supported on this platform for {}", path);
+            log.debug("POSIX permissions not supported on this platform for {}", path);
         } catch (IOException e) {
-            LOG.debug("Failed to set executable permission on {}: {}", path, e.getMessage());
+            log.debug("Failed to set executable permission on {}: {}", path, e.getMessage());
         }
     }
 
@@ -384,15 +384,15 @@ public final class SliceProjectInitializer {
                     <scope>test</scope>
                 </dependency>
                 <dependency>
-                    <groupId>org.tinylog</groupId>
-                    <artifactId>tinylog-api</artifactId>
-                    <version>2.7.0</version>
+                    <groupId>org.apache.logging.log4j</groupId>
+                    <artifactId>log4j-slf4j2-impl</artifactId>
+                    <version>2.24.3</version>
                     <scope>test</scope>
                 </dependency>
                 <dependency>
-                    <groupId>org.tinylog</groupId>
-                    <artifactId>tinylog-impl</artifactId>
-                    <version>2.7.0</version>
+                    <groupId>org.apache.logging.log4j</groupId>
+                    <artifactId>log4j-core</artifactId>
+                    <version>2.24.3</version>
                     <scope>test</scope>
                 </dependency>
             </dependencies>
@@ -473,7 +473,7 @@ public final class SliceProjectInitializer {
 
         [lint]
         failOnWarning = false
-        businessPackages = ["{{basePackage}}.**"]
+        # excludePackages = ["some.generated.**"]
         """;
 
     private static final String GITIGNORE_TEMPLATE = """
@@ -724,28 +724,21 @@ public final class SliceProjectInitializer {
         fi
         """;
 
-    private static final String TINYLOG_PROPERTIES_TEMPLATE = """
-        # Tinylog configuration for test logging
-        # Documentation: https://tinylog.org/v2/configuration/
-
-        # Global logging level (trace, debug, info, warn, error)
-        level = info
-
-        # Writer configuration - output to console with colored output
-        writer        = console
-        writer.format = {date: HH:mm:ss.SSS} [{thread}] {class}.{method}() {level}: {message}
-        writer.stream = out
-
-        # Package-specific logging levels
-        # Uncomment and adjust as needed:
-        # level@{{basePackage}} = debug
-
-        # Show SQL queries (if using JDBC):
-        # level@org.pragmatica.jdbc = debug
-
-        # Reduce noise from libraries:
-        # level@org.apache.http = warn
-        # level@io.netty = warn
+    private static final String LOG4J2_TEST_XML_TEMPLATE = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <Configuration status="WARN">
+            <Appenders>
+                <Console name="Console" target="SYSTEM_OUT">
+                    <PatternLayout pattern="%d{HH:mm:ss.SSS} [%t] %-5level %c{1.}.%M() - %msg%n"/>
+                </Console>
+            </Appenders>
+            <Loggers>
+                <Root level="info"><AppenderRef ref="Console"/></Root>
+                <Logger name="io.netty" level="error"/>
+                <Logger name="org.apache.fury" level="error"/>
+                <Logger name="org.h2" level="error"/>
+            </Loggers>
+        </Configuration>
         """;
 
     public Path projectDir() {

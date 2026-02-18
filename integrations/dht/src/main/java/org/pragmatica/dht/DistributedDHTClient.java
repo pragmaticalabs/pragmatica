@@ -60,15 +60,13 @@ public final class DistributedDHTClient implements DHTClient {
     @Override
     public Promise<Option<byte[]>> get(byte[] key) {
         var targets = targetNodes(key);
-
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
-
         Promise<Option<byte[]>> promise = Promise.promise();
-        var quorum = config.effectiveReadQuorum(node.ring().nodeCount());
+        var quorum = config.effectiveReadQuorum(node.ring()
+                                                    .nodeCount());
         var collector = QuorumCollector.<Option<byte[]>>quorumCollector(quorum, targets.size(), promise);
-
         for (var target : targets) {
             if (target.equals(node.nodeId())) {
                 handleLocalGet(key, collector);
@@ -76,22 +74,19 @@ public final class DistributedDHTClient implements DHTClient {
                 sendRemoteGet(target, key, collector);
             }
         }
-
         return promise.timeout(config.operationTimeout());
     }
 
     @Override
     public Promise<Unit> put(byte[] key, byte[] value) {
         var targets = targetNodes(key);
-
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
-
         Promise<Unit> promise = Promise.promise();
-        var quorum = config.effectiveWriteQuorum(node.ring().nodeCount());
+        var quorum = config.effectiveWriteQuorum(node.ring()
+                                                     .nodeCount());
         var collector = QuorumCollector.<Unit>quorumCollector(quorum, targets.size(), promise);
-
         for (var target : targets) {
             if (target.equals(node.nodeId())) {
                 handleLocalPut(key, value, collector);
@@ -99,22 +94,19 @@ public final class DistributedDHTClient implements DHTClient {
                 sendRemotePut(target, key, value, collector);
             }
         }
-
         return promise.timeout(config.operationTimeout());
     }
 
     @Override
     public Promise<Boolean> remove(byte[] key) {
         var targets = targetNodes(key);
-
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
-
         Promise<Boolean> promise = Promise.promise();
-        var quorum = config.effectiveWriteQuorum(node.ring().nodeCount());
+        var quorum = config.effectiveWriteQuorum(node.ring()
+                                                     .nodeCount());
         var collector = QuorumCollector.<Boolean>quorumCollector(quorum, targets.size(), promise);
-
         for (var target : targets) {
             if (target.equals(node.nodeId())) {
                 handleLocalRemove(key, collector);
@@ -122,22 +114,19 @@ public final class DistributedDHTClient implements DHTClient {
                 sendRemoteRemove(target, key, collector);
             }
         }
-
         return promise.timeout(config.operationTimeout());
     }
 
     @Override
     public Promise<Boolean> exists(byte[] key) {
         var targets = targetNodes(key);
-
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
-
         Promise<Boolean> promise = Promise.promise();
-        var quorum = config.effectiveReadQuorum(node.ring().nodeCount());
+        var quorum = config.effectiveReadQuorum(node.ring()
+                                                    .nodeCount());
         var collector = QuorumCollector.<Boolean>quorumCollector(quorum, targets.size(), promise);
-
         for (var target : targets) {
             if (target.equals(node.nodeId())) {
                 handleLocalExists(key, collector);
@@ -145,7 +134,6 @@ public final class DistributedDHTClient implements DHTClient {
                 sendRemoteExists(target, key, collector);
             }
         }
-
         return promise.timeout(config.operationTimeout());
     }
 
@@ -160,41 +148,42 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     // --- Response handlers (called by message router) ---
-
     /// Handle a get response from a remote node.
     public void onGetResponse(DHTMessage.GetResponse response) {
         removePending(response.requestId())
-            .onPresent(op -> castCollector(op, Option.class).onSuccess(response.value()));
+        .onPresent(op -> castCollector(op, Option.class).onSuccess(response.value()));
     }
 
     /// Handle a put response from a remote node.
     public void onPutResponse(DHTMessage.PutResponse response) {
         removePending(response.requestId())
-            .onPresent(op -> {
-                if (response.success()) {
-                    castCollector(op, Unit.class).onSuccess(unit());
-                } else {
-                    castCollector(op, Unit.class).onFailure(DHTError.OPERATION_TIMEOUT);
-                }
-            });
+        .onPresent(op -> {
+                       if (response.success()) {
+                           castCollector(op, Unit.class).onSuccess(unit());
+                       } else {
+                           castCollector(op, Unit.class).onFailure(DHTError.OPERATION_TIMEOUT);
+                       }
+                   });
     }
 
     /// Handle a remove response from a remote node.
     public void onRemoveResponse(DHTMessage.RemoveResponse response) {
         removePending(response.requestId())
-            .onPresent(op -> castCollector(op, Boolean.class).onSuccess(response.found()));
+        .onPresent(op -> castCollector(op, Boolean.class).onSuccess(response.found()));
     }
 
     /// Handle an exists response from a remote node.
     public void onExistsResponse(DHTMessage.ExistsResponse response) {
         removePending(response.requestId())
-            .onPresent(op -> castCollector(op, Boolean.class).onSuccess(response.exists()));
+        .onPresent(op -> castCollector(op, Boolean.class).onSuccess(response.exists()));
     }
 
     // --- Private helpers ---
-
     private List<NodeId> targetNodes(byte[] key) {
-        return node.ring().nodesFor(key, config.effectiveReplicationFactor(node.ring().nodeCount()));
+        return node.ring()
+                   .nodesFor(key,
+                             config.effectiveReplicationFactor(node.ring()
+                                                                   .nodeCount()));
     }
 
     private Option<PendingOperation<?>> removePending(String correlationId) {
@@ -231,26 +220,34 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     private void sendRemoteGet(NodeId target, byte[] key, QuorumCollector<Option<byte[]>> collector) {
-        var correlationId = KSUID.ksuid().toString();
+        var correlationId = KSUID.ksuid()
+                                 .toString();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
-        network.send(target, new DHTMessage.GetRequest(correlationId, node.nodeId(), key));
+        network.send(target,
+                     new DHTMessage.GetRequest(correlationId, node.nodeId(), key));
     }
 
     private void sendRemotePut(NodeId target, byte[] key, byte[] value, QuorumCollector<Unit> collector) {
-        var correlationId = KSUID.ksuid().toString();
+        var correlationId = KSUID.ksuid()
+                                 .toString();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
-        network.send(target, new DHTMessage.PutRequest(correlationId, node.nodeId(), key, value));
+        network.send(target,
+                     new DHTMessage.PutRequest(correlationId, node.nodeId(), key, value));
     }
 
     private void sendRemoteRemove(NodeId target, byte[] key, QuorumCollector<Boolean> collector) {
-        var correlationId = KSUID.ksuid().toString();
+        var correlationId = KSUID.ksuid()
+                                 .toString();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
-        network.send(target, new DHTMessage.RemoveRequest(correlationId, node.nodeId(), key));
+        network.send(target,
+                     new DHTMessage.RemoveRequest(correlationId, node.nodeId(), key));
     }
 
     private void sendRemoteExists(NodeId target, byte[] key, QuorumCollector<Boolean> collector) {
-        var correlationId = KSUID.ksuid().toString();
+        var correlationId = KSUID.ksuid()
+                                 .toString();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
-        network.send(target, new DHTMessage.ExistsRequest(correlationId, node.nodeId(), key));
+        network.send(target,
+                     new DHTMessage.ExistsRequest(correlationId, node.nodeId(), key));
     }
 }

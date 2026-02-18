@@ -1,6 +1,14 @@
 package org.pragmatica.aether.forge.load.pattern;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.utils.Causes;
+
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.stream.IntStream;
+
+import static org.pragmatica.lang.Result.success;
 
 /// Generates random strings based on a pattern.
 ///
@@ -16,8 +24,13 @@ import java.util.concurrent.ThreadLocalRandom;
 public record RandomGenerator(String template) implements PatternGenerator {
     public static final String TYPE = "random";
 
-    public static RandomGenerator randomGenerator(String template) {
-        return new RandomGenerator(template);
+    private static final Cause EMPTY_TEMPLATE = Causes.cause("Random generator template cannot be empty");
+
+    public static Result<RandomGenerator> randomGenerator(String template) {
+        return Verify.ensure(template, Verify.Is::notNull, EMPTY_TEMPLATE)
+                     .filter(EMPTY_TEMPLATE,
+                             s -> !s.isEmpty())
+                     .map(RandomGenerator::new);
     }
 
     private static final String DIGITS = "0123456789";
@@ -27,17 +40,25 @@ public record RandomGenerator(String template) implements PatternGenerator {
     @Override
     public String generate() {
         var random = ThreadLocalRandom.current();
-        var result = new StringBuilder(template.length());
-        for (int i = 0; i < template.length(); i++) {
-            char c = template.charAt(i);
-            result.append(switch (c) {
-                case '#' -> DIGITS.charAt(random.nextInt(DIGITS.length()));
-                case '?' -> LETTERS.charAt(random.nextInt(LETTERS.length()));
-                case '*' -> ALPHANUMERIC.charAt(random.nextInt(ALPHANUMERIC.length()));
-                default -> c;
-            });
-        }
-        return result.toString();
+        var chars = IntStream.range(0,
+                                    template.length())
+                             .mapToObj(i -> generateChar(template.charAt(i),
+                                                         random))
+                             .collect(StringBuilder::new, StringBuilder::append, StringBuilder::append);
+        return chars.toString();
+    }
+
+    private static char generateChar(char c, ThreadLocalRandom random) {
+        return switch (c) {
+            case '#' -> randomFrom(DIGITS, random);
+            case '?' -> randomFrom(LETTERS, random);
+            case '*' -> randomFrom(ALPHANUMERIC, random);
+            default -> c;
+        };
+    }
+
+    private static char randomFrom(String source, ThreadLocalRandom random) {
+        return source.charAt(random.nextInt(source.length()));
     }
 
     @Override

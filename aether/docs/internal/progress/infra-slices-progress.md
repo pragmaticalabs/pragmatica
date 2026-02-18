@@ -2,7 +2,7 @@
 
 Status: **IN PROGRESS**
 
-## Completed (16/21)
+## Completed (15/21)
 
 | # | Component | Package | Key Classes | Tests |
 |---|-----------|---------|-------------|-------|
@@ -22,7 +22,6 @@ Status: **IN PROGRESS**
 | 14 | HttpServerSlice | `infra-slices/.../server` | `HttpServerSliceConfig`, `HttpServerSliceError`, `HttpServerSlice`, `DefaultHttpServerSlice` | `HttpServerSliceTest` |
 | 15 | CacheService Extensions | `infra-slices/.../cache` | Batch ops, counters, patterns, stats | `CacheServiceTest` |
 | 16 | StreamingService | `infra-slices/.../streaming` | `StreamingConfig`, `StreamingError`, `StreamMessage`, `TopicInfo`, `ConsumerGroupInfo`, `StreamingService`, `InMemoryStreamingService` | `StreamingServiceTest` |
-| 17 | SecretsManager | `infra-slices/.../secrets` | `SecretsConfig`, `SecretsError`, `SecretMetadata`, `SecretValue`, `SecretsManager`, `InMemorySecretsManager` | `SecretsManagerTest` |
 
 ## Remaining (4)
 

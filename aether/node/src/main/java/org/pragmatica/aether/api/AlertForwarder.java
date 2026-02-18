@@ -28,6 +28,7 @@ import org.slf4j.LoggerFactory;
 ///   - Configurable retries
 ///   - Configurable timeout
 ///
+@SuppressWarnings("JBCT-RET-01")
 public class AlertForwarder {
     private static final Logger log = LoggerFactory.getLogger(AlertForwarder.class);
 
@@ -112,7 +113,7 @@ public class AlertForwarder {
 
     private Promise<Unit> handleStatusCode(HttpClient client, String url, String payload, int attempt, int statusCode) {
         if (statusCode >= 200 && statusCode < 300) {
-            log.debug("Alert forwarded successfully to {}", url);
+            log.debug("Alert forwarded to {}", url);
             return Promise.success(Unit.unit());
         }
         log.warn("Webhook {} returned status {}", url, statusCode);

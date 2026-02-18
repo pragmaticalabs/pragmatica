@@ -7,8 +7,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AetherConfigTest {
 
     @Test
-    void forEnvironment_createsValidLocalConfig() {
-        var config = AetherConfig.forEnvironment(Environment.LOCAL);
+    void aetherConfig_createsValidLocalConfig() {
+        var config = AetherConfig.aetherConfig(Environment.LOCAL);
 
         assertThat(config.environment()).isEqualTo(Environment.LOCAL);
         assertThat(config.cluster().nodes()).isEqualTo(3);
@@ -19,8 +19,8 @@ class AetherConfigTest {
     }
 
     @Test
-    void forEnvironment_createsValidDockerConfig() {
-        var config = AetherConfig.forEnvironment(Environment.DOCKER);
+    void aetherConfig_createsValidDockerConfig() {
+        var config = AetherConfig.aetherConfig(Environment.DOCKER);
 
         assertThat(config.environment()).isEqualTo(Environment.DOCKER);
         assertThat(config.cluster().nodes()).isEqualTo(5);
@@ -32,8 +32,8 @@ class AetherConfigTest {
     }
 
     @Test
-    void forEnvironment_createsValidKubernetesConfig() {
-        var config = AetherConfig.forEnvironment(Environment.KUBERNETES);
+    void aetherConfig_createsValidKubernetesConfig() {
+        var config = AetherConfig.aetherConfig(Environment.KUBERNETES);
 
         assertThat(config.environment()).isEqualTo(Environment.KUBERNETES);
         assertThat(config.cluster().nodes()).isEqualTo(5);
@@ -47,8 +47,8 @@ class AetherConfigTest {
     }
 
     @Test
-    void defaultConfig_createsDockerConfig() {
-        var config = AetherConfig.defaultConfig();
+    void aetherConfig_createsDockerConfigByDefault() {
+        var config = AetherConfig.aetherConfig();
 
         assertThat(config.environment()).isEqualTo(Environment.DOCKER);
     }
@@ -56,7 +56,7 @@ class AetherConfigTest {
     @Test
     void builder_overridesNodes() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .nodes(7)
             .build();
 
@@ -68,7 +68,7 @@ class AetherConfigTest {
     @Test
     void builder_overridesHeap() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .heap("2g")
             .build();
 
@@ -80,7 +80,7 @@ class AetherConfigTest {
     @Test
     void builder_overridesTls() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .tls(true)
             .build();
 
@@ -92,8 +92,8 @@ class AetherConfigTest {
     @Test
     void builder_overridesPorts() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
-            .ports(PortsConfig.portsConfig(9000, 9100))
+            .withEnvironment(Environment.DOCKER)
+            .ports(PortsConfig.portsConfig(9000, 9100).unwrap())
             .build();
 
         assertThat(config.cluster().ports().management()).isEqualTo(9000);
@@ -103,7 +103,7 @@ class AetherConfigTest {
     @Test
     void builder_overridesGc() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .gc("g1")
             .build();
 
@@ -112,9 +112,9 @@ class AetherConfigTest {
 
     @Test
     void builder_overridesDockerConfig() {
-        var customDocker = DockerConfig.dockerConfig("my-network", "my-image:v1");
+        var customDocker = DockerConfig.dockerConfig("my-network", "my-image:v1").unwrap();
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .dockerConfig(customDocker)
             .build();
 
@@ -124,9 +124,9 @@ class AetherConfigTest {
 
     @Test
     void builder_overridesKubernetesConfig() {
-        var customK8s = KubernetesConfig.kubernetesConfig("prod", "LoadBalancer", "fast-ssd");
+        var customK8s = KubernetesConfig.kubernetesConfig("prod", "LoadBalancer", "fast-ssd").unwrap();
         var config = AetherConfig.builder()
-            .environment(Environment.KUBERNETES)
+            .withEnvironment(Environment.KUBERNETES)
             .kubernetesConfig(customK8s)
             .build();
 
@@ -138,12 +138,12 @@ class AetherConfigTest {
     @Test
     void builder_combinesMultipleOverrides() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .nodes(7)
             .heap("2g")
             .gc("g1")
             .tls(true)
-            .ports(PortsConfig.portsConfig(9000, 9100))
+            .ports(PortsConfig.portsConfig(9000, 9100).unwrap())
             .build();
 
         assertThat(config.cluster().nodes()).isEqualTo(7);
@@ -154,8 +154,8 @@ class AetherConfigTest {
     }
 
     @Test
-    void forEnvironment_includesDefaultSliceConfig() {
-        var config = AetherConfig.forEnvironment(Environment.DOCKER);
+    void aetherConfig_includesDefaultSliceConfig() {
+        var config = AetherConfig.aetherConfig(Environment.DOCKER);
 
         assertThat(config.slice()).isNotNull();
         assertThat(config.slice().repositories()).containsExactly(RepositoryType.LOCAL);
@@ -163,9 +163,9 @@ class AetherConfigTest {
 
     @Test
     void builder_overridesSliceConfig() {
-        var customSlice = SliceConfig.withTypes(RepositoryType.BUILTIN, RepositoryType.LOCAL);
+        var customSlice = SliceConfig.sliceConfig(RepositoryType.BUILTIN, RepositoryType.LOCAL);
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .sliceConfig(customSlice)
             .build();
 
@@ -176,7 +176,7 @@ class AetherConfigTest {
     @Test
     void builder_usesDefaultSliceConfigWhenNotOverridden() {
         var config = AetherConfig.builder()
-            .environment(Environment.DOCKER)
+            .withEnvironment(Environment.DOCKER)
             .build();
 
         assertThat(config.slice()).isNotNull();

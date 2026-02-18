@@ -1,19 +1,22 @@
 package org.pragmatica.aether.setup.generators;
 
 import org.pragmatica.aether.config.AetherConfig;
+import org.pragmatica.aether.config.DockerConfig;
 import org.pragmatica.aether.config.Environment;
 import org.pragmatica.lang.Result;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Result.success;
 
 /// Generates Docker Compose deployment for Aether cluster.
 ///
@@ -37,105 +40,132 @@ public final class DockerGenerator implements Generator {
 
     @Override
     public Result<GeneratorOutput> generate(AetherConfig config, Path outputDir) {
-        try{
-            Files.createDirectories(outputDir);
-            var generatedFiles = new ArrayList<Path>();
-            // Generate docker-compose.yml
-            var composePath = outputDir.resolve("docker-compose.yml");
-            Files.writeString(composePath, generateDockerCompose(config));
-            generatedFiles.add(Path.of("docker-compose.yml"));
-            // Generate .env
-            var envPath = outputDir.resolve(".env");
-            Files.writeString(envPath, generateEnvFile(config));
-            generatedFiles.add(Path.of(".env"));
-            // Generate scripts
-            var startPath = outputDir.resolve("start.sh");
-            Files.writeString(startPath, generateStartScript());
-            makeExecutable(startPath);
-            generatedFiles.add(Path.of("start.sh"));
-            var stopPath = outputDir.resolve("stop.sh");
-            Files.writeString(stopPath, generateStopScript());
-            makeExecutable(stopPath);
-            generatedFiles.add(Path.of("stop.sh"));
-            var statusPath = outputDir.resolve("status.sh");
-            Files.writeString(statusPath, generateStatusScript());
-            makeExecutable(statusPath);
-            generatedFiles.add(Path.of("status.sh"));
-            var instructions = String.format("""
-                Docker Compose cluster generated in: %s
-
-                To start the cluster:
-                  cd %s && ./start.sh
-
-                To stop the cluster:
-                  ./stop.sh
-
-                To check status:
-                  ./status.sh
-
-                Nodes: %d
-                Management ports: %d-%d
-                Cluster ports: %d-%d
-                """,
-                                             outputDir,
-                                             outputDir,
-                                             config.cluster()
-                                                   .nodes(),
-                                             config.cluster()
-                                                   .ports()
-                                                   .management(),
-                                             config.cluster()
-                                                   .ports()
-                                                   .management() + config.cluster()
-                                                                        .nodes() - 1,
-                                             config.cluster()
-                                                   .ports()
-                                                   .cluster(),
-                                             config.cluster()
-                                                   .ports()
-                                                   .cluster() + config.cluster()
-                                                                     .nodes() - 1);
-            return Result.success(GeneratorOutput.generatorOutput(outputDir,
-                                                                  generatedFiles,
-                                                                  startPath,
-                                                                  stopPath,
-                                                                  instructions));
-        } catch (IOException e) {
-            return GeneratorError.ioError(e.getMessage())
-                                 .result();
-        }
+        return Result.lift(DockerGenerator::toIoError, () -> generateArtifacts(config, outputDir));
     }
 
-    private String generateDockerCompose(AetherConfig config) {
+    @SuppressWarnings("JBCT-EX-01")
+    private GeneratorOutput generateArtifacts(AetherConfig config, Path outputDir) throws Exception {
+        Files.createDirectories(outputDir);
+        var generatedFiles = new ArrayList<Path>();
+        writeFile(outputDir, "docker-compose.yml", generateDockerCompose(config), generatedFiles);
+        writeFile(outputDir, ".env", generateEnvFile(config), generatedFiles);
+        var startPath = writeScript(outputDir, "start.sh", generateStartScript(), generatedFiles);
+        var stopPath = writeScript(outputDir, "stop.sh", generateStopScript(), generatedFiles);
+        writeScript(outputDir, "status.sh", generateStatusScript(), generatedFiles);
+        var instructions = formatInstructions(config, outputDir);
+        return GeneratorOutput.generatorOutput(outputDir, generatedFiles, startPath, stopPath, instructions);
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private void writeFile(Path dir, String name, String content, List<Path> files) throws Exception {
+        Files.writeString(dir.resolve(name), content);
+        files.add(Path.of(name));
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private Path writeScript(Path dir, String name, String content, List<Path> files) throws Exception {
+        var path = dir.resolve(name);
+        Files.writeString(path, content);
+        makeExecutable(path);
+        files.add(Path.of(name));
+        return path;
+    }
+
+    private String formatInstructions(AetherConfig config, Path outputDir) {
         var nodes = config.cluster()
                           .nodes();
-        // docker() is guaranteed present by supports() check
-        var dockerConfig = config.docker()
-                                 .expect("Docker config expected");
-        var network = dockerConfig.network();
-        var image = dockerConfig.image();
         var mgmtPort = config.cluster()
                              .ports()
                              .management();
         var clusterPort = config.cluster()
                                 .ports()
                                 .cluster();
-        var nodeNames = IntStream.range(0, nodes)
-                                 .mapToObj(i -> "aether-node-" + i)
-                                 .toList();
-        var peerList = String.join(",",
-                                   nodeNames.stream()
-                                            .map(name -> name + ":" + clusterPort)
-                                            .toList());
-        var services = IntStream.range(0, nodes)
-                                .mapToObj(i -> generateServiceDefinition(i,
-                                                                         nodeNames.get(i),
-                                                                         image,
-                                                                         mgmtPort,
-                                                                         clusterPort,
-                                                                         peerList,
-                                                                         config))
-                                .collect(Collectors.joining("\n"));
+        return formatInstructionsText(outputDir, nodes, mgmtPort, clusterPort);
+    }
+
+    private String formatInstructionsText(Path outputDir, int nodes, int mgmtPort, int clusterPort) {
+        return String.format("""
+            Docker Compose cluster generated in: %s
+
+            To start the cluster:
+              cd %s && ./start.sh
+
+            To stop the cluster:
+              ./stop.sh
+
+            To check status:
+              ./status.sh
+
+            Nodes: %d
+            Management ports: %d-%d
+            Cluster ports: %d-%d
+            """,
+                             outputDir,
+                             outputDir,
+                             nodes,
+                             mgmtPort,
+                             mgmtPort + nodes - 1,
+                             clusterPort,
+                             clusterPort + nodes - 1);
+    }
+
+    private DockerConfig dockerConfig(AetherConfig config) {
+        return config.docker()
+                     .expect("Docker config expected");
+    }
+
+    private String generateDockerCompose(AetherConfig config) {
+        var dockerConf = dockerConfig(config);
+        var nodes = config.cluster()
+                          .nodes();
+        var mgmtPort = config.cluster()
+                             .ports()
+                             .management();
+        var clusterPort = config.cluster()
+                                .ports()
+                                .cluster();
+        var heap = config.node()
+                         .heap();
+        var gc = gcFlag(config);
+        var nodeNames = buildNodeNames(nodes);
+        var peerList = buildPeerList(nodeNames, clusterPort);
+        var services = buildServices(nodes, nodeNames, dockerConf, mgmtPort, clusterPort, peerList, heap, gc);
+        return formatComposeFile(services, dockerConf.network());
+    }
+
+    private List<String> buildNodeNames(int nodes) {
+        return IntStream.range(0, nodes)
+                        .mapToObj(i -> "aether-node-" + i)
+                        .toList();
+    }
+
+    private String buildPeerList(List<String> nodeNames, int clusterPort) {
+        return nodeNames.stream()
+                        .map(name -> name + ":" + clusterPort)
+                        .collect(Collectors.joining(","));
+    }
+
+    private String buildServices(int nodes,
+                                 List<String> nodeNames,
+                                 DockerConfig dockerConf,
+                                 int mgmtPort,
+                                 int clusterPort,
+                                 String peerList,
+                                 String heap,
+                                 String gc) {
+        return IntStream.range(0, nodes)
+                        .mapToObj(i -> serviceYaml(i,
+                                                   nodeNames.get(i),
+                                                   dockerConf,
+                                                   mgmtPort,
+                                                   clusterPort,
+                                                   peerList,
+                                                   heap,
+                                                   gc))
+                        .collect(Collectors.joining("\n"));
+    }
+
+    private String formatComposeFile(String services, String network) {
         return String.format("""
             # Aether Cluster - Docker Compose
             # Generated by aether-up
@@ -151,19 +181,40 @@ public final class DockerGenerator implements Generator {
                              network);
     }
 
-    private String generateServiceDefinition(int index,
-                                             String nodeName,
-                                             String image,
-                                             int mgmtPort,
-                                             int clusterPort,
-                                             String peerList,
-                                             AetherConfig config) {
-        // docker() is guaranteed present by supports() check
-        var network = config.docker()
-                            .expect("Docker config expected")
-                            .network();
+    private String serviceYaml(int index,
+                               String nodeName,
+                               DockerConfig dockerConf,
+                               int mgmtPort,
+                               int clusterPort,
+                               String peerList,
+                               String heap,
+                               String gc) {
         var hostMgmtPort = mgmtPort + index;
         var hostClusterPort = clusterPort + index;
+        return formatServiceYaml(nodeName,
+                                 dockerConf.image(),
+                                 index,
+                                 peerList,
+                                 mgmtPort,
+                                 clusterPort,
+                                 hostMgmtPort,
+                                 hostClusterPort,
+                                 dockerConf.network(),
+                                 heap,
+                                 gc);
+    }
+
+    private String formatServiceYaml(String nodeName,
+                                     String image,
+                                     int index,
+                                     String peerList,
+                                     int mgmtPort,
+                                     int clusterPort,
+                                     int hostMgmtPort,
+                                     int hostClusterPort,
+                                     String network,
+                                     String heap,
+                                     String gc) {
         return String.format("""
               %s:
                 image: %s
@@ -195,14 +246,8 @@ public final class DockerGenerator implements Generator {
                              peerList,
                              mgmtPort,
                              clusterPort,
-                             config.node()
-                                   .heap(),
-                             config.node()
-                                   .gc()
-                                   .toUpperCase()
-                                   .equals("ZGC")
-                             ? "ZGC"
-                             : "G1GC",
+                             heap,
+                             gc,
                              hostMgmtPort,
                              mgmtPort,
                              hostClusterPort,
@@ -211,10 +256,41 @@ public final class DockerGenerator implements Generator {
                              mgmtPort);
     }
 
+    private String gcFlag(AetherConfig config) {
+        return config.node()
+                     .gc()
+                     .toUpperCase()
+                     .equals("ZGC")
+               ? "ZGC"
+               : "G1GC";
+    }
+
     private String generateEnvFile(AetherConfig config) {
-        // docker() is guaranteed present by supports() check
-        var dockerConfig = config.docker()
-                                 .expect("Docker config expected");
+        var dockerConf = dockerConfig(config);
+        var nodes = config.cluster()
+                          .nodes();
+        var mgmtPort = config.cluster()
+                             .ports()
+                             .management();
+        var clusterPort = config.cluster()
+                                .ports()
+                                .cluster();
+        return formatEnvFile(nodes,
+                             mgmtPort,
+                             clusterPort,
+                             dockerConf,
+                             config.node()
+                                   .heap(),
+                             config.node()
+                                   .gc());
+    }
+
+    private String formatEnvFile(int nodes,
+                                 int mgmtPort,
+                                 int clusterPort,
+                                 DockerConfig dockerConf,
+                                 String heap,
+                                 String gc) {
         return String.format("""
             # Aether Cluster Environment
             NODES=%d
@@ -225,20 +301,13 @@ public final class DockerGenerator implements Generator {
             HEAP=%s
             GC=%s
             """,
-                             config.cluster()
-                                   .nodes(),
-                             config.cluster()
-                                   .ports()
-                                   .management(),
-                             config.cluster()
-                                   .ports()
-                                   .cluster(),
-                             dockerConfig.network(),
-                             dockerConfig.image(),
-                             config.node()
-                                   .heap(),
-                             config.node()
-                                   .gc());
+                             nodes,
+                             mgmtPort,
+                             clusterPort,
+                             dockerConf.network(),
+                             dockerConf.image(),
+                             heap,
+                             gc);
     }
 
     private String generateStartScript() {
@@ -286,12 +355,19 @@ public final class DockerGenerator implements Generator {
             """;
     }
 
-    private void makeExecutable(Path path) throws IOException {
+    @SuppressWarnings("JBCT-SEQ-01")
+    private void makeExecutable(Path path) {
         try{
             Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rwxr-xr-x"));
         } catch (UnsupportedOperationException e) {
             // POSIX permissions not supported on this filesystem (e.g., Windows)
             log.debug("Cannot set POSIX permissions on {}: {}", path, e.getMessage());
+        } catch (Exception e) {
+            log.debug("Failed to set permissions on {}: {}", path, e.getMessage());
         }
+    }
+
+    private static GeneratorError toIoError(Throwable throwable) {
+        return GeneratorError.ioError(throwable.getMessage());
     }
 }

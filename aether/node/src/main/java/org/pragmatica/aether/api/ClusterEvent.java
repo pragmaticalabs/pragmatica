@@ -19,15 +19,26 @@ public record ClusterEvent(Instant timestamp,
                            String summary,
                            Map<String, String> details) {
     public enum EventType {
-        NODE_JOINED, NODE_LEFT, NODE_FAILED,
-        LEADER_ELECTED, LEADER_LOST,
-        QUORUM_ESTABLISHED, QUORUM_LOST,
-        DEPLOYMENT_STARTED, DEPLOYMENT_COMPLETED, DEPLOYMENT_FAILED,
+        NODE_JOINED,
+        NODE_LEFT,
+        NODE_FAILED,
+        LEADER_ELECTED,
+        LEADER_LOST,
+        QUORUM_ESTABLISHED,
+        QUORUM_LOST,
+        DEPLOYMENT_STARTED,
+        DEPLOYMENT_COMPLETED,
+        DEPLOYMENT_FAILED,
         SLICE_FAILURE,
-        CONNECTION_ESTABLISHED, CONNECTION_FAILED
+        CONNECTION_ESTABLISHED,
+        CONNECTION_FAILED
     }
 
-    public enum Severity { INFO, WARNING, CRITICAL }
+    public enum Severity {
+        INFO,
+        WARNING,
+        CRITICAL
+    }
 
     /// Factory method following JBCT naming convention.
     public static ClusterEvent clusterEvent(EventType type,

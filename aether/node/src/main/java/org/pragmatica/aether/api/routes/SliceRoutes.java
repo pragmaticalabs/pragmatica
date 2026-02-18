@@ -258,13 +258,15 @@ public final class SliceRoutes implements RouteSource {
     private int countActiveInstances(AetherNode node, Artifact artifact) {
         var count = new AtomicInteger(0);
         node.kvStore()
-            .forEach(SliceNodeKey.class, SliceNodeValue.class,
+            .forEach(SliceNodeKey.class,
+                     SliceNodeValue.class,
                      (key, value) -> countIfActive(count, key, value, artifact));
         return count.get();
     }
 
     private void countIfActive(AtomicInteger count, SliceNodeKey key, SliceNodeValue value, Artifact artifact) {
-        if (key.artifact().equals(artifact) && value.state() == SliceState.ACTIVE) {
+        if (key.artifact()
+               .equals(artifact) && value.state() == SliceState.ACTIVE) {
             count.incrementAndGet();
         }
     }
@@ -375,7 +377,8 @@ public final class SliceRoutes implements RouteSource {
         var node = nodeSupplier.get();
         Map<Artifact, List<SliceInstance>> slicesByArtifact = new HashMap<>();
         node.kvStore()
-            .forEach(SliceNodeKey.class, SliceNodeValue.class,
+            .forEach(SliceNodeKey.class,
+                     SliceNodeValue.class,
                      (key, value) -> collectSliceInstance(slicesByArtifact, key, value));
         var slices = slicesByArtifact.entrySet()
                                      .stream()
@@ -417,10 +420,12 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private void collectSliceInstance(Map<Artifact, List<SliceInstance>> map,
-                                       SliceNodeKey sliceKey,
-                                       SliceNodeValue sliceValue) {
-        map.computeIfAbsent(sliceKey.artifact(), _ -> new ArrayList<>())
-           .add(new SliceInstance(sliceKey.nodeId(), sliceValue.state()));
+                                      SliceNodeKey sliceKey,
+                                      SliceNodeValue sliceValue) {
+        map.computeIfAbsent(sliceKey.artifact(),
+                            _ -> new ArrayList<>())
+           .add(new SliceInstance(sliceKey.nodeId(),
+                                  sliceValue.state()));
     }
 
     private record SliceInstance(NodeId nodeId, SliceState state) {}

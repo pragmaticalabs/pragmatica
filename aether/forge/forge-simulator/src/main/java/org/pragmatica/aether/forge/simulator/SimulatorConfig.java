@@ -1,8 +1,12 @@
 package org.pragmatica.aether.forge.simulator;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.parse.Number;
+import org.pragmatica.lang.parse.Text;
 import org.pragmatica.lang.utils.Causes;
 
 import java.nio.file.Files;
@@ -10,12 +14,16 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.regex.MatchResult;
 import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.utils.Causes.cause;
 
 /// Configuration for the simulator.
 ///
@@ -27,9 +35,9 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
                               double globalRateMultiplier) {
     private static final Logger log = LoggerFactory.getLogger(SimulatorConfig.class);
 
-    private static final Cause ENTRY_POINTS_NULL = Causes.cause("entryPoints cannot be null");
-    private static final Cause SLICES_NULL = Causes.cause("slices cannot be null");
-    private static final Cause INVALID_MULTIPLIER = Causes.cause("globalRateMultiplier must be >= 0 and finite");
+    private static final Cause ENTRY_POINTS_NULL = cause("entryPoints cannot be null");
+    private static final Cause SLICES_NULL = cause("slices cannot be null");
+    private static final Cause INVALID_MULTIPLIER = cause("globalRateMultiplier must be >= 0 and finite");
 
     /// Configuration for a single entry point.
     public record EntryPointConfig(int callsPerSecond,
@@ -40,57 +48,101 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
                                    int maxQuantity) {
         private static final List<String> DEFAULT_PRODUCTS = List.of("PROD-ABC123", "PROD-DEF456", "PROD-GHI789");
 
-        public static EntryPointConfig defaultConfig() {
-            return new EntryPointConfig(0, true, List.of(), List.of(), 1, 5);
+        public static Result<EntryPointConfig> entryPointConfig(int callsPerSecond,
+                                                                boolean enabled,
+                                                                List<String> products,
+                                                                List<String> customerIds,
+                                                                int minQuantity,
+                                                                int maxQuantity) {
+            return success(new EntryPointConfig(callsPerSecond, enabled, products, customerIds, minQuantity, maxQuantity));
         }
 
-        public static EntryPointConfig withRate(int callsPerSecond) {
-            return new EntryPointConfig(callsPerSecond, true, List.of(), List.of(), 1, 5);
+        public static EntryPointConfig entryPointConfig() {
+            return entryPointConfig(0, true, List.of(), List.of(), 1, 5).unwrap();
+        }
+
+        public static EntryPointConfig entryPointConfig(int callsPerSecond) {
+            return entryPointConfig(callsPerSecond, true, List.of(), List.of(), 1, 5).unwrap();
         }
 
         /// Get products list, using defaults if empty.
         public List<String> effectiveProducts() {
-            return products.isEmpty()
-                   ? DEFAULT_PRODUCTS
-                   : products;
+            return option(products).filter(list -> !list.isEmpty())
+                         .or(DEFAULT_PRODUCTS);
         }
 
         /// Build a DataGenerator for this entry point type.
         public DataGenerator buildGenerator(String entryPointName) {
-            var productGen = new DataGenerator.ProductIdGenerator(effectiveProducts());
+            var productGen = buildProductGenerator();
             return switch (entryPointName) {
-                case "placeOrder" -> new DataGenerator.OrderRequestGenerator(productGen,
-                                                                             DataGenerator.CustomerIdGenerator.withDefaults(),
-                                                                             DataGenerator.IntRange.intRange(minQuantity,
-                                                                                                             maxQuantity)
-                                                                                          .unwrap());
-                case "getOrderStatus", "cancelOrder" -> DataGenerator.OrderIdGenerator.withSharedPool();
-                case "checkStock" -> new DataGenerator.StockCheckGenerator(productGen);
-                case "getPrice" -> new DataGenerator.PriceCheckGenerator(productGen);
+                case "placeOrder" -> buildOrderRequestGenerator(productGen);
+                case "getOrderStatus", "cancelOrder" -> DataGenerator.OrderIdGenerator.orderIdGenerator();
+                case "checkStock" -> buildStockCheckGenerator(productGen);
+                case "getPrice" -> buildPriceCheckGenerator(productGen);
                 default -> productGen;
             };
         }
 
-        public String toJson() {
-            var productsJson = formatStringList(products);
-            var customerIdsJson = formatStringList(customerIds);
-            return String.format("{\"callsPerSecond\":%d,\"enabled\":%b,\"products\":%s,\"customerIds\":%s,\"minQuantity\":%d,\"maxQuantity\":%d}",
-                                 callsPerSecond,
-                                 enabled,
-                                 productsJson,
-                                 customerIdsJson,
-                                 minQuantity,
-                                 maxQuantity);
+        private DataGenerator.ProductIdGenerator buildProductGenerator() {
+            return DataGenerator.ProductIdGenerator.productIdGenerator(effectiveProducts())
+                                .unwrap();
         }
 
-        private static String formatStringList(List<String> list) {
-            if (list.isEmpty()) {
-                return "[]";
-            }
+        private static DataGenerator buildStockCheckGenerator(DataGenerator.ProductIdGenerator productGen) {
+            return DataGenerator.StockCheckGenerator.stockCheckGenerator(productGen)
+                                .unwrap();
+        }
+
+        private static DataGenerator buildPriceCheckGenerator(DataGenerator.ProductIdGenerator productGen) {
+            return DataGenerator.PriceCheckGenerator.priceCheckGenerator(productGen)
+                                .unwrap();
+        }
+
+        private DataGenerator buildOrderRequestGenerator(DataGenerator.ProductIdGenerator productGen) {
+            var customerGen = DataGenerator.CustomerIdGenerator.customerIdGenerator();
+            var quantityRange = DataGenerator.IntRange.intRange(minQuantity, maxQuantity)
+                                             .unwrap();
+            return DataGenerator.OrderRequestGenerator.orderRequestGenerator(productGen, customerGen, quantityRange)
+                                .unwrap();
+        }
+
+        public String toJson() {
+            var productsJson = toJsonList(products);
+            var customerIdsJson = toJsonList(customerIds);
+            return formatEntryPointJson(callsPerSecond, enabled, productsJson, customerIdsJson, minQuantity, maxQuantity);
+        }
+
+        private static String formatEntryPointJson(int cps,
+                                                   boolean en,
+                                                   String prods,
+                                                   String custs,
+                                                   int minQ,
+                                                   int maxQ) {
+            return String.format("{\"callsPerSecond\":%d,\"enabled\":%b,\"products\":%s,\"customerIds\":%s,\"minQuantity\":%d,\"maxQuantity\":%d}",
+                                 cps,
+                                 en,
+                                 prods,
+                                 custs,
+                                 minQ,
+                                 maxQ);
+        }
+
+        private static String toJsonList(List<String> list) {
+            return option(list).filter(l -> !l.isEmpty())
+                         .map(SimulatorConfig.EntryPointConfig::nonEmptyListToJson)
+                         .or("[]");
+        }
+
+        private static String nonEmptyListToJson(List<String> list) {
             return "[" + String.join(",",
                                      list.stream()
                                          .map(s -> "\"" + s + "\"")
                                          .toList()) + "]";
+        }
+
+        /// Create a copy with a new rate.
+        public EntryPointConfig withRate(int rate) {
+            return entryPointConfig(rate, enabled, products, customerIds, minQuantity, maxQuantity).unwrap();
         }
     }
 
@@ -102,12 +154,12 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
                               double failureRate,
                               double spikeChance,
                               int spikeLatencyMs) {
-        private static final Cause INVALID_STOCK_MODE = Causes.cause("stockMode must be 'infinite' or 'realistic'");
-        private static final Cause BASE_LATENCY_NEGATIVE = Causes.cause("baseLatencyMs must be >= 0");
-        private static final Cause JITTER_NEGATIVE = Causes.cause("jitterMs must be >= 0");
-        private static final Cause FAILURE_RATE_OUT_OF_RANGE = Causes.cause("failureRate must be between 0 and 1");
-        private static final Cause SPIKE_CHANCE_OUT_OF_RANGE = Causes.cause("spikeChance must be between 0 and 1");
-        private static final Cause SPIKE_LATENCY_NEGATIVE = Causes.cause("spikeLatencyMs must be >= 0");
+        private static final Cause INVALID_STOCK_MODE = cause("stockMode must be 'infinite' or 'realistic'");
+        private static final Cause BASE_LATENCY_NEGATIVE = cause("baseLatencyMs must be >= 0");
+        private static final Cause JITTER_NEGATIVE = cause("jitterMs must be >= 0");
+        private static final Cause FAILURE_RATE_OUT_OF_RANGE = cause("failureRate must be between 0 and 1");
+        private static final Cause SPIKE_CHANCE_OUT_OF_RANGE = cause("spikeChance must be between 0 and 1");
+        private static final Cause SPIKE_LATENCY_NEGATIVE = cause("spikeLatencyMs must be >= 0");
 
         public static Result<SliceConfig> sliceConfig(String stockMode,
                                                       int refillRate,
@@ -116,35 +168,40 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
                                                       double failureRate,
                                                       double spikeChance,
                                                       int spikeLatencyMs) {
-            if (stockMode == null || (!stockMode.equals("infinite") && !stockMode.equals("realistic"))) {
-                return INVALID_STOCK_MODE.result();
-            }
-            if (baseLatencyMs < 0) {
-                return BASE_LATENCY_NEGATIVE.result();
-            }
-            if (jitterMs < 0) {
-                return JITTER_NEGATIVE.result();
-            }
-            if (failureRate < 0 || failureRate > 1) {
-                return FAILURE_RATE_OUT_OF_RANGE.result();
-            }
-            if (spikeChance < 0 || spikeChance > 1) {
-                return SPIKE_CHANCE_OUT_OF_RANGE.result();
-            }
-            if (spikeLatencyMs < 0) {
-                return SPIKE_LATENCY_NEGATIVE.result();
-            }
-            return Result.success(new SliceConfig(stockMode,
-                                                  refillRate,
-                                                  baseLatencyMs,
-                                                  jitterMs,
-                                                  failureRate,
-                                                  spikeChance,
-                                                  spikeLatencyMs));
+            return ensureStockMode(stockMode).flatMap(_ -> validateLatencyParams(baseLatencyMs, jitterMs, spikeLatencyMs))
+                                  .flatMap(_ -> validateRateParams(failureRate, spikeChance))
+                                  .map(_ -> new SliceConfig(stockMode,
+                                                            refillRate,
+                                                            baseLatencyMs,
+                                                            jitterMs,
+                                                            failureRate,
+                                                            spikeChance,
+                                                            spikeLatencyMs));
         }
 
-        public static SliceConfig defaultConfig() {
-            return new SliceConfig("infinite", 0, 0, 0, 0.0, 0.0, 0);
+        private static Result<String> ensureStockMode(String stockMode) {
+            return Verify.ensure(stockMode, Verify.Is::notNull, INVALID_STOCK_MODE)
+                         .filter(INVALID_STOCK_MODE,
+                                 m -> m.equals("infinite") || m.equals("realistic"));
+        }
+
+        private static Result<Integer> validateLatencyParams(int baseLatencyMs, int jitterMs, int spikeLatencyMs) {
+            return Verify.ensure(baseLatencyMs, Verify.Is::nonNegative, BASE_LATENCY_NEGATIVE)
+                         .flatMap(_ -> Verify.ensure(jitterMs, Verify.Is::nonNegative, JITTER_NEGATIVE))
+                         .flatMap(_ -> Verify.ensure(spikeLatencyMs, Verify.Is::nonNegative, SPIKE_LATENCY_NEGATIVE));
+        }
+
+        private static Result<Double> validateRateParams(double failureRate, double spikeChance) {
+            return Verify.ensure(failureRate, Verify.Is::between, 0.0, 1.0, FAILURE_RATE_OUT_OF_RANGE)
+                         .flatMap(_ -> Verify.ensure(spikeChance,
+                                                     Verify.Is::between,
+                                                     0.0,
+                                                     1.0,
+                                                     SPIKE_CHANCE_OUT_OF_RANGE));
+        }
+
+        public static SliceConfig sliceConfig() {
+            return sliceConfig("infinite", 0, 0, 0, 0.0, 0.0, 0).unwrap();
         }
 
         /// Build a BackendSimulation from this config.
@@ -152,41 +209,59 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
             var hasLatency = baseLatencyMs > 0 || jitterMs > 0;
             var hasFailure = failureRate > 0;
             if (!hasLatency && !hasFailure) {
-                return BackendSimulation.NoOp.INSTANCE;
+                return BackendSimulation.NoOp.noOp()
+                                        .unwrap();
             }
             if (hasLatency && hasFailure) {
                 return buildCompositeSimulation();
             }
             if (hasLatency) {
-                return new BackendSimulation.LatencySimulation(baseLatencyMs, jitterMs, spikeChance, spikeLatencyMs);
+                return BackendSimulation.LatencySimulation.latencySimulation(baseLatencyMs, jitterMs);
             }
             return buildFailureSimulation();
         }
 
         private BackendSimulation buildCompositeSimulation() {
-            var latency = new BackendSimulation.LatencySimulation(baseLatencyMs, jitterMs, spikeChance, spikeLatencyMs);
+            var latency = BackendSimulation.LatencySimulation.latencySimulation(baseLatencyMs, jitterMs);
             var failure = buildFailureSimulation();
             return BackendSimulation.Composite.composite(latency, failure)
                                     .unwrap();
         }
 
         private BackendSimulation buildFailureSimulation() {
-            return BackendSimulation.FailureInjection.withRate(failureRate,
-                                                               new BackendSimulation.SimulatedError.ServiceUnavailable("backend"),
-                                                               new BackendSimulation.SimulatedError.Timeout("operation",
-                                                                                                            5000))
+            var unavailable = BackendSimulation.SimulatedError.ServiceUnavailable.serviceUnavailable("backend")
+                                               .unwrap();
+            var timeout = BackendSimulation.SimulatedError.Timeout.timeout("operation", 5000)
+                                           .unwrap();
+            return BackendSimulation.FailureInjection.failureInjection(failureRate, unavailable, timeout)
                                     .unwrap();
         }
 
         public String toJson() {
+            return formatSliceJson(stockMode,
+                                   refillRate,
+                                   baseLatencyMs,
+                                   jitterMs,
+                                   failureRate,
+                                   spikeChance,
+                                   spikeLatencyMs);
+        }
+
+        private static String formatSliceJson(String mode,
+                                              int refill,
+                                              int baseLat,
+                                              int jit,
+                                              double fail,
+                                              double spike,
+                                              int spikeLat) {
             return String.format("{\"stockMode\":\"%s\",\"refillRate\":%d,\"baseLatencyMs\":%d,\"jitterMs\":%d,\"failureRate\":%.4f,\"spikeChance\":%.4f,\"spikeLatencyMs\":%d}",
-                                 stockMode,
-                                 refillRate,
-                                 baseLatencyMs,
-                                 jitterMs,
-                                 failureRate,
-                                 spikeChance,
-                                 spikeLatencyMs);
+                                 mode,
+                                 refill,
+                                 baseLat,
+                                 jit,
+                                 fail,
+                                 spike,
+                                 spikeLat);
         }
     }
 
@@ -194,46 +269,67 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
                                                           Map<String, SliceConfig> slices,
                                                           boolean loadGeneratorEnabled,
                                                           double globalRateMultiplier) {
-        if (entryPoints == null) {
-            return ENTRY_POINTS_NULL.result();
-        }
-        if (slices == null) {
-            return SLICES_NULL.result();
-        }
-        if (globalRateMultiplier < 0 || !Double.isFinite(globalRateMultiplier)) {
-            return INVALID_MULTIPLIER.result();
-        }
-        return Result.success(new SimulatorConfig(entryPoints, slices, loadGeneratorEnabled, globalRateMultiplier));
+        return ensureInputs(entryPoints, slices, globalRateMultiplier)
+        .map(_ -> new SimulatorConfig(entryPoints, slices, loadGeneratorEnabled, globalRateMultiplier));
+    }
+
+    private static Result<Double> ensureInputs(Map<String, EntryPointConfig> entryPoints,
+                                               Map<String, SliceConfig> slices,
+                                               double globalRateMultiplier) {
+        return ensureMapsNotNull(entryPoints, slices).flatMap(_ -> ensureFiniteMultiplier(globalRateMultiplier));
+    }
+
+    private static Result<Map<String, SliceConfig>> ensureMapsNotNull(Map<String, EntryPointConfig> entryPoints,
+                                                                      Map<String, SliceConfig> slices) {
+        return Verify.ensure(entryPoints, Verify.Is::notNull, ENTRY_POINTS_NULL)
+                     .flatMap(_ -> Verify.ensure(slices, Verify.Is::notNull, SLICES_NULL));
+    }
+
+    private static Result<Double> ensureFiniteMultiplier(double globalRateMultiplier) {
+        return Verify.ensure(globalRateMultiplier, Verify.Is::nonNegative, INVALID_MULTIPLIER)
+                     .filter(INVALID_MULTIPLIER, Double::isFinite);
     }
 
     /// Create default configuration.
-    public static SimulatorConfig defaultConfig() {
+    public static SimulatorConfig simulatorConfig() {
+        var entryPoints = buildDefaultEntryPoints();
+        var slices = buildDefaultSlices();
+        return simulatorConfig(entryPoints, slices, false, 1.0).unwrap();
+    }
+
+    private static HashMap<String, EntryPointConfig> buildDefaultEntryPoints() {
         var entryPoints = new HashMap<String, EntryPointConfig>();
-        entryPoints.put("placeOrder", EntryPointConfig.withRate(0));
-        entryPoints.put("getOrderStatus", EntryPointConfig.withRate(0));
-        entryPoints.put("cancelOrder", EntryPointConfig.withRate(0));
-        entryPoints.put("checkStock", EntryPointConfig.withRate(0));
-        entryPoints.put("getPrice", EntryPointConfig.withRate(0));
+        entryPoints.put("placeOrder", EntryPointConfig.entryPointConfig(0));
+        entryPoints.put("getOrderStatus", EntryPointConfig.entryPointConfig(0));
+        entryPoints.put("cancelOrder", EntryPointConfig.entryPointConfig(0));
+        entryPoints.put("checkStock", EntryPointConfig.entryPointConfig(0));
+        entryPoints.put("getPrice", EntryPointConfig.entryPointConfig(0));
+        return entryPoints;
+    }
+
+    private static HashMap<String, SliceConfig> buildDefaultSlices() {
         var slices = new HashMap<String, SliceConfig>();
-        slices.put("inventory-service", SliceConfig.defaultConfig());
-        slices.put("pricing-service", SliceConfig.defaultConfig());
-        return new SimulatorConfig(entryPoints, slices, false, 1.0);
+        slices.put("inventory-service", SliceConfig.sliceConfig());
+        slices.put("pricing-service", SliceConfig.sliceConfig());
+        return slices;
     }
 
     /// Get entry point config, returning default if not found.
     public EntryPointConfig entryPointConfig(String name) {
-        return entryPoints.getOrDefault(name, EntryPointConfig.defaultConfig());
+        return entryPoints.getOrDefault(name, EntryPointConfig.entryPointConfig());
     }
 
     /// Get slice config, returning default if not found.
     public SliceConfig sliceConfig(String name) {
-        return slices.getOrDefault(name, SliceConfig.defaultConfig());
+        return slices.getOrDefault(name, SliceConfig.sliceConfig());
     }
 
     /// Get effective rate for an entry point (applies global multiplier).
     public int effectiveRate(String entryPoint) {
         var config = entryPointConfig(entryPoint);
-        if (!config.enabled()) return 0;
+        if (!config.enabled()) {
+            return 0;
+        }
         return (int)(config.callsPerSecond() * globalRateMultiplier);
     }
 
@@ -241,24 +337,18 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
     public SimulatorConfig withEntryPointRate(String entryPoint, int rate) {
         var newEntryPoints = new HashMap<>(entryPoints);
         var existing = entryPointConfig(entryPoint);
-        newEntryPoints.put(entryPoint,
-                           new EntryPointConfig(rate,
-                                                existing.enabled(),
-                                                existing.products(),
-                                                existing.customerIds(),
-                                                existing.minQuantity(),
-                                                existing.maxQuantity()));
-        return new SimulatorConfig(newEntryPoints, slices, loadGeneratorEnabled, globalRateMultiplier);
+        newEntryPoints.put(entryPoint, existing.withRate(rate));
+        return simulatorConfig(newEntryPoints, slices, loadGeneratorEnabled, globalRateMultiplier).unwrap();
     }
 
     /// Create a new config with updated global rate multiplier.
     public SimulatorConfig withGlobalMultiplier(double multiplier) {
-        return new SimulatorConfig(entryPoints, slices, loadGeneratorEnabled, multiplier);
+        return simulatorConfig(entryPoints, slices, loadGeneratorEnabled, multiplier).unwrap();
     }
 
     /// Create a new config with load generator enabled/disabled.
     public SimulatorConfig withLoadGeneratorEnabled(boolean enabled) {
-        return new SimulatorConfig(entryPoints, slices, enabled, globalRateMultiplier);
+        return simulatorConfig(entryPoints, slices, enabled, globalRateMultiplier).unwrap();
     }
 
     /// Serialize to JSON.
@@ -278,87 +368,93 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
 
     private static <T> void appendMapEntries(StringBuilder sb,
                                              Map<String, T> map,
-                                             java.util.function.Function<T, String> toJson) {
-        var first = true;
-        for (var entry : map.entrySet()) {
-            if (!first) sb.append(",");
-            first = false;
-            sb.append("\"")
-              .append(entry.getKey())
-              .append("\":")
-              .append(toJson.apply(entry.getValue()));
-        }
+                                             Function<T, String> toJson) {
+        var json = map.entrySet()
+                      .stream()
+                      .map(e -> entryJson(e, toJson))
+                      .toList();
+        sb.append(String.join(",", json));
     }
 
-    /// Load configuration from file.
-    public static Result<SimulatorConfig> loadFromFile(Path path) {
-        return Result.lift(Causes.forOneValue("Failed to load config from " + path),
-                           () -> parseJson(Files.readString(path)));
+    private static <T> String entryJson(Map.Entry<String, T> entry, Function<T, String> toJson) {
+        return "\"" + entry.getKey() + "\":" + toJson.apply(entry.getValue());
     }
 
-    /// Try to load from file, return default if file doesn't exist.
-    public static SimulatorConfig loadOrDefault(Path path) {
+    /// Load configuration from file, returning Result.
+    public static Result<SimulatorConfig> simulatorConfig(Path path, Cause errorCause) {
+        return Result.lift(errorCause, () -> simulatorConfig(Files.readString(path), true));
+    }
+
+    /// Load configuration from file, returning default if missing or invalid.
+    public static SimulatorConfig simulatorConfig(Path path) {
         if (!Files.exists(path)) {
             log.info("Config file not found at {}, using defaults", path);
-            return defaultConfig();
+            return simulatorConfig();
         }
-        return loadFromFile(path).onFailure(cause -> log.warn("Failed to load config: {}, using defaults",
-                                                              cause.message()))
-                           .or(defaultConfig());
+        var cause = cause("Failed to load config from " + path);
+        return simulatorConfig(path, cause).onFailure(c -> log.warn("Failed to load config: {}, using defaults",
+                                                                    c.message()))
+                              .or(simulatorConfig());
     }
 
     /// Parse JSON configuration (simple parser, no external dependencies).
-    public static SimulatorConfig parseJson(String json) {
-        var config = defaultConfig();
-        var entryPoints = new HashMap<>(config.entryPoints());
-        var slices = new HashMap<>(config.slices());
-        parseEntryPointRates(json, entryPoints);
+    public static SimulatorConfig simulatorConfig(String json, boolean fromJson) {
+        var config = simulatorConfig();
+        var parsedEntryPoints = new HashMap<>(config.entryPoints());
+        var parsedSlices = new HashMap<>(config.slices());
+        parseEntryPointRates(json, parsedEntryPoints);
         var multiplier = parseDoubleField(json, "globalRateMultiplier", config.globalRateMultiplier());
         var enabled = parseBooleanField(json, "loadGeneratorEnabled", config.loadGeneratorEnabled());
-        return new SimulatorConfig(entryPoints, slices, enabled, multiplier);
+        return simulatorConfig(parsedEntryPoints, parsedSlices, enabled, multiplier).unwrap();
     }
 
+    private static final Pattern ENTRY_POINT_PATTERN = Pattern.compile("\"(\\w+)\"\\s*:\\s*\\{[^}]*\"callsPerSecond\"\\s*:\\s*(\\d+)");
+
     private static void parseEntryPointRates(String json, Map<String, EntryPointConfig> entryPoints) {
-        var entryPointPattern = Pattern.compile("\"(\\w+)\"\\s*:\\s*\\{[^}]*\"callsPerSecond\"\\s*:\\s*(\\d+)");
-        var matcher = entryPointPattern.matcher(json);
-        while (matcher.find()) {
-            var name = matcher.group(1);
-            var rate = Integer.parseInt(matcher.group(2));
-            if (entryPoints.containsKey(name)) {
-                var existing = entryPoints.get(name);
-                entryPoints.put(name,
-                                new EntryPointConfig(rate,
-                                                     existing.enabled(),
-                                                     existing.products(),
-                                                     existing.customerIds(),
-                                                     existing.minQuantity(),
-                                                     existing.maxQuantity()));
-            }
+        ENTRY_POINT_PATTERN.matcher(json)
+                           .results()
+                           .forEach(match -> updateEntryPointRate(match, entryPoints));
+    }
+
+    private static void updateEntryPointRate(MatchResult match, Map<String, EntryPointConfig> entryPoints) {
+        var name = match.group(1);
+        Number.parseInt(match.group(2))
+              .onSuccess(rate -> rateUpdate(name, rate, entryPoints));
+    }
+
+    private static void rateUpdate(String name, int rate, Map<String, EntryPointConfig> entryPoints) {
+        if (entryPoints.containsKey(name)) {
+            var existing = entryPoints.get(name);
+            entryPoints.put(name, existing.withRate(rate));
         }
     }
 
     private static double parseDoubleField(String json, String fieldName, double defaultValue) {
-        var pattern = Pattern.compile("\"" + fieldName + "\"\\s*:\\s*([\\d.]+)");
+        var pattern = Text.compilePattern("\"" + fieldName + "\"\\s*:\\s*([\\d.]+)")
+                          .unwrap();
         var matcher = pattern.matcher(json);
-        return matcher.find()
-               ? Double.parseDouble(matcher.group(1))
-               : defaultValue;
+        if (matcher.find()) {
+            return Number.parseDouble(matcher.group(1))
+                         .or(defaultValue);
+        }
+        return defaultValue;
     }
 
     private static boolean parseBooleanField(String json, String fieldName, boolean defaultValue) {
-        var pattern = Pattern.compile("\"" + fieldName + "\"\\s*:\\s*(true|false)");
+        var pattern = Text.compilePattern("\"" + fieldName + "\"\\s*:\\s*(true|false)")
+                          .unwrap();
         var matcher = pattern.matcher(json);
-        return matcher.find()
-               ? Boolean.parseBoolean(matcher.group(1))
-               : defaultValue;
+        if (matcher.find()) {
+            return Boolean.parseBoolean(matcher.group(1));
+        }
+        return defaultValue;
     }
 
     /// Save configuration to file.
     public Result<Unit> saveToFile(Path path) {
         return Result.lift(Causes.forOneValue("Failed to save config to " + path),
-                           () -> {
-                               Files.writeString(path, toJson());
-                               return unit();
-                           });
+                           () -> Files.writeString(path,
+                                                   toJson()))
+                     .mapToUnit();
     }
 }

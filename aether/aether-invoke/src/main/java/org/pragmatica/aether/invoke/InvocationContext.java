@@ -5,6 +5,8 @@ import org.pragmatica.utility.KSUID;
 
 import java.util.function.Supplier;
 
+import org.slf4j.MDC;
+
 /// ScopedValue-based context for propagating request ID through invocation chains.
 ///
 ///
@@ -36,6 +38,7 @@ import java.util.function.Supplier;
 /// }```
 public final class InvocationContext {
     private static final ScopedValue<String> REQUEST_ID = ScopedValue.newInstance();
+    private static final String MDC_KEY = "requestId";
 
     private InvocationContext() {}
 
@@ -51,6 +54,7 @@ public final class InvocationContext {
     /// Get current request ID or generate a new one.
     ///
     /// @return the current request ID, or a newly generated one
+    @SuppressWarnings("JBCT-RET-03") // Returns non-null String (fallback to generateRequestId)
     public static String getOrGenerateRequestId() {
         return REQUEST_ID.isBound() && REQUEST_ID.get() != null
                ? REQUEST_ID.get()
@@ -65,22 +69,34 @@ public final class InvocationContext {
     ///
     /// @return the result of the supplier
     public static <T> T runWithRequestId(String requestId, Supplier<T> supplier) {
-        return ScopedValue.where(REQUEST_ID, requestId)
-                          .call(supplier::get);
+        MDC.put(MDC_KEY, requestId);
+        try{
+            return ScopedValue.where(REQUEST_ID, requestId)
+                              .call(supplier::get);
+        } finally{
+            MDC.remove(MDC_KEY);
+        }
     }
 
     /// Run a runnable within a request ID scope.
     ///
     /// @param requestId the request ID to set for this scope
     /// @param runnable  the runnable to execute within the scope
+    @SuppressWarnings("JBCT-RET-01") // ScopedValue.run() requires Runnable — void is inherent
     public static void runWithRequestId(String requestId, Runnable runnable) {
-        ScopedValue.where(REQUEST_ID, requestId)
-                   .run(runnable);
+        MDC.put(MDC_KEY, requestId);
+        try{
+            ScopedValue.where(REQUEST_ID, requestId)
+                       .run(runnable);
+        } finally{
+            MDC.remove(MDC_KEY);
+        }
     }
 
     /// Capture the current context for propagation across async boundaries.
     ///
     /// @return a snapshot that can be used to restore context in another thread
+    @SuppressWarnings("JBCT-RET-03") // Nullable requestId required for ContextSnapshot — null means "no context"
     public static ContextSnapshot captureContext() {
         return new ContextSnapshot(currentRequestId().or((String) null));
     }
@@ -112,6 +128,7 @@ public final class InvocationContext {
         /// Run a runnable with the captured context restored.
         ///
         /// @param runnable the runnable to execute
+        @SuppressWarnings("JBCT-RET-01") // Delegates to Runnable-based API
         public void runWithCaptured(Runnable runnable) {
             if (requestId == null) {
                 runnable.run();

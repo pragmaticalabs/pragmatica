@@ -20,6 +20,9 @@ import org.pragmatica.messaging.Message;
 ///
 /// @see org.pragmatica.messaging.MessageRouter.Entry.SealedBuilder
 public sealed interface DeploymentEvent extends Message.Local {
+    /// Unused record for sealed utility interface.
+    record unused() implements DeploymentEvent {}
+
     /// Emitted when a deployment is initiated (blueprint change triggers LOAD command).
     record DeploymentStarted(Artifact artifact, NodeId targetNode, long timestamp) implements DeploymentEvent {
         /// Factory method following JBCT naming convention. */
@@ -55,7 +58,10 @@ public sealed interface DeploymentEvent extends Message.Local {
     /// Emitted when deployment fails (reaches FAILED state).
     record DeploymentFailed(Artifact artifact, NodeId nodeId, SliceState failedAt, long timestamp) implements DeploymentEvent {
         /// Factory method following JBCT naming convention. */
-        public static DeploymentFailed deploymentFailed(Artifact artifact, NodeId nodeId, SliceState failedAt, long timestamp) {
+        public static DeploymentFailed deploymentFailed(Artifact artifact,
+                                                        NodeId nodeId,
+                                                        SliceState failedAt,
+                                                        long timestamp) {
             return new DeploymentFailed(artifact, nodeId, failedAt, timestamp);
         }
     }

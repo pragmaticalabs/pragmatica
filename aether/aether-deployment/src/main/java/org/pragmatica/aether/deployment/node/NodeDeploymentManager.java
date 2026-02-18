@@ -47,6 +47,7 @@ import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+@SuppressWarnings("JBCT-RET-01") // MessageReceiver callbacks — void required by messaging framework
 public interface NodeDeploymentManager {
     record SliceDeployment(SliceNodeKey key, SliceState state, long timestamp) {}
 
@@ -160,14 +161,18 @@ public interface NodeDeploymentManager {
                 // Emit state transition event for metrics via MessageRouter
                 // For initial LOAD, use LOAD as both from and to (captures loadTime)
                 var effectiveFromState = previousState.or(state);
-                router.route(StateTransition.stateTransition(sliceKey.artifact(), self, effectiveFromState, state, timestamp));
+                router.route(StateTransition.stateTransition(sliceKey.artifact(),
+                                                             self,
+                                                             effectiveFromState,
+                                                             state,
+                                                             timestamp));
                 // Emit deployment failed event if transitioning to FAILED
                 // We do this here because we have access to previousState
                 if (state == SliceState.FAILED) {
                     previousState.onPresent(prevState -> router.route(DeploymentFailed.deploymentFailed(sliceKey.artifact(),
-                                                                                           self,
-                                                                                           prevState,
-                                                                                           timestamp)));
+                                                                                                        self,
+                                                                                                        prevState,
+                                                                                                        timestamp)));
                 }
             }
 
@@ -227,7 +232,7 @@ public interface NodeDeploymentManager {
             private void handleLoaded(SliceNodeKey sliceKey) {
                 // LOADED is a stable state - do nothing
                 // ACTIVATE must be explicitly requested by ClusterDeploymentManager
-                log.info("Slice {} loaded successfully, awaiting activation", sliceKey.artifact());
+                log.debug("Slice {} loaded, awaiting activation", sliceKey.artifact());
             }
 
             private void handleActivating(SliceNodeKey sliceKey) {
@@ -276,7 +281,9 @@ public interface NodeDeploymentManager {
             private void handleActive(SliceNodeKey sliceKey) {
                 // All registration and publishing is done in handleActivating BEFORE transitioning to ACTIVE
                 // Here we only emit the deployment completed event for metrics
-                router.route(DeploymentCompleted.deploymentCompleted(sliceKey.artifact(), self, System.currentTimeMillis()));
+                router.route(DeploymentCompleted.deploymentCompleted(sliceKey.artifact(),
+                                                                     self,
+                                                                     System.currentTimeMillis()));
             }
 
             private Promise<Unit> publishHttpRoutes(SliceNodeKey sliceKey) {
@@ -285,10 +292,8 @@ public interface NodeDeploymentManager {
                           artifact,
                           httpRoutePublisher.isPresent(),
                           sliceInvokerFacade.isPresent());
-                return httpRoutePublisher.flatMap(publisher ->
-                                                    sliceInvokerFacade.flatMap(facade ->
-                                                        findLoadedSlice(artifact)
-                                                            .map(ls -> doPublishHttpRoutes(artifact, publisher, facade, ls))))
+                return httpRoutePublisher.flatMap(publisher -> sliceInvokerFacade.flatMap(facade -> findLoadedSlice(artifact)
+                .map(ls -> doPublishHttpRoutes(artifact, publisher, facade, ls))))
                                          .or(Promise.unitPromise());
             }
 
@@ -511,18 +516,14 @@ public interface NodeDeploymentManager {
             }
 
             private Promise<?> applyTimeout(SliceNodeKey sliceKey,
-                                               Promise<?> operation,
-                                               org.pragmatica.lang.io.TimeSpan timeout) {
-                log.debug("Got timeout {} for {}, setting up callbacks",
-                          timeout,
-                          sliceKey.artifact());
+                                            Promise<?> operation,
+                                            org.pragmatica.lang.io.TimeSpan timeout) {
+                log.debug("Got timeout {} for {}, setting up callbacks", timeout, sliceKey.artifact());
                 return operation.timeout(timeout);
             }
 
             private void handleTransitionSuccess(SliceNodeKey sliceKey, SliceState successState) {
-                log.debug("Operation succeeded for {}, transitioning to {}",
-                          sliceKey.artifact(),
-                          successState);
+                log.debug("Operation succeeded for {}, transitioning to {}", sliceKey.artifact(), successState);
                 transitionTo(sliceKey, successState);
             }
 
@@ -611,8 +612,7 @@ public interface NodeDeploymentManager {
 
             private void unpublishRoutesForSuspension(HttpRoutePublisher publisher, SliceNodeKey sliceKey) {
                 publisher.unpublishRoutes(sliceKey.artifact());
-                log.debug("Unpublished HTTP routes for suspended slice {}",
-                          sliceKey.artifact());
+                log.debug("Unpublished HTTP routes for suspended slice {}", sliceKey.artifact());
             }
 
             /// Reactivate previously suspended slices after quorum is restored.
@@ -649,16 +649,14 @@ public interface NodeDeploymentManager {
                     log.debug("Reactivating suspended slice {}", sliceKey.artifact());
                     // Re-register for invocation
                     registerSliceForInvocation(sliceKey).flatMap(_ -> publishEndpointsAndRoutes(sliceKey))
-                                              .onSuccess(_ -> log.debug("Successfully reactivated slice {}",
+                                              .onSuccess(_ -> log.debug("Reactivated slice {}",
                                                                         sliceKey.artifact()))
                                               .onFailure(cause -> handleReactivationFailure(sliceKey, cause));
                 }
             }
 
             private void handleReactivationFailure(SliceNodeKey sliceKey, Cause cause) {
-                log.error("Failed to reactivate slice {}: {}",
-                          sliceKey.artifact(),
-                          cause.message());
+                log.error("Failed to reactivate slice {}: {}", sliceKey.artifact(), cause.message());
                 unregisterSliceFromInvocation(sliceKey);
                 unpublishHttpRoutes(sliceKey);
                 deployments.remove(sliceKey);
@@ -695,7 +693,7 @@ public interface NodeDeploymentManager {
                                      cluster,
                                      kvStore,
                                      invocationHandler,
-                                     SliceActionConfig.defaultConfiguration(),
+                                     SliceActionConfig.sliceActionConfig(),
                                      Option.none(),
                                      Option.none());
     }

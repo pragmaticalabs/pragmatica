@@ -25,7 +25,7 @@ public class CstValidatedNamingRule implements CstLintRule {
                                                                                             RuleId.QualifiedName.class))
                                    .map(qn -> text(qn, source))
                                    .or("");
-        if (!ctx.isBusinessPackage(packageName)) {
+        if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
         // Check classes and records for Validated prefix

@@ -31,6 +31,6 @@ public interface SecurityValidator {
     ///
     /// @return SecurityValidator that always returns anonymous context
     static SecurityValidator noOpValidator() {
-        return (_, _) -> Result.success(SecurityContext.anonymous());
+        return (_, _) -> Result.success(SecurityContext.securityContext());
     }
 }

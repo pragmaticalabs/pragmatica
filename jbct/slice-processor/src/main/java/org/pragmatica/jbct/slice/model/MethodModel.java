@@ -7,29 +7,37 @@ import org.pragmatica.lang.utils.Causes;
 
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.AnnotationMirror;
-import javax.lang.model.element.AnnotationValue;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.RecordComponentElement;
 import javax.lang.model.element.TypeElement;
-import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
 public record MethodModel(String name,
-                          TypeMirror returnType,
-                          TypeMirror responseType,
-                          TypeMirror parameterType,
-                          String parameterName,
-                          boolean deprecated,
-                          AspectModel aspects) {
+                           TypeMirror returnType,
+                           TypeMirror responseType,
+                           List<MethodParameterInfo> parameters,
+                           boolean deprecated,
+                           List<ResourceQualifierModel> interceptors,
+                           Option<KeyExtractorInfo> keyExtractor,
+                           Option<MethodParameterInfo> multiParamKeyParam) {
+
+    public record MethodParameterInfo(String name, TypeMirror type, boolean isKey) {}
+
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("^[a-z][a-zA-Z0-9]*$");
-    private static final String ASPECT_ANNOTATION = "org.pragmatica.aether.infra.aspect.Aspect";
-    private static final String KEY_ANNOTATION = "org.pragmatica.aether.infra.aspect.Key";
+    private static final String KEY_ANNOTATION = "org.pragmatica.aether.resource.aspect.Key";
     private static final String PROMISE_TYPE = "org.pragmatica.lang.Promise";
+    private static final String RESOURCE_QUALIFIER_ANNOTATION = "org.pragmatica.aether.slice.annotation.ResourceQualifier";
+
+    public MethodModel {
+        interceptors = List.copyOf(interceptors);
+        parameters = List.copyOf(parameters);
+    }
 
     public static Result<MethodModel> methodModel(ExecutableElement method, ProcessingEnvironment env) {
         var name = method.getSimpleName()
@@ -45,27 +53,135 @@ public record MethodModel(String name,
         .flatMap(_ -> validateAndBuildModel(method, env, name, returnType));
     }
 
+    /// Check if this method has any interceptors.
+    public boolean hasInterceptors() {
+        return !interceptors.isEmpty();
+    }
+
+    /// Returns true if this method has zero parameters.
+    public boolean hasNoParams() {
+        return parameters.isEmpty();
+    }
+
+    /// Returns true if this method has exactly one parameter.
+    public boolean hasSingleParam() {
+        return parameters.size() == 1;
+    }
+
+    /// Returns true if this method has more than one parameter.
+    public boolean hasMultipleParams() {
+        return parameters.size() > 1;
+    }
+
+    /// Returns the single parameter type (for backwards compatibility with single-param methods).
+    /// For 0-param methods returns "org.pragmatica.lang.Unit".
+    /// For multi-param methods, this should not be called — use parameters() instead.
+    public String effectiveRequestType() {
+        if (hasNoParams()) {
+            return "org.pragmatica.lang.Unit";
+        }
+        if (hasSingleParam()) {
+            return parameters.getFirst().type().toString();
+        }
+        throw new IllegalStateException("effectiveRequestType() called on multi-param method: " + name);
+    }
+
+    /// Returns the parameter type for single-param methods.
+    /// Used by RouteSourceGenerator for route generation.
+    public TypeMirror parameterType() {
+        if (hasSingleParam()) {
+            return parameters.getFirst().type();
+        }
+        throw new IllegalStateException("parameterType() called on method with " + parameters.size() + " params: " + name);
+    }
+
+    /// Returns the parameter name for single-param methods.
+    /// Used by RouteSourceGenerator for route generation.
+    public String parameterName() {
+        if (hasSingleParam()) {
+            return parameters.getFirst().name();
+        }
+        throw new IllegalStateException("parameterName() called on method with " + parameters.size() + " params: " + name);
+    }
+
     private static Result<MethodModel> validateAndBuildModel(ExecutableElement method,
-                                                             ProcessingEnvironment env,
-                                                             String name,
-                                                             TypeMirror returnType) {
+                                                              ProcessingEnvironment env,
+                                                              String name,
+                                                              TypeMirror returnType) {
         var responseType = extractPromiseTypeArg(returnType);
         var params = method.getParameters();
-        if (params.size() != 1) {
-            return Causes.cause("Slice methods must have exactly one parameter: " + name)
+        var deprecated = method.getAnnotation(Deprecated.class) != null;
+        var methodInterceptors = extractMethodInterceptors(method, env);
+        var paramInfos = buildParameterInfos(params, env);
+        return validateKeyAnnotations(paramInfos, name)
+        .flatMap(_ -> resolveKeyInfo(paramInfos, env, methodInterceptors, name))
+        .map(keyResult -> new MethodModel(name,
+                                           returnType,
+                                           responseType,
+                                           paramInfos,
+                                           deprecated,
+                                           methodInterceptors,
+                                           keyResult.keyExtractor(),
+                                           keyResult.multiParamKeyParam()));
+    }
+
+    private record KeyResolution(Option<KeyExtractorInfo> keyExtractor,
+                                  Option<MethodParameterInfo> multiParamKeyParam) {}
+
+    private static List<MethodParameterInfo> buildParameterInfos(
+        List<? extends javax.lang.model.element.VariableElement> params,
+        ProcessingEnvironment env) {
+        var result = new ArrayList<MethodParameterInfo>();
+        for (var param : params) {
+            var isKey = hasKeyAnnotationOnParam(param);
+            result.add(new MethodParameterInfo(param.getSimpleName().toString(), param.asType(), isKey));
+        }
+        return result;
+    }
+
+    private static boolean hasKeyAnnotationOnParam(javax.lang.model.element.VariableElement param) {
+        return param.getAnnotationMirrors()
+                    .stream()
+                    .anyMatch(mirror -> isAnnotationType(mirror, KEY_ANNOTATION));
+    }
+
+    private static Result<Unit> validateKeyAnnotations(List<MethodParameterInfo> paramInfos, String methodName) {
+        var keyCount = paramInfos.stream().filter(MethodParameterInfo::isKey).count();
+        if (keyCount > 1) {
+            return Causes.cause("Multiple @Key annotations found on method '" + methodName
+                                + "'. Only one @Key is allowed per method.")
                          .result();
         }
-        var param = params.getFirst();
-        var deprecated = method.getAnnotation(Deprecated.class) != null;
-        return extractAspects(method, param, env)
-        .map(aspects -> new MethodModel(name,
-                                        returnType,
-                                        responseType,
-                                        param.asType(),
-                                        param.getSimpleName()
-                                             .toString(),
-                                        deprecated,
-                                        aspects));
+        return Result.success(Unit.unit());
+    }
+
+    private static Result<KeyResolution> resolveKeyInfo(List<MethodParameterInfo> paramInfos,
+                                                         ProcessingEnvironment env,
+                                                         List<ResourceQualifierModel> interceptors,
+                                                         String methodName) {
+        if (interceptors.isEmpty()) {
+            return Result.success(new KeyResolution(Option.none(), Option.none()));
+        }
+
+        if (paramInfos.isEmpty()) {
+            return Result.success(new KeyResolution(Option.none(), Option.none()));
+        }
+
+        if (paramInfos.size() == 1) {
+            var param = paramInfos.getFirst();
+            if (param.isKey()) {
+                return Result.success(new KeyResolution(Option.none(), Option.none()));
+            }
+            return extractKeyInfoFromRecord(param.type(), env, interceptors)
+            .map(keyInfo -> new KeyResolution(keyInfo, Option.none()));
+        }
+
+        // Multi-param: check for @Key on parameter
+        var keyParam = paramInfos.stream().filter(MethodParameterInfo::isKey).findFirst();
+        if (keyParam.isPresent()) {
+            return Result.success(new KeyResolution(Option.none(), Option.some(keyParam.get())));
+        }
+        return Result.success(new KeyResolution(Option.none(), Option.none()));
     }
 
     private static Result<Unit> validatePromiseReturnType(TypeMirror returnType, String methodName) {
@@ -93,88 +209,39 @@ public record MethodModel(String name,
         return Result.success(Unit.unit());
     }
 
-    private static Result<AspectModel> extractAspects(ExecutableElement method,
-                                                      VariableElement param,
-                                                      ProcessingEnvironment env) {
-        return findAnnotationMirror(method, ASPECT_ANNOTATION)
-        .fold(() -> Result.success(AspectModel.none()),
-              mirror -> buildAspectModel(mirror, param, env));
-    }
-
-    private static Result<AspectModel> buildAspectModel(AnnotationMirror mirror,
-                                                        VariableElement param,
-                                                        ProcessingEnvironment env) {
-        var kinds = extractAspectKinds(mirror);
-        var hasCache = kinds.contains("CACHE");
-        if (!hasCache) {
-            return Result.success(new AspectModel(kinds, Option.none()));
+    /// Extract method-level interceptors from annotations with @ResourceQualifier meta-annotation.
+    /// Annotations are processed in declaration order; the generated interceptor composition
+    /// wraps inside-out (last annotation = innermost).
+    private static List<ResourceQualifierModel> extractMethodInterceptors(ExecutableElement method,
+                                                                           ProcessingEnvironment env) {
+        var interceptors = new ArrayList<ResourceQualifierModel>();
+        for (var annotation : method.getAnnotationMirrors()) {
+            var rq = ResourceQualifierModel.fromAnnotationMirror(annotation, env);
+            rq.onPresent(interceptors::add);
         }
-        return extractKeyInfo(param.asType(), env).map(keyInfo -> new AspectModel(kinds, keyInfo));
+        return interceptors;
     }
 
-    private static Option<AnnotationMirror> findAnnotationMirror(Element element, String annotationName) {
-        return element.getAnnotationMirrors()
-                      .stream()
-                      .filter(mirror -> isAnnotationType(mirror, annotationName))
-                      .findFirst()
-                      .map(Option::some)
-                      .orElse(Option.none());
-    }
-
-    private static boolean isAnnotationType(AnnotationMirror mirror, String annotationName) {
-        var annotationType = mirror.getAnnotationType()
-                                   .asElement();
-        return annotationType instanceof TypeElement te &&
-        te.getQualifiedName()
-          .toString()
-          .equals(annotationName);
-    }
-
-    private static List<String> extractAspectKinds(AnnotationMirror aspectMirror) {
-        return aspectMirror.getElementValues()
-                           .entrySet()
-                           .stream()
-                           .filter(entry -> entry.getKey()
-                                                 .getSimpleName()
-                                                 .toString()
-                                                 .equals("value"))
-                           .flatMap(entry -> extractKindsFromValue(entry.getValue()).stream())
-                           .toList();
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<String> extractKindsFromValue(AnnotationValue annotationValue) {
-        var value = annotationValue.getValue();
-        if (! (value instanceof List<?> list)) {
-            return List.of();
+    /// Extract @Key info from the method parameter record, but only if interceptors are present.
+    /// If no interceptors, keyExtractor is always none.
+    /// Key extractors are only generated from explicit @Key annotations on record components.
+    private static Result<Option<KeyExtractorInfo>> extractKeyInfoFromRecord(TypeMirror paramType,
+                                                                              ProcessingEnvironment env,
+                                                                              List<ResourceQualifierModel> interceptors) {
+        if (interceptors.isEmpty()) {
+            return Result.success(Option.none());
         }
-        return list.stream()
-                   .filter(AnnotationValue.class::isInstance)
-                   .map(AnnotationValue.class::cast)
-                   .map(AnnotationValue::getValue)
-                   .filter(VariableElement.class::isInstance)
-                   .map(VariableElement.class::cast)
-                   .map(ve -> ve.getSimpleName()
-                                .toString())
-                   .toList();
-    }
-
-    private static Result<Option<KeyExtractorInfo>> extractKeyInfo(TypeMirror paramType,
-                                                                   ProcessingEnvironment env) {
         if (! (paramType instanceof DeclaredType dt)) {
-            return KeyExtractorInfo.identity(paramType.toString())
-                                   .map(Option::some);
+            return Result.success(Option.none());
         }
         var element = dt.asElement();
         if (element.getKind() != ElementKind.RECORD) {
-            return KeyExtractorInfo.identity(paramType.toString())
-                                   .map(Option::some);
+            return Result.success(Option.none());
         }
         var typeElement = (TypeElement) element;
         var keyFields = findKeyAnnotatedFields(typeElement);
         if (keyFields.isEmpty()) {
-            return KeyExtractorInfo.identity(paramType.toString())
-                                   .map(Option::some);
+            return Result.success(Option.none());
         }
         if (keyFields.size() > 1) {
             return Causes.cause("Multiple @Key annotations found on " + typeElement.getSimpleName()
@@ -194,7 +261,7 @@ public record MethodModel(String name,
     }
 
     private static Result<Option<KeyExtractorInfo>> buildKeyExtractorFromField(RecordComponentElement keyField,
-                                                                               TypeElement typeElement) {
+                                                                                TypeElement typeElement) {
         var keyType = keyField.asType()
                               .toString();
         var fieldName = keyField.getSimpleName()
@@ -207,6 +274,24 @@ public record MethodModel(String name,
 
     private static boolean hasKeyAnnotation(RecordComponentElement element) {
         return findAnnotationMirror(element, KEY_ANNOTATION).isPresent();
+    }
+
+    private static Option<AnnotationMirror> findAnnotationMirror(Element element, String annotationName) {
+        return element.getAnnotationMirrors()
+                      .stream()
+                      .filter(mirror -> isAnnotationType(mirror, annotationName))
+                      .findFirst()
+                      .map(Option::some)
+                      .orElse(Option.none());
+    }
+
+    private static boolean isAnnotationType(AnnotationMirror mirror, String annotationName) {
+        var annotationType = mirror.getAnnotationType()
+                                   .asElement();
+        return annotationType instanceof TypeElement te &&
+        te.getQualifiedName()
+          .toString()
+          .equals(annotationName);
     }
 
     private static TypeMirror extractPromiseTypeArg(TypeMirror returnType) {

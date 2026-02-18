@@ -5,7 +5,7 @@ FROM eclipse-temurin:25-alpine
 
 LABEL org.opencontainers.image.title="Aether Node"
 LABEL org.opencontainers.image.description="Aether distributed runtime node"
-LABEL org.opencontainers.image.version="0.15.1"
+LABEL org.opencontainers.image.version="0.16.0"
 LABEL org.opencontainers.image.source="https://github.com/siy/aether"
 
 # Create non-root user for security
@@ -54,5 +54,6 @@ ENTRYPOINT ["sh", "-c", "\
     --config=/app/aether.toml \
     ${NODE_ID:+--node-id=$NODE_ID} \
     --port=$CLUSTER_PORT \
+    --management-port=$MANAGEMENT_PORT \
     ${PEERS:+--peers=$PEERS} \
 "]

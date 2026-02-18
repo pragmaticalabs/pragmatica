@@ -1,15 +1,17 @@
 package org.pragmatica.aether.forge.load.pattern;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.lang.Functions.Fn1;
 
 import java.util.regex.Pattern;
 
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
 
 /// Parses pattern specifications like `${type:args`} into PatternGenerator instances.
 public sealed interface PatternParser {
@@ -31,46 +33,61 @@ public sealed interface PatternParser {
         }
         var type = matcher.group(1);
         var args = matcher.group(2);
-        // may be null
+        return dispatchByType(type, args, pattern);
+    }
+
+    private static Result<PatternGenerator> dispatchByType(String type, String args, String pattern) {
         return switch (type) {
-            case UuidGenerator.TYPE -> parseUuid();
-            case RandomGenerator.TYPE -> parseRandom(args, pattern);
-            case RangeGenerator.TYPE -> parseRange(args, pattern);
-            case ChoiceGenerator.TYPE -> parseChoice(args, pattern);
-            case SequenceGenerator.TYPE -> SequenceGenerator.sequenceGenerator(args);
-            default -> UNKNOWN_TYPE.apply(type)
-                                   .result();
+            case UuidGenerator.TYPE -> toUuidGenerator();
+            case RandomGenerator.TYPE -> toRandomGenerator(args, pattern);
+            case RangeGenerator.TYPE -> toRangeGenerator(args, pattern);
+            case ChoiceGenerator.TYPE -> toChoiceGenerator(args, pattern);
+            case SequenceGenerator.TYPE -> toSequenceGenerator(args);
+            default -> unknownType(type);
         };
     }
 
-    private static Result<PatternGenerator> parseUuid() {
-        return Result.success(UuidGenerator.uuidGenerator());
+    private static Result<PatternGenerator> toUuidGenerator() {
+        return UuidGenerator.uuidGenerator()
+                            .map(gen -> gen);
     }
 
-    private static Result<PatternGenerator> parseRandom(String args, String pattern) {
-        return Option.option(args)
-                     .filter(s -> !s.isEmpty())
+    private static Result<PatternGenerator> toSequenceGenerator(String args) {
+        return SequenceGenerator.sequenceGenerator(args);
+    }
+
+    private static Result<PatternGenerator> unknownType(String type) {
+        return UNKNOWN_TYPE.apply(type)
+                           .result();
+    }
+
+    private static Result<PatternGenerator> toRandomGenerator(String args, String pattern) {
+        return option(args).filter(s -> !s.isEmpty())
                      .toResult(INVALID_PATTERN.apply(pattern + " (random requires template)"))
-                     .map(RandomGenerator::randomGenerator);
+                     .flatMap(PatternParser::widenRandomGenerator);
     }
 
-    private static Result<PatternGenerator> parseRange(String args, String pattern) {
-        return Option.option(args)
-                     .filter(s -> !s.isEmpty())
+    private static Result<PatternGenerator> widenRandomGenerator(String template) {
+        return RandomGenerator.randomGenerator(template)
+                              .map(gen -> gen);
+    }
+
+    private static Result<PatternGenerator> toRangeGenerator(String args, String pattern) {
+        return option(args).filter(s -> !s.isEmpty())
                      .toResult(INVALID_PATTERN.apply(pattern + " (range requires MIN-MAX)"))
                      .flatMap(RangeGenerator::rangeGenerator);
     }
 
-    private static Result<PatternGenerator> parseChoice(String args, String pattern) {
-        return Option.option(args)
-                     .filter(s -> !s.isEmpty())
+    private static Result<PatternGenerator> toChoiceGenerator(String args, String pattern) {
+        return option(args).filter(s -> !s.isEmpty())
                      .toResult(INVALID_PATTERN.apply(pattern + " (choice requires values)"))
                      .flatMap(ChoiceGenerator::choiceGenerator);
     }
 
     /// Checks if a string contains any pattern placeholders.
     static boolean containsPatterns(String text) {
-        return text != null && text.contains("${");
+        return option(text).filter(t -> t.contains("${"))
+                     .isPresent();
     }
 
     /// Extracts the pattern type from a pattern string.
@@ -81,5 +98,5 @@ public sealed interface PatternParser {
                : none();
     }
 
-    record Unused() implements PatternParser {}
+    record unused() implements PatternParser {}
 }

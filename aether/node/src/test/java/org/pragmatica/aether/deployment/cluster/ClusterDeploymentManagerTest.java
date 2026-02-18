@@ -7,7 +7,7 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
-import org.pragmatica.aether.provider.AutoHealConfig;
+import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
@@ -347,7 +347,7 @@ class ClusterDeploymentManagerTest {
     void leader_failover_triggers_immediate_auto_heal_when_cluster_below_target() {
         var provisionCount = new AtomicInteger(0);
         var testTopologyManager = new TestTopologyManager(3);
-        var testNodeProvider = new TestNodeProvider(provisionCount);
+        var testComputeProvider = new TestComputeProvider(provisionCount);
         var prePopulatedKvStore = new TestKVStore();
 
         // Pre-populate KVStore with a blueprint to simulate leader failover (not initial startup)
@@ -356,17 +356,17 @@ class ClusterDeploymentManagerTest {
         var targetValue = SliceTargetValue.sliceTargetValue(artifact.version(), 2);
         prePopulatedKvStore.put(targetKey, targetValue);
 
-        // Create manager with NodeProvider and TopologyManager that expects 3 nodes
+        // Create manager with ComputeProvider and TopologyManager that expects 3 nodes
         var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, prePopulatedKvStore, router, List.of(self, node2),
-            testTopologyManager, Option.option(testNodeProvider), AutoHealConfig.DEFAULT);
+            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT);
 
         clusterNode.appliedCommands.clear();
 
         // Become leader with only 2 of 3 expected nodes — failover triggers immediate auto-heal
         healingManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
 
-        // NodeProvider.provision() should have been called once (deficit = 1)
+        // ComputeProvider.provision() should have been called once (deficit = 1)
         assertThat(provisionCount.get()).isEqualTo(1);
     }
 
@@ -374,12 +374,12 @@ class ClusterDeploymentManagerTest {
     void initial_startup_defers_auto_heal_during_cooldown() {
         var provisionCount = new AtomicInteger(0);
         var testTopologyManager = new TestTopologyManager(3);
-        var testNodeProvider = new TestNodeProvider(provisionCount);
+        var testComputeProvider = new TestComputeProvider(provisionCount);
 
-        // Create manager with NodeProvider, no pre-populated blueprints (initial startup)
+        // Create manager with ComputeProvider, no pre-populated blueprints (initial startup)
         var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, kvStore, router, List.of(self, node2),
-            testTopologyManager, Option.option(testNodeProvider), AutoHealConfig.DEFAULT);
+            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT);
 
         clusterNode.appliedCommands.clear();
 
@@ -394,12 +394,12 @@ class ClusterDeploymentManagerTest {
     void leader_activation_skips_auto_heal_when_cluster_at_target() {
         var provisionCount = new AtomicInteger(0);
         var testTopologyManager = new TestTopologyManager(3);
-        var testNodeProvider = new TestNodeProvider(provisionCount);
+        var testComputeProvider = new TestComputeProvider(provisionCount);
 
         // Create manager with 3 nodes already present (matches target)
         var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, kvStore, router, List.of(self, node2, node3),
-            testTopologyManager, Option.option(testNodeProvider), AutoHealConfig.DEFAULT);
+            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT);
 
         clusterNode.appliedCommands.clear();
 
@@ -413,7 +413,7 @@ class ClusterDeploymentManagerTest {
     void topology_change_triggers_auto_heal_from_outer_cdm() {
         var provisionCount = new AtomicInteger(0);
         var testTopologyManager = new TestTopologyManager(3);
-        var testNodeProvider = new TestNodeProvider(provisionCount);
+        var testComputeProvider = new TestComputeProvider(provisionCount);
         var prePopulatedKvStore = new TestKVStore();
 
         // Pre-populate to simulate failover (immediate auto-heal, no cooldown)
@@ -424,7 +424,7 @@ class ClusterDeploymentManagerTest {
 
         var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, prePopulatedKvStore, router, List.of(self, node2, node3),
-            testTopologyManager, Option.option(testNodeProvider), AutoHealConfig.DEFAULT);
+            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT);
 
         // Become leader with full topology (no deficit)
         healingManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
@@ -636,17 +636,41 @@ class ClusterDeploymentManagerTest {
         }
     }
 
-    static class TestNodeProvider implements org.pragmatica.aether.provider.NodeProvider {
+    static class TestComputeProvider implements org.pragmatica.aether.environment.ComputeProvider {
         private final AtomicInteger provisionCount;
 
-        TestNodeProvider(AtomicInteger provisionCount) {
+        TestComputeProvider(AtomicInteger provisionCount) {
             this.provisionCount = provisionCount;
         }
 
         @Override
-        public Promise<Unit> provision(org.pragmatica.aether.provider.InstanceType instanceType) {
-            provisionCount.incrementAndGet();
+        public Promise<org.pragmatica.aether.environment.InstanceInfo> provision(org.pragmatica.aether.environment.InstanceType instanceType) {
+            var id = new org.pragmatica.aether.environment.InstanceId("test-" + provisionCount.incrementAndGet());
+            var info = new org.pragmatica.aether.environment.InstanceInfo(
+                id,
+                org.pragmatica.aether.environment.InstanceStatus.RUNNING,
+                List.of("localhost:9999"),
+                instanceType);
+            return Promise.success(info);
+        }
+
+        @Override
+        public Promise<Unit> terminate(org.pragmatica.aether.environment.InstanceId instanceId) {
             return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public Promise<List<org.pragmatica.aether.environment.InstanceInfo>> listInstances() {
+            return Promise.success(List.of());
+        }
+
+        @Override
+        public Promise<org.pragmatica.aether.environment.InstanceInfo> instanceStatus(org.pragmatica.aether.environment.InstanceId instanceId) {
+            return Promise.success(new org.pragmatica.aether.environment.InstanceInfo(
+                instanceId,
+                org.pragmatica.aether.environment.InstanceStatus.RUNNING,
+                List.of("localhost:9999"),
+                org.pragmatica.aether.environment.InstanceType.ON_DEMAND));
         }
     }
 

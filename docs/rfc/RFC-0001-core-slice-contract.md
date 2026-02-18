@@ -1,7 +1,7 @@
 ---
 RFC: 0001
 Title: Core Slice Contract
-Status: Draft
+Status: Implemented
 Author: Sergiy Yevtushenko
 Created: 2026-01-15
 Updated: 2026-01-28
@@ -201,14 +201,14 @@ Promise<ResponseType> methodName(RequestType request);
 
 **Rules:**
 - Return type: `Promise<T>` (async, fallible)
-- Exactly one parameter (request object)
-- No overloads (method name uniqueness)
+- Any number of parameters (0, 1, or more). Multi-param methods use synthetic request records at transport. Zero-param methods use `Unit`.
+- No overloads (method name uniqueness; rejected at compile time)
 - No checked exceptions in signature
 
 **Forbidden patterns:**
 - `Result<T>` return (use `Promise<T>`, failures flow through Promise)
 - `Promise<Result<T>>` return (nested error channels)
-- Multiple parameters (wrap in request record)
+- Overloaded method names (use distinct names)
 - Void return (use `Promise<Unit>`)
 
 ### 6. Slice Manifest Format

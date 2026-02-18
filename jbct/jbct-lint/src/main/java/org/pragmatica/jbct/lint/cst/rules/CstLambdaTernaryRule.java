@@ -25,16 +25,21 @@ public class CstLambdaTernaryRule implements CstLintRule {
                                                                                             RuleId.QualifiedName.class))
                                    .map(qn -> text(qn, source))
                                    .or("");
-        if (!ctx.isBusinessPackage(packageName)) {
+        if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
         return findAll(root, RuleId.Lambda.class).stream()
-                      .filter(lambda -> hasTernary(lambda, source))
+                      .filter(this::containsActualTernary)
                       .map(lambda -> createDiagnostic(lambda, ctx));
     }
 
-    private boolean hasTernary(CstNode lambda, String source) {
-        return contains(lambda, RuleId.Ternary.class) || text(lambda, source).contains("?");
+    private boolean containsActualTernary(CstNode lambda) {
+        return findAll(lambda, RuleId.Ternary.class).stream()
+                      .anyMatch(CstLambdaTernaryRule::isActualTernary);
+    }
+
+    private static boolean isActualTernary(CstNode node) {
+        return node instanceof CstNode.NonTerminal nt && nt.children().size() > 1;
     }
 
     private Diagnostic createDiagnostic(CstNode lambda, LintContext ctx) {

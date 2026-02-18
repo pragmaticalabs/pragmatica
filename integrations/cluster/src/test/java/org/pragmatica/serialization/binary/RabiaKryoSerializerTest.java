@@ -20,8 +20,8 @@ class RabiaKryoSerializerTest {
 
     @Test
     void roundTrip_succeeds_forProtocolMessage() {
-        var serializer = KryoSerializer.kryoSerializer(CustomClasses::configure, StringKey::register);
-        var deserializer = KryoDeserializer.kryoDeserializer(CustomClasses::configure, StringKey::register);
+        var serializer = KryoSerializer.kryoSerializer(CustomClasses.INSTANCE, StringKey.registrator());
+        var deserializer = KryoDeserializer.kryoDeserializer(CustomClasses.INSTANCE, StringKey.registrator());
 
         var commands = List.of(new KVCommand.Put<>(key("k1"), "v1"),
                                new KVCommand.Get<>(key("k2")),

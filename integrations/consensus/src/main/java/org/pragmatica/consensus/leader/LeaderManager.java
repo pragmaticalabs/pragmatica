@@ -149,7 +149,7 @@ public interface LeaderManager {
         return leaderManager(self, router, Option.some(proposalHandler), expectedCluster);
     }
 
-    Logger LOG = LoggerFactory.getLogger(LeaderManager.class);
+    Logger log = LoggerFactory.getLogger(LeaderManager.class);
 
     /// Retry delay for leader proposals that fail (e.g., when consensus not ready yet)
     TimeSpan PROPOSAL_RETRY_DELAY = timeSpan(500).millis();
@@ -195,7 +195,7 @@ public interface LeaderManager {
 
             @Override
             public void onLeaderCommitted(NodeId leader) {
-                LOG.debug("onLeaderCommitted: self={}, leader={}, needsReactivation={}",
+                log.debug("onLeaderCommitted: self={}, leader={}, needsReactivation={}",
                           self,
                           leader,
                           needsReactivation.get());
@@ -212,7 +212,7 @@ public interface LeaderManager {
                     // Increment viewSequence on each commit to track local state progression
                     viewSequence.incrementAndGet();
                     if (forceNotify || !newLeader.equals(oldLeader)) {
-                        LOG.debug("Leader committed: {} (forceNotify={}, changed={}), notifying",
+                        log.debug("Leader committed: {} (forceNotify={}, changed={}), notifying",
                                   newLeader,
                                   forceNotify,
                                   !newLeader.equals(oldLeader));
@@ -222,20 +222,20 @@ public interface LeaderManager {
                         // deploy commands arrive before ClusterDeploymentManager is active.
                         notifyLeaderChange();
                     } else {
-                        LOG.debug("Leader unchanged ({}), skipping notification", newLeader);
+                        log.debug("Leader unchanged ({}), skipping notification", newLeader);
                     }
                 }
             }
 
             @Override
             public void triggerElection() {
-                LOG.debug("triggerElection called: self={}, active={}, topology={}, expectedCluster={}",
+                log.debug("triggerElection called: self={}, active={}, topology={}, expectedCluster={}",
                           self,
                           active.get(),
                           currentTopology.get(),
                           expectedCluster);
                 if (!active.get()) {
-                    LOG.debug("triggerElection skipped: not active");
+                    log.debug("triggerElection skipped: not active");
                     scheduleElectionRetryIfNeeded();
                     return;
                 }
@@ -246,10 +246,12 @@ public interface LeaderManager {
             }
 
             private void scheduleElectionRetryIfNeeded() {
-                if (!hasEverHadLeader.get() && currentLeader.get().isEmpty()) {
+                if (!hasEverHadLeader.get() && currentLeader.get()
+                                                            .isEmpty()) {
                     var retries = electionRetryCount.incrementAndGet();
-                    LOG.debug("No leader elected yet, scheduling election retry #{} in {}ms",
-                              retries, PROPOSAL_RETRY_DELAY.millis());
+                    log.debug("No leader elected yet, scheduling election retry #{} in {}ms",
+                              retries,
+                              PROPOSAL_RETRY_DELAY.millis());
                     SharedScheduler.schedule(this::triggerElection, PROPOSAL_RETRY_DELAY);
                 }
             }
@@ -257,7 +259,7 @@ public interface LeaderManager {
             private void handleConsensusElection(LeaderProposalHandler handler) {
                 var topology = currentTopology.get();
                 if (topology.isEmpty()) {
-                    LOG.debug("Skipping election trigger: topology is empty");
+                    log.debug("Skipping election trigger: topology is empty");
                     return;
                 }
                 var candidatePool = selectCandidatePool(topology);
@@ -271,22 +273,23 @@ public interface LeaderManager {
                 // If each node proposed itself, different BatchIds would cause infinite V0 decisions
                 // because no single proposal gets quorum agreement.
                 var shouldSubmit = self.equals(candidate);
-                if (!shouldSubmit && isInitialElection
-                    && electionRetryCount.get() >= ELECTION_FALLBACK_RETRIES) {
-                    LOG.info("Election fallback after {} retries: self={} taking over submission "
+                if (!shouldSubmit && isInitialElection && electionRetryCount.get() >= ELECTION_FALLBACK_RETRIES) {
+                    log.info("Election fallback after {} retries: self={} taking over submission "
                              + "for candidate={} (designated min node may be slow)",
-                             electionRetryCount.get(), self, candidate);
+                             electionRetryCount.get(),
+                             self,
+                             candidate);
                     shouldSubmit = true;
                 }
                 if (!shouldSubmit) {
-                    LOG.debug("Skipping election trigger: self={} is not min node {} in candidatePool {} (initial={})",
+                    log.debug("Skipping election trigger: self={} is not min node {} in candidatePool {} (initial={})",
                               self,
                               candidate,
                               candidatePool,
                               isInitialElection);
                     return;
                 }
-                LOG.debug("Submitting leader proposal: candidate={}, submitter={} (min node in {}, initial={})",
+                log.debug("Submitting leader proposal: candidate={}, submitter={} (min node in {}, initial={})",
                           candidate,
                           self,
                           expectedCluster.isEmpty()
@@ -347,7 +350,7 @@ public interface LeaderManager {
                                                     .isPresent();
                 if (leaderWasRemoved && active.get()) {
                     // Leader was removed while we still have quorum - trigger re-election
-                    LOG.debug("Leader {} was removed, triggering re-election", removedNode);
+                    log.debug("Leader {} was removed, triggering re-election", removedNode);
                     if (proposalHandler.isPresent()) {
                         // Consensus mode: submit proposal
                         triggerElection();
@@ -406,7 +409,7 @@ public interface LeaderManager {
             private void submitProposal(LeaderProposalHandler handler, NodeId candidate) {
                 // Prevent duplicate submissions while a proposal is in flight
                 if (!proposalInFlight.compareAndSet(false, true)) {
-                    LOG.debug("Skipping proposal submission - another proposal is in flight");
+                    log.debug("Skipping proposal submission - another proposal is in flight");
                     return;
                 }
                 var nextViewSequence = viewSequence.incrementAndGet();
@@ -414,7 +417,7 @@ public interface LeaderManager {
                        .onFailure(cause -> {
                                       // Clear in-flight flag on failure to allow retry
                 proposalInFlight.set(false);
-                                      LOG.debug("Leader proposal failed ({}), scheduling retry in {}ms",
+                                      log.debug("Leader proposal failed ({}), scheduling retry in {}ms",
                                                 cause.message(),
                                                 PROPOSAL_RETRY_DELAY.millis());
                                       scheduleProposalRetry(handler, candidate);
@@ -426,7 +429,7 @@ public interface LeaderManager {
                                              // Only retry if still active and no leader elected yet
                 if (active.get() && currentLeader.get()
                                                  .isEmpty()) {
-                                                 LOG.debug("Retrying leader proposal for {}", candidate);
+                                                 log.debug("Retrying leader proposal for {}", candidate);
                                                  submitProposal(handler, candidate);
                                              }
                                          },
@@ -483,9 +486,12 @@ public interface LeaderManager {
                     // Use INITIAL_ELECTION_DELAY on first election to allow all nodes to complete
                     // synchronization before leader proposals are submitted.
                     var isFirstElection = !hasEverHadLeader.get();
-                    var delay = isFirstElection ? INITIAL_ELECTION_DELAY : PROPOSAL_RETRY_DELAY;
-                    LOG.debug("Quorum established, scheduling leader election trigger (initial={}, delay={}ms)",
-                              isFirstElection, delay.millis());
+                    var delay = isFirstElection
+                                ? INITIAL_ELECTION_DELAY
+                                : PROPOSAL_RETRY_DELAY;
+                    log.debug("Quorum established, scheduling leader election trigger (initial={}, delay={}ms)",
+                              isFirstElection,
+                              delay.millis());
                     SharedScheduler.schedule(this::triggerElection, delay);
                 } else {
                     // Local mode: notify if we have a candidate

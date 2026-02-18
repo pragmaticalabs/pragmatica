@@ -1,10 +1,15 @@
 package org.pragmatica.aether.config.internal;
 
 import org.pragmatica.aether.config.ConfigSource;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
+
+import static org.pragmatica.lang.Result.success;
 
 /// Utility for deep-merging configuration maps.
 ///
@@ -12,7 +17,6 @@ import java.util.Map;
 /// in priority order (sources should be pre-sorted, highest priority first).
 /// Later sources override earlier sources for the same keys.
 public sealed interface DeepMerger {
-
     /// Merge multiple configuration sources into a single flat map.
     ///
     /// Sources should be sorted by priority (highest first).
@@ -22,13 +26,10 @@ public sealed interface DeepMerger {
     /// @return Merged map of all key-value pairs
     static Map<String, String> mergeSources(List<ConfigSource> sources) {
         var result = new LinkedHashMap<String, String>();
-
-        // Process in reverse order so highest priority wins
-        for (int i = sources.size() - 1; i >= 0; i--) {
-            var source = sources.get(i);
-            result.putAll(source.asMap());
-        }
-
+        var reversed = sources.reversed();
+        reversed.stream()
+                .map(ConfigSource::asMap)
+                .forEach(result::putAll);
         return Map.copyOf(result);
     }
 
@@ -56,25 +57,7 @@ public sealed interface DeepMerger {
     @SuppressWarnings("unchecked")
     static Map<String, Object> deepMerge(Map<String, Object> base, Map<String, Object> override) {
         var result = new LinkedHashMap<>(base);
-
-        for (var entry : override.entrySet()) {
-            var key = entry.getKey();
-            var overrideValue = entry.getValue();
-            var baseValue = result.get(key);
-
-            if (isNestedMap(baseValue) && isNestedMap(overrideValue)) {
-                // Recursively merge nested maps
-                var mergedNested = deepMerge(
-                    (Map<String, Object>) baseValue,
-                    (Map<String, Object>) overrideValue
-                );
-                result.put(key, mergedNested);
-            } else {
-                // Override value replaces base
-                result.put(key, overrideValue);
-            }
-        }
-
+        override.forEach((key, overrideValue) -> result.merge(key, overrideValue, DeepMerger::mergeValues));
         return result;
     }
 
@@ -88,20 +71,7 @@ public sealed interface DeepMerger {
     @SuppressWarnings("unchecked")
     static Map<String, Object> toHierarchical(Map<String, String> flat) {
         var result = new LinkedHashMap<String, Object>();
-
-        for (var entry : flat.entrySet()) {
-            var keyPath = entry.getKey().split("\\.");
-            Map<String, Object> current = result;
-
-            for (int i = 0; i < keyPath.length - 1; i++) {
-                var segment = keyPath[i];
-                var nested = current.computeIfAbsent(segment, _ -> new LinkedHashMap<String, Object>());
-                current = (Map<String, Object>) nested;
-            }
-
-            current.put(keyPath[keyPath.length - 1], entry.getValue());
-        }
-
+        flat.forEach((key, value) -> insertHierarchical(result, key.split("\\."), value));
         return result;
     }
 
@@ -120,16 +90,49 @@ public sealed interface DeepMerger {
 
     @SuppressWarnings("unchecked")
     private static void flattenRecursive(String prefix, Map<String, Object> map, Map<String, String> result) {
-        for (var entry : map.entrySet()) {
-            var key = prefix.isEmpty() ? entry.getKey() : prefix + "." + entry.getKey();
-            var value = entry.getValue();
+        map.forEach((entryKey, value) -> flattenEntry(prefix, entryKey, value, result));
+    }
 
-            if (isNestedMap(value)) {
-                flattenRecursive(key, (Map<String, Object>) value, result);
-            } else {
-                result.put(key, String.valueOf(value));
-            }
+    @SuppressWarnings("unchecked")
+    private static void flattenEntry(String prefix, String entryKey, Object value, Map<String, String> result) {
+        var key = buildKey(prefix, entryKey);
+        if (isNestedMap(value)) {
+            flattenRecursive(key, (Map<String, Object>) value, result);
+        } else {
+            result.put(key, String.valueOf(value));
         }
+    }
+
+    private static String buildKey(String prefix, String entryKey) {
+        if (Verify.Is.empty(prefix)) {
+            return entryKey;
+        }
+        return prefix + "." + entryKey;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Object mergeValues(Object baseValue, Object overrideValue) {
+        if (isNestedMap(baseValue) && isNestedMap(overrideValue)) {
+            return deepMerge((Map<String, Object>) baseValue, (Map<String, Object>) overrideValue);
+        }
+        return overrideValue;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void insertHierarchical(Map<String, Object> result, String[] keyPath, String value) {
+        var parentDepth = keyPath.length - 1;
+        var current = navigateToParent(result, keyPath, parentDepth);
+        current.put(keyPath[parentDepth], value);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> navigateToParent(Map<String, Object> root, String[] keyPath, int depth) {
+        var container = new Object[]{root};
+        IntStream.range(0, depth)
+                 .forEach(i -> container[0] = ((Map<String, Object>) container[0])
+        .computeIfAbsent(keyPath[i],
+                         _ -> new LinkedHashMap<String, Object>()));
+        return (Map<String, Object>) container[0];
     }
 
     private static boolean isNestedMap(Object value) {
@@ -137,5 +140,9 @@ public sealed interface DeepMerger {
     }
 
     /// Marker record to satisfy sealed interface requirement.
-    record unused() implements DeepMerger {}
+    record unused() implements DeepMerger {
+        static Result<unused> unused() {
+            return success(new unused());
+        }
+    }
 }

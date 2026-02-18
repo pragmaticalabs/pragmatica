@@ -24,6 +24,7 @@ import org.pragmatica.lang.utils.Causes;
 ///   - `org.example:user-service:1.0.0` → `org.example.UserService`
 ///   - `com.company.app.OrderProcessor` → `com.company.app:order-processor:1.0.0`
 ///
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-PAT-01"})
 public interface ArtifactMapper {
     /// Convert a fully qualified class name and version to artifact coordinates.
     ///
@@ -170,6 +171,7 @@ public interface ArtifactMapper {
             case VersionPattern.Comparison(_, Version version) -> version.withQualifier();
             case VersionPattern.Tilde(Version version) -> version.withQualifier();
             case VersionPattern.Caret(Version version) -> version.withQualifier();
+            case VersionPattern.unused _ -> "0.0.0";
         };
     }
 

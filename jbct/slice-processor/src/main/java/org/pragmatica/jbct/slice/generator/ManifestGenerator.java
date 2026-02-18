@@ -83,10 +83,10 @@ public class ManifestGenerator {
             // Artifact coordinates
             props.setProperty("base.artifact", getArtifactFromEnv());
             props.setProperty("slice.artifactId", getArtifactIdFromEnv() + "-" + toKebabCase(sliceName));
-            // Dependencies for blueprint generation (exclude infrastructure dependencies)
+            // Dependencies for blueprint generation (exclude resource dependencies)
             var dependencies = model.dependencies()
                                     .stream()
-                                    .filter(dep -> !dep.isInfrastructure())
+                                    .filter(dep -> !dep.isResource())
                                     .toList();
             props.setProperty("dependencies.count",
                               String.valueOf(dependencies.size()));
@@ -147,7 +147,7 @@ public class ManifestGenerator {
     private List<String> collectRequestTypes(SliceModel model) {
         return model.methods()
                     .stream()
-                    .map(MethodModel::parameterType)
+                    .flatMap(m -> m.parameters().stream().map(MethodModel.MethodParameterInfo::type))
                     .map(this::getQualifiedTypeName)
                     .filter(name -> !isStandardType(name))
                     .distinct()

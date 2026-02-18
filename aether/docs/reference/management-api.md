@@ -14,74 +14,99 @@ Currently no authentication is required. TLS can be enabled via `AetherNodeConfi
 
 ## Cluster Status
 
-### GET /status
+### GET /api/status
 
-Get overall cluster status.
+Get overall cluster status including uptime, cluster info, slice count, and metrics summary.
 
 **Response:**
 ```json
 {
-  "node": "node-1",
-  "status": "LEADER",
-  "quorumSize": 3,
-  "connectedNodes": 3,
-  "uptime": 123456
+  "uptimeSeconds": 123456,
+  "cluster": {
+    "nodeCount": 3,
+    "leaderId": "node-1",
+    "nodes": [
+      {"id": "node-1", "isLeader": true},
+      {"id": "node-2", "isLeader": false}
+    ]
+  },
+  "sliceCount": 5,
+  "metrics": {
+    "requestsPerSecond": 1500.0,
+    "successRate": 99.5,
+    "avgLatencyMs": 12.3
+  },
+  "nodeId": "node-1",
+  "status": "running",
+  "isLeader": true,
+  "leader": "node-1"
 }
 ```
 
-### GET /health
+### GET /api/health
 
-Get node health status.
+Get node health status including readiness and quorum.
 
 **Response:**
 ```json
 {
   "status": "healthy",
+  "ready": true,
   "quorum": true,
   "nodeCount": 3,
+  "connectedPeers": 2,
+  "metricsNodeCount": 3,
   "sliceCount": 5
 }
 ```
 
-### GET /nodes
+### GET /api/nodes
 
-List all connected cluster nodes.
+List all known cluster node IDs.
 
 **Response:**
 ```json
 {
-  "nodes": [
-    {"id": "node-1", "address": "192.168.1.1:5000", "status": "CONNECTED"},
-    {"id": "node-2", "address": "192.168.1.2:5000", "status": "CONNECTED"}
-  ]
+  "nodes": ["node-1", "node-2", "node-3"]
 }
 ```
+
+### GET /api/events
+
+Get cluster events (placeholder -- currently returns empty list).
+
+**Response:**
+```json
+[]
+```
+
+### GET /api/panel/chaos
+
+Chaos panel placeholder (returns empty string).
+
+**Content-Type**: `text/plain`
 
 ---
 
 ## Slice Management
 
-### GET /slices
+### GET /api/slices
 
-List all deployed slices.
+List all deployed slice artifact identifiers.
 
 **Response:**
 ```json
 {
   "slices": [
-    {
-      "artifact": "org.example:my-slice:1.0.0",
-      "instances": 3,
-      "activeInstances": 3,
-      "state": "ACTIVE"
-    }
+    "org.example:my-slice:1.0.0",
+    "org.example:other-slice:2.0.0"
   ]
 }
 ```
 
-### GET /slices/status
+### GET /api/slices/status
 
-Get detailed slice status including per-node state.
+Get detailed slice status including per-node state and health.
 
 **Response:**
 ```json
@@ -89,16 +114,34 @@ Get detailed slice status including per-node state.
   "slices": [
     {
       "artifact": "org.example:my-slice:1.0.0",
-      "nodes": [
-        {"nodeId": "node-1", "state": "ACTIVE"},
-        {"nodeId": "node-2", "state": "ACTIVE"}
+      "state": "ACTIVE",
+      "instances": [
+        {"nodeId": "node-1", "state": "ACTIVE", "health": "HEALTHY"},
+        {"nodeId": "node-2", "state": "ACTIVE", "health": "HEALTHY"}
       ]
     }
   ]
 }
 ```
 
-### POST /deploy
+### GET /api/routes
+
+List all registered HTTP routes from deployed slices.
+
+**Response:**
+```json
+{
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/orders",
+      "nodes": ["node-1", "node-2"]
+    }
+  ]
+}
+```
+
+### POST /api/deploy
 
 Deploy a slice to the cluster.
 
@@ -110,6 +153,8 @@ Deploy a slice to the cluster.
 }
 ```
 
+`instances` is optional (defaults to 1).
+
 **Response:**
 ```json
 {
@@ -119,9 +164,9 @@ Deploy a slice to the cluster.
 }
 ```
 
-### POST /scale
+### POST /api/scale
 
-Scale a deployed slice.
+Scale a deployed slice to a new instance count.
 
 **Request:**
 ```json
@@ -140,7 +185,7 @@ Scale a deployed slice.
 }
 ```
 
-### POST /undeploy
+### POST /api/undeploy
 
 Remove a slice from the cluster.
 
@@ -161,44 +206,281 @@ Remove a slice from the cluster.
 
 ---
 
+## Blueprint Management
+
+### POST /api/blueprint
+
+Publish (apply) a blueprint definition. The request body is the raw blueprint YAML/JSON string.
+
+**Request:** Raw blueprint content as request body (string).
+
+**Response:**
+```json
+{
+  "status": "applied",
+  "blueprint": "my-blueprint",
+  "slices": 3
+}
+```
+
+### GET /api/blueprints
+
+List all published blueprints.
+
+**Response:**
+```json
+{
+  "blueprints": [
+    {"id": "my-blueprint", "sliceCount": 3},
+    {"id": "other-blueprint", "sliceCount": 2}
+  ]
+}
+```
+
+### GET /api/blueprint/{id}
+
+Get blueprint details including slices and dependencies.
+
+**Response:**
+```json
+{
+  "id": "my-blueprint",
+  "slices": [
+    {
+      "artifact": "org.example:my-slice:1.0.0",
+      "instances": 3,
+      "isDependency": false,
+      "dependencies": ["org.example:shared-lib:1.0.0"]
+    }
+  ],
+  "dependencies": ["org.example:shared-lib:1.0.0"]
+}
+```
+
+### GET /api/blueprint/{id}/status
+
+Get deployment status of a blueprint and each of its slices.
+
+**Response:**
+```json
+{
+  "id": "my-blueprint",
+  "overallStatus": "DEPLOYED",
+  "slices": [
+    {
+      "artifact": "org.example:my-slice:1.0.0",
+      "targetInstances": 3,
+      "activeInstances": 3,
+      "status": "DEPLOYED"
+    }
+  ]
+}
+```
+
+Status values: `PENDING`, `DEPLOYING`, `DEPLOYED`, `SCALING_DOWN`. Overall: `DEPLOYED`, `PENDING`, `IN_PROGRESS`, `PARTIAL`.
+
+### DELETE /api/blueprint/{id}
+
+Delete a published blueprint.
+
+**Response:**
+```json
+{
+  "status": "deleted",
+  "id": "my-blueprint"
+}
+```
+
+### POST /api/blueprint/validate
+
+Validate a blueprint without applying it.
+
+**Request:** Raw blueprint content as request body (string).
+
+**Response (valid):**
+```json
+{
+  "valid": true,
+  "id": "my-blueprint",
+  "sliceCount": 3,
+  "errors": []
+}
+```
+
+**Response (invalid):**
+```json
+{
+  "valid": false,
+  "id": "",
+  "sliceCount": 0,
+  "errors": ["Unknown artifact: org.example:missing:1.0.0"]
+}
+```
+
+---
+
 ## Metrics
 
-### GET /metrics
+### GET /api/metrics
 
-Get cluster-wide metrics snapshot.
+Get cluster-wide metrics including per-node load and deployment metrics.
 
 **Response:**
 ```json
 {
   "load": {
-    "node-1": {"cpu.usage": 0.45, "heap.used": 0.60},
-    "node-2": {"cpu.usage": 0.52, "heap.used": 0.55}
+    "node-1": {"cpu.usage": 0.45, "heap.used": 268435456},
+    "node-2": {"cpu.usage": 0.52, "heap.used": 234881024}
   },
-  "deployment": {
-    "totalDeployments": 10,
-    "avgDeploymentTimeMs": 1234
+  "deployments": {
+    "org.example:my-slice:1.0.0": [
+      {
+        "nodeId": "node-1",
+        "status": "ACTIVE",
+        "fullDeploymentMs": 1234,
+        "netDeploymentMs": 800,
+        "transitions": {"DOWNLOADING": 200, "LOADING": 400, "STARTING": 200},
+        "startTime": 1704067200000,
+        "activeTime": 1704067201234
+      }
+    ]
   }
 }
 ```
 
-### GET /invocation-metrics
+### GET /api/metrics/comprehensive
+
+Get comprehensive minute-aggregated metrics for the most recent minute.
+
+**Response:**
+```json
+{
+  "minuteTimestamp": 1704067200000,
+  "avgCpuUsage": 0.45,
+  "avgHeapUsage": 0.60,
+  "avgEventLoopLagMs": 1.2,
+  "avgLatencyMs": 12.3,
+  "totalInvocations": 15000,
+  "totalGcPauseMs": 50,
+  "latencyP50": 8.0,
+  "latencyP95": 25.0,
+  "latencyP99": 80.0,
+  "errorRate": 0.005,
+  "eventCount": 120,
+  "sampleCount": 60
+}
+```
+
+### GET /api/metrics/derived
+
+Get derived (computed) metrics including trends, saturation, and health score.
+
+**Response:**
+```json
+{
+  "requestRate": 250.0,
+  "errorRate": 0.005,
+  "gcRate": 0.8,
+  "latencyP50": 8.0,
+  "latencyP95": 25.0,
+  "latencyP99": 80.0,
+  "eventLoopSaturation": 0.1,
+  "heapSaturation": 0.6,
+  "cpuTrend": 0.02,
+  "latencyTrend": -0.01,
+  "errorTrend": 0.0,
+  "healthScore": 0.95,
+  "stressed": false,
+  "hasCapacity": true
+}
+```
+
+### GET /api/metrics/prometheus
+
+Get Prometheus-format metrics for scraping.
+
+**Content-Type**: `text/plain; version=0.0.4; charset=utf-8`
+
+### GET /api/metrics/history
+
+Get historical metrics for nodes over a time range.
+
+**Query Parameters:**
+- `range` (optional) -- Time range. Values: `5m`, `15m`, `1h` (default), `2h`.
+
+**Example:**
+```bash
+curl "http://localhost:8080/api/metrics/history?range=15m"
+```
+
+**Response:**
+```json
+{
+  "timeRange": "15m",
+  "nodes": {
+    "node-1": [
+      {
+        "timestamp": 1704067200000,
+        "metrics": {"cpu.usage": 0.45, "heap.used": 268435456}
+      }
+    ]
+  }
+}
+```
+
+### GET /api/node-metrics
+
+Get per-node CPU and heap metrics.
+
+**Response:**
+```json
+[
+  {
+    "nodeId": "node-1",
+    "cpuUsage": 0.45,
+    "heapUsedMb": 256,
+    "heapMaxMb": 512
+  }
+]
+```
+
+### GET /api/artifact-metrics
+
+Get artifact storage and deployment metrics.
+
+**Response:**
+```json
+{
+  "artifactCount": 5,
+  "chunkCount": 120,
+  "memoryBytes": 52428800,
+  "memoryMB": "50.00",
+  "deployedCount": 3,
+  "deployedArtifacts": [
+    "org.example:my-slice:1.0.0",
+    "org.example:other-slice:2.0.0"
+  ]
+}
+```
+
+### GET /api/invocation-metrics
 
 Get per-method invocation metrics.
 
 **Query Parameters:**
-- `artifact` (optional) - Filter by artifact (partial match)
-- `method` (optional) - Filter by method name (exact match)
+- `artifact` (optional) -- Filter by artifact (partial match)
+- `method` (optional) -- Filter by method name (exact match)
 
 **Examples:**
 ```bash
 # All metrics
-curl http://localhost:8080/invocation-metrics
+curl http://localhost:8080/api/invocation-metrics
 
 # Filter by artifact
-curl "http://localhost:8080/invocation-metrics?artifact=order-service"
+curl "http://localhost:8080/api/invocation-metrics?artifact=order-service"
 
 # Filter by method
-curl "http://localhost:8080/invocation-metrics?method=processOrder"
+curl "http://localhost:8080/api/invocation-metrics?method=processOrder"
 ```
 
 **Response:**
@@ -221,7 +503,7 @@ curl "http://localhost:8080/invocation-metrics?method=processOrder"
 }
 ```
 
-### GET /invocation-metrics/slow
+### GET /api/invocation-metrics/slow
 
 Get slow invocation details.
 
@@ -242,84 +524,44 @@ Get slow invocation details.
 }
 ```
 
-### GET /invocation-metrics/strategy
+### GET /api/invocation-metrics/strategy
 
 Get current slow invocation threshold strategy.
 
 **Response (Fixed):**
 ```json
-{
-  "type": "fixed",
-  "thresholdMs": 100
-}
+{"type": "fixed", "thresholdMs": 100}
 ```
 
 **Response (Adaptive):**
 ```json
-{
-  "type": "adaptive",
-  "minMs": 10,
-  "maxMs": 1000,
-  "multiplier": 3.0
-}
+{"type": "adaptive", "minMs": 10, "maxMs": 1000, "multiplier": 3.0}
 ```
 
 **Response (PerMethod):**
 ```json
-{
-  "type": "perMethod",
-  "defaultMs": 100
-}
+{"type": "perMethod", "defaultMs": 100}
 ```
 
 **Response (Composite):**
 ```json
-{
-  "type": "composite"
-}
+{"type": "composite"}
 ```
 
-### POST /invocation-metrics/strategy
+### POST /api/invocation-metrics/strategy
 
-Set the slow invocation threshold strategy.
-
-**Request (Fixed):**
-```json
-{
-  "type": "fixed",
-  "thresholdMs": 100
-}
-```
-
-**Request (Adaptive):**
-```json
-{
-  "type": "adaptive",
-  "minMs": 10,
-  "maxMs": 1000
-}
-```
+Strategy changes are not currently supported. This endpoint always returns an error.
 
 **Response:**
 ```json
-{
-  "status": "strategy_updated",
-  "type": "fixed",
-  "thresholdMs": 100
-}
+{"error": "Strategy change via API is not supported"}
 ```
-
-### GET /metrics/prometheus
-
-Get Prometheus-format metrics for scraping.
-
-**Content-Type**: `text/plain; version=0.0.4`
 
 ---
 
 ## Controller Configuration
 
-### GET /controller/config
+### GET /api/controller/config
 
 Get current controller configuration.
 
@@ -328,26 +570,24 @@ Get current controller configuration.
 {
   "cpuScaleUpThreshold": 0.8,
   "cpuScaleDownThreshold": 0.2,
-  "callRateScaleUpThreshold": 1000,
+  "callRateScaleUpThreshold": 1000.0,
   "evaluationIntervalMs": 1000
 }
 ```
 
-### POST /controller/config
+### POST /api/controller/config
 
-Update controller configuration.
+Update controller configuration. All fields are optional; only provided fields will be updated.
 
 **Request:**
 ```json
 {
   "cpuScaleUpThreshold": 0.75,
   "cpuScaleDownThreshold": 0.15,
-  "callRateScaleUpThreshold": 500,
+  "callRateScaleUpThreshold": 500.0,
   "evaluationIntervalMs": 2000
 }
 ```
-
-All fields are optional; only provided fields will be updated.
 
 **Response:**
 ```json
@@ -356,30 +596,33 @@ All fields are optional; only provided fields will be updated.
   "config": {
     "cpuScaleUpThreshold": 0.75,
     "cpuScaleDownThreshold": 0.15,
-    "callRateScaleUpThreshold": 500,
+    "callRateScaleUpThreshold": 500.0,
     "evaluationIntervalMs": 2000
   }
 }
 ```
 
-### GET /controller/status
+### GET /api/controller/status
 
-Get controller status.
+Get controller status including whether it is enabled and its configuration.
 
 **Response:**
 ```json
 {
   "enabled": true,
   "evaluationIntervalMs": 1000,
-  "config": { ... }
+  "config": {
+    "cpuScaleUpThreshold": 0.8,
+    "cpuScaleDownThreshold": 0.2,
+    "callRateScaleUpThreshold": 1000.0,
+    "evaluationIntervalMs": 1000
+  }
 }
 ```
 
-### POST /controller/evaluate
+### POST /api/controller/evaluate
 
 Trigger immediate controller evaluation.
-
-**Request:** `{}`
 
 **Response:**
 ```json
@@ -390,51 +633,82 @@ Trigger immediate controller evaluation.
 
 ---
 
-## Alert Management
+## TTM (Time-series Trend Model)
 
-### GET /alerts
+### GET /api/ttm/status
 
-Get all alerts (active + history).
+Get TTM engine status including configuration, state, and latest forecast.
 
 **Response:**
 ```json
 {
-  "active": [
-    {
-      "metric": "cpu.usage",
-      "nodeId": "node-1",
-      "value": 0.92,
-      "threshold": 0.9,
-      "severity": "CRITICAL",
-      "triggeredAt": 1704067200000
-    }
-  ],
-  "history": [
-    {
-      "timestamp": 1704067100000,
-      "metric": "cpu.usage",
-      "nodeId": "node-1",
-      "value": 0.75,
-      "severity": "WARNING",
-      "status": "RESOLVED"
-    }
-  ]
+  "enabled": true,
+  "active": true,
+  "state": "RUNNING",
+  "modelPath": "/models/ttm.onnx",
+  "inputWindowMinutes": 60,
+  "evaluationIntervalMs": 30000,
+  "confidenceThreshold": 0.8,
+  "hasForecast": true,
+  "lastForecast": {
+    "timestamp": 1704067200000,
+    "confidence": 0.92,
+    "recommendation": "ScaleUp"
+  }
 }
 ```
 
-### GET /alerts/active
+### GET /api/ttm/training-data
+
+Export TTM training data (last 120 minute-aggregated samples).
+
+**Response:**
+```json
+[
+  {
+    "timestamp": 1704067200000,
+    "cpuUsage": 0.45,
+    "heapUsage": 0.60,
+    "eventLoopLagMs": 1.2,
+    "latencyMs": 12.3,
+    "invocations": 15000,
+    "gcPauseMs": 50,
+    "latencyP50": 8.0,
+    "latencyP95": 25.0,
+    "latencyP99": 80.0,
+    "errorRate": 0.005,
+    "eventCount": 120
+  }
+]
+```
+
+---
+
+## Alert Management
+
+### GET /api/alerts
+
+Get all alerts (active + history combined).
+
+**Response:**
+```json
+{
+  "active": [...],
+  "history": [...]
+}
+```
+
+### GET /api/alerts/active
 
 Get active alerts only.
 
-### GET /alerts/history
+### GET /api/alerts/history
 
 Get alert history only.
 
-### POST /alerts/clear
+### POST /api/alerts/clear
 
 Clear all active alerts.
-
-**Request:** `{}`
 
 **Response:**
 ```json
@@ -447,7 +721,7 @@ Clear all active alerts.
 
 ## Threshold Configuration
 
-### GET /thresholds
+### GET /api/thresholds
 
 Get all configured alert thresholds.
 
@@ -459,9 +733,9 @@ Get all configured alert thresholds.
 }
 ```
 
-### POST /thresholds
+### POST /api/thresholds
 
-Set a threshold. Thresholds are persisted to the KV-Store and replicated across all cluster nodes.
+Set an alert threshold. Thresholds are persisted to the KV-Store and replicated across all cluster nodes.
 
 **Request:**
 ```json
@@ -482,13 +756,13 @@ Set a threshold. Thresholds are persisted to the KV-Store and replicated across 
 }
 ```
 
-### DELETE /thresholds/{metric}
+### DELETE /api/thresholds/{metric}
 
 Remove an alert threshold. The removal is persisted to the KV-Store and replicated across all cluster nodes.
 
 **Example:**
 ```bash
-curl -X DELETE http://localhost:8080/thresholds/cpu.usage
+curl -X DELETE http://localhost:8080/api/thresholds/cpu.usage
 ```
 
 **Response:**
@@ -501,11 +775,292 @@ curl -X DELETE http://localhost:8080/thresholds/cpu.usage
 
 ---
 
+## Dynamic Aspects
+
+### GET /api/aspects
+
+Get all configured dynamic aspects.
+
+**Response:**
+```json
+{
+  "org.example:my-slice:1.0.0/processOrder": "LOG_AND_METRICS",
+  "org.example:my-slice:1.0.0/getStatus": "METRICS"
+}
+```
+
+### POST /api/aspects
+
+Set aspect mode on a method.
+
+**Request:**
+```json
+{
+  "artifact": "org.example:my-slice:1.0.0",
+  "method": "processOrder",
+  "mode": "LOG_AND_METRICS"
+}
+```
+
+Available modes: `NONE`, `LOG`, `METRICS`, `LOG_AND_METRICS`
+
+**Response:**
+```json
+{
+  "status": "aspect_set",
+  "artifact": "org.example:my-slice:1.0.0",
+  "method": "processOrder",
+  "mode": "LOG_AND_METRICS"
+}
+```
+
+### DELETE /api/aspects/{artifact}/{method}
+
+Remove aspect configuration for a method.
+
+**Example:**
+```bash
+curl -X DELETE http://localhost:8080/api/aspects/org.example:my-slice:1.0.0/processOrder
+```
+
+**Response:**
+```json
+{
+  "status": "aspect_removed",
+  "artifact": "org.example:my-slice:1.0.0",
+  "method": "processOrder"
+}
+```
+
+---
+
+## Log Level Management
+
+Runtime log level control with cluster-wide persistence via KV-Store consensus.
+
+### GET /api/logging/levels
+
+Get all runtime-configured log level overrides.
+
+**Response:**
+```json
+{
+  "org.pragmatica.aether.node": "DEBUG",
+  "org.pragmatica.consensus": "WARN"
+}
+```
+
+### POST /api/logging/levels
+
+Set log level for a specific logger. The change is persisted to the KV-Store and replicated across all cluster nodes.
+
+**Request:**
+```json
+{
+  "logger": "org.pragmatica.aether.node",
+  "level": "DEBUG"
+}
+```
+
+Available levels: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`, `OFF`
+
+**Response:**
+```json
+{
+  "status": "level_set",
+  "logger": "org.pragmatica.aether.node",
+  "level": "DEBUG"
+}
+```
+
+### DELETE /api/logging/levels/{logger}
+
+Reset a logger to its configuration default. The removal is persisted to the KV-Store and replicated across all cluster nodes.
+
+**Example:**
+```bash
+curl -X DELETE http://localhost:8080/api/logging/levels/org.pragmatica.aether.node
+```
+
+**Response:**
+```json
+{
+  "status": "level_reset",
+  "logger": "org.pragmatica.aether.node"
+}
+```
+
+---
+
+## Dynamic Configuration
+
+Configuration overrides are persisted to the KV-Store and replicated across all cluster nodes. Overrides take precedence over base configuration from TOML/environment/system properties.
+
+**Note:** Dynamic configuration routes are only available when `DynamicConfigManager` is enabled.
+
+### GET /api/config
+
+Get all configuration values (base + overrides merged).
+
+**Response:**
+```json
+{
+  "database.host": "localhost",
+  "database.port": "5432",
+  "server.port": "8080"
+}
+```
+
+### GET /api/config/overrides
+
+Get only dynamic overrides from the KV store.
+
+**Response:**
+```json
+{
+  "database.port": "5433"
+}
+```
+
+### POST /api/config
+
+Set a configuration override. Omit `nodeId` for cluster-wide, include it for node-specific.
+
+**Request (cluster-wide):**
+```json
+{
+  "key": "database.port",
+  "value": "5433"
+}
+```
+
+**Request (node-specific):**
+```json
+{
+  "key": "server.port",
+  "value": "9090",
+  "nodeId": "node-2"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "config_set",
+  "key": "database.port",
+  "value": "5433"
+}
+```
+
+### DELETE /api/config/{key}
+
+Remove a cluster-wide configuration override. The base value from TOML/env/system properties is restored.
+
+**Example:**
+```bash
+curl -X DELETE http://localhost:8080/api/config/database.port
+```
+
+**Response:**
+```json
+{
+  "status": "config_removed",
+  "key": "database.port"
+}
+```
+
+### DELETE /api/config/node/{nodeId}/{key}
+
+Remove a node-specific configuration override.
+
+**Example:**
+```bash
+curl -X DELETE http://localhost:8080/api/config/node/node-2/server.port
+```
+
+**Response:**
+```json
+{
+  "status": "config_removed",
+  "key": "server.port"
+}
+```
+
+---
+
 ## Rolling Updates
 
-### POST /rolling-update/start
+All rolling update mutation endpoints (start, routing, complete, rollback) require the requesting node to be the cluster leader.
 
-Start a new rolling update.
+### GET /api/rolling-updates
+
+List all active rolling updates.
+
+**Response:**
+```json
+{
+  "updates": [
+    {
+      "updateId": "2bKyJE8yxxxxxxxxxxx",
+      "artifactBase": "org.example:my-slice",
+      "oldVersion": "1.0.0",
+      "newVersion": "2.0.0",
+      "state": "ROUTING",
+      "routing": "1:3",
+      "newInstances": 3,
+      "createdAt": 1704067200000,
+      "updatedAt": 1704067200000
+    }
+  ]
+}
+```
+
+### GET /api/rolling-update/{updateId}
+
+Get a single rolling update by ID. Use `current` as the ID to resolve to the first active update.
+
+**Response:**
+```json
+{
+  "updateId": "2bKyJE8yxxxxxxxxxxx",
+  "artifactBase": "org.example:my-slice",
+  "oldVersion": "1.0.0",
+  "newVersion": "2.0.0",
+  "state": "ROUTING",
+  "routing": "1:3",
+  "newInstances": 3,
+  "createdAt": 1704067200000,
+  "updatedAt": 1704067200000
+}
+```
+
+### GET /api/rolling-update/{updateId}/health
+
+Get version health metrics for a rolling update.
+
+**Response:**
+```json
+{
+  "updateId": "2bKyJE8yxxxxxxxxxxx",
+  "oldVersion": {
+    "version": "1.0.0",
+    "requestCount": 1000,
+    "errorRate": 0.001,
+    "avgLatencyMs": 45.0
+  },
+  "newVersion": {
+    "version": "2.0.0",
+    "requestCount": 250,
+    "errorRate": 0.002,
+    "avgLatencyMs": 50.0
+  },
+  "collectedAt": 1704067200000
+}
+```
+
+### POST /api/rolling-update/start
+
+Start a new rolling update. Requires leader node.
 
 **Request:**
 ```json
@@ -519,6 +1074,8 @@ Start a new rolling update.
   "cleanupPolicy": "GRACE_PERIOD"
 }
 ```
+
+All fields except `artifactBase` and `version` are optional. Defaults: `instances=1`, `maxErrorRate=0.01`, `maxLatencyMs=500`, `requireManualApproval=false`, `cleanupPolicy=GRACE_PERIOD`.
 
 **Response:**
 ```json
@@ -535,33 +1092,9 @@ Start a new rolling update.
 }
 ```
 
-### GET /rolling-updates
+### POST /api/rolling-update/{updateId}/routing
 
-List all active rolling updates.
-
-**Response:**
-```json
-{
-  "updates": [
-    {
-      "updateId": "2bKyJE8yxxxxxxxxxxx",
-      "artifactBase": "org.example:my-slice",
-      "oldVersion": "1.0.0",
-      "newVersion": "2.0.0",
-      "state": "ROUTING",
-      "routing": "1:3"
-    }
-  ]
-}
-```
-
-### GET /rolling-update/{id}
-
-Get rolling update status.
-
-### POST /rolling-update/{id}/routing
-
-Adjust traffic routing.
+Adjust traffic routing for a rolling update. Requires leader node.
 
 **Request:**
 ```json
@@ -570,61 +1103,69 @@ Adjust traffic routing.
 }
 ```
 
-Format: `new:old` (e.g., "1:3" = 25% new, 75% old)
+Format: `new:old` (e.g., `"1:3"` = 25% new, 75% old; `"1:0"` = 100% new).
 
-### POST /rolling-update/{id}/approve
+**Response:** Same as `GET /api/rolling-update/{updateId}`.
 
-Manually approve current routing configuration.
+### POST /api/rolling-update/{updateId}/complete
 
-### POST /rolling-update/{id}/complete
+Complete the rolling update (finalize new version, decommission old). Requires leader node.
 
-Complete the rolling update.
+**Response:** Same as `GET /api/rolling-update/{updateId}`.
 
-### POST /rolling-update/{id}/rollback
+### POST /api/rolling-update/{updateId}/rollback
 
-Rollback to old version.
+Rollback to old version. Requires leader node.
 
-### GET /rolling-update/{id}/health
-
-Get version health metrics.
-
-**Response:**
-```json
-{
-  "updateId": "2bKyJE8yxxxxxxxxxxx",
-  "oldVersion": {
-    "version": "1.0.0",
-    "requestCount": 1000,
-    "errorRate": 0.001,
-    "avgLatencyMs": 45
-  },
-  "newVersion": {
-    "version": "2.0.0",
-    "requestCount": 250,
-    "errorRate": 0.002,
-    "avgLatencyMs": 50
-  },
-  "collectedAt": 1704067200000
-}
-```
+**Response:** Same as `GET /api/rolling-update/{updateId}`.
 
 ---
 
 ## Artifact Repository
 
-### PUT /repository/{group}/{artifact}/{version}/{filename}
+### GET /repository/info/{groupPath}/{artifactId}/{version}
 
-Upload an artifact to the repository.
+Get artifact metadata including size, checksums, and deployment status.
 
-**Content-Type**: `application/java-archive`
+**Example:**
+```bash
+curl http://localhost:8080/repository/info/org/example/my-slice/1.0.0
+```
 
-### GET /repository/{group}/{artifact}/{version}/{filename}
+**Response:**
+```json
+{
+  "artifact": "org.example:my-slice:1.0.0",
+  "size": 1048576,
+  "chunkCount": 16,
+  "md5": "d41d8cd98f00b204e9800998ecf8427e",
+  "sha1": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+  "deployedAt": 1704067200000,
+  "isDeployed": true
+}
+```
 
-Download an artifact.
+### GET /repository/{groupPath}/{artifactId}/{version}/{filename}
 
-### GET /repository/artifacts
+Download an artifact file from the repository.
 
-List all artifacts.
+**Content-Type**: Determined dynamically by file extension.
+
+### PUT /repository/{groupPath}/{artifactId}/{version}/{filename}
+
+Upload an artifact file to the repository. Maximum upload size: 64 MB.
+
+**Content-Type**: Binary content (e.g., `application/java-archive`).
+
+### POST /repository/{groupPath}/{artifactId}/{version}/{filename}
+
+Alternative upload method (same behavior as PUT).
+
+### GET /repository/{groupPath}/{artifactId}/maven-metadata.xml
+
+Get Maven metadata XML for an artifact.
+
+**Content-Type**: `application/xml`
 
 ---
 
@@ -632,15 +1173,19 @@ List all artifacts.
 
 ### GET /dashboard
 
-Serves the built-in cluster monitoring dashboard.
+Serves the built-in cluster monitoring dashboard (static HTML/JS/CSS files).
 
 **Content-Type**: `text/html`
 
 Open in browser: `http://localhost:8080/dashboard`
 
-### WebSocket /ws/dashboard
+---
 
-Real-time metrics streaming via WebSocket.
+## WebSocket Endpoints
+
+### WS /ws/dashboard
+
+Real-time dashboard metrics streaming via WebSocket.
 
 **Connection:**
 ```javascript
@@ -651,15 +1196,114 @@ ws.onmessage = (event) => {
 };
 ```
 
+### WS /ws/status
+
+Real-time cluster status streaming via WebSocket. Pushes periodic JSON snapshots containing uptime, node metrics, slices, and cluster info.
+
 **Message Format:**
 ```json
 {
-  "timestamp": 1704067200000,
-  "nodes": [...],
-  "metrics": {...},
-  "alerts": [...]
+  "uptimeSeconds": 123456,
+  "nodeMetrics": [
+    {
+      "nodeId": "node-1",
+      "isLeader": true,
+      "cpuUsage": 0.45,
+      "heapUsedMb": 256,
+      "heapMaxMb": 512
+    }
+  ],
+  "slices": [
+    {
+      "artifact": "org.example:my-slice:1.0.0",
+      "state": "ACTIVE",
+      "instances": [
+        {"nodeId": "node-1", "state": "ACTIVE"}
+      ]
+    }
+  ],
+  "cluster": {
+    "nodes": [
+      {"id": "node-1", "isLeader": true}
+    ],
+    "leaderId": "node-1",
+    "nodeCount": 3
+  }
 }
 ```
+
+---
+
+## Endpoint Summary
+
+| Method | Path | Section |
+|--------|------|---------|
+| GET | `/api/status` | Cluster Status |
+| GET | `/api/health` | Cluster Status |
+| GET | `/api/nodes` | Cluster Status |
+| GET | `/api/events` | Cluster Status |
+| GET | `/api/panel/chaos` | Cluster Status |
+| GET | `/api/slices` | Slice Management |
+| GET | `/api/slices/status` | Slice Management |
+| GET | `/api/routes` | Slice Management |
+| POST | `/api/deploy` | Slice Management |
+| POST | `/api/scale` | Slice Management |
+| POST | `/api/undeploy` | Slice Management |
+| POST | `/api/blueprint` | Blueprint Management |
+| GET | `/api/blueprints` | Blueprint Management |
+| GET | `/api/blueprint/{id}` | Blueprint Management |
+| GET | `/api/blueprint/{id}/status` | Blueprint Management |
+| DELETE | `/api/blueprint/{id}` | Blueprint Management |
+| POST | `/api/blueprint/validate` | Blueprint Management |
+| GET | `/api/metrics` | Metrics |
+| GET | `/api/metrics/comprehensive` | Metrics |
+| GET | `/api/metrics/derived` | Metrics |
+| GET | `/api/metrics/prometheus` | Metrics |
+| GET | `/api/metrics/history` | Metrics |
+| GET | `/api/node-metrics` | Metrics |
+| GET | `/api/artifact-metrics` | Metrics |
+| GET | `/api/invocation-metrics` | Metrics |
+| GET | `/api/invocation-metrics/slow` | Metrics |
+| GET | `/api/invocation-metrics/strategy` | Metrics |
+| POST | `/api/invocation-metrics/strategy` | Metrics |
+| GET | `/api/controller/config` | Controller |
+| POST | `/api/controller/config` | Controller |
+| GET | `/api/controller/status` | Controller |
+| POST | `/api/controller/evaluate` | Controller |
+| GET | `/api/ttm/status` | TTM |
+| GET | `/api/ttm/training-data` | TTM |
+| GET | `/api/alerts` | Alert Management |
+| GET | `/api/alerts/active` | Alert Management |
+| GET | `/api/alerts/history` | Alert Management |
+| POST | `/api/alerts/clear` | Alert Management |
+| GET | `/api/thresholds` | Threshold Configuration |
+| POST | `/api/thresholds` | Threshold Configuration |
+| DELETE | `/api/thresholds/{metric}` | Threshold Configuration |
+| GET | `/api/aspects` | Dynamic Aspects |
+| POST | `/api/aspects` | Dynamic Aspects |
+| DELETE | `/api/aspects/{artifact}/{method}` | Dynamic Aspects |
+| GET | `/api/logging/levels` | Log Level Management |
+| POST | `/api/logging/levels` | Log Level Management |
+| DELETE | `/api/logging/levels/{logger}` | Log Level Management |
+| GET | `/api/config` | Dynamic Configuration |
+| GET | `/api/config/overrides` | Dynamic Configuration |
+| POST | `/api/config` | Dynamic Configuration |
+| DELETE | `/api/config/{key}` | Dynamic Configuration |
+| DELETE | `/api/config/node/{nodeId}/{key}` | Dynamic Configuration |
+| GET | `/api/rolling-updates` | Rolling Updates |
+| GET | `/api/rolling-update/{updateId}` | Rolling Updates |
+| GET | `/api/rolling-update/{updateId}/health` | Rolling Updates |
+| POST | `/api/rolling-update/start` | Rolling Updates |
+| POST | `/api/rolling-update/{updateId}/routing` | Rolling Updates |
+| POST | `/api/rolling-update/{updateId}/complete` | Rolling Updates |
+| POST | `/api/rolling-update/{updateId}/rollback` | Rolling Updates |
+| GET | `/repository/info/{group}/{artifact}/{version}` | Artifact Repository |
+| GET | `/repository/{group}/{artifact}/{version}/{file}` | Artifact Repository |
+| PUT | `/repository/{group}/{artifact}/{version}/{file}` | Artifact Repository |
+| POST | `/repository/{group}/{artifact}/{version}/{file}` | Artifact Repository |
+| GET | `/dashboard` | Dashboard |
+| WS | `/ws/dashboard` | WebSocket |
+| WS | `/ws/status` | WebSocket |
 
 ---
 
@@ -674,6 +1318,6 @@ All errors return JSON with an `error` field:
 ```
 
 Common HTTP status codes:
-- `400 Bad Request` - Invalid request format
-- `404 Not Found` - Resource not found
-- `500 Internal Server Error` - Server error
+- `400 Bad Request` -- Invalid request format or missing required fields
+- `404 Not Found` -- Resource not found
+- `500 Internal Server Error` -- Server error

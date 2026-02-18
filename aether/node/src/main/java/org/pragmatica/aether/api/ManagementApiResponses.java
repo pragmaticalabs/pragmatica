@@ -209,6 +209,14 @@ public sealed interface ManagementApiResponses {
     record AlertsResponse(Object active,
                           Object history) {}
 
+    // ===== Log Level Routes =====
+    record LogLevelSetResponse(String status,
+                               String logger,
+                               String level) {}
+
+    record LogLevelResetResponse(String status,
+                                 String logger) {}
+
     // ===== Dynamic Aspect Routes =====
     record AspectModeSetResponse(String status,
                                  String artifact,
@@ -268,6 +276,14 @@ public sealed interface ManagementApiResponses {
 
     record RollingUpdateErrorResponse(String error,
                                       String updateId) {}
+
+    // ===== Config Routes =====
+    record ConfigSetResponse(String status,
+                             String key,
+                             String value) {}
+
+    record ConfigRemovedResponse(String status,
+                                 String key) {}
 
     // ===== Repository Routes =====
     record ArtifactInfoResponse(String artifact,

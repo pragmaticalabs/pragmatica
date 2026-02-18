@@ -326,4 +326,4 @@ Traffic routing is applied at the `SliceInvoker` level. When selecting an endpoi
 2. If active, uses weighted round-robin based on routing ratio
 3. Selects endpoint from appropriate version's instances
 
-See [Management API Reference](../api/management-api.md#rolling-updates) for complete API documentation.
+See [Management API Reference](../reference/management-api.md#rolling-updates) for complete API documentation.

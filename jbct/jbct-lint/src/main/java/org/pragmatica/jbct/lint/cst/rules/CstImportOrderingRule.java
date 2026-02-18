@@ -14,14 +14,13 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 
 /// JBCT-STY-06: Import ordering convention.
 ///
-/// Expected order:
-/// 1. java.* (including module imports)
-/// 2. javax.*
-/// 3. org.pragmatica.*
-/// 4. Third-party (org.*, com.*, etc.)
-/// 5. Project imports
-/// 6. (blank line)
-/// 7. Static imports (same grouping order)
+/// Expected order (matching JBCT formatter):
+/// 1. org.pragmatica.* (framework imports)
+/// 2. java.* / javax.* (JDK imports)
+/// 3. Third-party (org.*, com.*, etc.)
+/// 4. Project imports
+/// 5. (blank line)
+/// 6. Static imports (same grouping order)
 public class CstImportOrderingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-STY-06";
 
@@ -36,7 +35,7 @@ public class CstImportOrderingRule implements CstLintRule {
                                                                                             RuleId.QualifiedName.class))
                                    .map(qn -> text(qn, source))
                                    .or("");
-        if (!ctx.isBusinessPackage(packageName)) {
+        if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
         // Get project root package (first segment of package name)
@@ -102,28 +101,24 @@ public class CstImportOrderingRule implements CstLintRule {
     }
 
     private int getImportGroup(String importPath, String projectPackage) {
-        // Group 0: java.*
-        if (importPath.startsWith("java.") || importPath.equals("java")) {
+        // Group 0: org.pragmatica.* (framework imports first)
+        if (importPath.startsWith("org.pragmatica.")) {
             return 0;
         }
-        // Group 1: javax.*
-        if (importPath.startsWith("javax.")) {
+        // Group 1: java.* and javax.*
+        if (importPath.startsWith("java.") || importPath.equals("java") || importPath.startsWith("javax.")) {
             return 1;
         }
-        // Group 2: org.pragmatica.*
-        if (importPath.startsWith("org.pragmatica.")) {
-            return 2;
-        }
-        // Group 3: Third-party (org.*, com.*, etc. but not project)
+        // Group 2: Third-party (org.*, com.*, etc. but not project)
         if (!importPath.startsWith(projectPackage) &&
         (importPath.startsWith("org.") ||
         importPath.startsWith("com.") ||
         importPath.startsWith("io.") ||
         importPath.startsWith("net."))) {
-            return 3;
+            return 2;
         }
-        // Group 4: Project imports
-        return 4;
+        // Group 3: Project imports
+        return 3;
     }
 
     private Diagnostic createDiagnostic(CstNode importNode,
@@ -144,24 +139,23 @@ public class CstImportOrderingRule implements CstLintRule {
                                      startLine(importNode),
                                      startColumn(importNode),
                                      prefix + " '" + importPath + "' should come before '" + lastPath + "'",
-                                     "Follow import ordering: java → javax → org.pragmatica → third-party → project → static")
+                                     "Follow import ordering: org.pragmatica → java/javax → third-party → project → static")
                          .withExample("""
                 // Correct import order:
-                import java.util.List;
-                import java.util.Map;
-
-                import javax.annotation.Nonnull;
-
                 import org.pragmatica.lang.Result;
                 import org.pragmatica.lang.Option;
+
+                import java.util.List;
+                import java.util.Map;
+                import javax.annotation.Nonnull;
 
                 import org.slf4j.Logger;
                 import com.google.common.collect.ImmutableList;
 
                 import com.example.project.MyClass;
 
-                import static java.util.Objects.requireNonNull;
                 import static org.pragmatica.lang.Result.success;
+                import static java.util.Objects.requireNonNull;
                 """);
     }
 }

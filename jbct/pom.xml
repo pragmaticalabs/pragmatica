@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>pragmatica</artifactId>
-        <version>0.15.1</version>
+        <version>0.16.0</version>
     </parent>
 
     <artifactId>jbct-parent</artifactId>
@@ -54,6 +54,7 @@
     </modules>
 
     <properties>
+        <jbct.skip>true</jbct.skip>
         <java.version>25</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
@@ -70,7 +71,7 @@
         <!-- Test dependencies -->
         <junit.version>5.11.4</junit.version>
         <assertj.version>3.27.3</assertj.version>
-        <tinylog.version>2.7.0</tinylog.version>
+        <log4j2.version>2.24.3</log4j2.version>
 
         <!-- Plugin versions -->
         <maven-compiler-plugin.version>3.14.0</maven-compiler-plugin.version>
@@ -155,10 +156,10 @@
                 <version>${project.version}</version>
             </dependency>
 
-            <!-- Aether Infra Aspect -->
+            <!-- Aether Resource API -->
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-aspect</artifactId>
+                <artifactId>resource-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -203,17 +204,11 @@
                 <scope>test</scope>
             </dependency>
 
-            <!-- Logging (SLF4J provider for tests) -->
+            <!-- Logging (Log4j2 SLF4J provider for tests) -->
             <dependency>
-                <groupId>org.tinylog</groupId>
-                <artifactId>tinylog-impl</artifactId>
-                <version>${tinylog.version}</version>
-                <scope>test</scope>
-            </dependency>
-            <dependency>
-                <groupId>org.tinylog</groupId>
-                <artifactId>slf4j-tinylog</artifactId>
-                <version>${tinylog.version}</version>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>test-logging</artifactId>
+                <version>${project.version}</version>
                 <scope>test</scope>
             </dependency>
         </dependencies>
@@ -334,35 +329,6 @@
     </build>
 
     <profiles>
-        <!-- jbct profile disabled - dogfooding creates cycle. Run jbct:check manually on single modules -->
-        <!--
-        <profile>
-            <id>jbct</id>
-            <activation>
-                <property>
-                    <name>jbct.skip</name>
-                    <value>false</value>
-                </property>
-            </activation>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.pragmatica-lite</groupId>
-                        <artifactId>jbct-maven-plugin</artifactId>
-                        <version>0.15.1</version>
-                        <executions>
-                            <execution>
-                                <id>check</id>
-                                <goals>
-                                    <goal>check</goal>
-                                </goals>
-                            </execution>
-                        </executions>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-        -->
         <profile>
             <id>release</id>
             <activation>

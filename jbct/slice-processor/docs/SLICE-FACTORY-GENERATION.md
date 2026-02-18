@@ -24,10 +24,10 @@ From a `@Slice`-annotated interface, the processor generates:
 
 ```java
 // CORRECT
-public static Promise<MySlice> create(Aspect<MySlice> aspect, SliceInvokerFacade invoker)
+public static Promise<MySlice> mySlice(Aspect<MySlice> aspect, SliceCreationContext ctx)
 
 // WRONG - never wrap Result in Promise
-public static Promise<Result<MySlice>> create(...)
+public static Promise<Result<MySlice>> mySlice(...)
 ```
 
 ### D2: Aspect Parameter
@@ -41,54 +41,61 @@ public static Promise<Result<MySlice>> create(...)
 
 ```java
 // No aspect needed
-var slice = SliceFactory.create(Aspect.identity(), invoker);
+var slice = SliceFactory.sliceName(Aspect.identity(), ctx);
 
 // With logging aspect
-var slice = SliceFactory.create(LoggingAspect.create(), invoker);
+var slice = SliceFactory.sliceName(LoggingAspect.create(), ctx);
 ```
 
 ### D3: Dependency Classification
 
-**Decision**: Dependencies are classified as internal or external based on package:
+**Decision**: Dependencies are classified into three types based on their annotations and structure:
 
 | Type | Definition | Handling |
 |------|------------|----------|
-| Internal | Same base package or subpackage | Call factory method directly |
-| External | Different base package | Generate local proxy record |
+| Resource | Parameter has `@ResourceQualifier` meta-annotation | `ctx.resources().provide(Type.class, "config")` |
+| Slice | External `@Slice` interface or interface without factory method | Proxy record with `MethodHandle` fields via `ctx.invoker()` |
+| Plain interface | Non-`@Slice` interface with static factory method | Call factory directly; if factory has `@ResourceQualifier` params, provision transitively |
 
 **Example**:
-```
-Slice package: org.example.order
-
-org.example.order.validation.OrderValidator  → Internal (subpackage)
-org.example.inventory.InventoryService       → External (different base)
+```java
+static OrderProcessor orderProcessor(
+    @PrimaryDb DatabaseConnector db,        // Resource dependency
+    InventoryService inventory,              // Slice dependency (external @Slice)
+    OrderValidator validator                 // Plain interface dependency
+) { ... }
 ```
 
 ### D4: Local Proxy Records
 
-**Decision**: External dependency proxies are generated as local records INSIDE the `create()` method, not as separate class files.
+**Decision**: Slice dependency proxies are generated as local records INSIDE the factory method, not as separate class files. Proxy records use `MethodHandle<R, I>` fields instead of `SliceInvokerFacade`.
 
 **Rationale**:
 - No separate proxy class files to manage
 - Encapsulation - proxy is implementation detail
 - Follows JBCT convention of preferring local records over classes
+- `MethodHandle` fields provide type-safe invocation
 
 ```java
-public static Promise<OrderService> create(Aspect<OrderService> aspect,
-                                            SliceInvokerFacade invoker) {
-    // Local proxy record - not a separate file
-    record inventoryService(SliceInvokerFacade invoker) implements InventoryService {
-        private static final String ARTIFACT = "org.example:inventory:1.0.0";
-
+public static Promise<OrderService> orderService(Aspect<OrderService> aspect,
+                                                   SliceCreationContext ctx) {
+    // Local proxy record with MethodHandle fields
+    record inventoryService(MethodHandle<Integer, String> checkStockHandle) implements InventoryService {
         @Override
-        public Promise<Stock> checkStock(StockRequest request) {
-            return invoker.invoke(ARTIFACT, "checkStock", request, Stock.class);
+        public Promise<Integer> checkStock(String productId) {
+            return checkStockHandle.invoke(productId);
         }
     }
 
-    var inventory = new inventoryService(invoker);
-    var instance = OrderService.orderService(inventory);
-    return Promise.success(aspect.apply(instance));
+    return Promise.all(
+            ctx.invoker().methodHandle("org.example:inventory:1.0.0", "checkStock",
+                                        new TypeToken<String>() {},
+                                        new TypeToken<Integer>() {}).async())
+        .map((inventory_checkStock) -> {
+            var inventory = new inventoryService(inventory_checkStock);
+            var instance = OrderService.orderService(inventory);
+            return aspect.apply(instance);
+        });
 }
 ```
 
@@ -100,7 +107,7 @@ public static Promise<OrderService> create(Aspect<OrderService> aspect,
 
 ```java
 public static Promise<Slice> orderServiceSlice(Aspect<OrderService> aspect,
-                                               SliceInvokerFacade invoker) {
+                                               SliceCreationContext ctx) {
     record orderServiceSlice(OrderService delegate) implements Slice, OrderService {
         @Override
         public List<SliceMethod<?, ?>> methods() {
@@ -120,7 +127,7 @@ public static Promise<Slice> orderServiceSlice(Aspect<OrderService> aspect,
         }
     }
 
-    return orderService(aspect, invoker).map(orderServiceSlice::new);
+    return orderService(aspect, ctx).map(orderServiceSlice::new);
 }
 ```
 
@@ -128,31 +135,50 @@ The slice wrapper record implements both `Slice` (for Aether runtime) and the sl
 
 ### D6: Proxy Method Parameter Handling
 
-**Decision**: All slice methods require at least one parameter. Multi-parameter methods use synthetic request records (see D8).
+**Decision**: Slice methods support any number of parameters (0, 1, or more). Multi-parameter methods and single primitive parameters use synthetic request records (see D8). Zero-parameter methods accept `Unit` at the transport layer; the handler ignores it.
 
 | Params | Request Argument |
 |--------|------------------|
-| 0 | **Not supported** - methods must have at least one parameter |
+| 0 | `Unit` at transport layer; handler ignores it |
 | 1 (record) | Parameter directly |
 | 1 (primitive) | Synthetic record wrapping the value |
 | 2+ | Synthetic record with all parameters |
 
 ```java
-// Single record param - uses directly
-public Promise<Stock> checkStock(StockRequest request) {
-    return invoker.invoke(ARTIFACT, "checkStock", request, Stock.class);
+// Zero params - SliceMethod accepts Unit, handler ignores it
+record healthService(MethodHandle<HealthStatus, Unit> healthCheckHandle) implements HealthService {
+    @Override
+    public Promise<HealthStatus> healthCheck() {
+        return healthCheckHandle.invoke(Unit.unit());
+    }
 }
 
-// Single primitive - synthetic record
-public Promise<Stock> getStock(String sku) {
-    // Uses GetStock_0_Request(String sku)
-    return invoker.invoke(ARTIFACT, "getStock", new GetStock_0_Request(sku), Stock.class);
+// Single record param - MethodHandle invoked directly
+record stockService(MethodHandle<Stock, StockRequest> checkStockHandle) implements StockService {
+    @Override
+    public Promise<Stock> checkStock(StockRequest request) {
+        return checkStockHandle.invoke(request);
+    }
 }
 
-// Multiple params - synthetic record
-public Promise<Boolean> transfer(String from, String to, int amount) {
-    // Uses Transfer_0_Request(String from, String to, int amount)
-    return invoker.invoke(ARTIFACT, "transfer", new Transfer_0_Request(from, to, amount), Boolean.class);
+// Single primitive - MethodHandle with synthetic record
+record stockService(MethodHandle<Stock, GetStockRequest> getStockHandle) implements StockService {
+    public record GetStockRequest(String sku) {}
+
+    @Override
+    public Promise<Stock> getStock(String sku) {
+        return getStockHandle.invoke(new GetStockRequest(sku));
+    }
+}
+
+// Multiple params - MethodHandle with synthetic record
+record transferService(MethodHandle<Boolean, TransferRequest> transferHandle) implements TransferService {
+    public record TransferRequest(String from, String to, int amount) {}
+
+    @Override
+    public Promise<Boolean> transfer(String from, String to, int amount) {
+        return transferHandle.invoke(new TransferRequest(from, to, amount));
+    }
 }
 ```
 
@@ -186,9 +212,9 @@ package org.example.order;
 public interface OrderProcessor {
     Promise<OrderResult> processOrder(ProcessOrderRequest request);
 
-    static OrderProcessor orderProcessor(OrderValidator validator,    // internal
-                                          PricingEngine pricing,      // internal
-                                          InventoryService inventory) // external
+    static OrderProcessor orderProcessor(OrderValidator validator,    // plain interface
+                                          PricingEngine pricing,      // plain interface
+                                          InventoryService inventory) // slice dependency
     {
         return new OrderProcessorImpl(validator, pricing, inventory);
     }
@@ -201,9 +227,10 @@ public interface OrderProcessor {
 package org.example.order;
 
 import org.pragmatica.aether.slice.Aspect;
+import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
-import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -221,32 +248,34 @@ import inventory.InventoryService;
 public final class OrderProcessorFactory {
     private OrderProcessorFactory() {}
 
-    public static Promise<OrderProcessor> create(Aspect<OrderProcessor> aspect,
-                                                  SliceInvokerFacade invoker) {
-        // Local proxy for external dependency
-        record inventoryService(SliceInvokerFacade invoker) implements InventoryService {
-            private static final String ARTIFACT = "org.example:inventory-service:1.0.0";
-
+    public static Promise<OrderProcessor> orderProcessor(Aspect<OrderProcessor> aspect,
+                                                          SliceCreationContext ctx) {
+        // Local proxy for slice dependency with MethodHandle fields
+        record inventoryService(MethodHandle<Stock, StockRequest> checkStockHandle)
+                implements InventoryService {
             @Override
-            public Promise<Stock> getStock(String sku) {
-                return invoker.invoke(ARTIFACT, "getStock", sku, Stock.class);
+            public Promise<Stock> checkStock(StockRequest request) {
+                return checkStockHandle.invoke(request);
             }
         }
 
-        // Internal dependencies - call their factories directly
-        var validator = OrderValidator.orderValidator();
-        var pricing = PricingEngine.pricingEngine();
-
-        // External dependency - instantiate proxy
-        var inventory = new inventoryService(invoker);
-
-        // Create slice via developer's factory
-        var instance = OrderProcessor.orderProcessor(validator, pricing, inventory);
-        return Promise.success(aspect.apply(instance));
+        return Promise.all(
+                ctx.invoker().methodHandle("org.example:inventory-service:1.0.0", "checkStock",
+                                            new TypeToken<StockRequest>() {},
+                                            new TypeToken<Stock>() {}).async())
+            .map((inventory_checkStock) -> {
+                // Plain interface deps - call factory directly
+                var validator = OrderValidator.orderValidator();
+                var pricing = PricingEngine.pricingEngine();
+                // Slice deps - instantiate proxy
+                var inventory = new inventoryService(inventory_checkStock);
+                return aspect.apply(
+                    OrderProcessor.orderProcessor(validator, pricing, inventory));
+            });
     }
 
     public static Promise<Slice> orderProcessorSlice(Aspect<OrderProcessor> aspect,
-                                                      SliceInvokerFacade invoker) {
+                                                      SliceCreationContext ctx) {
         record orderProcessorSlice(OrderProcessor delegate) implements Slice, OrderProcessor {
             @Override
             public List<SliceMethod<?, ?>> methods() {
@@ -266,7 +295,7 @@ public final class OrderProcessorFactory {
             }
         }
 
-        return orderProcessor(aspect, invoker)
+        return orderProcessor(aspect, ctx)
                    .map(orderProcessorSlice::new);
     }
 }
@@ -276,10 +305,14 @@ public final class OrderProcessorFactory {
 
 Slice API methods must:
 - Return `Promise<T>` where T is the response type
-- Have at least one parameter
+- Have any number of parameters (0, 1, or more)
 - Use simple types or records as request/response
+- Not be overloaded (overloads are rejected at compile time)
 
 ```java
+// CORRECT - zero parameters
+Promise<HealthStatus> healthCheck();
+
 // CORRECT - single record parameter
 Promise<OrderResult> processOrder(ProcessOrderRequest request);
 
@@ -289,9 +322,6 @@ Promise<OrderResult> processOrder(String orderId, int quantity);
 // CORRECT - single primitive
 Promise<Stock> getStock(String sku);
 
-// WRONG - no parameters
-Promise<HealthStatus> healthCheck();
-
 // WRONG - void return
 void processOrder(ProcessOrderRequest request);
 ```
@@ -300,21 +330,30 @@ void processOrder(ProcessOrderRequest request);
 
 ### D8: Synthetic Request Records
 
-**Decision**: For slice methods with multiple parameters or single primitive parameters, the processor generates synthetic request records inside the factory interface.
+**Decision**: For slice methods with multiple parameters or single primitive parameters, the processor generates synthetic request records inside the factory interface. Method overloads are rejected at compile time.
 
-**Naming Convention**: `{MethodName}_{N}_Request` where N is a sequence number.
-
-**Sequence Number Rules**:
-1. Sort all method signatures as strings alphabetically
-2. Assign sequence numbers starting from 0
-3. Always include `_0_` suffix even for non-overloaded methods (consistency)
+**Naming Convention**: `{MethodName}Request` (e.g., `GetStockRequest`, `TransferRequest`).
 
 **Rationale**:
 - Provides deterministic naming across caller and callee
-- Adding method overloads is a breaking change (minor version bump)
 - Same generated record can be used on both sides of the transport
+- Overloads are rejected at compile time, so sequence numbering is unnecessary
 
 ### Examples
+
+**Zero Parameters**:
+```java
+// Slice interface
+Promise<HealthStatus> healthCheck();
+
+// Generated SliceMethod uses Unit as request type
+new SliceMethod<>(
+    MethodName.methodName("healthCheck").unwrap(),
+    _ -> delegate.healthCheck(),
+    new TypeToken<HealthStatus>() {},
+    new TypeToken<Unit>() {}
+)
+```
 
 **Single Primitive Parameter**:
 ```java
@@ -322,14 +361,14 @@ void processOrder(ProcessOrderRequest request);
 Promise<Stock> getStock(String sku);
 
 // Generated synthetic record
-public record GetStock_0_Request(String sku) {}
+public record GetStockRequest(String sku) {}
 
 // Generated SliceMethod uses the synthetic record
 new SliceMethod<>(
     MethodName.methodName("getStock").unwrap(),
     request -> delegate.getStock(request.sku()),
     new TypeToken<Stock>() {},
-    new TypeToken<GetStock_0_Request>() {}
+    new TypeToken<GetStockRequest>() {}
 )
 ```
 
@@ -339,14 +378,14 @@ new SliceMethod<>(
 Promise<TransferResult> transfer(String from, String to, BigDecimal amount);
 
 // Generated synthetic record
-public record Transfer_0_Request(String from, String to, BigDecimal amount) {}
+public record TransferRequest(String from, String to, BigDecimal amount) {}
 
 // Generated SliceMethod
 new SliceMethod<>(
     MethodName.methodName("transfer").unwrap(),
     request -> delegate.transfer(request.from(), request.to(), request.amount()),
     new TypeToken<TransferResult>() {},
-    new TypeToken<Transfer_0_Request>() {}
+    new TypeToken<TransferRequest>() {}
 )
 ```
 
@@ -364,59 +403,109 @@ new SliceMethod<>(
 )
 ```
 
-**Method Overloads**:
+**Method Overloads (rejected)**:
 ```java
-// Slice interface with overloaded methods
+// COMPILE ERROR - overloaded methods are not allowed
 Promise<User> getUser(Long id);
 Promise<User> getUser(String email);
-
-// Signatures sorted: "getUser(Long)" < "getUser(String)"
-// Generated synthetic records
-public record GetUser_0_Request(Long id) {}      // for getUser(Long)
-public record GetUser_1_Request(String email) {} // for getUser(String)
+// error: Overloaded slice method 'getUser' is not supported. Use distinct method names.
 ```
 
-### External Dependency Proxies
+### Slice Dependency Proxies
 
-For external dependencies with multi-parameter methods, the generator creates stub interfaces with synthetic records:
+For slice dependencies with multi-parameter methods, the generator creates proxy records with `MethodHandle` fields and synthetic request records:
 
 ```java
-// External dependency interface (in another slice)
+// Slice dependency interface (in another slice)
 public interface PaymentService {
     Promise<PaymentResult> processPayment(String orderId, BigDecimal amount);
 }
 
 // Generated proxy record inside factory
-record paymentService(SliceInvokerFacade invoker) implements PaymentService {
-    private static final String ARTIFACT = "org.example:payment:1.0.0";
-
-    // Synthetic record for the proxy
-    public record ProcessPayment_0_Request(String orderId, BigDecimal amount) {}
+record paymentService(MethodHandle<PaymentResult, ProcessPaymentRequest> processPaymentHandle)
+        implements PaymentService {
+    // Synthetic record for multi-param method
+    public record ProcessPaymentRequest(String orderId, BigDecimal amount) {}
 
     @Override
     public Promise<PaymentResult> processPayment(String orderId, BigDecimal amount) {
-        return invoker.invoke(ARTIFACT, "processPayment",
-                              new ProcessPayment_0_Request(orderId, amount),
-                              PaymentResult.class);
+        return processPaymentHandle.invoke(new ProcessPaymentRequest(orderId, amount));
     }
+}
+
+// MethodHandle obtained via:
+ctx.invoker().methodHandle("org.example:payment:1.0.0", "processPayment",
+                            new TypeToken<ProcessPaymentRequest>() {},
+                            new TypeToken<PaymentResult>() {}).async()
+```
+
+### D9: Resource Dependencies
+
+**Decision**: Parameters annotated with `@ResourceQualifier` meta-annotations are provisioned via `ctx.resources().provide()`.
+
+**Rationale**: Resources (database connections, HTTP clients, etc.) are configured externally and provisioned at runtime by the Aether resource provider SPI.
+
+```java
+@Slice
+public interface OrderRepository {
+    Promise<Order> save(SaveOrderRequest request);
+
+    static OrderRepository orderRepository(@PrimaryDb DatabaseConnector db) {
+        return new orderRepository(db);
+    }
+}
+
+// Generated factory:
+public static Promise<OrderRepository> orderRepository(Aspect<OrderRepository> aspect,
+                                                         SliceCreationContext ctx) {
+    return Promise.all(
+            ctx.resources().provide(DatabaseConnector.class, "database.primary"))
+        .map((db) -> {
+            return aspect.apply(OrderRepository.orderRepository(db));
+        });
 }
 ```
 
-### Breaking Change Warning
+See [RFC-0006: Resource Provisioning](../../../docs/rfc/RFC-0006-resource-provisioning.md) for the full resource provisioning architecture.
 
-Adding method overloads changes sequence numbers and is a **breaking change**:
+### D10: Plain Interface Dependencies
+
+**Decision**: Non-`@Slice` interfaces with static factory methods are treated as plain interface dependencies. They are constructed by calling their factory method directly.
+
+**Transitive resource provisioning**: If the plain interface's factory method has `@ResourceQualifier`-annotated parameters, those resources are provisioned transitively and passed as arguments.
 
 ```java
-// Version 1.0.0
-Promise<User> getUser(Long id);  // GetUser_0_Request
+// Plain interface - not a @Slice
+public interface KycStep {
+    Promise<Boolean> verify(String customerId);
 
-// Version 1.1.0 - BREAKING CHANGE
-Promise<User> getUser(Long id);      // Still GetUser_0_Request
-Promise<User> getUser(String email); // NEW: GetUser_1_Request
-// Old clients sending GetUser_0_Request for getUser(String) will fail
+    static KycStep kycStep(@KycProvider HttpClient httpClient) {
+        return new kycStep(httpClient);
+    }
+}
+
+@Slice
+public interface LoanService {
+    Promise<LoanResult> processLoan(LoanRequest request);
+    static LoanService loanService(KycStep kycStep) { return new loanService(kycStep); }
+}
+
+// Generated factory:
+public static Promise<LoanService> loanService(Aspect<LoanService> aspect,
+                                                 SliceCreationContext ctx) {
+    return Promise.all(
+            ctx.resources().provide(HttpClient.class, "http.kyc"))
+        .map((kycStep_httpClient) -> {
+            var kycStep = KycStep.kycStep(kycStep_httpClient);
+            return aspect.apply(LoanService.loanService(kycStep));
+        });
+}
 ```
 
-**Migration**: Increment minor version when adding overloads; document in changelog.
+**Zero-arg plain interfaces** (factory has no parameters) are constructed synchronously:
+```java
+var validator = OrderValidator.orderValidator();
+```
 
 ## File Structure
 
@@ -470,10 +559,20 @@ public record SliceMethod<I, O>(
 ) {}
 ```
 
+### SliceCreationContext
+```java
+public interface SliceCreationContext {
+    SliceInvokerFacade invoker();
+    ResourceProviderFacade resources();
+}
+```
+
 ### SliceInvokerFacade
 ```java
 public interface SliceInvokerFacade {
     <T> Promise<T> invoke(String artifact, String method, Object request, Class<T> responseType);
+    <R, I> MethodHandle<R, I> methodHandle(String artifact, String method,
+                                            TypeToken<I> requestType, TypeToken<R> responseType);
 }
 ```
 
@@ -492,6 +591,9 @@ public interface SliceInvokerFacade {
 | `should_handle_deeply_nested_slice_dependencies` | Complex dependency graph |
 | `should_generate_createSlice_method_with_all_business_methods` | Slice adapter |
 | `should_generate_correct_type_tokens_for_slice_methods` | Custom DTO types |
+| `should_generate_resource_provide_call_for_qualified_parameter` | @ResourceQualifier resource dep |
+| `should_generate_resource_provide_for_plain_interface_factory_params` | Plain interface with @ResourceQualifier factory params |
+| `should_generate_resources_for_multiple_plain_interfaces_with_params` | Multiple plain interfaces with resource params |
 
 ## Revision History
 
@@ -502,3 +604,4 @@ public interface SliceInvokerFacade {
 | 2026-01-11 | Claude | Added comprehensive test coverage (11 tests) |
 | 2026-01-11 | Claude | Fixed: import internal deps from subpackages |
 | 2026-01-14 | Claude | Added D8: Multi-parameter method support with synthetic records |
+| 2026-02-16 | Claude | Updated for SliceCreationContext, resource deps, plain interface deps with transitive provisioning |

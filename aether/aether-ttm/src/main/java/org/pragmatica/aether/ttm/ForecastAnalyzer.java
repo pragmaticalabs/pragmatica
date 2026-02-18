@@ -1,6 +1,6 @@
 package org.pragmatica.aether.ttm;
 
-import org.pragmatica.aether.config.TTMConfig;
+import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.metrics.MinuteAggregate;
 import org.pragmatica.aether.ttm.model.FeatureIndex;
@@ -25,7 +25,7 @@ public interface ForecastAnalyzer {
                         ControllerConfig currentConfig);
 
     /// Create default analyzer.
-    static ForecastAnalyzer forecastAnalyzer(TTMConfig config) {
+    static ForecastAnalyzer forecastAnalyzer(TtmConfig config) {
         return new ForecastAnalyzerImpl(config);
     }
 }
@@ -35,7 +35,7 @@ final class ForecastAnalyzerImpl implements ForecastAnalyzer {
     private static final float HIGH_CPU_THRESHOLD = 0.7f;
     private static final float HIGH_CPU_INCREASE_THRESHOLD = 0.1f;
     private static final double TARGET_CPU_UTILIZATION = 0.6;
-    private static final float CPU_DECREASE_THRESHOLD = -0.15f;
+    private static final float CPU_DECREASE_THRESHOLD = - 0.15f;
     private static final float LOW_CPU_THRESHOLD = 0.3f;
     private static final double SCALE_DOWN_TARGET_CPU = 0.5;
     private static final double MODERATE_CHANGE_THRESHOLD = 0.05;
@@ -45,9 +45,9 @@ final class ForecastAnalyzerImpl implements ForecastAnalyzer {
     private static final double MAX_SCALE_DOWN_THRESHOLD = 0.4;
     private static final double THRESHOLD_ADJUSTMENT_FACTOR = 0.5;
 
-    private final TTMConfig config;
+    private final TtmConfig config;
 
-    ForecastAnalyzerImpl(TTMConfig config) {
+    ForecastAnalyzerImpl(TtmConfig config) {
         this.config = config;
     }
 

@@ -27,11 +27,12 @@ public record ForgeConfig(int nodes,
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
 
     /// Default configuration.
+    @SuppressWarnings("JBCT-VO-02")
     public static final ForgeConfig DEFAULT = new ForgeConfig(DEFAULT_NODES,
-                                                               DEFAULT_MANAGEMENT_PORT,
-                                                               DEFAULT_DASHBOARD_PORT,
-                                                               DEFAULT_APP_HTTP_PORT,
-                                                               ForgeH2Config.disabled());
+                                                              DEFAULT_MANAGEMENT_PORT,
+                                                              DEFAULT_DASHBOARD_PORT,
+                                                              DEFAULT_APP_HTTP_PORT,
+                                                              ForgeH2Config.disabled());
 
     /// Create configuration with specified values and validation.
     public static Result<ForgeConfig> forgeConfig(int nodes, int managementPort, int dashboardPort) {
@@ -79,7 +80,8 @@ public record ForgeConfig(int nodes,
     /// Load configuration from file path.
     /// Relative paths in the config (e.g., init_script) are resolved relative to the config file's directory.
     public static Result<ForgeConfig> load(Path path) {
-        var baseDir = path.toAbsolutePath().getParent();
+        var baseDir = path.toAbsolutePath()
+                          .getParent();
         return TomlParser.parseFile(path)
                          .flatMap(doc -> fromDocument(doc, baseDir));
     }
@@ -133,7 +135,9 @@ public record ForgeConfig(int nodes,
         if (filePath.isAbsolute()) {
             return filePath.toString();
         }
-        return baseDir.map(dir -> dir.resolve(filePath).toAbsolutePath().toString())
+        return baseDir.map(dir -> dir.resolve(filePath)
+                                     .toAbsolutePath()
+                                     .toString())
                       .or(path);
     }
 

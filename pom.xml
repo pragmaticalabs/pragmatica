@@ -6,7 +6,7 @@
 
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>pragmatica</artifactId>
-    <version>0.15.1</version>
+    <version>0.16.0</version>
     <packaging>pom</packaging>
 
     <name>Pragmatica</name>
@@ -47,6 +47,7 @@
         <module>core</module>
         <module>integrations</module>
         <module>testing</module>
+        <module>test-logging</module>
         <module>jbct</module>
         <module>aether</module>
         <module>examples</module>
@@ -63,28 +64,28 @@
         <assertj-core.version>3.27.7</assertj-core.version>
         <mockito.version>5.21.0</mockito.version>
         <awaitility.version>4.3.0</awaitility.version>
-        <tinylog.version>2.7.0</tinylog.version>
+        <log4j2.version>2.24.3</log4j2.version>
         <kryo.version>5.6.2</kryo.version>
         <fury-core.version>0.10.3</fury-core.version>
-        <picocli.version>4.7.6</picocli.version>
-        <asm.version>9.8</asm.version>
+        <picocli.version>4.7.7</picocli.version>
+        <asm.version>9.9.1</asm.version>
         <micrometer.version>1.16.1</micrometer.version>
         <onnxruntime.version>1.23.2</onnxruntime.version>
 
         <!-- Integration Dependencies -->
         <jackson.version>3.0.3</jackson.version>
         <jakarta.persistence.version>3.2.0</jakarta.persistence.version>
-        <jooq.version>3.20.10</jooq.version>
+        <jooq.version>3.20.11</jooq.version>
 
         <!-- Maven Plugin versions -->
-        <maven-compiler-plugin.version>3.14.0</maven-compiler-plugin.version>
-        <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
-        <maven-failsafe-plugin.version>3.5.1</maven-failsafe-plugin.version>
+        <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
+        <maven-surefire-plugin.version>3.5.4</maven-surefire-plugin.version>
+        <maven-failsafe-plugin.version>3.5.4</maven-failsafe-plugin.version>
         <maven-plugin-api.version>3.9.9</maven-plugin-api.version>
         <maven-plugin-annotations.version>3.15.1</maven-plugin-annotations.version>
         <maven-plugin-plugin.version>4.0.0-beta-2</maven-plugin-plugin.version>
 
-        <!-- Skip jbct by default to avoid cycle during reactor build -->
+        <!-- Default true to avoid reactor cycle; override with -Djbct.skip=false -pl !jbct -->
         <jbct.skip>true</jbct.skip>
     </properties>
 
@@ -99,6 +100,11 @@
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>testing</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>test-logging</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -198,6 +204,11 @@
                 <artifactId>cluster</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>hetzner</artifactId>
+                <version>${project.version}</version>
+            </dependency>
 
             <!-- JBCT modules -->
             <dependency>
@@ -219,7 +230,7 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-api</artifactId>
+                <artifactId>resource-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -249,7 +260,17 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-aspect</artifactId>
+                <artifactId>environment-integration</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>environment-hetzner</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>resource-interceptors</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -260,14 +281,19 @@
                 <version>${slf4j.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.tinylog</groupId>
-                <artifactId>slf4j-tinylog</artifactId>
-                <version>${tinylog.version}</version>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-core</artifactId>
+                <version>${log4j2.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.tinylog</groupId>
-                <artifactId>tinylog-impl</artifactId>
-                <version>${tinylog.version}</version>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-slf4j2-impl</artifactId>
+                <version>${log4j2.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-layout-template-json</artifactId>
+                <version>${log4j2.version}</version>
             </dependency>
 
             <!-- Testing -->
@@ -448,12 +474,12 @@
                 <plugin>
                     <groupId>org.codehaus.mojo</groupId>
                     <artifactId>versions-maven-plugin</artifactId>
-                    <version>2.18.0</version>
+                    <version>2.21.0</version>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-source-plugin</artifactId>
-                    <version>3.3.1</version>
+                    <version>3.4.0</version>
                     <executions>
                         <execution>
                             <id>attach-sources</id>
@@ -467,7 +493,7 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-javadoc-plugin</artifactId>
-                    <version>3.10.1</version>
+                    <version>3.12.0</version>
                     <executions>
                         <execution>
                             <id>attach-javadocs</id>
@@ -485,7 +511,7 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-gpg-plugin</artifactId>
-                    <version>3.2.7</version>
+                    <version>3.2.8</version>
                     <executions>
                         <execution>
                             <id>sign-artifacts</id>
@@ -499,7 +525,7 @@
                 <plugin>
                     <groupId>org.sonatype.central</groupId>
                     <artifactId>central-publishing-maven-plugin</artifactId>
-                    <version>0.9.0</version>
+                    <version>0.10.0</version>
                     <extensions>true</extensions>
                     <configuration>
                         <publishingServerId>central</publishingServerId>
@@ -520,7 +546,7 @@
                 </plugin>
                 <plugin>
                     <artifactId>maven-shade-plugin</artifactId>
-                    <version>3.6.0</version>
+                    <version>3.6.1</version>
                     <configuration>
                         <createDependencyReducedPom>false</createDependencyReducedPom>
                     </configuration>
@@ -544,6 +570,7 @@
                         <execution>
                             <goals>
                                 <goal>format</goal>
+                                <goal>lint</goal>
                             </goals>
                         </execution>
                     </executions>

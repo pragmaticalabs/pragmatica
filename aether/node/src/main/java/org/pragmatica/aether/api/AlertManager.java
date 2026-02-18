@@ -30,6 +30,7 @@ import org.slf4j.LoggerFactory;
 ///
 /// Thresholds are persisted to consensus KV-Store for cluster-wide consistency
 /// and survival across node restarts.
+@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
 public class AlertManager {
     private static final Logger log = LoggerFactory.getLogger(AlertManager.class);
     private static final int MAX_ALERT_HISTORY = 100;
@@ -421,7 +422,7 @@ public class AlertManager {
             sb.append("],");
             sb.append("\"lastError\":\"")
               .append(escapeJson(alert.lastError.map(Cause::message)
-                                                .or("unknown")))
+                                      .or("unknown")))
               .append("\",");
             sb.append("\"timestamp\":")
               .append(alert.triggeredAt);

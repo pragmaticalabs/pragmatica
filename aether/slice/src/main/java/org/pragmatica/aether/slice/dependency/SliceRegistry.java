@@ -14,6 +14,9 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
+
 /// Thread-safe registry for tracking loaded slice instances.
 ///
 /// Maps artifacts to their loaded slice instances. Supports:
@@ -21,6 +24,7 @@ import java.util.concurrent.ConcurrentMap;
 /// - Lookup by exact artifact
 /// - Lookup by class name with version pattern matching
 /// - Thread-safe concurrent access
+@SuppressWarnings({"JBCT-VO-01", "JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-ZONE-03"})
 public interface SliceRegistry {
     /// Create a new empty registry.
     static SliceRegistry sliceRegistry() {
@@ -79,22 +83,21 @@ public interface SliceRegistry {
         @Override
         public Result<Unit> register(Artifact artifact, Slice slice) {
             // putIfAbsent returns null on success (nothing was there), returns existing value on failure
-            return Option.option(registry.putIfAbsent(artifact, slice))
-                         .fold(Result::unitResult,
-                               _ -> ALREADY_REGISTERED.apply(artifact.asString())
-                                                      .result());
+            return option(registry.putIfAbsent(artifact, slice))
+            .fold(Result::unitResult,
+                  _ -> ALREADY_REGISTERED.apply(artifact.asString())
+                                         .result());
         }
 
         @Override
         public Result<Unit> unregister(Artifact artifact) {
-            return Option.option(registry.remove(artifact))
-                         .toResult(NOT_FOUND.apply(artifact.asString()))
+            return option(registry.remove(artifact)).toResult(NOT_FOUND.apply(artifact.asString()))
                          .mapToUnit();
         }
 
         @Override
         public Option<Slice> lookup(Artifact artifact) {
-            return Option.option(registry.get(artifact));
+            return option(registry.get(artifact));
         }
 
         @Override
@@ -108,7 +111,7 @@ public interface SliceRegistry {
                            .map(Map.Entry::getValue)
                            .findFirst()
                            .map(Option::option)
-                           .orElse(Option.none());
+                           .orElse(none());
         }
 
         @Override
@@ -133,7 +136,7 @@ public interface SliceRegistry {
                            .map(Map.Entry::getValue)
                            .findFirst()
                            .map(Option::option)
-                           .orElse(Option.none());
+                           .orElse(none());
         }
 
         private boolean matchesClassName(Artifact artifact, String className) {

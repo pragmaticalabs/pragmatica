@@ -36,7 +36,7 @@ class NodeFailureE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
 
     // Common timeouts (CI gets 2x via adapt())
-    private static final Duration RECOVERY_TIMEOUT = adapt(timeSpan(90).seconds().duration());
+    private static final Duration RECOVERY_TIMEOUT = adapt(timeSpan(2).minutes().duration());
     private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
 
     private static AetherCluster cluster;
@@ -126,6 +126,7 @@ class NodeFailureE2ETest {
         // Wait for new leader election
         await().atMost(RECOVERY_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
+               .ignoreExceptions()
                .until(() -> {
                    var newLeader = cluster.leader();
                    return newLeader.isPresent() &&

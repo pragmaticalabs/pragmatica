@@ -1,20 +1,21 @@
 package org.pragmatica.aether.forge;
 
-import org.h2.tools.Server;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 
+import org.h2.tools.Server;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /// Embedded H2 database server for Forge.
 /// Provides an in-memory or persistent H2 database that slices can connect to.
+@SuppressWarnings({"JBCT-RET-03", "JBCT-EX-01"})
 public final class ForgeH2Server {
     private static final Logger log = LoggerFactory.getLogger(ForgeH2Server.class);
 
@@ -46,12 +47,10 @@ public final class ForgeH2Server {
     }
 
     private Server startServer() throws SQLException {
-        var args = new String[]{
-            "-tcp",
-            "-tcpPort", String.valueOf(config.port()),
-            "-tcpAllowOthers",
-            "-ifNotExists"
-        };
+        var args = new String[]{"-tcp",
+        "-tcpPort", String.valueOf(config.port()),
+        "-tcpAllowOthers",
+        "-ifNotExists"};
         tcpServer = Server.createTcpServer(args)
                           .start();
         return tcpServer;
@@ -61,21 +60,26 @@ public final class ForgeH2Server {
         return config.initScript()
                      .map(this::runInitScript)
                      .or(() -> {
-                         log.debug("No init script configured, skipping database initialization");
-                         return Promise.success(Unit.unit());
-                     });
+                             log.debug("No init script configured, skipping database initialization");
+                             return Promise.success(Unit.unit());
+                         });
     }
 
     private Promise<Unit> runInitScript(String scriptPath) {
         log.info("Running H2 init script: {}", scriptPath);
-        return Promise.lift(H2Error.InitScriptFailed::new, () -> {
-            try (Connection conn = DriverManager.getConnection(jdbcUrl(), "sa", "")) {
-                var statement = conn.createStatement();
-                statement.execute("RUNSCRIPT FROM '" + scriptPath + "'");
-            }
-        }).mapToUnit()
-          .onSuccess(_ -> log.info("H2 init script completed successfully"))
-          .onFailure(cause -> log.error("H2 init script failed: {}", cause.message()));
+        return Promise.lift(H2Error.InitScriptFailed::new,
+                            () -> {
+                                try (Connection conn = DriverManager.getConnection(jdbcUrl(),
+                                                                                   "sa",
+                                                                                   "")) {
+                                    var statement = conn.createStatement();
+                                    statement.execute("RUNSCRIPT FROM '" + scriptPath + "'");
+                                }
+                            })
+                      .mapToUnit()
+                      .onSuccess(_ -> log.info("H2 init script completed"))
+                      .onFailure(cause -> log.error("H2 init script failed: {}",
+                                                    cause.message()));
     }
 
     /// Stop the H2 TCP server.
@@ -83,11 +87,13 @@ public final class ForgeH2Server {
         if (tcpServer == null) {
             return Promise.success(Unit.unit());
         }
-        return Promise.lift(H2Error.StopFailed::new, () -> {
-            tcpServer.stop();
-            tcpServer = null;
-            log.info("H2 server stopped");
-        }).mapToUnit();
+        return Promise.lift(H2Error.StopFailed::new,
+                            () -> {
+                                tcpServer.stop();
+                                tcpServer = null;
+                                log.info("H2 server stopped");
+                            })
+                      .mapToUnit();
     }
 
     /// Get the JDBC URL for connecting to this H2 server.

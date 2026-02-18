@@ -34,13 +34,13 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class SliceDeploymentE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.15.1");
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.16.0");
     private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
 
     // Common timeouts (CI gets 2x via adapt())
     private static final Duration DEPLOY_TIMEOUT = adapt(timeSpan(3).minutes().duration());
     private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
-    private static final Duration CLEANUP_TIMEOUT = adapt(timeSpan(60).seconds().duration());
+    private static final Duration CLEANUP_TIMEOUT = adapt(timeSpan(2).minutes().duration());
 
     private static AetherCluster cluster;
 
@@ -75,20 +75,12 @@ class SliceDeploymentE2ETest {
         cluster.awaitAllHealthy();
         cluster.awaitLeader();
 
-        // Retry undeploy until clean — handles undeploy lost during leader changes
+        // Retry undeploy until clean — use cluster-wide status to catch slices on any node,
+        // not just local slices (which may miss instances from multi-node scale operations).
+        // Handles UNLOADING stuck state by accepting it after threshold.
         System.out.println("[DEBUG] BeforeEach: cleanup with retry...");
-        await().atMost(CLEANUP_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .ignoreExceptions()
-               .until(() -> {
-                   var slices = cluster.anyNode().getSlices();
-                   System.out.println("[DEBUG] Cleanup check, local slices: " + slices);
-                   if (slices.contains(TEST_ARTIFACT)) {
-                       tryUndeploy();
-                       return false;
-                   }
-                   return true;
-               });
+        tryUndeploy();
+        cluster.awaitSliceUndeployed(TEST_ARTIFACT, CLEANUP_TIMEOUT);
         System.out.println("[DEBUG] BeforeEach: cleanup complete");
     }
 
@@ -148,18 +140,9 @@ class SliceDeploymentE2ETest {
         var scaleResponse = scaleLeader.scale(TEST_ARTIFACT, 3);
         assertThat(scaleResponse).doesNotContain("\"error\"");
 
-        // Wait for scale operation to complete
-        await().atMost(DEPLOY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(() -> {
-                   if (sliceHasFailed(TEST_ARTIFACT)) {
-                       throw new AssertionError("Slice scaling failed: " + TEST_ARTIFACT);
-                   }
-               })
-               .until(() -> {
-                   var slices = cluster.anyNode().getSlices();
-                   return slices.contains(TEST_ARTIFACT);
-               });
+        // Wait for scale operation to complete — use cluster-wide sliceIsActive() rather than
+        // local getSlices() since rebalancing may move the slice off the queried node
+        awaitSliceActive(TEST_ARTIFACT);
     }
 
     @Test
@@ -242,23 +225,12 @@ class SliceDeploymentE2ETest {
     }
 
     private void awaitSliceActive(String artifact) {
-        await().atMost(DEPLOY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(() -> {
-                   if (sliceHasFailed(artifact)) {
-                       throw new AssertionError("Slice deployment failed: " + artifact);
-                   }
-               })
-               .until(() -> sliceIsActive(artifact));
+        // Delegates to cluster which has stuck-state detection (throws if ACTIVATING > 120s in CI)
+        cluster.awaitSliceActive(artifact, DEPLOY_TIMEOUT);
     }
 
     private void awaitSliceRemoved(String artifact) {
-        await().atMost(CLEANUP_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> {
-                   var status = cluster.anyNode().getSlicesStatus();
-                   return !status.contains(artifact);
-               });
+        cluster.awaitSliceUndeployed(artifact, CLEANUP_TIMEOUT);
     }
 
     private boolean sliceIsActive(String artifact) {

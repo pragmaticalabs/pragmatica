@@ -25,7 +25,7 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
                                                                                             RuleId.QualifiedName.class))
                                    .map(qn -> text(qn, source))
                                    .or("");
-        if (!ctx.isBusinessPackage(packageName)) {
+        if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
         // Find ClassMember nodes with static methods containing local record declarations

@@ -197,13 +197,12 @@ public interface PricingService {
                               Set<String> loyalCustomers) implements PricingService {
             @Override
             public Promise<PriceBreakdown> calculatePrice(CalculatePriceRequest request) {
-                return calculateLinePrices(request.items())
-                       .flatMap(linePrices -> calculateSubtotal(linePrices)
-                                              .map(subtotal -> PriceBreakdown.builder()
-                                                                             .linePrices(linePrices)
-                                                                             .subtotal(subtotal)))
-                       .flatMap(PriceBreakdown.Builder::build)
-                       .async();
+                return calculateLinePrices(request.items()).flatMap(linePrices -> calculateSubtotal(linePrices)
+                .map(subtotal -> PriceBreakdown.builder()
+                                               .linePrices(linePrices)
+                                               .subtotal(subtotal)))
+                                          .flatMap(PriceBreakdown.Builder::build)
+                                          .async();
             }
 
             @Override
@@ -221,7 +220,7 @@ public interface PricingService {
                                    .toUpperCase();
                 var rate = taxRates.getOrDefault(state, BigDecimal.valueOf(0.08));
                 return request.subtotal()
-                              .percentage((int) (rate.doubleValue() * 100))
+                              .percentage((int)(rate.doubleValue() * 100))
                               .map(taxAmount -> TaxResult.taxResult(taxAmount, rate, state))
                               .async();
             }
@@ -232,8 +231,8 @@ public interface PricingService {
                                    .toList();
                 return Result.allOf(results)
                              .map(linePrices -> linePrices.stream()
-                                                         .collect(Collectors.toMap(PriceBreakdown.LinePrice::productId,
-                                                                                   lp -> lp)));
+                                                          .collect(Collectors.toMap(PriceBreakdown.LinePrice::productId,
+                                                                                    lp -> lp)));
             }
 
             private Result<PriceBreakdown.LinePrice> calculateLinePrice(LineItem item) {

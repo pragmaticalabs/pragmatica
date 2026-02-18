@@ -3,9 +3,15 @@ package org.pragmatica.aether.setup;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.Environment;
-import org.pragmatica.aether.setup.generators.*;
+import org.pragmatica.aether.setup.generators.DockerGenerator;
+import org.pragmatica.aether.setup.generators.Generator;
+import org.pragmatica.aether.setup.generators.KubernetesGenerator;
+import org.pragmatica.aether.setup.generators.LocalGenerator;
+import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.parse.Number;
 
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +43,7 @@ public final class AetherUp {
                                                               new DockerGenerator(),
                                                               new KubernetesGenerator());
 
+    @SuppressWarnings("JBCT-RET-01")
     public static void main(String[] args) {
         var options = parseArgs(args);
         if (options.containsKey("help")) {
@@ -47,100 +54,139 @@ public final class AetherUp {
             System.out.println("aether-up " + VERSION);
             return;
         }
-        // Load configuration
         var configPath = Path.of(options.getOrDefault("config", "aether.toml"));
         var outputDir = Path.of(options.getOrDefault("output", "aether-cluster"));
-        AetherConfig config;
-        if (configPath.toFile()
-                      .exists()) {
-            var overrides = extractOverrides(options);
-            var result = ConfigLoader.loadWithOverrides(configPath, overrides);
-            if (result.isFailure()) {
-                System.err.println("Error loading configuration:");
-                result.onFailure(cause -> System.err.println("  " + cause.message()));
-                System.exit(1);
-                return;
-            }
-            config = result.unwrap();
-        } else {
-            // No config file - use environment defaults
-            var envStr = options.getOrDefault("env", "docker");
-            var envResult = Environment.environment(envStr)
-                                       .onFailure(cause -> System.err.println("Error: " + cause.message()))
-                                       .onFailure(_ -> System.exit(1));
-            var env = envResult.unwrap();
-            var builder = AetherConfig.builder()
-                                      .environment(env);
-            // Apply overrides
-            if (options.containsKey("nodes")) {
-                builder.nodes(Integer.parseInt(options.get("nodes")));
-            }
-            if (options.containsKey("heap")) {
-                builder.heap(options.get("heap"));
-            }
-            if (options.containsKey("tls")) {
-                builder.tls(true);
-            }
-            if (options.containsKey("no-tls")) {
-                builder.tls(false);
-            }
-            config = builder.build();
-        }
-        // Find appropriate generator
-        var generator = GENERATORS.stream()
-                                  .filter(g -> g.supports(config))
-                                  .findFirst()
-                                  .orElseThrow(() -> new IllegalStateException("No generator found for environment: " + config.environment()));
+        var config = configFor(options, configPath);
+        var generator = findGenerator(config);
         if (options.containsKey("dry-run")) {
-            System.out.println("Dry run - would generate artifacts for:");
-            System.out.println("  Environment: " + config.environment()
-                                                        .displayName());
-            System.out.println("  Nodes: " + config.cluster()
-                                                  .nodes());
-            System.out.println("  Heap: " + config.node()
-                                                 .heap());
-            System.out.println("  TLS: " + config.tlsEnabled());
-            System.out.println("  Output: " + outputDir);
+            printDryRun(config, outputDir);
             return;
         }
-        // Generate artifacts
+        runGeneration(generator, config, outputDir);
+    }
+
+    private static AetherConfig configFor(Map<String, String> options, Path configPath) {
+        return configPath.toFile()
+                         .exists()
+               ? configFromFile(options, configPath)
+               : configFromDefaults(options);
+    }
+
+    private static AetherConfig configFromFile(Map<String, String> options, Path configPath) {
+        var overrides = extractOverrides(options);
+        var result = ConfigLoader.loadWithOverrides(configPath, overrides);
+        result.onFailure(cause -> printErrorAndExit("Error loading configuration:", cause.message()));
+        return result.unwrap();
+    }
+
+    private static AetherConfig configFromDefaults(Map<String, String> options) {
+        var envStr = options.getOrDefault("env", "docker");
+        var env = Environment.environment(envStr)
+                             .onFailure(cause -> printErrorAndExit("Error:",
+                                                                   cause.message()))
+                             .unwrap();
+        var builder = AetherConfig.builder()
+                                  .withEnvironment(env);
+        withOverrides(builder, options);
+        return builder.build();
+    }
+
+    private static void withOverrides(AetherConfig.Builder builder, Map<String, String> options) {
+        if (options.containsKey("nodes")) {
+            builder.nodes(Number.parseInt(options.get("nodes"))
+                                .unwrap());
+        }
+        if (options.containsKey("heap")) {
+            builder.heap(options.get("heap"));
+        }
+        if (options.containsKey("tls")) {
+            builder.tls(true);
+        }
+        if (options.containsKey("no-tls")) {
+            builder.tls(false);
+        }
+    }
+
+    private static Generator findGenerator(AetherConfig config) {
+        return GENERATORS.stream()
+                         .filter(g -> g.supports(config))
+                         .findFirst()
+                         .orElseThrow(() -> noGeneratorError(config));
+    }
+
+    private static IllegalStateException noGeneratorError(AetherConfig config) {
+        return new IllegalStateException("No generator found for environment: " + config.environment());
+    }
+
+    private static void printDryRun(AetherConfig config, Path outputDir) {
+        System.out.println("Dry run - would generate artifacts for:");
+        System.out.println("  Environment: " + config.environment()
+                                                    .displayName());
+        System.out.println("  Nodes: " + config.cluster()
+                                              .nodes());
+        System.out.println("  Heap: " + config.node()
+                                             .heap());
+        System.out.println("  TLS: " + config.tlsEnabled());
+        System.out.println("  Output: " + outputDir);
+    }
+
+    @SuppressWarnings("JBCT-SEQ-01")
+    private static void runGeneration(Generator generator, AetherConfig config, Path outputDir) {
         var result = generator.generate(config, outputDir);
         result.onSuccess(output -> System.out.println(output.instructions()))
-              .onFailure(cause -> {
-                             System.err.println("Error generating artifacts:");
-                             System.err.println("  " + cause.message());
-                             System.exit(1);
-                         });
+              .onFailure(cause -> printErrorAndExit("Error generating artifacts:",
+                                                    cause.message()));
+    }
+
+    private static void printErrorAndExit(String header, String detail) {
+        System.err.println(header);
+        System.err.println("  " + detail);
+        System.exit(1);
     }
 
     private static Map<String, String> parseArgs(String[] args) {
         var options = new HashMap<String, String>();
-        for (int i = 0; i < args.length; i++) {
-            var arg = args[i];
-            switch (arg) {
-                case "-h", "--help" -> options.put("help", "true");
-                case "-v", "--version" -> options.put("version", "true");
-                case "-c", "--config" -> {
-                    if (i + 1 < args.length) options.put("config", args[++ i]);
-                }
-                case "-e", "--env" -> {
-                    if (i + 1 < args.length) options.put("env", args[++ i]);
-                }
-                case "-o", "--output" -> {
-                    if (i + 1 < args.length) options.put("output", args[++ i]);
-                }
-                case "--nodes" -> {
-                    if (i + 1 < args.length) options.put("nodes", args[++ i]);
-                }
-                case "--heap" -> {
-                    if (i + 1 < args.length) options.put("heap", args[++ i]);
-                }
-                case "--tls" -> options.put("tls", "true");
-                case "--no-tls" -> options.put("no-tls", "true");
-                case "--dry-run" -> options.put("dry-run", "true");
-            }
-        }
+        Arrays.stream(args)
+              .reduce("",
+                      (prev, arg) -> parseArg(prev, arg, options));
         return options;
+    }
+
+    @SuppressWarnings("JBCT-SEQ-01")
+    private static String parseArg(String prev, String arg, Map<String, String> options) {
+        return switch (arg) {
+            case "-h", "--help" -> {
+                options.put("help", "true");
+                yield "";
+            }
+            case "-v", "--version" -> {
+                options.put("version", "true");
+                yield "";
+            }
+            case "-c", "--config" -> "config";
+            case "-e", "--env" -> "env";
+            case "-o", "--output" -> "output";
+            case "--nodes" -> "nodes";
+            case "--heap" -> "heap";
+            case "--tls" -> {
+                options.put("tls", "true");
+                yield "";
+            }
+            case "--no-tls" -> {
+                options.put("no-tls", "true");
+                yield "";
+            }
+            case "--dry-run" -> {
+                options.put("dry-run", "true");
+                yield "";
+            }
+            default -> {
+                if (Verify.Is.notEmpty(prev)) {
+                    options.put(prev, arg);
+                }
+                yield "";
+            }
+        };
     }
 
     private static Map<String, String> extractOverrides(Map<String, String> options) {

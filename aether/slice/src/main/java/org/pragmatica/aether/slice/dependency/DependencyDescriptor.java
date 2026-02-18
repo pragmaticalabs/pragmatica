@@ -6,6 +6,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+import static org.pragmatica.lang.Option.option;
+
 /// Dependency descriptor parsed from META-INF/dependencies/ file format.
 ///
 /// Format: `<fully.qualified.class>:<version-pattern>[:<optional-param-name>]`
@@ -18,6 +20,7 @@ import org.pragmatica.lang.utils.Causes;
 /// @param sliceClassName Fully qualified class name of the dependency slice
 /// @param versionPattern Version pattern for dependency resolution
 /// @param parameterName  Optional parameter name for factory method (for verification)
+@SuppressWarnings("JBCT-UTIL-02")
 public record DependencyDescriptor(String sliceClassName, VersionPattern versionPattern, Option<String> parameterName) {
     /// Parse dependency descriptor from string.
     ///
@@ -47,7 +50,7 @@ public record DependencyDescriptor(String sliceClassName, VersionPattern version
         var className = parts[0].trim();
         var versionStr = parts[1].trim();
         var paramName = parts.length == 3
-                        ? Option.option(parts[2].trim())
+                        ? option(parts[2].trim())
                         : Option.<String>none();
         if (className.isEmpty()) {
             return EMPTY_CLASS_NAME.apply(line)

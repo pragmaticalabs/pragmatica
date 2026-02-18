@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>pragmatica</artifactId>
-        <version>0.15.1</version>
+        <version>0.16.0</version>
     </parent>
 
     <groupId>org.pragmatica-lite.aether</groupId>
@@ -49,13 +49,12 @@
         <module>aether-setup</module>
         <module>dashboard</module>
         <module>slice-api</module>
-        <module>node-provider</module>
-        <module>infra-api</module>
-        <module>infra-slices</module>
+        <module>environment-integration</module>
+        <module>environment</module>
+        <module>resource</module>
         <module>slice</module>
         <module>cli</module>
         <module>forge</module>
-        <module>infra-services</module>
         <!-- e2e-tests requires examples to be installed first, enabled via -Pwith-e2e profile -->
         <module>http-handler-api</module>
         <module>http-routing-adapter</module>
@@ -77,6 +76,15 @@
         <!-- Enable JBCT for aether modules -->
         <jbct.skip>false</jbct.skip>
     </properties>
+
+    <dependencies>
+        <!-- Logging provider for tests — inherited by all aether child modules -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>test-logging</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
 
     <dependencyManagement>
         <dependencies>
@@ -181,13 +189,23 @@
 
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>node-provider</artifactId>
+                <artifactId>environment-integration</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>environment-hetzner</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>hetzner</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-api</artifactId>
+                <artifactId>resource-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -199,27 +217,32 @@
 
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-db-connector-api</artifactId>
+                <artifactId>resource-db-jdbc</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-db-connector-jdbc</artifactId>
+                <artifactId>resource-db-r2dbc</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-db-connector-r2dbc</artifactId>
+                <artifactId>resource-db-jooq</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-db-connector-jooq</artifactId>
+                <artifactId>resource-db-jooq-r2dbc</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-db-connector-jooq-r2dbc</artifactId>
+                <artifactId>resource-http</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>resource-interceptors</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -318,14 +341,24 @@
                 <version>${slf4j.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.tinylog</groupId>
-                <artifactId>slf4j-tinylog</artifactId>
-                <version>${tinylog.version}</version>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-core</artifactId>
+                <version>${log4j2.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.tinylog</groupId>
-                <artifactId>tinylog-impl</artifactId>
-                <version>${tinylog.version}</version>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-slf4j2-impl</artifactId>
+                <version>${log4j2.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-layout-template-json</artifactId>
+                <version>${log4j2.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>test-logging</artifactId>
+                <version>${project.version}</version>
             </dependency>
 
             <!-- Testing -->
@@ -441,21 +474,6 @@
                     </executions>
                 </plugin>
                 <plugin>
-                    <groupId>org.pragmatica-lite</groupId>
-                    <artifactId>jbct-maven-plugin</artifactId>
-                    <version>${project.version}</version>
-                    <configuration>
-                        <skip>${jbct.skip}</skip>
-                    </configuration>
-                    <executions>
-                        <execution>
-                            <goals>
-                                <goal>format</goal>
-                            </goals>
-                        </execution>
-                    </executions>
-                </plugin>
-                <plugin>
                     <artifactId>maven-shade-plugin</artifactId>
                     <version>3.6.0</version>
                     <configuration>
@@ -542,12 +560,6 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
             </plugin>
-            <!-- jbct-maven-plugin commented until 0.15.0 is published
-            <plugin>
-                <groupId>org.pragmatica-lite</groupId>
-                <artifactId>jbct-maven-plugin</artifactId>
-            </plugin>
-            -->
         </plugins>
     </build>
 
@@ -556,6 +568,12 @@
             <id>with-e2e</id>
             <modules>
                 <module>e2e-tests</module>
+            </modules>
+        </profile>
+        <profile>
+            <id>with-cloud-tests</id>
+            <modules>
+                <module>cloud-tests</module>
             </modules>
         </profile>
         <profile>

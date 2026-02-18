@@ -17,6 +17,7 @@
 package org.pragmatica.dht;
 
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,13 +43,15 @@ public final class DHTTopologyListener {
     public void onNodeAdded(TopologyChangeNotification.NodeAdded event) {
         var addedNodeId = event.nodeId();
         log.info("DHT: Node added {}, updating ring", addedNodeId.id());
-        node.ring().addNode(addedNodeId);
+        node.ring()
+            .addNode(addedNodeId);
     }
 
     /// Handle a node-removed event by removing the node from the consistent hash ring.
     public void onNodeRemoved(TopologyChangeNotification.NodeRemoved event) {
         var removedNodeId = event.nodeId();
         log.info("DHT: Node removed {}, updating ring", removedNodeId.id());
-        node.ring().removeNode(removedNodeId);
+        node.ring()
+            .removeNode(removedNodeId);
     }
 }

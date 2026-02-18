@@ -23,19 +23,29 @@ public interface OrderService {
 }
 ```
 
-### Single-Parameter Methods
-Every slice method takes exactly one request parameter. This enables:
-- Uniform serialization/deserialization
-- Consistent logging and metrics
-- Versioning via request evolution
+### Method Parameters
+Slice methods support any number of parameters (0, 1, or more). At the transport layer, they are normalized to a single request object:
+
+- **0 parameters**: `Unit` is used at the transport layer; the handler ignores it
+- **1 parameter (record)**: passed directly as the request type
+- **1 parameter (primitive)**: wrapped in a synthetic `{MethodName}Request` record
+- **N parameters**: wrapped in a synthetic `{MethodName}Request` record with all parameters as fields
 
 ```java
-// Correct
+// Zero parameters - Unit at transport layer
+Promise<HealthStatus> healthCheck();
+
+// Single record parameter - direct pass-through
 Promise<OrderResult> placeOrder(PlaceOrderRequest request);
 
-// Wrong - multiple parameters
-Promise<OrderResult> placeOrder(String customerId, List<LineItem> items);
+// Single primitive - synthetic GetStockRequest(String sku) generated
+Promise<Stock> getStock(String sku);
+
+// Multiple parameters - synthetic TransferRequest(String from, String to, BigDecimal amount) generated
+Promise<TransferResult> transfer(String from, String to, BigDecimal amount);
 ```
+
+Method overloads are rejected at compile time. Use distinct method names instead.
 
 ### Promise Return Types
 All methods return `Promise<T>`. This enables:
@@ -49,7 +59,7 @@ public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
     return inventory.checkStock(new StockRequest(request.items()))
                     .flatMap(stock -> {
                         if (!stock.available()) {
-                            return Promise.failed(new OutOfStockException());
+                            return Promise.failed(Causes.cause("Out of stock"));
                         }
                         return processOrder(request);
                     });
@@ -57,6 +67,50 @@ public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
 ```
 
 ## Adding Dependencies
+
+### Resource Dependencies (Infrastructure)
+
+To depend on infrastructure resources (databases, HTTP clients, etc.):
+
+1. Define a qualifier annotation with `@ResourceQualifier`:
+```java
+@ResourceQualifier(type = DatabaseConnector.class, config = "database.primary")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+public @interface PrimaryDb {}
+```
+
+2. Annotate the factory parameter:
+```java
+@Slice
+public interface OrderRepository {
+    Promise<OrderResult> findOrder(FindOrderRequest request);
+
+    static OrderRepository orderRepository(@PrimaryDb DatabaseConnector db) {
+        return new orderRepository(db);
+    }
+}
+```
+
+3. Configure the resource in `aether.toml`:
+```toml
+[database.primary]
+driver = "postgresql"
+jdbc_url = "jdbc:postgresql://localhost:5432/orders"
+username = "app"
+password = "secret"
+```
+
+**What happens at build time:**
+- Annotation processor detects `@PrimaryDb` as a `@ResourceQualifier` meta-annotation
+- Extracts resource type (`DatabaseConnector.class`) and config section (`"database.primary"`)
+- Generates `ctx.resources().provide(DatabaseConnector.class, "database.primary")` in the factory
+
+**What happens at runtime:**
+- Aether discovers a `ResourceFactory<DatabaseConnector, ...>` via SPI
+- Loads config from `aether.toml` section `database.primary`
+- Creates and caches the resource instance
+- Injects it into the slice factory
 
 ### External Dependencies (Other Slices)
 
@@ -80,7 +134,7 @@ public interface OrderService {
 
     static OrderService orderService(InventoryService inventory,
                                      PricingEngine pricing) {
-        return new OrderServiceImpl(inventory, pricing);
+        return OrderServiceImpl.orderServiceImpl(inventory, pricing);
     }
 }
 ```
@@ -91,9 +145,13 @@ public class OrderServiceImpl implements OrderService {
     private final InventoryService inventory;
     private final PricingEngine pricing;
 
-    public OrderServiceImpl(InventoryService inventory, PricingEngine pricing) {
+    OrderServiceImpl(InventoryService inventory, PricingEngine pricing) {
         this.inventory = inventory;
         this.pricing = pricing;
+    }
+
+    static OrderServiceImpl orderServiceImpl(InventoryService inventory, PricingEngine pricing) {
+        return new OrderServiceImpl(inventory, pricing);
     }
 
     @Override
@@ -123,7 +181,7 @@ public interface OrderService {
     Promise<OrderResult> placeOrder(PlaceOrderRequest request);
 
     static OrderService orderService(OrderValidator validator) {
-        return new OrderServiceImpl(validator);
+        return OrderServiceImpl.orderServiceImpl(validator);
     }
 }
 ```
@@ -133,15 +191,76 @@ Internal dependencies:
 - No proxy generation
 - No network overhead
 
+### Plain Interface Dependencies
+
+Non-`@Slice` interfaces with static factory methods are "plain interface" dependencies. They are constructed by calling their factory method directly.
+
+```java
+// Plain interface - not a @Slice, has a factory method
+public interface OrderValidator {
+    Promise<Boolean> validate(String orderId);
+
+    static OrderValidator orderValidator() {
+        return new orderValidator();
+    }
+}
+
+@Slice
+public interface OrderService {
+    Promise<OrderResult> placeOrder(PlaceOrderRequest request);
+
+    static OrderService orderService(OrderValidator validator) {
+        return new orderService(validator);
+    }
+}
+```
+
+**What happens at build time:**
+- Processor detects `OrderValidator` has a factory method → plain interface
+- Generated factory calls `OrderValidator.orderValidator()` directly
+- No proxy, no network overhead
+
+#### Plain Interfaces with Resource Parameters
+
+If a plain interface's factory method has `@ResourceQualifier`-annotated parameters, those resources are provisioned transitively:
+
+```java
+public interface KycStep {
+    Promise<Boolean> verify(String customerId);
+
+    static KycStep kycStep(@KycProvider HttpClient httpClient) {
+        return new kycStep(httpClient);
+    }
+}
+
+@Slice
+public interface LoanService {
+    Promise<LoanResult> processLoan(LoanRequest request);
+
+    static LoanService loanService(KycStep kycStep) {
+        return new loanService(kycStep);
+    }
+}
+```
+
+The processor introspects `KycStep.kycStep()`, discovers `@KycProvider HttpClient`, provisions the resource, and passes it:
+```java
+// Generated: provisions HttpClient, then passes to KycStep factory
+ctx.resources().provide(HttpClient.class, "http.kyc")
+// ...
+var kycStep = KycStep.kycStep(kycStep_httpClient);
+```
+
 ### Dependency Classification
 
-The processor uses package names to classify:
+The processor classifies factory parameters into three categories:
 
-| Dependency Package | Slice Package | Classification |
-|-------------------|---------------|----------------|
-| `org.example.order.validation` | `org.example.order` | Internal (starts with slice's package) |
-| `org.example.inventory` | `org.example.order` | External (different base) |
-| `com.other.service` | `org.example.order` | External |
+| Dependency | Characteristics | Classification |
+|-----------|----------------|----------------|
+| `@PrimaryDb DatabaseConnector db` | Has @ResourceQualifier annotation | Resource dependency |
+| `InventoryService inventory` | External interface, no factory method | Slice dependency (proxied) |
+| `OrderValidator validator` | Has static factory method | Plain interface dependency |
+| `KycStep kycStep` | Has factory with @ResourceQualifier params | Plain interface (transitive resources) |
 
 ## Multiple Slices in One Module
 
@@ -185,7 +304,7 @@ public interface OrderService {
 
     static OrderService orderService(PaymentService payments,
                                      ShippingService shipping) {
-        return new OrderServiceImpl(payments, shipping);
+        return OrderServiceImpl.orderServiceImpl(payments, shipping);
     }
 }
 ```
@@ -221,7 +340,7 @@ Validate in your implementation, not in records:
 @Override
 public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
     if (request.items().isEmpty()) {
-        return Promise.failed(new ValidationException("Order must have items"));
+        return Promise.failed(Causes.cause("Order must have items"));
     }
     // ... process order
 }
@@ -252,11 +371,11 @@ class OrderServiceTest {
         var pricing = mock(PricingEngine.class);
 
         when(inventory.reserve(any()))
-            .thenReturn(Promise.successful(new ReserveResult("RES-123")));
+            .thenReturn(Promise.success(new ReserveResult("RES-123")));
         when(pricing.calculate(any()))
-            .thenReturn(Promise.successful(new PriceResult("ORD-456", 99.99)));
+            .thenReturn(Promise.success(new PriceResult("ORD-456", 99.99)));
 
-        var service = new OrderServiceImpl(inventory, pricing);
+        var service = OrderServiceImpl.orderServiceImpl(inventory, pricing);
         var request = new PlaceOrderRequest("CUST-1", List.of(item), address);
 
         var result = service.placeOrder(request).await();
@@ -277,7 +396,7 @@ class OrderServiceIntegrationTest {
     void should_wire_dependencies() {
         var invoker = mock(SliceInvokerFacade.class);
         when(invoker.invoke(anyString(), eq("reserve"), any(), any()))
-            .thenReturn(Promise.successful(new ReserveResult("RES-123")));
+            .thenReturn(Promise.success(new ReserveResult("RES-123")));
 
         var result = OrderServiceFactory.create(Aspect.identity(), invoker).await();
 
@@ -290,37 +409,43 @@ class OrderServiceIntegrationTest {
 
 ### Use Promise.failed()
 
-For business errors, return failed promises:
+For business errors, return failed promises using sealed `Cause` types:
 
 ```java
 @Override
 public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
     if (request.items().isEmpty()) {
-        return Promise.failed(new EmptyOrderException());
+        return Promise.failed(OrderCause.EMPTY_ORDER);
     }
 
     return inventory.checkStock(stockRequest)
                     .flatMap(stock -> {
                         if (!stock.sufficient()) {
-                            return Promise.failed(new InsufficientStockException(stock));
+                            return Promise.failed(OrderCause.insufficientStock(stock));
                         }
                         return completeOrder(request);
                     });
 }
 ```
 
-### Exception Types
+### Cause Types
 
-Define clear exception hierarchies:
+Define sealed `Cause` hierarchies instead of exceptions:
 
 ```java
-public sealed class OrderException extends RuntimeException {
-    public static final class EmptyOrderException extends OrderException {}
-    public static final class InsufficientStockException extends OrderException {
-        private final StockStatus stock;
-        // ...
+public sealed interface OrderCause extends Cause {
+    OrderCause EMPTY_ORDER = new EmptyOrder();
+    static OrderCause insufficientStock(StockStatus stock) { return new InsufficientStock(stock); }
+
+    record EmptyOrder() implements OrderCause {
+        public String message() { return "Order must have items"; }
     }
-    public static final class PaymentDeclinedException extends OrderException {}
+    record InsufficientStock(StockStatus stock) implements OrderCause {
+        public String message() { return "Insufficient stock: " + stock; }
+    }
+    record PaymentDeclined() implements OrderCause {
+        public String message() { return "Payment was declined"; }
+    }
 }
 ```
 
@@ -400,7 +525,7 @@ Checks:
 - `@Slice` interface has factory method
 - Factory method returns the interface type
 - All methods return `Promise<T>`
-- All methods have exactly one parameter
+- No overloaded method names
 
 ## IDE Setup
 

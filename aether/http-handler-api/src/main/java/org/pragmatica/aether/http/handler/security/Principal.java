@@ -2,6 +2,7 @@ package org.pragmatica.aether.http.handler.security;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 /// Principal identity - who is making the request.
 ///
@@ -12,68 +13,46 @@ import org.pragmatica.lang.Result;
 public record Principal(String value) {
     /// Validation errors for Principal.
     public sealed interface PrincipalError extends Cause {
-        record NullValue() implements PrincipalError {
+        enum General implements PrincipalError {
+            NULL_VALUE("Principal value cannot be null"),
+            BLANK_VALUE("Principal cannot be blank");
+            private final String message;
+            General(String message) {
+                this.message = message;
+            }
             @Override
             public String message() {
-                return "Principal value cannot be null";
+                return message;
             }
         }
 
-        record BlankValue() implements PrincipalError {
+        @SuppressWarnings("unused")
+        record unused() implements PrincipalError {
             @Override
             public String message() {
-                return "Principal cannot be blank";
+                return "";
             }
         }
     }
 
-    public static final Principal ANONYMOUS = new Principal("anonymous");
+    public static final Principal ANONYMOUS = principal("anonymous").unwrap();
 
     /// Create principal from raw value with validation.
     ///
     /// @param value the principal identifier
     /// @return Result containing valid Principal or validation error
     public static Result<Principal> principal(String value) {
-        if (value == null) {
-            return new PrincipalError.NullValue().result();
-        }
-        if (value.isBlank()) {
-            return new PrincipalError.BlankValue().result();
-        }
-        return Result.success(new Principal(value));
+        return ensureNotBlank(value).map(Principal::new);
     }
 
-    /// Create principal for API key authentication.
+    /// Create principal with type prefix.
     ///
-    /// @param keyName the API key name
+    /// @param name the identifier
+    /// @param type the principal type (determines prefix)
     /// @return Result containing valid Principal or validation error
-    public static Result<Principal> apiKeyPrincipal(String keyName) {
-        if (keyName == null || keyName.isBlank()) {
-            return new PrincipalError.BlankValue().result();
-        }
-        return Result.success(new Principal("api-key:" + keyName));
-    }
-
-    /// Create principal for user authentication.
-    ///
-    /// @param userId the user ID
-    /// @return Result containing valid Principal or validation error
-    public static Result<Principal> userPrincipal(String userId) {
-        if (userId == null || userId.isBlank()) {
-            return new PrincipalError.BlankValue().result();
-        }
-        return Result.success(new Principal("user:" + userId));
-    }
-
-    /// Create principal for service-to-service authentication.
-    ///
-    /// @param serviceName the service name
-    /// @return Result containing valid Principal or validation error
-    public static Result<Principal> servicePrincipal(String serviceName) {
-        if (serviceName == null || serviceName.isBlank()) {
-            return new PrincipalError.BlankValue().result();
-        }
-        return Result.success(new Principal("service:" + serviceName));
+    public static Result<Principal> principal(String name, PrincipalType type) {
+        return ensureNotBlank(name).map(type::prefixed)
+                             .map(Principal::new);
     }
 
     /// Check if this is an anonymous (unauthenticated) principal.
@@ -94,5 +73,24 @@ public record Principal(String value) {
     /// Check if this principal represents a service.
     public boolean isService() {
         return value.startsWith("service:");
+    }
+
+    private static Result<String> ensureNotBlank(String value) {
+        return Verify.ensure(value, Verify.Is::notNull, PrincipalError.General.NULL_VALUE)
+                     .filter(PrincipalError.General.BLANK_VALUE, Verify.Is::notBlank);
+    }
+
+    /// Principal type with associated prefix.
+    public enum PrincipalType {
+        API_KEY("api-key:"),
+        USER("user:"),
+        SERVICE("service:");
+        private final String prefix;
+        PrincipalType(String prefix) {
+            this.prefix = prefix;
+        }
+        String prefixed(String name) {
+            return prefix + name;
+        }
     }
 }

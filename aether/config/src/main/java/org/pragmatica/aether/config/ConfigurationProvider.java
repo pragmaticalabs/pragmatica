@@ -5,7 +5,9 @@ import org.pragmatica.aether.config.source.EnvironmentConfigSource;
 import org.pragmatica.aether.config.source.MapConfigSource;
 import org.pragmatica.aether.config.source.SystemPropertyConfigSource;
 import org.pragmatica.aether.config.source.TomlConfigSource;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
 import java.nio.file.Path;
@@ -15,6 +17,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
 
 /// Layered configuration provider that merges multiple sources.
 ///
@@ -41,7 +46,6 @@ import java.util.Set;
 /// config.getString("server.port")  // Returns merged value
 /// }```
 public interface ConfigurationProvider extends ConfigSource {
-
     /// Get all registered sources in priority order (highest first).
     ///
     /// @return List of configuration sources
@@ -59,7 +63,21 @@ public interface ConfigurationProvider extends ConfigSource {
     /// @param source The configuration source
     /// @return ConfigurationProvider wrapping the source
     static ConfigurationProvider configurationProvider(ConfigSource source) {
-        return builder().withSource(source).build();
+        return builder().withSource(source)
+                      .build();
+    }
+
+    /// Resolve ${secrets:path} placeholders in all config values.
+    ///
+    /// Scans all merged values for ${secrets:path} patterns and resolves them
+    /// using the provided resolver function. Resolution is eager (at call time).
+    ///
+    /// @param provider       The configuration provider with unresolved values
+    /// @param secretResolver Function that resolves secret paths to values
+    /// @return New ConfigurationProvider with all secrets resolved, or failure
+    static Result<ConfigurationProvider> withSecretResolution(ConfigurationProvider provider,
+                                                              Fn1<Promise<String>, String> secretResolver) {
+        return SecretResolvingConfigurationProvider.resolve(provider, secretResolver);
     }
 
     /// Builder for creating layered ConfigurationProvider instances.
@@ -82,7 +100,8 @@ public interface ConfigurationProvider extends ConfigSource {
         /// @param defaults Map of default key-value pairs
         /// @return This builder
         public Builder withDefaults(Map<String, String> defaults) {
-            return withSource(MapConfigSource.mapConfigSource("defaults", defaults, -1000));
+            return withSource(MapConfigSource.mapConfigSource("defaults", defaults, - 1000)
+                                             .unwrap());
         }
 
         /// Add a TOML file source (priority: 0).
@@ -101,10 +120,7 @@ public interface ConfigurationProvider extends ConfigSource {
         /// @return Result containing this builder or error
         public Result<Builder> withRequiredTomlFile(Path path) {
             return TomlConfigSource.tomlConfigSource(path)
-                                   .map(source -> {
-                                       sources.add(source);
-                                       return this;
-                                   });
+                                   .map(this::includeSourceAndReturn);
         }
 
         /// Add environment variables with prefix (priority: 100).
@@ -134,11 +150,16 @@ public interface ConfigurationProvider extends ConfigSource {
         /// @return Configured provider with all sources merged
         public ConfigurationProvider build() {
             var sortedSources = sources.stream()
-                                       .sorted(Comparator.comparingInt(ConfigSource::priority).reversed())
+                                       .sorted(Comparator.comparingInt(ConfigSource::priority)
+                                                         .reversed())
                                        .toList();
-
             var mergedMap = DeepMerger.mergeSources(sortedSources);
             return new LayeredConfigurationProvider(sortedSources, mergedMap);
+        }
+
+        private Builder includeSourceAndReturn(ConfigSource source) {
+            sources.add(source);
+            return this;
         }
     }
 }
@@ -160,7 +181,7 @@ final class LayeredConfigurationProvider implements ConfigurationProvider {
 
     @Override
     public Option<String> getString(String key) {
-        return Option.option(mergedValues.get(key));
+        return option(mergedValues.get(key));
     }
 
     @Override
@@ -188,8 +209,7 @@ final class LayeredConfigurationProvider implements ConfigurationProvider {
             }
             reloadedSources.add(reloaded.unwrap());
         }
-
         var newMerged = DeepMerger.mergeSources(reloadedSources);
-        return Result.success(new LayeredConfigurationProvider(reloadedSources, newMerged));
+        return success(new LayeredConfigurationProvider(reloadedSources, newMerged));
     }
 }

@@ -5,17 +5,20 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Set;
+
+import static org.pragmatica.lang.Result.success;
 
 /// Pure function test slice for E2E testing - VERSION 2.
 /// Responses include version field to distinguish from v1.
 @Slice
+@SuppressWarnings("JBCT-STY-04")
 public interface EchoService {
     String VERSION = "2.0";
 
@@ -26,7 +29,7 @@ public interface EchoService {
         private static final int MAX_LENGTH = 10000;
 
         public static Result<EchoRequest> echoRequest(String message) {
-            if (message == null || message.isBlank()) {
+            if (message == null || Verify.Is.blank(message)) {
                 return MESSAGE_REQUIRED.apply(message)
                                        .result();
             }
@@ -34,13 +37,14 @@ public interface EchoService {
                 return MESSAGE_TOO_LONG.apply(message.length())
                                        .result();
             }
-            return Result.success(new EchoRequest(message));
+            return success(new EchoRequest(message));
         }
     }
 
+    @SuppressWarnings("JBCT-VO-01")
     record PingRequest() {
-        public static Result<PingRequest> pingRequest() {
-            return Result.success(new PingRequest());
+        public static PingRequest pingRequest() {
+            return new PingRequest();
         }
     }
 
@@ -52,11 +56,23 @@ public interface EchoService {
         private static final int MAX_LENGTH = 10000;
 
         public static Result<TransformRequest> transformRequest(String operation, String value) {
+            var validOp = parseOperation(operation);
+            var validValue = parseValue(value);
+            return Result.all(validOp, validValue)
+                         .map(TransformRequest::new);
+        }
+
+        @SuppressWarnings("JBCT-UTIL-02")
+        private static Result<String> parseOperation(String operation) {
             if (operation == null || !VALID_OPERATIONS.contains(operation.toLowerCase())) {
                 return INVALID_OPERATION.apply(operation)
                                         .result();
             }
-            if (value == null || value.isEmpty()) {
+            return success(operation.toLowerCase());
+        }
+
+        private static Result<String> parseValue(String value) {
+            if (value == null || Verify.Is.empty(value)) {
                 return VALUE_REQUIRED.apply(value)
                                      .result();
             }
@@ -64,7 +80,7 @@ public interface EchoService {
                 return VALUE_TOO_LONG.apply(value.length())
                                      .result();
             }
-            return Result.success(new TransformRequest(operation.toLowerCase(), value));
+            return success(value);
         }
     }
 
@@ -76,35 +92,45 @@ public interface EchoService {
                 return INVALID_CODE.apply(code)
                                    .result();
             }
-            return Result.success(new FailRequest(code));
+            return success(new FailRequest(code));
         }
     }
 
     // === Responses (v2: include version field) ===
     record EchoResponse(String message, long timestamp, String version) {
-        public static EchoResponse echoResponse(String message) {
-            return new EchoResponse(message, System.currentTimeMillis(), VERSION);
+        public static Result<EchoResponse> echoResponse(String message) {
+            return success(new EchoResponse(message, System.currentTimeMillis(), VERSION));
         }
     }
 
     record PingResponse(boolean pong, String nodeId, long timestamp, String version) {
-        public static PingResponse pingResponse() {
-            var nodeId = System.getProperty("NODE_ID",
-                                            System.getenv()
-                                                  .getOrDefault("NODE_ID", "unknown"));
-            return new PingResponse(true, nodeId, System.currentTimeMillis(), VERSION);
+        public static Result<PingResponse> pingResponse() {
+            var nodeId = readNodeId();
+            return success(new PingResponse(true, nodeId, System.currentTimeMillis(), VERSION));
+        }
+
+        private static String readNodeId() {
+            return System.getProperty("NODE_ID",
+                                      System.getenv()
+                                            .getOrDefault("NODE_ID", "unknown"));
         }
     }
 
     record TransformResponse(String operation, String input, String result, String version) {
-        public static TransformResponse transformResponse(String operation, String input, String result) {
-            return new TransformResponse(operation, input, result, VERSION);
+        public static Result<TransformResponse> transformResponse(String operation,
+                                                                  String input,
+                                                                  String result) {
+            return success(new TransformResponse(operation, input, result, VERSION));
         }
     }
 
     // === Errors ===
     sealed interface EchoError extends Cause {
         record ValidationFailed(String reason) implements EchoError {
+            public static Result<ValidationFailed> validationFailed(String reason) {
+                return success(new ValidationFailed(reason));
+            }
+
             @Override
             public String message() {
                 return reason;
@@ -112,14 +138,24 @@ public interface EchoService {
         }
 
         record ControlledFailure(int code, String text) implements EchoError {
+            public static Result<ControlledFailure> controlledFailure(int code, String text) {
+                return success(new ControlledFailure(code, text));
+            }
+
             @Override
             public String message() {
                 return "Controlled failure: " + code + " - " + text;
             }
         }
 
-        static ControlledFailure controlledFailure(int code) {
-            var text = switch (code) {
+        static ControlledFailure toControlledFailure(int code) {
+            var text = formatErrorText(code);
+            return ControlledFailure.controlledFailure(code, text)
+                                    .unwrap();
+        }
+
+        private static String formatErrorText(int code) {
+            return switch (code) {
                 case 400 -> "Bad Request";
                 case 401 -> "Unauthorized";
                 case 403 -> "Forbidden";
@@ -129,7 +165,6 @@ public interface EchoService {
                 case 503 -> "Service Unavailable";
                 default -> "Error " + code;
             };
-            return new ControlledFailure(code, text);
         }
     }
 
@@ -150,32 +185,42 @@ public interface EchoService {
     final class EchoServiceImpl implements EchoService {
         @Override
         public Promise<EchoResponse> echo(EchoRequest request) {
-            return Promise.success(EchoResponse.echoResponse(request.message()));
+            return EchoResponse.echoResponse(request.message())
+                               .async();
         }
 
         @Override
         public Promise<PingResponse> ping(PingRequest request) {
-            return Promise.success(PingResponse.pingResponse());
+            return PingResponse.pingResponse()
+                               .async();
         }
 
         @Override
         public Promise<TransformResponse> transform(TransformRequest request) {
-            var result = switch (request.operation()) {
+            var transformed = convertValue(request);
+            return TransformResponse.transformResponse(request.operation(),
+                                                       request.value(),
+                                                       transformed)
+                                    .async();
+        }
+
+        @Override
+        public Promise<EchoError.ControlledFailure> fail(FailRequest request) {
+            return EchoError.toControlledFailure(request.code())
+                            .promise();
+        }
+
+        @SuppressWarnings("JBCT-SEQ-01")
+        private String convertValue(TransformRequest request) {
+            return switch (request.operation()) {
                 case "reverse" -> reverse(request.value());
                 case "upper" -> request.value()
                                        .toUpperCase();
                 case "lower" -> request.value()
                                        .toLowerCase();
-                case "hash" -> hash(request.value());
+                case "hash" -> computeHash(request.value());
                 default -> request.value();
             };
-            return Promise.success(TransformResponse.transformResponse(request.operation(), request.value(), result));
-        }
-
-        @Override
-        public Promise<EchoError.ControlledFailure> fail(FailRequest request) {
-            return EchoError.controlledFailure(request.code())
-                            .promise();
         }
 
         private String reverse(String input) {
@@ -183,15 +228,17 @@ public interface EchoService {
                                            .toString();
         }
 
-        private String hash(String input) {
-            try{
-                var digest = MessageDigest.getInstance("SHA-256");
-                var hashBytes = digest.digest(input.getBytes(StandardCharsets.UTF_8));
-                return HexFormat.of()
-                                .formatHex(hashBytes);
-            } catch (NoSuchAlgorithmException e) {
-                return "hash-error";
-            }
+        private String computeHash(String input) {
+            return Result.lift1(Causes::fromThrowable, EchoServiceImpl::digestSha256, input)
+                         .or("hash-error");
+        }
+
+        @SuppressWarnings("JBCT-EX-01")
+        private static String digestSha256(String input) throws Exception {
+            var digest = MessageDigest.getInstance("SHA-256");
+            var hashBytes = digest.digest(input.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of()
+                            .formatHex(hashBytes);
         }
     }
 }

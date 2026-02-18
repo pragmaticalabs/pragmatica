@@ -62,6 +62,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 ///
 /// Separate from ManagementServer for security isolation.
+@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
 public interface AppHttpServer {
     Promise<Unit> start();
 
@@ -137,6 +138,7 @@ public interface AppHttpServer {
     }
 }
 
+@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
 class AppHttpServerImpl implements AppHttpServer {
     private static final Logger log = LoggerFactory.getLogger(AppHttpServerImpl.class);
     private static final int MAX_CONTENT_LENGTH = 16 * 1024 * 1024;
@@ -244,7 +246,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                         .toList();
         var newTable = RouteTable.routeTable(localRoutes, remoteRoutes);
         routeTableRef.set(newTable);
-        log.info("Router rebuilt: {} local routes, {} remote routes", localRoutes.size(), remoteRoutes.size());
+        log.debug("Router rebuilt: {} local routes, {} remote routes", localRoutes.size(), remoteRoutes.size());
     }
 
     @Override
@@ -302,10 +304,15 @@ class AppHttpServerImpl implements AppHttpServer {
         }
         // No route found — distinguish between "not synced yet" and "genuinely missing"
         if (!routeSyncReceived.get() && httpRoutePublisher.isPresent()) {
-            log.info("Route not yet available for {} {} [{}] — node starting, routes not synchronized",
-                     method, path, requestId);
-            sendProblem(response, HttpStatus.SERVICE_UNAVAILABLE,
-                        "Node starting, routes not yet synchronized", path, requestId);
+            log.debug("Route not yet available for {} {} [{}] — node starting, routes not synchronized",
+                      method,
+                      path,
+                      requestId);
+            sendProblem(response,
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "Node starting, routes not yet synchronized",
+                        path,
+                        requestId);
         } else {
             log.warn("No route found for {} {} [{}]", method, path, requestId);
             sendProblem(response, HttpStatus.NOT_FOUND, "No route found for " + method + " " + path, path, requestId);
@@ -384,7 +391,7 @@ class AppHttpServerImpl implements AppHttpServer {
         router.handle(context)
               .onSuccess(responseData -> sendResponse(response, responseData, requestId))
               .onFailure(cause -> {
-                             log.error("Local route handling failed [{}]: {}",
+                             log.error("Failed to handle local route [{}]: {}",
                                        requestId,
                                        cause.message());
                              sendProblem(response,
@@ -500,24 +507,24 @@ class AppHttpServerImpl implements AppHttpServer {
         if (candidates.isEmpty()) {
             if (retriesRemaining > 0) {
                 // No candidates now — wait briefly for route table to heal, then re-query
-                log.info("No candidates for {} {} [{}], waiting {}ms before re-query ({} retries remaining)",
-                         routeKey.httpMethod(),
-                         routeKey.pathPrefix(),
-                         requestId,
-                         RETRY_DELAY_MS,
-                         retriesRemaining);
-                Promise.<Unit>promise()
+                log.debug("No candidates for {} {} [{}], waiting {}ms before re-query ({} retries remaining)",
+                          routeKey.httpMethod(),
+                          routeKey.pathPrefix(),
+                          requestId,
+                          RETRY_DELAY_MS,
+                          retriesRemaining);
+                Promise.<Unit> promise()
                        .timeout(timeSpan(RETRY_DELAY_MS).millis())
                        .onResult(_ -> {
-                                    var freshNodes = freshCandidatesForRoute(routeKey);
-                                    forwardRequestWithRetry(request,
-                                                            response,
-                                                            freshNodes,
-                                                            Set.of(),
-                                                            routeKey,
-                                                            requestId,
-                                                            retriesRemaining - 1);
-                                });
+                                     var freshNodes = freshCandidatesForRoute(routeKey);
+                                     forwardRequestWithRetry(request,
+                                                             response,
+                                                             freshNodes,
+                                                             Set.of(),
+                                                             routeKey,
+                                                             requestId,
+                                                             retriesRemaining - 1);
+                                 });
                 return;
             }
             log.error("No more nodes to try for {} {} [{}] after all retries exhausted",
@@ -542,9 +549,9 @@ class AppHttpServerImpl implements AppHttpServer {
                                requestId,
                                () -> {
                                    if (retriesRemaining > 0) {
-                                       log.info("Retrying request [{}], {} retries remaining, re-querying route",
-                                                requestId,
-                                                retriesRemaining);
+                                       log.debug("Retrying request [{}], {} retries remaining, re-querying route",
+                                                 requestId,
+                                                 retriesRemaining);
                                        var freshNodes = freshCandidatesForRoute(routeKey);
                                        forwardRequestWithRetry(request,
                                                                response,
@@ -573,7 +580,7 @@ class AppHttpServerImpl implements AppHttpServer {
         // Fast path: if the target is already known to be disconnected, fail immediately
         if (!network.connectedPeers()
                     .contains(targetNode)) {
-            log.info("Target node {} already disconnected, immediate retry [{}]", targetNode, requestId);
+            log.debug("Target node {} already disconnected, immediate retry [{}]", targetNode, requestId);
             onFailure.run();
             return;
         }
@@ -623,7 +630,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                       String requestId,
                                       NodeId targetNode,
                                       Runnable onFailure) {
-        log.warn("Forward request failed [{}] to {}, attempting retry", requestId, targetNode);
+        log.warn("Failed to forward request [{}] to {}, attempting retry", requestId, targetNode);
         onFailure.run();
     }
 
@@ -744,10 +751,10 @@ class AppHttpServerImpl implements AppHttpServer {
                                                .map(PendingForward::requestId)
                                                .limit(5)
                                                .toList();
-        log.info("Node {} departed, triggering immediate retry for {} pending forwards, requestIds={}",
-                 departedNode,
-                 correlationIds.size(),
-                 affectedRequestIds);
+        log.debug("Node {} departed, triggering immediate retry for {} pending forwards, requestIds={}",
+                  departedNode,
+                  correlationIds.size(),
+                  affectedRequestIds);
         for (var correlationId : correlationIds) {
             var pending = pendingForwards.remove(correlationId);
             if (pending != null) {
@@ -798,7 +805,7 @@ class AppHttpServerImpl implements AppHttpServer {
 
     private void handleFailedForwardResponse(PendingForward pending, HttpForwardResponse response) {
         var errorMessage = new String(response.payload(), StandardCharsets.UTF_8);
-        log.warn("Forward request failed [{}]: {}", pending.requestId(), errorMessage);
+        log.warn("Failed to forward request [{}]: {}", pending.requestId(), errorMessage);
         pending.promise()
                .fail(Causes.cause("Remote processing failed: " + errorMessage));
     }

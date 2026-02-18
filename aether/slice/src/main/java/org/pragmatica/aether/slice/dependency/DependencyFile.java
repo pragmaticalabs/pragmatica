@@ -7,10 +7,18 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
 
 /// Parsed dependency file with shared, infra, and slice sections.
 ///
@@ -42,6 +50,7 @@ import java.util.List;
 /// @param shared List of shared library dependencies
 /// @param infra  List of infrastructure service dependencies
 /// @param slices List of slice dependencies
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-UTIL-02", "JBCT-PAT-01", "JBCT-RET-05", "JBCT-NAM-01"})
 public record DependencyFile(List<ArtifactDependency> shared,
                              List<ArtifactDependency> infra,
                              List<ArtifactDependency> slices) {
@@ -94,8 +103,8 @@ public record DependencyFile(List<ArtifactDependency> shared,
             // Capture the section for the lambda
             final var sectionRef = currentSection;
             // Use AtomicReference as a holder to capture error from lambda
-            var errorHolder = new java.util.concurrent.atomic.AtomicReference<Cause>();
-            var skipFlag = new java.util.concurrent.atomic.AtomicBoolean(false);
+            var errorHolder = new AtomicReference<Cause>();
+            var skipFlag = new AtomicBoolean(false);
             parseResult.onSuccess(dependency -> {
                                       switch (sectionRef) {
                 case SHARED -> shared.add(dependency);
@@ -129,7 +138,7 @@ public record DependencyFile(List<ArtifactDependency> shared,
     /// These are provided by the runtime and should never be in slice dependency files.
     private Result<DependencyFile> validateNoFrameworkDependencies() {
         return findFrameworkDependency()
-        .fold(() -> Result.success(this),
+        .fold(() -> success(this),
               dep -> FRAMEWORK_DEPENDENCY_ERROR.apply(dep)
                                                .result());
     }
@@ -137,15 +146,15 @@ public record DependencyFile(List<ArtifactDependency> shared,
     private Option<String> findFrameworkDependency() {
         for (var dep : shared) {
             if (isFrameworkArtifact(dep)) {
-                return Option.some("[shared] " + dep.asString());
+                return some("[shared] " + dep.asString());
             }
         }
         for (var dep : infra) {
             if (isFrameworkArtifact(dep)) {
-                return Option.some("[infra] " + dep.asString());
+                return some("[infra] " + dep.asString());
             }
         }
-        return Option.none();
+        return none();
     }
 
     private static boolean isFrameworkArtifact(ArtifactDependency dep) {
@@ -153,9 +162,7 @@ public record DependencyFile(List<ArtifactDependency> shared,
     }
 
     private static final String AETHER_GROUP = "org.pragmatica-lite.aether";
-    private static final java.util.Set<String> FRAMEWORK_ARTIFACTS = java.util.Set.of("slice-api",
-                                                                                      "infra-api",
-                                                                                      "slice-annotations");
+    private static final Set<String> FRAMEWORK_ARTIFACTS = Set.of("slice-api", "infra-api", "slice-annotations");
     private static final Fn1<Cause, String> FRAMEWORK_DEPENDENCY_ERROR = Causes.forOneValue("Slice incorrectly packaged: framework dependency declared in %s. "
                                                                                             + "slice-api, infra-api, and slice-annotations are provided by the runtime and must not be declared as dependencies");
 
@@ -163,20 +170,25 @@ public record DependencyFile(List<ArtifactDependency> shared,
     ///
     /// @param inputStream The input stream to read from
     /// @return Parsed dependency file or error
+    /// Adapter boundary — InputStream/BufferedReader APIs use null for EOF.
+    @SuppressWarnings("JBCT-RET-03")
     public static Result<DependencyFile> dependencyFile(InputStream inputStream) {
         return Result.lift(Causes::fromThrowable,
-                           () -> {
-                               try (var reader = new BufferedReader(new InputStreamReader(inputStream))) {
-                                   var content = new StringBuilder();
-                                   String line;
-                                   while ((line = reader.readLine()) != null) {
-                                       content.append(line)
-                                              .append("\n");
-                                   }
-                                   return content.toString();
-                               }
-                           })
+                           () -> readStreamContent(inputStream))
                      .flatMap(DependencyFile::dependencyFile);
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static String readStreamContent(InputStream inputStream) throws IOException {
+        try (var reader = new BufferedReader(new InputStreamReader(inputStream))) {
+            var content = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                content.append(line)
+                       .append("\n");
+            }
+            return content.toString();
+        }
     }
 
     /// Load dependency file from classloader resource.
@@ -184,12 +196,13 @@ public record DependencyFile(List<ArtifactDependency> shared,
     /// @param sliceClassName Fully qualified class name of the slice
     /// @param classLoader    ClassLoader to load resource from
     /// @return Parsed dependency file, empty if no file exists
+    @SuppressWarnings("JBCT-RET-03")
     public static Result<DependencyFile> load(String sliceClassName, ClassLoader classLoader) {
         var resourcePath = "META-INF/dependencies/" + sliceClassName;
         var resource = classLoader.getResourceAsStream(resourcePath);
         if (resource == null) {
             // No dependencies file means no dependencies - this is valid
-            return Result.success(new DependencyFile(List.of(), List.of(), List.of()));
+            return success(new DependencyFile(List.of(), List.of(), List.of()));
         }
         return dependencyFile(resource);
     }

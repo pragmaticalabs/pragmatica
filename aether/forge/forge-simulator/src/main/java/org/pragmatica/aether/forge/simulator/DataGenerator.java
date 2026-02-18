@@ -2,13 +2,19 @@ package org.pragmatica.aether.forge.simulator;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 import java.util.List;
 import java.util.Queue;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.Random;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ThreadLocalRandom;
+
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.Result.unitResult;
 
 /// Framework for generating test data for load testing.
 /// Each generator produces data appropriate for a specific entry point type.
@@ -29,20 +35,19 @@ public sealed interface DataGenerator {
         private static final Cause MIN_GREATER_THAN_MAX = Causes.cause("min must be <= max");
 
         public int random(Random random) {
-            return min == max
-                   ? min
-                   : min + random.nextInt(max - min + 1);
+            if (min == max) {
+                return min;
+            }
+            return min + random.nextInt(max - min + 1);
         }
 
         public static Result<IntRange> intRange(int min, int max) {
-            if (min > max) {
-                return MIN_GREATER_THAN_MAX.result();
-            }
-            return Result.success(new IntRange(min, max));
+            return Verify.ensure(min, Verify.Is::lessThanOrEqualTo, max, MIN_GREATER_THAN_MAX)
+                         .map(m -> new IntRange(m, max));
         }
 
-        public static IntRange intRangeExact(int value) {
-            return new IntRange(value, value);
+        public static IntRange intRange(int value) {
+            return intRange(value, value).unwrap();
         }
     }
 
@@ -62,14 +67,14 @@ public sealed interface DataGenerator {
         }
 
         public static Result<ProductIdGenerator> productIdGenerator(List<String> productIds) {
-            if (productIds == null || productIds.isEmpty()) {
-                return PRODUCT_IDS_EMPTY.result();
-            }
-            return Result.success(new ProductIdGenerator(productIds));
+            return Verify.ensure(productIds, Verify.Is::notNull, PRODUCT_IDS_EMPTY)
+                         .filter(PRODUCT_IDS_EMPTY,
+                                 list -> !list.isEmpty())
+                         .map(ProductIdGenerator::new);
         }
 
-        public static ProductIdGenerator withDefaults() {
-            return new ProductIdGenerator(List.of("PROD-ABC123", "PROD-DEF456", "PROD-GHI789"));
+        public static ProductIdGenerator productIdGenerator() {
+            return productIdGenerator(List.of("PROD-ABC123", "PROD-DEF456", "PROD-GHI789")).unwrap();
         }
     }
 
@@ -84,17 +89,13 @@ public sealed interface DataGenerator {
         }
 
         public static Result<CustomerIdGenerator> customerIdGenerator(String prefix, int maxId) {
-            if (prefix == null) {
-                return PREFIX_NULL.result();
-            }
-            if (maxId <= 0) {
-                return MAX_ID_NOT_POSITIVE.result();
-            }
-            return Result.success(new CustomerIdGenerator(prefix, maxId));
+            return Verify.ensure(prefix, Verify.Is::notNull, PREFIX_NULL)
+                         .flatMap(_ -> Verify.ensure(maxId, Verify.Is::positive, MAX_ID_NOT_POSITIVE))
+                         .map(_ -> new CustomerIdGenerator(prefix, maxId));
         }
 
-        public static CustomerIdGenerator withDefaults() {
-            return new CustomerIdGenerator("CUST-", 100_000_000);
+        public static CustomerIdGenerator customerIdGenerator() {
+            return customerIdGenerator("CUST-", 100_000_000).unwrap();
         }
     }
 
@@ -106,28 +107,39 @@ public sealed interface DataGenerator {
 
         @Override
         public OrderRequestData generate(Random random) {
-            return new OrderRequestData(customerGenerator.generate(random),
-                                        productGenerator.generate(random),
-                                        quantityRange.random(random));
+            return OrderRequestData.orderRequestData(customerGenerator.generate(random),
+                                                     productGenerator.generate(random),
+                                                     quantityRange.random(random))
+                                   .unwrap();
         }
 
         public static Result<OrderRequestGenerator> orderRequestGenerator(ProductIdGenerator productGenerator,
                                                                           CustomerIdGenerator customerGenerator,
                                                                           IntRange quantityRange) {
-            if (productGenerator == null || customerGenerator == null || quantityRange == null) {
-                return GENERATORS_NULL.result();
-            }
-            return Result.success(new OrderRequestGenerator(productGenerator, customerGenerator, quantityRange));
+            return ensureGeneratorsNotNull(productGenerator, customerGenerator, quantityRange)
+            .map(_ -> new OrderRequestGenerator(productGenerator, customerGenerator, quantityRange));
         }
 
-        public static OrderRequestGenerator withDefaults() {
-            return new OrderRequestGenerator(ProductIdGenerator.withDefaults(),
-                                             CustomerIdGenerator.withDefaults(),
-                                             IntRange.intRangeExact(1));
+        private static Result<IntRange> ensureGeneratorsNotNull(ProductIdGenerator productGenerator,
+                                                                CustomerIdGenerator customerGenerator,
+                                                                IntRange quantityRange) {
+            return Verify.ensure(productGenerator, Verify.Is::notNull, GENERATORS_NULL)
+                         .flatMap(_ -> Verify.ensure(customerGenerator, Verify.Is::notNull, GENERATORS_NULL))
+                         .flatMap(_ -> Verify.ensure(quantityRange, Verify.Is::notNull, GENERATORS_NULL));
+        }
+
+        public static OrderRequestGenerator orderRequestGenerator() {
+            return orderRequestGenerator(ProductIdGenerator.productIdGenerator(),
+                                         CustomerIdGenerator.customerIdGenerator(),
+                                         IntRange.intRange(1)).unwrap();
         }
 
         /// Generated order request data.
         public record OrderRequestData(String customerId, String productId, int quantity) {
+            public static Result<OrderRequestData> orderRequestData(String customerId, String productId, int quantity) {
+                return success(new OrderRequestData(customerId, productId, quantity));
+            }
+
             public String toJson() {
                 return String.format("{\"customerId\":\"%s\",\"items\":[{\"productId\":\"%s\",\"quantity\":%d}]}",
                                      customerId,
@@ -148,44 +160,42 @@ public sealed interface DataGenerator {
 
         @Override
         public String generate(Random random) {
-            var orderId = orderIdPool.poll();
-            if (orderId != null) {
-                orderIdPool.offer(orderId);
-                return orderId;
-            }
+            return option(orderIdPool.poll()).onPresent(orderIdPool::offer)
+                         .or(syntheticOrderId(random));
+        }
+
+        private static String syntheticOrderId(Random random) {
             return "ORD-" + String.format("%08d", random.nextInt(100_000_000));
         }
 
         /// Add an order ID to the pool (called when orders are created).
-        public void addOrderId(String orderId) {
+        public Result<Unit> addOrderId(String orderId) {
             if (orderIdPool.size() < maxPoolSize) {
                 orderIdPool.offer(orderId);
             }
+            return unitResult();
         }
 
         public static Result<OrderIdGenerator> orderIdGenerator(Queue<String> orderIdPool, int maxPoolSize) {
-            if (orderIdPool == null) {
-                return POOL_NULL.result();
-            }
-            if (maxPoolSize <= 0) {
-                return MAX_POOL_NOT_POSITIVE.result();
-            }
-            return Result.success(new OrderIdGenerator(orderIdPool, maxPoolSize));
+            return Verify.ensure(orderIdPool, Verify.Is::notNull, POOL_NULL)
+                         .flatMap(_ -> Verify.ensure(maxPoolSize, Verify.Is::positive, MAX_POOL_NOT_POSITIVE))
+                         .map(_ -> new OrderIdGenerator(orderIdPool, maxPoolSize));
         }
 
-        public static OrderIdGenerator withSharedPool() {
-            return new OrderIdGenerator(SHARED_POOL, DEFAULT_MAX_POOL_SIZE);
+        public static OrderIdGenerator orderIdGenerator() {
+            return orderIdGenerator(SHARED_POOL, DEFAULT_MAX_POOL_SIZE).unwrap();
         }
 
-        public static OrderIdGenerator withNewPool() {
-            return new OrderIdGenerator(new ConcurrentLinkedQueue<>(), DEFAULT_MAX_POOL_SIZE);
+        public static OrderIdGenerator orderIdGenerator(Queue<String> pool) {
+            return orderIdGenerator(pool, DEFAULT_MAX_POOL_SIZE).unwrap();
         }
 
         /// Add order ID to the shared pool.
-        public static void trackOrderId(String orderId) {
+        public static Result<Unit> trackOrderId(String orderId) {
             if (SHARED_POOL.size() < DEFAULT_MAX_POOL_SIZE) {
                 SHARED_POOL.offer(orderId);
             }
+            return unitResult();
         }
     }
 
@@ -195,21 +205,24 @@ public sealed interface DataGenerator {
 
         @Override
         public StockCheckData generate(Random random) {
-            return new StockCheckData(productGenerator.generate(random));
+            return StockCheckData.stockCheckData(productGenerator.generate(random))
+                                 .unwrap();
         }
 
         public static Result<StockCheckGenerator> stockCheckGenerator(ProductIdGenerator productGenerator) {
-            if (productGenerator == null) {
-                return GENERATOR_NULL.result();
+            return Verify.ensure(productGenerator, Verify.Is::notNull, GENERATOR_NULL)
+                         .map(StockCheckGenerator::new);
+        }
+
+        public static StockCheckGenerator stockCheckGenerator() {
+            return stockCheckGenerator(ProductIdGenerator.productIdGenerator()).unwrap();
+        }
+
+        public record StockCheckData(String productId) {
+            public static Result<StockCheckData> stockCheckData(String productId) {
+                return success(new StockCheckData(productId));
             }
-            return Result.success(new StockCheckGenerator(productGenerator));
         }
-
-        public static StockCheckGenerator withDefaults() {
-            return new StockCheckGenerator(ProductIdGenerator.withDefaults());
-        }
-
-        public record StockCheckData(String productId) {}
     }
 
     /// Generates price check request data.
@@ -218,20 +231,30 @@ public sealed interface DataGenerator {
 
         @Override
         public PriceCheckData generate(Random random) {
-            return new PriceCheckData(productGenerator.generate(random));
+            return PriceCheckData.priceCheckData(productGenerator.generate(random))
+                                 .unwrap();
         }
 
         public static Result<PriceCheckGenerator> priceCheckGenerator(ProductIdGenerator productGenerator) {
-            if (productGenerator == null) {
-                return GENERATOR_NULL.result();
+            return Verify.ensure(productGenerator, Verify.Is::notNull, GENERATOR_NULL)
+                         .map(PriceCheckGenerator::new);
+        }
+
+        public static PriceCheckGenerator priceCheckGenerator() {
+            return priceCheckGenerator(ProductIdGenerator.productIdGenerator()).unwrap();
+        }
+
+        public record PriceCheckData(String productId) {
+            public static Result<PriceCheckData> priceCheckData(String productId) {
+                return success(new PriceCheckData(productId));
             }
-            return Result.success(new PriceCheckGenerator(productGenerator));
         }
+    }
 
-        public static PriceCheckGenerator withDefaults() {
-            return new PriceCheckGenerator(ProductIdGenerator.withDefaults());
+    record unused() implements DataGenerator {
+        @Override
+        public Object generate(Random random) {
+            return "";
         }
-
-        public record PriceCheckData(String productId) {}
     }
 }

@@ -35,9 +35,11 @@ import org.slf4j.LoggerFactory;
 /// Same algorithm as RequestRouter in http-routing module.
 public interface HttpRouteRegistry {
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
     void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
 
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
     void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
 
     /// Find route for HTTP method and path.
@@ -76,20 +78,16 @@ public interface HttpRouteRegistry {
             private static final Logger log = LoggerFactory.getLogger(httpRouteRegistry.class);
 
             @Override
+            @SuppressWarnings("JBCT-RET-01")
             public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
                 var key = valuePut.cause()
                                   .key();
                 var value = valuePut.cause()
                                     .value();
-                log.debug("HttpRouteRegistry.onValuePut received: keyType={}, valueType={}",
-                          key.getClass()
-                             .getSimpleName(),
-                          value.getClass()
-                               .getSimpleName());
                 if (key instanceof HttpRouteKey httpRouteKey && value instanceof HttpRouteValue httpRouteValue) {
-                    log.info("HttpRouteRegistry: Processing HttpRouteKey {} {}",
-                             httpRouteKey.httpMethod(),
-                             httpRouteKey.pathPrefix());
+                    log.debug("HttpRouteRegistry: Processing HttpRouteKey {} {}",
+                              httpRouteKey.httpMethod(),
+                              httpRouteKey.pathPrefix());
                     var routeInfo = RouteInfo.routeInfo(httpRouteKey.httpMethod(),
                                                         httpRouteKey.pathPrefix(),
                                                         httpRouteValue.nodes());
@@ -101,15 +99,15 @@ public interface HttpRouteRegistry {
                                          updated.put(httpRouteKey.pathPrefix(), routeInfo);
                                          return updated;
                                      });
-                    log.info("HttpRouteRegistry: Registered route {} {} -> {} nodes",
+                    log.info("HttpRouteRegistry: Registered route {} {} -> {}",
                              httpRouteKey.httpMethod(),
                              httpRouteKey.pathPrefix(),
-                             httpRouteValue.nodes()
-                                           .size());
+                             httpRouteValue.nodes());
                 }
             }
 
             @Override
+            @SuppressWarnings("JBCT-RET-01")
             public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
                 var key = valueRemove.cause()
                                      .key();

@@ -23,6 +23,7 @@ import static org.pragmatica.aether.slice.repository.Location.location;
 /// {localRepo}/{groupId as path}/{artifactId}/{version}/{artifactId}-{version}.jar
 /// Example: ~/.m2/repository/org/example/my-slice/1.0.0/my-slice-1.0.0.jar
 /// ```
+@SuppressWarnings({"JBCT-VO-01", "JBCT-UC-01", "JBCT-SEQ-01", "JBCT-ZONE-02"})
 public interface LocalRepository extends Repository {
     /// Create a LocalRepository using the detected Maven local repository location.
     /// Detection order: maven.repo.local property → user settings.xml → global settings.xml → default ~/.m2/repository

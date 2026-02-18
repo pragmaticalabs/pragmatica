@@ -1,7 +1,7 @@
 package org.pragmatica.aether.example.urlshortener.analytics;
 
-import org.pragmatica.aether.infra.db.Database;
-import org.pragmatica.aether.infra.db.DatabaseConnector;
+import org.pragmatica.aether.resource.db.Database;
+import org.pragmatica.aether.resource.db.DatabaseConnector;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;

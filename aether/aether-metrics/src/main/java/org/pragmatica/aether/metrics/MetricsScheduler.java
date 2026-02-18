@@ -26,16 +26,20 @@ import org.slf4j.LoggerFactory;
 /// Each node responds with MetricsPong containing their metrics.
 public interface MetricsScheduler {
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
     void onLeaderChange(LeaderChange leaderChange);
 
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
     void onTopologyChange(TopologyChangeNotification topologyChange);
 
     /// Handle quorum state changes (stop pinging when quorum disappears).
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
     void onQuorumStateChange(QuorumStateNotification notification);
 
     /// Stop the scheduler (for graceful shutdown).
+    @SuppressWarnings("JBCT-RET-01")
     void stop();
 
     /// Create a new MetricsScheduler.
@@ -85,9 +89,10 @@ class MetricsSchedulerImpl implements MetricsScheduler {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onLeaderChange(LeaderChange leaderChange) {
         if (leaderChange.localNodeIsLeader()) {
-            log.info("Node {} became leader, starting metrics scheduler", self);
+            log.debug("Node {} became leader, starting metrics scheduler", self);
             startPinging();
         } else {
             log.info("Node {} is no longer leader, stopping metrics scheduler", self);
@@ -96,6 +101,7 @@ class MetricsSchedulerImpl implements MetricsScheduler {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onTopologyChange(TopologyChangeNotification topologyChange) {
         switch (topologyChange) {
             case NodeAdded(_, List<NodeId> newTopology) -> topology.set(newTopology);
@@ -105,6 +111,7 @@ class MetricsSchedulerImpl implements MetricsScheduler {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onQuorumStateChange(QuorumStateNotification notification) {
         if (notification == QuorumStateNotification.DISAPPEARED) {
             log.info("Quorum disappeared, stopping metrics scheduler");
@@ -113,6 +120,7 @@ class MetricsSchedulerImpl implements MetricsScheduler {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void stop() {
         stopPinging();
     }
@@ -137,11 +145,9 @@ class MetricsSchedulerImpl implements MetricsScheduler {
                 return;
             }
             var ping = new MetricsPing(self, metricsCollector.allMetrics());
-            for (var nodeId : currentTopology) {
-                if (!nodeId.equals(self)) {
-                    network.send(nodeId, ping);
-                }
-            }
+            currentTopology.stream()
+                           .filter(nodeId -> !nodeId.equals(self))
+                           .forEach(nodeId -> network.send(nodeId, ping));
             log.trace("Sent MetricsPing to {} nodes", currentTopology.size() - 1);
         } catch (Exception e) {
             log.warn("Failed to send metrics ping: {}", e.getMessage());

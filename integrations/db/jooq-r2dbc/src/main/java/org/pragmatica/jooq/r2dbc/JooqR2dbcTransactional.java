@@ -63,7 +63,7 @@ public interface JooqR2dbcTransactional {
                                           Fn1<R2dbcError, Throwable> errorMapper,
                                           Fn2<Promise<R>, DSLContext, Connection> operation) {
         return acquireConnection(connectionFactory, errorMapper)
-               .flatMap(conn -> executeWithConnection(conn, dialect, errorMapper, operation));
+        .flatMap(conn -> executeWithConnection(conn, dialect, errorMapper, operation));
     }
 
     private static Promise<Connection> acquireConnection(ConnectionFactory factory,
@@ -75,11 +75,10 @@ public interface JooqR2dbcTransactional {
                                                         SQLDialect dialect,
                                                         Fn1<R2dbcError, Throwable> errorMapper,
                                                         Fn2<Promise<R>, DSLContext, Connection> operation) {
-        return beginTransaction(conn, errorMapper)
-               .flatMap(_ -> executeOperation(conn, dialect, operation))
-               .flatMap(result -> commitAndReturn(conn, errorMapper, result))
-               .onFailure(_ -> rollbackTransaction(conn))
-               .onResult(_ -> closeConnection(conn));
+        return beginTransaction(conn, errorMapper).flatMap(_ -> executeOperation(conn, dialect, operation))
+                               .flatMap(result -> commitAndReturn(conn, errorMapper, result))
+                               .onFailure(_ -> rollbackTransaction(conn))
+                               .onResult(_ -> closeConnection(conn));
     }
 
     private static <R> Promise<R> executeOperation(Connection conn,
@@ -92,8 +91,7 @@ public interface JooqR2dbcTransactional {
     private static <R> Promise<R> commitAndReturn(Connection conn,
                                                   Fn1<R2dbcError, Throwable> errorMapper,
                                                   R result) {
-        return commitTransaction(conn, errorMapper)
-               .map(_ -> result);
+        return commitTransaction(conn, errorMapper).map(_ -> result);
     }
 
     private static Promise<Unit> beginTransaction(Connection conn, Fn1<R2dbcError, Throwable> errorMapper) {

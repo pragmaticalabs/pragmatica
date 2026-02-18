@@ -14,15 +14,15 @@ import java.util.List;
 /// **ClassLoader Hierarchy:**
 /// ```
 /// Bootstrap (JDK)
-///     ↑
+///     ^
 /// Application (Node code)
-///     │
-///     ├── Node uses its own framework copy
-///     │
+///     |
+///     +-- Node uses its own framework copy
+///     |
 /// FrameworkClassLoader (pragmatica-lite, slice-api)
-///     ↑
+///     ^
 /// SharedLibraryClassLoader ([shared] deps)
-///     ↑
+///     ^
 /// SliceClassLoader (slice JAR)
 /// ```
 ///

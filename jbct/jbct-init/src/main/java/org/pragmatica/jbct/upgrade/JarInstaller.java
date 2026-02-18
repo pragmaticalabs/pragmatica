@@ -21,7 +21,7 @@ import org.slf4j.LoggerFactory;
 
 /// Downloads and installs JBCT JAR files.
 public final class JarInstaller {
-    private static final Logger LOG = LoggerFactory.getLogger(JarInstaller.class);
+    private static final Logger log = LoggerFactory.getLogger(JarInstaller.class);
     private static final String DEFAULT_INSTALL_DIR = ".jbct";
     private static final String LIB_DIR = "lib";
     private static final String JAR_NAME = "jbct.jar";
@@ -73,7 +73,7 @@ public final class JarInstaller {
                 }
             }
         } catch (Exception e) {
-            LOG.debug("Could not detect current JAR location: {}", e.getMessage());
+            log.debug("Could not detect current JAR location: {}", e.getMessage());
         }
         return defaultInstallPath();
     }
@@ -124,7 +124,7 @@ public final class JarInstaller {
         try{
             Files.deleteIfExists(tempFile);
         } catch (IOException cleanupError) {
-            LOG.debug("Failed to cleanup temp file {}: {}", tempFile, cleanupError.getMessage());
+            log.debug("Failed to cleanup temp file {}: {}", tempFile, cleanupError.getMessage());
         }
     }
 
@@ -153,7 +153,7 @@ public final class JarInstaller {
                                  try{
                                      Files.deleteIfExists(backupPath);
                                  } catch (IOException cleanupError) {
-                                     LOG.debug("Failed to cleanup backup file {}: {}",
+                                     log.debug("Failed to cleanup backup file {}: {}",
                                                backupPath,
                                                cleanupError.getMessage());
                                  }

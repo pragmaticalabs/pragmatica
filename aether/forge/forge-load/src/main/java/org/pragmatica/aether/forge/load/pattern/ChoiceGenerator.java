@@ -2,13 +2,15 @@ package org.pragmatica.aether.forge.load.pattern;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
+
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
 
 /// Randomly selects from a list of choices.
 ///
@@ -18,30 +20,32 @@ import java.util.concurrent.ThreadLocalRandom;
 public record ChoiceGenerator(List<String> choices) implements PatternGenerator {
     public static final String TYPE = "choice";
 
-    public static ChoiceGenerator choiceGenerator(List<String> choices) {
-        return new ChoiceGenerator(choices);
+    public static Result<ChoiceGenerator> choiceGenerator(List<String> choices) {
+        return success(new ChoiceGenerator(choices));
     }
 
     private static final Fn1<Cause, String> INVALID_CHOICE = Causes.forOneValue("Invalid choice format: %s. Expected comma-separated values");
 
     /// Parses a choice specification like "A,B,C".
     public static Result<PatternGenerator> choiceGenerator(String choiceSpec) {
-        return Option.option(choiceSpec)
-                     .filter(s -> !s.isBlank())
+        return option(choiceSpec).filter(s -> !s.isBlank())
                      .toResult(INVALID_CHOICE.apply("empty"))
-                     .flatMap(ChoiceGenerator::parseChoices);
+                     .flatMap(ChoiceGenerator::toChoices);
     }
 
-    private static Result<PatternGenerator> parseChoices(String choiceSpec) {
+    private static Result<PatternGenerator> toChoices(String choiceSpec) {
         var choices = Arrays.stream(choiceSpec.split(","))
                             .map(String::trim)
                             .filter(s -> !s.isEmpty())
                             .toList();
-        if (choices.isEmpty()) {
-            return INVALID_CHOICE.apply(choiceSpec)
-                                 .result();
-        }
-        return Result.success(choiceGenerator(choices));
+        return ensureNonEmpty(choices, choiceSpec);
+    }
+
+    private static Result<PatternGenerator> ensureNonEmpty(List<String> choices, String choiceSpec) {
+        return choices.isEmpty()
+               ? INVALID_CHOICE.apply(choiceSpec)
+                               .result()
+               : choiceGenerator(choices).map(gen -> gen);
     }
 
     @Override

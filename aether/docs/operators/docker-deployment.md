@@ -4,8 +4,8 @@ Deploy Aether clusters using Docker containers for development, testing, and pro
 
 ## Prerequisites
 
-- Docker 20.10+
-- Docker Compose 2.0+ (for multi-node clusters)
+- Podman 4.0+
+- Podman Compose (for multi-node clusters)
 - Java 25 (for building from source)
 
 ## Container Images
@@ -27,16 +27,16 @@ Two container images are available:
 # Build JARs first
 mvn package -DskipTests
 
-# Build Docker images
-docker build -f docker/aether-node/Dockerfile -t aether-node:latest .
-docker build -f docker/aether-forge/Dockerfile -t aether-forge:latest .
+# Build container images
+podman build -f docker/aether-node/Dockerfile -t aether-node:latest .
+podman build -f docker/aether-forge/Dockerfile -t aether-forge:latest .
 ```
 
 ### Run 3-Node Cluster
 
 ```bash
 cd docker
-docker-compose up --build
+podman-compose up --build
 ```
 
 This starts:
@@ -47,12 +47,12 @@ This starts:
 ### Run with Forge Simulator
 
 ```bash
-docker-compose --profile forge up --build
+podman-compose --profile forge up --build
 ```
 
 Access Forge dashboard at http://localhost:8888
 
-## Docker Compose Configuration
+## Podman Compose Configuration
 
 The `docker/docker-compose.yml` defines a 3-node cluster:
 
@@ -128,7 +128,7 @@ node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090
 ### Single Node
 
 ```bash
-docker run -d \
+podman run -d \
   --name aether-node-1 \
   -e NODE_ID=node-1 \
   -e CLUSTER_PORT=8090 \
@@ -138,24 +138,24 @@ docker run -d \
   aether-node:latest
 ```
 
-### Multi-Node with Docker Network
+### Multi-Node with Podman Network
 
 ```bash
 # Create network
-docker network create aether-net
+podman network create aether-net
 
 # Start nodes
-docker run -d --name node1 --network aether-net \
+podman run -d --name node1 --network aether-net \
   -e NODE_ID=node-1 \
   -e PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
   -p 8080:8080 aether-node:latest
 
-docker run -d --name node2 --network aether-net \
+podman run -d --name node2 --network aether-net \
   -e NODE_ID=node-2 \
   -e PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
   -p 8081:8080 aether-node:latest
 
-docker run -d --name node3 --network aether-net \
+podman run -d --name node3 --network aether-net \
   -e NODE_ID=node-3 \
   -e PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
   -p 8082:8080 aether-node:latest
@@ -172,7 +172,7 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
 
 Check health status:
 ```bash
-docker inspect --format='{{.State.Health.Status}}' aether-node-1
+podman inspect --format='{{.State.Health.Status}}' aether-node-1
 ```
 
 ## Production Considerations
@@ -321,15 +321,15 @@ jobs:
 
 ### Container Won't Start
 
-1. Check logs: `docker logs aether-node-1`
-2. Verify JAR exists in image: `docker run --rm aether-node ls -la /app/`
+1. Check logs: `podman logs aether-node-1`
+2. Verify JAR exists in image: `podman run --rm aether-node ls -la /app/`
 3. Check memory limits aren't too low
 
 ### Cluster Not Forming
 
 1. Verify all nodes can reach each other:
    ```bash
-   docker exec aether-node-1 wget -q -O- http://aether-node-2:8080/health
+   podman exec aether-node-1 wget -q -O- http://aether-node-2:8080/health
    ```
 2. Check PEERS environment variable format
 3. Ensure health checks are passing

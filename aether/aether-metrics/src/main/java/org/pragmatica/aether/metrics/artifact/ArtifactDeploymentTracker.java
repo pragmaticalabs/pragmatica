@@ -29,10 +29,12 @@ import org.slf4j.LoggerFactory;
 public interface ArtifactDeploymentTracker {
     /// Handle slice deployment event.
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
     void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
 
     /// Handle slice removal event.
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
     void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
 
     /// Check if an artifact is deployed anywhere in the cluster.
@@ -57,14 +59,13 @@ class ArtifactDeploymentTrackerImpl implements ArtifactDeploymentTracker {
     private final ConcurrentHashMap<Artifact, Integer> deploymentCounts = new ConcurrentHashMap<>();
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
         var key = valuePut.cause()
                           .key();
         if (key instanceof SliceNodeKey sliceNodeKey) {
             var artifact = sliceNodeKey.artifact();
-            deploymentCounts.compute(artifact, (_, count) -> count == null
-                                                             ? 1
-                                                             : count + 1);
+            deploymentCounts.compute(artifact, (_, count) -> incrementCount(count));
             log.debug("Artifact deployed: {} (total deployments: {})",
                       artifact.asString(),
                       deploymentCounts.get(artifact));
@@ -72,22 +73,31 @@ class ArtifactDeploymentTrackerImpl implements ArtifactDeploymentTracker {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
         var key = valueRemove.cause()
                              .key();
         if (key instanceof SliceNodeKey sliceNodeKey) {
             var artifact = sliceNodeKey.artifact();
-            deploymentCounts.compute(artifact,
-                                     (_, count) -> {
-                                         if (count == null || count <= 1) {
-                                             return null;
-                                         }
-                                         return count - 1;
-                                     });
+            deploymentCounts.compute(artifact, (_, count) -> decrementCount(count));
             log.debug("Artifact undeployed: {} (remaining deployments: {})",
                       artifact.asString(),
                       deploymentCounts.getOrDefault(artifact, 0));
         }
+    }
+
+    @SuppressWarnings("JBCT-RET-03") // null return required by ConcurrentHashMap.compute API to signal absence
+    private static Integer incrementCount(Integer count) {
+        return count == null
+               ? 1
+               : count + 1;
+    }
+
+    @SuppressWarnings("JBCT-RET-03") // null return required by ConcurrentHashMap.compute API to signal removal
+    private static Integer decrementCount(Integer count) {
+        return (count == null || count <= 1)
+               ? null
+               : count - 1;
     }
 
     @Override

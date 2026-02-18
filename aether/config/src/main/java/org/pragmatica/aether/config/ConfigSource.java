@@ -2,9 +2,14 @@ package org.pragmatica.aether.config;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.parse.Number;
 
 import java.util.Map;
 import java.util.Set;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
 
 /// Abstraction for configuration sources.
 ///
@@ -14,7 +19,6 @@ import java.util.Set;
 /// Implementations may load from various sources: environment variables,
 /// system properties, TOML files, JSON files, or in-memory maps.
 public interface ConfigSource {
-
     /// Get a string value from the configuration.
     ///
     /// @param key Dot-separated key path (e.g., "database.host")
@@ -26,7 +30,7 @@ public interface ConfigSource {
     /// @param key Dot-separated key path
     /// @return Option containing the value if present and parseable as integer
     default Option<Integer> getInt(String key) {
-        return getString(key).flatMap(this::parseInteger);
+        return getString(key).flatMap(ConfigSource::safeParseInteger);
     }
 
     /// Get a long value from the configuration.
@@ -34,7 +38,7 @@ public interface ConfigSource {
     /// @param key Dot-separated key path
     /// @return Option containing the value if present and parseable as long
     default Option<Long> getLong(String key) {
-        return getString(key).flatMap(this::parseLong);
+        return getString(key).flatMap(ConfigSource::safeParseLong);
     }
 
     /// Get a boolean value from the configuration.
@@ -42,7 +46,7 @@ public interface ConfigSource {
     /// @param key Dot-separated key path
     /// @return Option containing the value if present and parseable as boolean
     default Option<Boolean> getBoolean(String key) {
-        return getString(key).flatMap(this::parseBoolean);
+        return getString(key).flatMap(ConfigSource::safeParseBoolean);
     }
 
     /// Get a double value from the configuration.
@@ -50,7 +54,7 @@ public interface ConfigSource {
     /// @param key Dot-separated key path
     /// @return Option containing the value if present and parseable as double
     default Option<Double> getDouble(String key) {
-        return getString(key).flatMap(this::parseDouble);
+        return getString(key).flatMap(ConfigSource::safeParseDouble);
     }
 
     /// Get all keys available in this source.
@@ -89,40 +93,31 @@ public interface ConfigSource {
     ///
     /// @return Result indicating success or failure
     default Result<ConfigSource> reload() {
-        return Result.success(this);
+        return success(this);
     }
 
-    private Option<Integer> parseInteger(String value) {
-        try {
-            return Option.some(Integer.parseInt(value));
-        } catch (NumberFormatException _) {
-            return Option.none();
-        }
+    private static Option<Integer> safeParseInteger(String value) {
+        return Number.parseInt(value)
+                     .option();
     }
 
-    private Option<Long> parseLong(String value) {
-        try {
-            return Option.some(Long.parseLong(value));
-        } catch (NumberFormatException _) {
-            return Option.none();
-        }
+    private static Option<Long> safeParseLong(String value) {
+        return Number.parseLong(value)
+                     .option();
     }
 
-    private Option<Boolean> parseBoolean(String value) {
+    private static Option<Boolean> safeParseBoolean(String value) {
         if ("true".equalsIgnoreCase(value)) {
-            return Option.some(true);
+            return some(true);
         }
         if ("false".equalsIgnoreCase(value)) {
-            return Option.some(false);
+            return some(false);
         }
-        return Option.none();
+        return none();
     }
 
-    private Option<Double> parseDouble(String value) {
-        try {
-            return Option.some(Double.parseDouble(value));
-        } catch (NumberFormatException _) {
-            return Option.none();
-        }
+    private static Option<Double> safeParseDouble(String value) {
+        return Number.parseDouble(value)
+                     .option();
     }
 }

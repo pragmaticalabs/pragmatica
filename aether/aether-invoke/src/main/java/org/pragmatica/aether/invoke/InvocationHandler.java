@@ -17,11 +17,11 @@ import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.lang.Functions.Fn2;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import org.pragmatica.lang.Functions.Fn2;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,14 +37,17 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public interface InvocationHandler {
     /// Handle incoming invocation request.
     @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
     void onInvokeRequest(InvokeRequest request);
 
     /// Register a slice bridge for handling invocations.
     /// Called when a slice becomes active.
+    @SuppressWarnings("JBCT-RET-01") // Fire-and-forget state mutation
     void registerSlice(Artifact artifact, SliceBridge bridge);
 
     /// Unregister a slice.
     /// Called when a slice is deactivated.
+    @SuppressWarnings("JBCT-RET-01") // Fire-and-forget state mutation
     void unregisterSlice(Artifact artifact);
 
     /// Get a local slice bridge for direct invocation.
@@ -210,12 +213,14 @@ class InvocationHandlerImpl implements InvocationHandler {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void registerSlice(Artifact artifact, SliceBridge bridge) {
         localSlices.put(artifact, bridge);
         log.debug("Registered slice for invocation: {}", artifact);
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void unregisterSlice(Artifact artifact) {
         localSlices.remove(artifact);
         log.debug("Unregistered slice from invocation: {}", artifact);
@@ -241,6 +246,7 @@ class InvocationHandlerImpl implements InvocationHandler {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onInvokeRequest(InvokeRequest request) {
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Received InvokeRequest [{}]: {}.{}",
@@ -272,12 +278,13 @@ class InvocationHandlerImpl implements InvocationHandler {
         // Record invocation start for active invocation tracking
         metricsCollector.onPresent(mc -> mc.recordStart(request.targetSlice(), request.method()));
         // Delegate aspect logging to interceptor, then handle response/metrics
-        aspectInterceptor.intercept(
-            request.targetSlice(), request.method(), request.requestId(),
-            () -> invokeWithHttpRouting(request, bridge)
-        ).timeout(invocationTimeout)
-         .onSuccess(data -> handleInvocationSuccess(request, data, startTime, requestBytes))
-         .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
+        aspectInterceptor.intercept(request.targetSlice(),
+                                    request.method(),
+                                    request.requestId(),
+                                    () -> invokeWithHttpRouting(request, bridge))
+                         .timeout(invocationTimeout)
+                         .onSuccess(data -> handleInvocationSuccess(request, data, startTime, requestBytes))
+                         .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
     }
 
     /// Attempt to route HTTP requests through SliceRouter if available.
@@ -348,7 +355,7 @@ class InvocationHandlerImpl implements InvocationHandler {
         var durationNs = System.nanoTime() - startTime;
         var errorType = cause.getClass()
                              .getSimpleName();
-        log.error("[requestId={}] Invocation failed [{}]: {}",
+        log.error("[requestId={}] Failed to complete invocation [{}]: {}",
                   request.requestId(),
                   request.correlationId(),
                   cause.message());

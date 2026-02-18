@@ -5,12 +5,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.Network;
 
-import org.pragmatica.aether.e2e.TestEnvironment;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -20,12 +19,15 @@ import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 /// Helper for managing multi-node Aether clusters in E2E tests.
 ///
 ///
-/// Provides cluster lifecycle management:
-///
-///   - Create and start N-node clusters
-///   - Wait for quorum formation
-///   - Kill and restart individual nodes
-///   - Access any node for API operations
+/// Uses platform-aware networking: host networking on Linux, bridge networking
+/// with fixed port bindings on macOS. Each cluster gets unique port assignments.
+/// Port allocation scheme:
+/// ```
+/// Base port = 20000 + ((PID * 100 + counter * 100) % 40000)
+/// Node N (1-indexed):
+///   Management port = base + N
+///   Cluster port    = base + 100 + N
+/// ```
 ///
 ///
 ///
@@ -43,7 +45,7 @@ import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 /// }
 /// }```
 public class AetherCluster implements AutoCloseable {
-    private static final Logger LOG = LoggerFactory.getLogger(AetherCluster.class);
+    private static final Logger log = LoggerFactory.getLogger(AetherCluster.class);
     private static final Duration QUORUM_TIMEOUT = adapt(Duration.ofSeconds(120));
     private static final Duration POLL_INTERVAL = Duration.ofSeconds(2);
 
@@ -51,59 +53,66 @@ public class AetherCluster implements AutoCloseable {
     private static final Path M2_REPO_PATH = Path.of(System.getProperty("user.home"), ".m2", "repository");
     private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
     // Note: Uses slice artifact IDs (echo-slice-echo-service), not module artifact IDs (echo-slice)
-    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.15.1");
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.16.0");
     private static final String[][] TEST_ARTIFACTS = {
         {"echo-slice-echo-service", TEST_ARTIFACT_VERSION},
         {"echo-slice-echo-service", "0.16.0"}
     };
 
     private final List<AetherNodeContainer> nodes;
-    private final Network network;
     private final Path projectRoot;
     private final Map<String, AetherNodeContainer> nodeMap;
+    private final int basePort;
+    private final Network network; // null on Linux (host networking), bridge network on macOS
 
-    // Use PID + counter for deterministic, collision-free subnets to avoid IP conflicts between test runs
-    private static final java.util.concurrent.atomic.AtomicInteger SUBNET_COUNTER = new java.util.concurrent.atomic.AtomicInteger(0);
-    private final String subnetPrefix;
+    // Counter for unique port allocation across cluster instances within the same JVM
+    private static final AtomicInteger CLUSTER_COUNTER = new AtomicInteger(0);
 
-    private String generateSubnet() {
-        // Use PID + counter for deterministic, collision-free subnets
+    /// Generates a unique base port for a cluster instance.
+    ///
+    ///
+    /// Uses PID + counter to produce ports in range [20000, 60000).
+    /// This avoids well-known ports (0-1023) and typical ephemeral port ranges (32768-60999).
+    ///
+    private static int generateBasePort() {
         long pid = ProcessHandle.current().pid();
-        int counter = SUBNET_COUNTER.incrementAndGet();
-        int second = (int) ((pid % 256));
-        int third = counter % 256;
-        return String.format("172.%d.%d", second, third);
+        int counter = CLUSTER_COUNTER.incrementAndGet();
+        return (int) (20000 + ((pid * 100 + counter * 100) % 40000));
     }
 
     private AetherCluster(int size, Path projectRoot) {
         this.projectRoot = projectRoot;
-        // Generate unique subnet per cluster instance to avoid conflicts
-        this.subnetPrefix = generateSubnet();
-        System.out.println("[DEBUG] Using subnet: " + subnetPrefix + ".0/24");
+        this.basePort = generateBasePort();
+        this.network = AetherNodeContainer.hostNetworkingSupported()
+            ? null
+            : Network.newNetwork();
 
-        // Create network with unique subnet to isolate test clusters
-        this.network = Network.builder()
-                              .createNetworkCmdModifier(cmd -> {
-                                  cmd.withIpam(new com.github.dockerjava.api.model.Network.Ipam()
-                                      .withConfig(new com.github.dockerjava.api.model.Network.Ipam.Config()
-                                          .withSubnet(subnetPrefix + ".0/24")
-                                          .withGateway(subnetPrefix + ".1")));
-                              })
-                              .build();
+        var networkMode = AetherNodeContainer.hostNetworkingSupported()
+            ? "host networking"
+            : "bridge networking";
+
+        System.out.println("[DEBUG] Using base port: " + basePort +
+                           " (management: " + (basePort + 1) + "-" + (basePort + size) +
+                           ", cluster: " + (basePort + 101) + "-" + (basePort + 100 + size) +
+                           ", mode: " + networkMode + ")");
+
         this.nodes = new ArrayList<>(size);
         this.nodeMap = new LinkedHashMap<>();
 
-        // Build hostname-based peer list — Docker DNS resolves network aliases to actual IPs.
-        // Previous IP-based approach was broken: parallelStream() startup caused Docker IPAM
-        // to assign IPs in non-deterministic order, creating identity mismatches in consensus.
         var peerList = buildPeerList(size);
-        System.out.println("[DEBUG] Using hostname-based peer list: " + peerList);
+        System.out.println("[DEBUG] Peer list (" + networkMode + "): " + peerList);
 
-        // Create nodes — Docker network aliases provide DNS resolution between containers
         for (int i = 1; i <= size; i++) {
             var nodeId = "node-" + i;
-            var node = AetherNodeContainer.aetherNode(nodeId, projectRoot, peerList)
-                                          .withClusterNetwork(network);
+            int managementPort = basePort + i;
+            int clusterPort = basePort + 100 + i;
+
+            var node = AetherNodeContainer.aetherNode(nodeId, projectRoot, peerList,
+                                                      managementPort, clusterPort);
+
+            if (network != null) {
+                node.withNetwork(network);
+            }
 
             nodes.add(node);
             nodeMap.put(nodeId, node);
@@ -123,17 +132,18 @@ public class AetherCluster implements AutoCloseable {
     }
 
     /// Starts all nodes in the cluster in parallel for faster startup.
-    /// Uses hostname-based peer configuration since containers share a Docker network.
     public void start() {
-        System.out.println("[DEBUG] Starting cluster with " + nodes.size() + " nodes in parallel...");
+        var networkMode = AetherNodeContainer.hostNetworkingSupported()
+            ? "host networking"
+            : "bridge networking";
+        System.out.println("[DEBUG] Starting cluster with " + nodes.size() + " nodes in parallel (" + networkMode + ")...");
 
-        // Start all nodes in parallel - each container is independent
         nodes.parallelStream().forEach(AetherNodeContainer::start);
 
-        // Log IPs after all nodes are started
         for (var node : nodes) {
-            var ip = getContainerIp(node).or("unknown");
-            System.out.println("[DEBUG] Node " + node.nodeId() + " started with IP: " + ip);
+            System.out.println("[DEBUG] Node " + node.nodeId() +
+                               " started on management port " + node.managementPort() +
+                               ", cluster port " + node.clusterPort());
         }
 
         System.out.println("[DEBUG] All nodes started. Waiting for cluster formation...");
@@ -164,23 +174,6 @@ public class AetherCluster implements AutoCloseable {
         System.out.println("[DEBUG] Test artifacts upload complete");
     }
 
-    private Option<String> getContainerIp(AetherNodeContainer node) {
-        try {
-            var networkSettings = node.getContainerInfo().getNetworkSettings();
-            var networks = networkSettings.getNetworks();
-            for (var networkEntry : networks.entrySet()) {
-                var ip = networkEntry.getValue().getIpAddress();
-                if (ip != null && !ip.isEmpty()) {
-                    return Option.some(ip);
-                }
-            }
-        } catch (Exception e) {
-            System.err.println("[DEBUG] Failed to get IP for " + node.nodeId() + ": " + e.getMessage());
-        }
-        return Option.none();
-    }
-
-
     /// Waits for the cluster to reach quorum.
     ///
     /// @throws org.awaitility.core.ConditionTimeoutException if quorum not reached
@@ -195,6 +188,48 @@ public class AetherCluster implements AutoCloseable {
         await().atMost(QUORUM_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
+    }
+
+    /// Waits for a slice to be fully undeployed (removed from cluster-wide status).
+    /// Handles UNLOADING stuck state by accepting it after a threshold and proceeding.
+    ///
+    /// @param artifact artifact to wait for removal
+    /// @param timeout  maximum time to wait
+    public void awaitSliceUndeployed(String artifact, Duration timeout) {
+        var unloadingStart = new long[]{0};
+        var stuckThreshold = STUCK_STATE_THRESHOLD;
+
+        try {
+            await().atMost(timeout)
+                   .pollInterval(POLL_INTERVAL)
+                   .ignoreExceptions()
+                   .until(() -> {
+                       var status = anyNode().getSlicesStatus();
+                       System.out.println("[DEBUG] Cleanup check, cluster slices status: " + status);
+                       if (!status.contains(artifact)) {
+                           return true;
+                       }
+                       if (status.contains("UNLOAD")) {
+                           if (unloadingStart[0] == 0) {
+                               unloadingStart[0] = System.currentTimeMillis();
+                           } else if (System.currentTimeMillis() - unloadingStart[0] > stuckThreshold.toMillis()) {
+                               System.out.println("[DEBUG] UNLOADING stuck > " + stuckThreshold.toSeconds() +
+                                                  "s, accepting and proceeding");
+                               return true; // Accept stuck state and proceed
+                           }
+                       } else {
+                           unloadingStart[0] = 0;
+                           // Try undeploy
+                           leader().onPresent(l -> {
+                               var result = l.undeploy(artifact);
+                               System.out.println("[DEBUG] Undeploy attempt: " + result);
+                           });
+                       }
+                       return false;
+                   });
+        } catch (Exception e) {
+            System.out.println("[DEBUG] Timed out waiting for slice removal: " + e.getMessage());
+        }
     }
 
     /// Waits for a slice to become ACTIVE, failing fast if it reaches FAILED state.
@@ -301,8 +336,10 @@ public class AetherCluster implements AutoCloseable {
     }
 
     private boolean isIntermediateState(String state) {
-        return "LOADING".equals(state) || "ACTIVATING".equals(state) ||
-               "DEACTIVATING".equals(state) || "UNLOADING".equals(state);
+        // Match both verb and gerund forms: LOAD/LOADING, UNLOAD/UNLOADING, etc.
+        return state != null && (
+            state.startsWith("LOADING") || state.startsWith("ACTIVAT") ||
+            state.startsWith("DEACTIVAT") || state.startsWith("UNLOAD"));
     }
 
     private boolean isStuckableState(String state) {
@@ -324,7 +361,7 @@ public class AetherCluster implements AutoCloseable {
                                       line.contains("Artifact") ||
                                       line.contains("ClassLoader") ||
                                       line.contains("Exception"))
-                       .collect(java.util.stream.Collectors.joining("\n"));
+                       .collect(Collectors.joining("\n"));
         } catch (Exception e) {
             return "Failed to get logs: " + e.getMessage();
         }
@@ -533,27 +570,34 @@ public class AetherCluster implements AutoCloseable {
 
     @Override
     public void close() {
-        // Stop all nodes first
         for (var node : nodes) {
             try {
                 node.stop();
             } catch (Exception e) {
-                LOG.warn("Failed to stop node {}: {}", node.nodeId(), e.getMessage());
+                log.warn("Failed to stop node {}: {}", node.nodeId(), e.getMessage());
             }
         }
-        // Defensive network cleanup - ensure network is removed even on errors
-        try {
-            network.close();
-        } catch (Exception e) {
-            LOG.warn("Failed to close network: {}", e.getMessage());
+        if (network != null) {
+            try {
+                network.close();
+            } catch (Exception e) {
+                log.warn("Failed to close network: {}", e.getMessage());
+            }
         }
     }
 
     // ===== Internal Methods =====
 
     private String buildPeerList(int size) {
+        // Linux (host networking): peers connect via localhost
+        // macOS (bridge networking): peers connect via Docker network aliases
+        var host = AetherNodeContainer.hostNetworkingSupported() ? "localhost" : null;
         return IntStream.rangeClosed(1, size)
-                        .mapToObj(i -> "node-" + i + ":node-" + i + ":8090")
+                        .mapToObj(i -> {
+                            var nodeId = "node-" + i;
+                            var peerHost = host != null ? host : nodeId;
+                            return nodeId + ":" + peerHost + ":" + (basePort + 100 + i);
+                        })
                         .collect(Collectors.joining(","));
     }
 

@@ -76,6 +76,10 @@ public final class MetricsRoutes implements RouteSource {
                               .toJson(this::buildStrategyResponse),
                          Route.<ErrorResponse> post("/api/invocation-metrics/strategy")
                               .to(_ -> MetricsError.StrategyChangeNotSupported.INSTANCE.<ErrorResponse>promise())
+                              .asJson(),
+                         Route.<Object> get("/api/metrics/history")
+                              .withQuery(aString("range"))
+                              .toValue(this::buildHistoryResponse)
                               .asJson());
     }
 
@@ -273,6 +277,41 @@ public final class MetricsRoutes implements RouteSource {
                                   slow.errorType());
     }
 
+    private Object buildHistoryResponse(Option<String> rangeOpt) {
+        var range = rangeOpt.or("1h");
+        var node = nodeSupplier.get();
+        var historicalData = node.metricsCollector()
+                                 .historicalMetrics();
+        var cutoff = System.currentTimeMillis() - parseTimeRange(range);
+        Map<String, List<Map<String, Object>>> nodes = new HashMap<>();
+        for (var nodeEntry : historicalData.entrySet()) {
+            var snapshots = new ArrayList<Map<String, Object>>();
+            for (var snapshot : nodeEntry.getValue()) {
+                if (snapshot.timestamp() < cutoff) continue;
+                var point = new HashMap<String, Object>();
+                point.put("timestamp", snapshot.timestamp());
+                point.put("metrics", snapshot.metrics());
+                snapshots.add(point);
+            }
+            if (!snapshots.isEmpty()) {
+                nodes.put(nodeEntry.getKey()
+                                   .id(),
+                          snapshots);
+            }
+        }
+        return Map.of("timeRange", range, "nodes", nodes);
+    }
+
+    private static long parseTimeRange(String range) {
+        return switch (range) {
+            case "5m" -> 5 * 60 * 1000L;
+            case "15m" -> 15 * 60 * 1000L;
+            case "1h" -> 60 * 60 * 1000L;
+            case "2h" -> 2 * 60 * 60 * 1000L;
+            default -> 60 * 60 * 1000L;
+        };
+    }
+
     private StrategyResponse buildStrategyResponse() {
         var node = nodeSupplier.get();
         var strategy = node.invocationMetrics()
@@ -289,6 +328,8 @@ public final class MetricsRoutes implements RouteSource {
             new StrategyResponse.PerMethod("perMethod", p.defaultThresholdNs() / 1_000_000);
             case ThresholdStrategy.Composite _ ->
             new StrategyResponse.Composite("composite");
+            case ThresholdStrategy.unused _ ->
+            new StrategyResponse.Fixed("none", 0);
         };
     }
 }

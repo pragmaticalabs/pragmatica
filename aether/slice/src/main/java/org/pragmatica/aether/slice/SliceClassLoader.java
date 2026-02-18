@@ -22,6 +22,7 @@ import java.net.URLClassLoader;
 ///
 ///
 /// @see SharedLibraryClassLoader
+@SuppressWarnings("JBCT-UTIL-02")
 public class SliceClassLoader extends URLClassLoader {
     private static final String JAVA_PREFIX = "java.";
     private static final String JAVAX_PREFIX = "javax.";
@@ -36,6 +37,8 @@ public class SliceClassLoader extends URLClassLoader {
         super(urls, parent);
     }
 
+    /// JDK override — kept as throws per ClassLoader contract.
+    @SuppressWarnings("JBCT-EX-01")
     @Override
     protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
         synchronized (getClassLoadingLock(name)) {
@@ -75,10 +78,13 @@ public class SliceClassLoader extends URLClassLoader {
     /// ensuring parameter types from dependency slices can be resolved.
     ///
     /// @param url URL to add (typically a dependency slice JAR)
+    @SuppressWarnings("JBCT-RET-01")
     public void addSliceDependencyUrl(URL url) {
         addURL(url);
     }
 
+    /// JDK override — kept as void/throws per URLClassLoader contract.
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
     @Override
     public void close() throws IOException {
         super.close();

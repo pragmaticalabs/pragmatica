@@ -54,6 +54,7 @@ public record RollingUpdate(String updateId,
     /// @param thresholds health thresholds
     /// @param cleanupPolicy cleanup policy
     /// @return new rolling update
+    @SuppressWarnings("JBCT-VO-02") // Factory method — validated construction
     public static RollingUpdate rollingUpdate(String updateId,
                                               ArtifactBase artifactBase,
                                               Version oldVersion,
@@ -79,6 +80,7 @@ public record RollingUpdate(String updateId,
     ///
     /// @param newState the new state
     /// @return updated rolling update, or failure if transition is invalid
+    @SuppressWarnings("JBCT-VO-02") // Record copy method with validated state transition
     public Result<RollingUpdate> transitionTo(RollingUpdateState newState) {
         if (!state.validTransitions()
                   .contains(newState)) {
@@ -102,6 +104,7 @@ public record RollingUpdate(String updateId,
     ///
     /// @param newRouting the new routing configuration
     /// @return updated rolling update
+    @SuppressWarnings("JBCT-VO-02") // Record copy method with known-valid fields
     public RollingUpdate withRouting(VersionRouting newRouting) {
         return new RollingUpdate(updateId,
                                  artifactBase,

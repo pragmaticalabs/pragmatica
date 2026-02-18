@@ -10,7 +10,7 @@ class MapConfigSourceTest {
 
     @Test
     void getString_returnsValue_whenKeyExists() {
-        var source = MapConfigSource.mapConfigSource("test", Map.of("key", "value"));
+        var source = MapConfigSource.mapConfigSource("test", Map.of("key", "value")).unwrap();
 
         var result = source.getString("key");
 
@@ -20,7 +20,7 @@ class MapConfigSourceTest {
 
     @Test
     void getString_returnsEmpty_whenKeyMissing() {
-        var source = MapConfigSource.mapConfigSource("test", Map.of("key", "value"));
+        var source = MapConfigSource.mapConfigSource("test", Map.of("key", "value")).unwrap();
 
         var result = source.getString("missing");
 
@@ -29,7 +29,7 @@ class MapConfigSourceTest {
 
     @Test
     void getInt_parsesInteger_whenValid() {
-        var source = MapConfigSource.mapConfigSource("test", Map.of("port", "8080"));
+        var source = MapConfigSource.mapConfigSource("test", Map.of("port", "8080")).unwrap();
 
         var result = source.getInt("port");
 
@@ -39,7 +39,7 @@ class MapConfigSourceTest {
 
     @Test
     void getInt_returnsEmpty_whenNotInteger() {
-        var source = MapConfigSource.mapConfigSource("test", Map.of("port", "not-a-number"));
+        var source = MapConfigSource.mapConfigSource("test", Map.of("port", "not-a-number")).unwrap();
 
         var result = source.getInt("port");
 
@@ -48,7 +48,7 @@ class MapConfigSourceTest {
 
     @Test
     void getBoolean_parsesTrue() {
-        var source = MapConfigSource.mapConfigSource("test", Map.of("enabled", "true"));
+        var source = MapConfigSource.mapConfigSource("test", Map.of("enabled", "true")).unwrap();
 
         var result = source.getBoolean("enabled");
 
@@ -58,7 +58,7 @@ class MapConfigSourceTest {
 
     @Test
     void getBoolean_parsesFalse() {
-        var source = MapConfigSource.mapConfigSource("test", Map.of("enabled", "false"));
+        var source = MapConfigSource.mapConfigSource("test", Map.of("enabled", "false")).unwrap();
 
         var result = source.getBoolean("enabled");
 
@@ -68,7 +68,7 @@ class MapConfigSourceTest {
 
     @Test
     void getBoolean_returnsEmpty_whenNotBoolean() {
-        var source = MapConfigSource.mapConfigSource("test", Map.of("enabled", "maybe"));
+        var source = MapConfigSource.mapConfigSource("test", Map.of("enabled", "maybe")).unwrap();
 
         var result = source.getBoolean("enabled");
 
@@ -77,7 +77,7 @@ class MapConfigSourceTest {
 
     @Test
     void keys_returnsAllKeys() {
-        var source = MapConfigSource.mapConfigSource("test", Map.of("a", "1", "b", "2"));
+        var source = MapConfigSource.mapConfigSource("test", Map.of("a", "1", "b", "2")).unwrap();
 
         var keys = source.keys();
 
@@ -87,7 +87,7 @@ class MapConfigSourceTest {
     @Test
     void asMap_returnsCopy() {
         var original = Map.of("key", "value");
-        var source = MapConfigSource.mapConfigSource("test", original);
+        var source = MapConfigSource.mapConfigSource("test", original).unwrap();
 
         var map = source.asMap();
 
@@ -97,28 +97,28 @@ class MapConfigSourceTest {
 
     @Test
     void priority_returnsCustomPriority() {
-        var source = MapConfigSource.mapConfigSource("test", Map.of(), 42);
+        var source = MapConfigSource.mapConfigSource("test", Map.of(), 42).unwrap();
 
         assertThat(source.priority()).isEqualTo(42);
     }
 
     @Test
     void priority_returnsDefaultZero() {
-        var source = MapConfigSource.mapConfigSource("test", Map.of());
+        var source = MapConfigSource.mapConfigSource("test", Map.of()).unwrap();
 
         assertThat(source.priority()).isEqualTo(0);
     }
 
     @Test
     void name_returnsProvidedName() {
-        var source = MapConfigSource.mapConfigSource("my-source", Map.of());
+        var source = MapConfigSource.mapConfigSource("my-source", Map.of()).unwrap();
 
         assertThat(source.name()).isEqualTo("my-source");
     }
 
     @Test
-    void emptyMapConfigSource_createsEmptySource() {
-        var source = MapConfigSource.emptyMapConfigSource("empty");
+    void mapConfigSource_createsEmptySource() {
+        var source = MapConfigSource.mapConfigSource("empty").unwrap();
 
         assertThat(source.keys()).isEmpty();
         assertThat(source.asMap()).isEmpty();

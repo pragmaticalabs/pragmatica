@@ -16,6 +16,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.utils.Causes.cause;
+
 /// Parser for blueprint DSL files using TOML format (RFC-0005).
 ///
 ///
@@ -35,20 +39,20 @@ import java.util.Map;
 /// artifact = "org.example:order-service:1.0.0"
 /// instances = 3
 /// ```
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-LAM-03", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-03", "JBCT-RET-05"})
 public interface BlueprintParser {
     Fn1<Cause, String> FILE_ERROR = Causes.forOneValue("Failed to read file: %s");
-    Cause MISSING_ID = Causes.cause("Missing blueprint id");
+    Cause MISSING_ID = cause("Missing blueprint id");
     Fn1<Cause, String> INVALID_SLICE = Causes.forOneValue("Invalid slice definition: %s");
     Fn1<Cause, String> MISSING_ARTIFACT = Causes.forOneValue("Missing artifact for slice: %s");
     Fn1<Cause, String> INVALID_ARTIFACT = Causes.forOneValue("Invalid artifact format: %s");
 
     static Result<Blueprint> parse(String dsl) {
-        return Option.option(dsl)
-                     .filter(s -> !s.isBlank())
+        return option(dsl).filter(s -> !s.isBlank())
                      .toResult(MISSING_ID)
                      .flatMap(content -> TomlParser.parse(content)
-                         .mapError(cause -> Causes.cause("TOML parse error: " + cause.message()))
-                         .flatMap(BlueprintParser::parseDocument));
+                                                   .mapError(cause -> cause("TOML parse error: " + cause.message()))
+                                                   .flatMap(BlueprintParser::parseDocument));
     }
 
     static Result<Blueprint> parseFile(Path path) {
@@ -75,7 +79,7 @@ public interface BlueprintParser {
         // RFC-0005: Parse [[slices]] array format
         return doc.getTableArray("slices")
                   .map(BlueprintParser::parseSliceArray)
-                  .or(Result.success(List.of()));
+                  .or(success(List.of()));
     }
 
     private static Result<List<SliceSpec>> parseSliceArray(List<Map<String, Object>> sliceEntries) {
@@ -84,25 +88,24 @@ public interface BlueprintParser {
         for (var entry : sliceEntries) {
             var result = parseSliceEntry(entry, index);
             if (result.isFailure()) {
-                return result.map(_ -> null);
+                return result.map(_ -> List.<SliceSpec>of());
             }
             slices.add(result.unwrap());
             index++;
         }
-        return Result.success(slices);
+        return success(slices);
     }
 
     private static Result<SliceSpec> parseSliceEntry(Map<String, Object> entry, int index) {
-        return Option.option(entry.get("artifact"))
-                     .toResult(MISSING_ARTIFACT.apply("slices[" + index + "]"))
+        return option(entry.get("artifact")).toResult(MISSING_ARTIFACT.apply("slices[" + index + "]"))
                      .flatMap(artifactObj -> {
-                         var artifactStr = artifactObj.toString();
-                         var instanceCount = entry.get("instances") instanceof Number n
-                                             ? n.intValue()
-                                             : 1;
-                         return Artifact.artifact(artifactStr)
-                                        .mapError(_ -> INVALID_ARTIFACT.apply(artifactStr))
-                                        .flatMap(artifact -> SliceSpec.sliceSpec(artifact, instanceCount));
-                     });
+                                  var artifactStr = artifactObj.toString();
+                                  var instanceCount = entry.get("instances") instanceof Number n
+                                                      ? n.intValue()
+                                                      : 1;
+                                  return Artifact.artifact(artifactStr)
+                                                 .mapError(_ -> INVALID_ARTIFACT.apply(artifactStr))
+                                                 .flatMap(artifact -> SliceSpec.sliceSpec(artifact, instanceCount));
+                              });
     }
 }

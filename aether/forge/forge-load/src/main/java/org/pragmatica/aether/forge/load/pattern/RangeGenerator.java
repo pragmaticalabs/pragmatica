@@ -1,13 +1,16 @@
 package org.pragmatica.aether.forge.load.pattern;
 
-import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Number;
+import org.pragmatica.lang.utils.Causes;
 
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Pattern;
+
+import static org.pragmatica.lang.Result.all;
+import static org.pragmatica.lang.Result.success;
 
 /// Generates random integers within a specified range.
 ///
@@ -17,8 +20,8 @@ import java.util.regex.Pattern;
 public record RangeGenerator(int min, int max) implements PatternGenerator {
     public static final String TYPE = "range";
 
-    public static RangeGenerator rangeGenerator(int min, int max) {
-        return new RangeGenerator(min, max);
+    public static Result<RangeGenerator> rangeGenerator(int min, int max) {
+        return success(new RangeGenerator(min, max));
     }
 
     private static final Pattern RANGE_PATTERN = Pattern.compile("^(-?\\d+)-(-?\\d+)$");
@@ -34,15 +37,16 @@ public record RangeGenerator(int min, int max) implements PatternGenerator {
             return INVALID_RANGE.apply(rangeSpec)
                                 .result();
         }
-        return Result.all(Number.parseInt(matcher.group(1)),
-                          Number.parseInt(matcher.group(2)))
-                     .flatMap(RangeGenerator::validateAndCreate);
+        var parsedValues = all(Number.parseInt(matcher.group(1)),
+                               Number.parseInt(matcher.group(2)));
+        return parsedValues.flatMap(RangeGenerator::ensureMinNotGreaterThanMax);
     }
 
-    private static Result<PatternGenerator> validateAndCreate(int min, int max) {
-        return min > max
-               ? MIN_GREATER_THAN_MAX.result()
-               : Result.success(rangeGenerator(min, max));
+    private static Result<PatternGenerator> ensureMinNotGreaterThanMax(int min, int max) {
+        if (min > max) {
+            return MIN_GREATER_THAN_MAX.result();
+        }
+        return rangeGenerator(min, max).map(gen -> gen);
     }
 
     @Override

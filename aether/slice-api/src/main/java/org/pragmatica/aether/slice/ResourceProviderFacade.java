@@ -13,7 +13,6 @@ import org.pragmatica.lang.Promise;
 /// ctx.resources().provide(DatabaseConnector.class, "database.primary")
 /// }```
 public interface ResourceProviderFacade {
-
     /// Provide a resource instance for the given type and configuration section.
     ///
     /// @param resourceType  The resource interface class
@@ -21,4 +20,16 @@ public interface ResourceProviderFacade {
     /// @param <T>           Resource type
     /// @return Promise containing the resource instance or error
     <T> Promise<T> provide(Class<T> resourceType, String configSection);
+
+    /// Provide a resource instance with additional provisioning context.
+    ///
+    /// The context carries type tokens and key extractors that resource factories
+    /// may use for generic type handling or sharded resource creation.
+    ///
+    /// @param resourceType  The resource interface class
+    /// @param configSection Dot-separated config section path
+    /// @param context       Provisioning context with type tokens and key extractor
+    /// @param <T>           Resource type
+    /// @return Promise containing the resource instance or error
+    <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context);
 }

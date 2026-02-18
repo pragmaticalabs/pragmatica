@@ -3,6 +3,8 @@ package org.pragmatica.jbct.slice.generator;
 import org.pragmatica.jbct.slice.model.DependencyModel;
 import org.pragmatica.jbct.slice.model.KeyExtractorInfo;
 import org.pragmatica.jbct.slice.model.MethodModel;
+import org.pragmatica.jbct.slice.model.MethodModel.MethodParameterInfo;
+import org.pragmatica.jbct.slice.model.ResourceQualifierModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -10,6 +12,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import javax.annotation.processing.Filer;
+import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
@@ -19,10 +22,14 @@ import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 import javax.tools.JavaFileObject;
 import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /// Generates factory class for slice instantiation.
 ///
@@ -34,28 +41,21 @@ import java.util.Map;
 ///
 /// Slice dependencies get local proxy records that delegate to ctx.invoker().
 /// Resource dependencies (annotated with @ResourceQualifier) use ctx.resources().provide().
-///
-/// When methods have @Aspect annotations, generates wrapper record with
-/// aspect-wrapped method implementations.
-///
-/// Currently supported aspects:
-///
-///   - `CACHE` - Fully implemented with key extraction
-///   - `LOG` - Planned, not yet implemented
-///   - `METRICS` - Planned, not yet implemented
-///   - `RETRY` - Planned, not yet implemented
-///   - `TIMEOUT` - Planned, not yet implemented
-///
+/// Method interceptors (annotations with @ResourceQualifier on methods) use ctx.resources().provide()
+/// and compose via interceptor.intercept(impl::method).
 public class FactoryClassGenerator {
+    private final ProcessingEnvironment processingEnv;
     private final Filer filer;
     private final Elements elements;
     private final Types types;
     private final DependencyVersionResolver versionResolver;
 
-    public FactoryClassGenerator(Filer filer,
+    public FactoryClassGenerator(ProcessingEnvironment processingEnv,
+                                 Filer filer,
                                  Elements elements,
                                  Types types,
                                  DependencyVersionResolver versionResolver) {
+        this.processingEnv = processingEnv;
         this.filer = filer;
         this.elements = elements;
         this.types = types;
@@ -63,7 +63,7 @@ public class FactoryClassGenerator {
     }
 
     public Result<Unit> generate(SliceModel model) {
-        try{
+        try {
             var factoryName = model.simpleName() + "Factory";
             var qualifiedName = model.packageName() + "." + factoryName;
             JavaFileObject file = filer.createSourceFile(qualifiedName);
@@ -81,145 +81,169 @@ public class FactoryClassGenerator {
     private void generateFactoryClass(PrintWriter out, SliceModel model, String factoryName) {
         var sliceName = model.simpleName();
         var basePackage = model.packageName();
-        // Resolve all dependencies - all go through invoker
+        var importTracker = new ImportTracker(basePackage);
+        // Resolve all dependencies
         var allDeps = model.dependencies()
                            .stream()
                            .map(versionResolver::resolve)
                            .toList();
         // Cache proxy methods per dependency to avoid repeated lookups
-        var proxyMethodsCache = new HashMap<String, List<ProxyMethodInfo>>();
+        var proxyMethodsCache = new LinkedHashMap<String, List<ProxyMethodInfo>>();
         for (var dep : allDeps) {
-            proxyMethodsCache.put(dep.interfaceQualifiedName(), collectProxyMethods(dep));
+            if (!dep.isResource() && !dep.isPlainInterface()) {
+                proxyMethodsCache.put(dep.interfaceQualifiedName(), collectProxyMethods(dep));
+            }
         }
-        // Package
+        // Phase 1: Generate body into buffer, collecting imports
+        var bodyBuffer = new StringWriter();
+        var bodyOut = new PrintWriter(bodyBuffer);
+        // Register standard imports
+        importTracker.use("org.pragmatica.aether.slice.Aspect");
+        importTracker.use("org.pragmatica.aether.slice.MethodHandle");
+        importTracker.use("org.pragmatica.aether.slice.MethodName");
+        importTracker.use("org.pragmatica.aether.slice.Slice");
+        importTracker.use("org.pragmatica.aether.slice.SliceCreationContext");
+        importTracker.use("org.pragmatica.aether.slice.SliceMethod");
+        importTracker.use("org.pragmatica.lang.Promise");
+        importTracker.use("org.pragmatica.lang.Unit");
+        importTracker.use("org.pragmatica.lang.type.TypeToken");
+        if (model.hasMethodInterceptors()) {
+            importTracker.use("org.pragmatica.aether.slice.MethodInterceptor");
+            importTracker.use("org.pragmatica.aether.slice.ProvisioningContext");
+            importTracker.use("org.pragmatica.lang.Functions.Fn1");
+        }
+        if (hasMultiParamMethods(model)) {
+            importTracker.use("org.pragmatica.lang.Functions.Fn1");
+        }
+        importTracker.use("java.util.List");
+        // Register dependency imports
+        for (var dep : allDeps) {
+            if (!dep.interfacePackage().equals(basePackage)) {
+                importTracker.use(dep.importName());
+            }
+        }
+        // Class declaration
+        bodyOut.println("/**");
+        bodyOut.println(" * Factory for " + sliceName + " slice.");
+        bodyOut.println(" * Generated by slice-processor - do not edit manually.");
+        bodyOut.println(" */");
+        bodyOut.println("public final class " + factoryName + " {");
+        bodyOut.println("    private " + factoryName + "() {}");
+        bodyOut.println();
+        // Request records for multi-param methods (public inner records of factory class)
+        generateRequestRecords(bodyOut, model, importTracker);
+        // create() method
+        generateCreateMethod(bodyOut, model, allDeps, proxyMethodsCache, importTracker);
+        bodyOut.println();
+        // createSlice() method
+        generateCreateSliceMethod(bodyOut, model, importTracker);
+        bodyOut.println("}");
+        bodyOut.flush();
+        // Phase 2: Assemble output — package, imports, body
         out.println("package " + basePackage + ";");
         out.println();
-        // Imports
-        generateImports(out, model, allDeps);
+        for (var importLine : importTracker.imports()) {
+            out.println("import " + importLine + ";");
+        }
         out.println();
-        // Class
-        out.println("/**");
-        out.println(" * Factory for " + sliceName + " slice.");
-        out.println(" * Generated by slice-processor - do not edit manually.");
-        out.println(" */");
-        out.println("public final class " + factoryName + " {");
-        out.println("    private " + factoryName + "() {}");
-        out.println();
-        // create() method
-        generateCreateMethod(out, model, allDeps, proxyMethodsCache);
-        out.println();
-        // createSlice() method
-        generateCreateSliceMethod(out, model);
-        out.println("}");
+        out.print(bodyBuffer);
     }
 
-    private void generateImports(PrintWriter out,
-                                 SliceModel model,
-                                 List<DependencyModel> allDeps) {
-        out.println("import org.pragmatica.aether.slice.Aspect;");
-        out.println("import org.pragmatica.aether.slice.MethodHandle;");
-        out.println("import org.pragmatica.aether.slice.MethodName;");
-        out.println("import org.pragmatica.aether.slice.Slice;");
-        out.println("import org.pragmatica.aether.slice.SliceCreationContext;");
-        out.println("import org.pragmatica.aether.slice.SliceMethod;");
-        out.println("import org.pragmatica.lang.Promise;");
-        out.println("import org.pragmatica.lang.Unit;");
-        out.println("import org.pragmatica.lang.type.TypeToken;");
-        // Aspect-related imports
-        if (model.hasAspects()) {
-            out.println("import org.pragmatica.aether.slice.SliceRuntime;");
-            out.println("import org.pragmatica.aether.infra.aspect.Aspects;");
-            out.println("import org.pragmatica.lang.Functions.Fn1;");
-        }
-        if (model.hasCache()) {
-            out.println("import org.pragmatica.aether.infra.aspect.Cache;");
-            out.println("import org.pragmatica.aether.infra.aspect.CacheConfig;");
-        }
-        out.println();
-        out.println("import java.util.List;");
-        // Import all dependency interfaces
-        var basePackage = model.packageName();
-        for (var dep : allDeps) {
-            if (!dep.interfacePackage()
-                    .equals(basePackage)) {
-                out.println("import " + dep.interfaceQualifiedName() + ";");
+    private boolean hasMultiParamMethods(SliceModel model) {
+        return model.methods().stream().anyMatch(MethodModel::hasMultipleParams);
+    }
+
+    private void generateRequestRecords(PrintWriter out, SliceModel model, ImportTracker importTracker) {
+        for (var method : model.methods()) {
+            if (method.hasMultipleParams()) {
+                generateRequestRecord(out, method, importTracker);
+                out.println();
             }
         }
     }
 
+    private void generateRequestRecord(PrintWriter out, MethodModel method, ImportTracker importTracker) {
+        var recordName = capitalize(method.name()) + "Request";
+        var components = method.parameters()
+                               .stream()
+                               .map(p -> importTracker.use(p.type().toString()) + " " + p.name())
+                               .collect(Collectors.joining(", "));
+        out.println("    public record " + recordName + "(" + components + ") {}");
+    }
+
     private void generateCreateMethod(PrintWriter out,
-                                      SliceModel model,
-                                      List<DependencyModel> allDeps,
-                                      Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
+                                       SliceModel model,
+                                       List<DependencyModel> allDeps,
+                                       Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
+                                       ImportTracker importTracker) {
         var sliceName = model.simpleName();
         var methodName = lowercaseFirst(sliceName);
-        // Split dependencies: resource deps (with @ResourceQualifier), infra deps, and slice deps
+        // Split dependencies: resource deps, slice deps (get proxy records), plain interface deps
         var resourceDeps = allDeps.stream()
                                   .filter(DependencyModel::isResource)
                                   .toList();
-        var infraDeps = allDeps.stream()
-                               .filter(d -> !d.isResource() && d.isInfrastructure())
-                               .toList();
         var sliceDeps = allDeps.stream()
-                               .filter(d -> !d.isResource() && !d.isInfrastructure())
+                               .filter(d -> !d.isResource() && !d.isPlainInterface())
+                               .toList();
+        var plainDeps = allDeps.stream()
+                               .filter(DependencyModel::isPlainInterface)
                                .toList();
         out.println("    public static Promise<" + sliceName + "> " + methodName + "(Aspect<" + sliceName + "> aspect,");
         out.println("                                              SliceCreationContext ctx) {");
         // Generate local proxy records ONLY for slice dependencies
         for (var dep : sliceDeps) {
-            generateLocalProxyRecord(out, dep, proxyMethodsCache);
+            generateLocalProxyRecord(out, dep, proxyMethodsCache, importTracker);
             out.println();
         }
-        // Generate wrapper record if aspects are present
-        if (model.hasAspects()) {
-            generateWrapperRecord(out, model);
+        // Generate wrapper record if method interceptors are present
+        if (model.hasMethodInterceptors()) {
+            generateWrapperRecord(out, model, importTracker);
             out.println();
         }
         // Build the creation chain
-        if (model.hasAspects()) {
-            generateAspectAllChain(out, model, resourceDeps, infraDeps, sliceDeps, proxyMethodsCache);
-        } else if (resourceDeps.isEmpty() && infraDeps.isEmpty() && sliceDeps.isEmpty()) {
-            // No dependencies at all
-            var factoryArgs = model.dependencies()
-                                   .stream()
-                                   .map(DependencyModel::parameterName)
-                                   .toList();
-            out.println("        var instance = " + sliceName + "." + model.factoryMethodName() + "(" + String.join(", ",
-                                                                                                                    factoryArgs)
-                        + ");");
-            out.println("        return Promise.success(aspect.apply(instance));");
-        } else {
-            generateAllChain(out, model, resourceDeps, infraDeps, sliceDeps, proxyMethodsCache);
-        }
+        generateCreationChain(out, model, resourceDeps, sliceDeps, plainDeps, proxyMethodsCache, importTracker);
         out.println("    }");
     }
 
-    private void generateWrapperRecord(PrintWriter out, SliceModel model) {
+    private void generateWrapperRecord(PrintWriter out, SliceModel model, ImportTracker importTracker) {
         var sliceName = model.simpleName();
         var wrapperName = sliceName + "Wrapper";
         // Generate record components - one Fn1 per method
         var components = new ArrayList<String>();
         for (var method : model.methods()) {
-            var responseType = method.responseType()
-                                     .toString();
-            var paramType = method.parameterType()
-                                  .toString();
-            components.add("Fn1<Promise<" + responseType + ">, " + paramType + "> " + method.name() + "Fn");
+            var responseType = importTracker.use(method.responseType().toString());
+            var effectiveParamType = effectiveParamTypeString(method, model, importTracker);
+            components.add("Fn1<Promise<" + responseType + ">, " + effectiveParamType + "> " + method.name() + "Fn");
         }
         out.println("        record " + wrapperName + "(" + String.join(",\n                                  ",
                                                                         components) + ")");
         out.println("               implements " + sliceName + " {");
         // Generate method implementations
         for (var method : model.methods()) {
-            var responseType = method.responseType()
-                                     .toString();
-            var paramType = method.parameterType()
-                                  .toString();
+            var responseType = importTracker.use(method.responseType().toString());
             out.println();
             out.println("            @Override");
-            out.println("            public Promise<" + responseType + "> " + method.name() + "(" + paramType
-                        + " request) {");
-            out.println("                return " + method.name() + "Fn.apply(request);");
+            if (method.hasNoParams()) {
+                out.println("            public Promise<" + responseType + "> " + method.name() + "() {");
+                out.println("                return " + method.name() + "Fn.apply(Unit.unit());");
+            } else if (method.hasSingleParam()) {
+                var paramType = importTracker.use(method.parameters().getFirst().type().toString());
+                out.println("            public Promise<" + responseType + "> " + method.name() + "(" + paramType
+                            + " " + method.parameters().getFirst().name() + ") {");
+                out.println("                return " + method.name() + "Fn.apply(" + method.parameters().getFirst().name() + ");");
+            } else {
+                var paramList = method.parameters()
+                                      .stream()
+                                      .map(p -> importTracker.use(p.type().toString()) + " " + p.name())
+                                      .collect(Collectors.joining(", "));
+                var requestRecordName = capitalize(method.name()) + "Request";
+                var argList = method.parameters()
+                                    .stream()
+                                    .map(MethodParameterInfo::name)
+                                    .collect(Collectors.joining(", "));
+                out.println("            public Promise<" + responseType + "> " + method.name() + "(" + paramList + ") {");
+                out.println("                return " + method.name() + "Fn.apply(new " + requestRecordName + "(" + argList + "));");
+            }
             out.println("            }");
         }
         out.println("        }");
@@ -227,46 +251,117 @@ public class FactoryClassGenerator {
 
     private record AllEntry(String varName, String promiseExpression) {}
 
-    private List<AllEntry> collectAllEntries(List<DependencyModel> resourceDeps,
-                                             List<DependencyModel> infraDeps,
-                                             List<DependencyModel> sliceDeps,
-                                             Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
+    private record PlainInterfaceFactoryParam(String varName, ResourceQualifierModel qualifier) {
+        /// Returns the fully qualified resource type name for use in generated source code.
+        String qualifiedResourceTypeName() {
+            return qualifier.resourceType().toString();
+        }
+    }
+
+    /// Analyze a plain interface's factory method for @ResourceQualifier-annotated parameters.
+    private List<PlainInterfaceFactoryParam> analyzePlainInterfaceResourceParams(DependencyModel dep) {
+        var typeElement = elements.getTypeElement(dep.interfaceQualifiedName());
+        if (typeElement == null) {
+            return List.of();
+        }
+        var factoryMethodName = lowercaseFirst(dep.interfaceSimpleName());
+        for (var enclosed : typeElement.getEnclosedElements()) {
+            if (enclosed.getKind() != ElementKind.METHOD) {
+                continue;
+            }
+            var method = (ExecutableElement) enclosed;
+            if (!method.getModifiers().contains(Modifier.STATIC)
+                || !method.getSimpleName().toString().equals(factoryMethodName)) {
+                continue;
+            }
+            var result = new ArrayList<PlainInterfaceFactoryParam>();
+            for (var param : method.getParameters()) {
+                ResourceQualifierModel.fromParameter(param, processingEnv)
+                                      .onPresent(qualifier -> result.add(
+                                          new PlainInterfaceFactoryParam(
+                                              dep.parameterName() + "_" + param.getSimpleName(),
+                                              qualifier)));
+            }
+            return result;
+        }
+        return List.of();
+    }
+
+    /// Collect unique interceptor provisions across all methods, deduplicating by (type, config).
+    private List<InterceptorEntry> collectUniqueInterceptors(SliceModel model) {
+        var seen = new LinkedHashMap<String, InterceptorEntry>();
+        for (var method : model.methods()) {
+            for (var interceptor : method.interceptors()) {
+                var key = interceptor.deduplicationKey();
+                if (!seen.containsKey(key)) {
+                    var varName = lowercaseFirst(interceptor.variableSafeName())
+                                  + "_" + interceptor.configSection()
+                                                     .replace('.', '_');
+                    seen.put(key, new InterceptorEntry(varName, interceptor, method));
+                }
+            }
+        }
+        return new ArrayList<>(seen.values());
+    }
+
+    private record InterceptorEntry(String varName, ResourceQualifierModel qualifier, MethodModel firstMethod) {}
+
+    private void generateCreationChain(PrintWriter out,
+                                        SliceModel model,
+                                        List<DependencyModel> resourceDeps,
+                                        List<DependencyModel> sliceDeps,
+                                        List<DependencyModel> plainDeps,
+                                        Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
+                                        ImportTracker importTracker) {
+        var sliceName = model.simpleName();
         var entries = new ArrayList<AllEntry>();
         // Resource deps
         for (var resource : resourceDeps) {
             entries.add(new AllEntry(resource.parameterName(), generateResourceProvideCall(resource)));
         }
-        // Infra deps
-        for (var infra : infraDeps) {
-            entries.add(new AllEntry(infra.parameterName(), generateInfraCall(infra)));
+        // Interceptor deps (deduplicated)
+        var interceptorEntries = collectUniqueInterceptors(model);
+        for (var ie : interceptorEntries) {
+            entries.add(new AllEntry(ie.varName(), generateInterceptorProvideCall(ie, model, importTracker)));
         }
         // Slice method handles
         for (var dep : sliceDeps) {
             var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
             for (var method : methods) {
                 var handle = new HandleInfo(dep, method);
-                entries.add(new AllEntry(handle.varName(), generateMethodHandleCall(handle)));
+                entries.add(new AllEntry(handle.varName(), generateMethodHandleCall(handle, importTracker)));
             }
         }
-        return entries;
-    }
+        // Analyze plain interface factory params and add resource provisions
+        var plainInterfaceParams = new LinkedHashMap<String, List<PlainInterfaceFactoryParam>>();
+        for (var dep : plainDeps) {
+            var params = analyzePlainInterfaceResourceParams(dep);
+            if (!params.isEmpty()) {
+                plainInterfaceParams.put(dep.parameterName(), params);
+                for (var param : params) {
+                    entries.add(new AllEntry(param.varName(),
+                        "ctx.resources().provide(" + param.qualifiedResourceTypeName() + ".class, \""
+                        + escapeJavaString(param.qualifier().configSection()) + "\")"));
+                }
+            }
+        }
 
-    private void generateAllChain(PrintWriter out,
-                                   SliceModel model,
-                                   List<DependencyModel> resourceDeps,
-                                   List<DependencyModel> infraDeps,
-                                   List<DependencyModel> sliceDeps,
-                                   Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
-        var sliceName = model.simpleName();
-        var entries = collectAllEntries(resourceDeps, infraDeps, sliceDeps, proxyMethodsCache);
+        if (entries.isEmpty()) {
+            // No async deps — plain deps are constructed synchronously
+            generateSyncOnlyBody(out, model, sliceName, plainDeps, plainInterfaceParams, importTracker);
+            return;
+        }
         if (entries.size() > 15) {
-            throw new IllegalStateException("Too many dependencies (" + entries.size() + ") for Promise.all() - maximum is 15");
+            throw new IllegalStateException("Too many dependencies (" + entries.size()
+                                            + ") for Promise.all() - maximum is 15");
         }
         // Generate Promise.all(...)
         out.println("        return Promise.all(");
         for (int i = 0; i < entries.size(); i++) {
             var entry = entries.get(i);
-            var comma = (i < entries.size() - 1) ? "," : "";
+            var comma = (i < entries.size() - 1)
+                        ? ","
+                        : "";
             out.println("            " + entry.promiseExpression() + comma);
         }
         out.println("        )");
@@ -281,205 +376,223 @@ public class FactoryClassGenerator {
             var handleArgs = methods.stream()
                                     .map(m -> dep.parameterName() + "_" + m.name)
                                     .toList();
-            out.println("            var " + dep.parameterName() + " = new " + dep.localRecordName()
-                        + "(" + String.join(", ", handleArgs) + ");");
+            out.println("            var " + dep.parameterName() + " = new " + dep.localRecordName() + "(" + String.join(", ",
+                                                                                                                         handleArgs)
+                        + ");");
         }
-        // Call factory
+        // Construct plain interface deps
+        for (var dep : plainDeps) {
+            var factoryMethodName = lowercaseFirst(dep.interfaceSimpleName());
+            var params = plainInterfaceParams.getOrDefault(dep.parameterName(), List.of());
+            var argList = params.stream()
+                                .map(PlainInterfaceFactoryParam::varName)
+                                .collect(Collectors.joining(", "));
+            out.println("            var " + dep.parameterName() + " = " + dep.sourceUsableName() + "."
+                        + factoryMethodName + "(" + argList + ");");
+        }
+        // Call factory and wrap
         var factoryArgs = model.dependencies()
                                .stream()
                                .map(DependencyModel::parameterName)
                                .toList();
-        out.println("            return aspect.apply(" + sliceName + "." + model.factoryMethodName() + "(" + String.join(", ",
-                                                                                                                          factoryArgs)
-                    + "));");
+        if (model.hasMethodInterceptors()) {
+            out.println("            var impl = " + sliceName + "." + model.factoryMethodName() + "(" + String.join(", ",
+                                                                                                                    factoryArgs)
+                        + ");");
+            out.println();
+            generateInterceptorWrapping(out, model, interceptorEntries, "            ", importTracker);
+        } else {
+            out.println("            return aspect.apply(" + sliceName + "." + model.factoryMethodName() + "(" + String.join(", ",
+                                                                                                                             factoryArgs)
+                        + "));");
+        }
         out.println("        });");
     }
 
-    private void generateAspectAllChain(PrintWriter out,
-                                         SliceModel model,
-                                         List<DependencyModel> resourceDeps,
-                                         List<DependencyModel> infraDeps,
-                                         List<DependencyModel> sliceDeps,
-                                         Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
-        var sliceName = model.simpleName();
+    private void generateNoDepInterceptorBody(PrintWriter out, SliceModel model, String sliceName, ImportTracker importTracker) {
         var wrapperName = sliceName + "Wrapper";
-        // Collect cache methods
-        var cacheMethods = model.methods()
-                                .stream()
-                                .filter(m -> m.aspects()
-                                              .hasCache())
-                                .toList();
-        if (cacheMethods.isEmpty()) {
-            // No caches - same as non-aspect all() but with wrapper body
-            var entries = collectAllEntries(resourceDeps, infraDeps, sliceDeps, proxyMethodsCache);
-            if (entries.isEmpty()) {
-                // No deps at all, just wrap - return Promise.success directly
-                var factoryArgs = model.dependencies()
-                                       .stream()
-                                       .map(DependencyModel::parameterName)
-                                       .toList();
-                out.println("        var impl = " + sliceName + "." + model.factoryMethodName() + "(" + String.join(", ",
-                                                                                                                     factoryArgs)
-                            + ");");
-                out.println();
-                // Generate wrapped functions
-                for (var method : model.methods()) {
-                    var wrappedVar = method.name() + "Wrapped";
-                    out.println("        Fn1<Promise<" + method.responseType() + ">, " + method.parameterType()
-                                + "> " + wrappedVar + " = impl::" + method.name() + ";");
-                }
-                out.println();
-                var wrappedArgs = model.methods()
-                                       .stream()
-                                       .map(m -> m.name() + "Wrapped")
-                                       .toList();
-                out.println("        return Promise.success(aspect.apply(new " + wrapperName + "(" + String.join(", ",
-                                                                                                                  wrappedArgs)
-                            + ")));");
-                return;
-            }
-            if (entries.size() > 15) {
-                throw new IllegalStateException("Too many dependencies (" + entries.size() + ") for Promise.all() - maximum is 15");
-            }
-            out.println("        return Promise.all(");
-            for (int i = 0; i < entries.size(); i++) {
-                var entry = entries.get(i);
-                var comma = (i < entries.size() - 1) ? "," : "";
-                out.println("            " + entry.promiseExpression() + comma);
-            }
-            out.println("        )");
-            var varNames = entries.stream()
-                                  .map(AllEntry::varName)
-                                  .toList();
-            out.println("        .map((" + String.join(", ", varNames) + ") -> {");
-            // Instantiate proxy records
-            for (var dep : sliceDeps) {
-                var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
-                var handleArgs = methods.stream()
-                                        .map(m -> dep.parameterName() + "_" + m.name)
-                                        .toList();
-                out.println("            var " + dep.parameterName() + " = new " + dep.localRecordName()
-                            + "(" + String.join(", ", handleArgs) + ");");
-            }
-            // Create impl and wrap
-            var factoryArgs = model.dependencies()
-                                   .stream()
-                                   .map(DependencyModel::parameterName)
-                                   .toList();
-            out.println("            var impl = " + sliceName + "." + model.factoryMethodName() + "(" + String.join(", ",
-                                                                                                                     factoryArgs)
-                        + ");");
-            out.println();
-            generateAspectWrapperBody(out, model, sliceName, wrapperName, "            ", List.of());
-            out.println("        });");
-            return;
-        }
-        // Has caches - need factory from SliceRuntime
-        var cacheVarNames = new ArrayList<String>();
-        // Build cache entries (need factory variable)
-        var cacheEntries = new ArrayList<AllEntry>();
-        for (var method : cacheMethods) {
-            var cacheVarName = method.name() + "Cache";
-            cacheVarNames.add(cacheVarName);
-            var keyExtractor = getKeyExtractorOrThrow(method);
-            var keyType = keyExtractor.keyType();
-            var responseType = method.responseType()
-                                     .toString();
-            var cacheName = escapeJavaString(lowercaseFirst(sliceName) + "." + method.name());
-            var cacheExpr = "CacheConfig.cacheConfig(\"" + cacheName + "\",\n"
-                            + "                                                     new TypeToken<" + keyType + ">() {},\n"
-                            + "                                                     new TypeToken<" + responseType + ">() {})\n"
-                            + "                                        .async()\n"
-                            + "                                        .flatMap(cfg -> factory.create(Cache.class, cfg).async())";
-            cacheEntries.add(new AllEntry(cacheVarName, cacheExpr));
-        }
-        // Build non-cache entries (resources, infras, slice handles)
-        var nonCacheEntries = collectAllEntries(resourceDeps, infraDeps, sliceDeps, proxyMethodsCache);
-        // Combine all entries for Promise.all()
-        var allEntries = new ArrayList<AllEntry>();
-        allEntries.addAll(cacheEntries);
-        allEntries.addAll(nonCacheEntries);
-        if (allEntries.size() > 15) {
-            throw new IllegalStateException("Too many dependencies (" + allEntries.size() + ") for Promise.all() - maximum is 15");
-        }
-        // Generate: SliceRuntime.getAspectFactory().async().flatMap(factory -> Promise.all(...).map(...))
-        out.println("        return SliceRuntime.getAspectFactory()");
-        out.println("                           .async()");
-        out.println("                           .flatMap(factory -> Promise.all(");
-        for (int i = 0; i < allEntries.size(); i++) {
-            var entry = allEntries.get(i);
-            var comma = (i < allEntries.size() - 1) ? "," : "";
-            out.println("                               " + entry.promiseExpression() + comma);
-        }
-        out.println("                           )");
-        var varNames = allEntries.stream()
-                                 .map(AllEntry::varName)
-                                 .toList();
-        out.println("                           .map((" + String.join(", ", varNames) + ") -> {");
-        // Instantiate proxy records
-        for (var dep : sliceDeps) {
-            var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
-            var handleArgs = methods.stream()
-                                    .map(m -> dep.parameterName() + "_" + m.name)
-                                    .toList();
-            out.println("                               var " + dep.parameterName() + " = new " + dep.localRecordName()
-                        + "(" + String.join(", ", handleArgs) + ");");
-        }
-        // Create impl
         var factoryArgs = model.dependencies()
                                .stream()
                                .map(DependencyModel::parameterName)
                                .toList();
-        out.println("                               var impl = " + sliceName + "." + model.factoryMethodName() + "(" + String.join(", ",
-                                                                                                                                   factoryArgs)
+        out.println("        var impl = " + sliceName + "." + model.factoryMethodName() + "(" + String.join(", ",
+                                                                                                            factoryArgs)
                     + ");");
         out.println();
-        generateAspectWrapperBody(out, model, sliceName, wrapperName, "                               ", cacheVarNames);
-        out.println("                           }));");
-    }
-
-    private void generateAspectWrapperBody(PrintWriter out,
-                                            SliceModel model,
-                                            String sliceName,
-                                            String wrapperName,
-                                            String indent,
-                                            List<String> cacheVarNames) {
-        // Create wrapped functions for each method
-        int cacheIdx = 0;
+        // Generate wrapped functions
         for (var method : model.methods()) {
             var wrappedVar = method.name() + "Wrapped";
-            if (method.aspects()
-                      .hasCache()) {
-                var keyExtractor = getKeyExtractorOrThrow(method);
-                var cacheVar = cacheVarNames.get(cacheIdx++);
-                out.println(indent + "var " + wrappedVar + " = Aspects.withCaching(impl::" + method.name()
-                            + ", " + keyExtractor.extractorExpression() + ", " + cacheVar + ");");
+            var responseType = importTracker.use(method.responseType().toString());
+            var effectiveType = effectiveParamTypeString(method, model, importTracker);
+            if (method.hasNoParams()) {
+                out.println("        Fn1<Promise<" + responseType + ">, Unit> " + wrappedVar
+                            + " = _unit -> impl." + method.name() + "();");
+            } else if (method.hasSingleParam()) {
+                out.println("        Fn1<Promise<" + responseType + ">, " + effectiveType + "> " + wrappedVar
+                            + " = impl::" + method.name() + ";");
             } else {
-                out.println(indent + "Fn1<Promise<" + method.responseType() + ">, " + method.parameterType()
-                            + "> " + wrappedVar + " = impl::" + method.name() + ";");
+                var requestRecordName = capitalize(method.name()) + "Request";
+                var argList = method.parameters()
+                                    .stream()
+                                    .map(p -> "req." + p.name() + "()")
+                                    .collect(Collectors.joining(", "));
+                out.println("        Fn1<Promise<" + responseType + ">, " + requestRecordName + "> " + wrappedVar
+                            + " = req -> impl." + method.name() + "(" + argList + ");");
             }
         }
         out.println();
-        // Return wrapped instance
         var wrappedArgs = model.methods()
                                .stream()
                                .map(m -> m.name() + "Wrapped")
                                .toList();
-        out.println(indent + "return aspect.apply(new " + wrapperName + "(" + String.join(", ",
-                                                                                           wrappedArgs)
-                    + "));");
+        out.println("        return Promise.success(aspect.apply(new " + wrapperName + "(" + String.join(", ",
+                                                                                                         wrappedArgs)
+                    + ")));");
     }
 
-    /// Gets the key extractor from method aspects, throwing if missing.
-    /// This should never happen if MethodModel.extractAspects() works correctly.
-    private KeyExtractorInfo getKeyExtractorOrThrow(MethodModel method) {
-        return method.aspects()
-                     .keyExtractor()
-                     .or(() -> {
-                             // This is a logic error - CACHE aspect should always have key extractor
-        throw new IllegalStateException("CACHE aspect on method '" + method.name()
-                                        + "' is missing key extractor. This indicates a bug in MethodModel.extractAspects().");
-                         });
+    /// Generates body when there are no async entries (only plain/no deps).
+    private void generateSyncOnlyBody(PrintWriter out,
+                                       SliceModel model,
+                                       String sliceName,
+                                       List<DependencyModel> plainDeps,
+                                       Map<String, List<PlainInterfaceFactoryParam>> plainInterfaceParams,
+                                       ImportTracker importTracker) {
+        if (model.hasMethodInterceptors()) {
+            generateNoDepInterceptorBody(out, model, sliceName, importTracker);
+            return;
+        }
+        // Construct plain interface deps synchronously
+        for (var dep : plainDeps) {
+            var factoryMethodName = lowercaseFirst(dep.interfaceSimpleName());
+            var params = plainInterfaceParams.getOrDefault(dep.parameterName(), List.of());
+            var argList = params.stream()
+                                .map(PlainInterfaceFactoryParam::varName)
+                                .collect(Collectors.joining(", "));
+            out.println("        var " + dep.parameterName() + " = " + dep.sourceUsableName() + "."
+                        + factoryMethodName + "(" + argList + ");");
+        }
+        var factoryArgs = buildFactoryArgs(model, plainDeps);
+        out.println("        var instance = " + sliceName + "." + model.factoryMethodName() + "("
+                    + String.join(", ", factoryArgs) + ");");
+        out.println("        return Promise.success(aspect.apply(instance));");
+    }
+
+    /// Generate interceptor wrapping for each method.
+    /// Interceptors compose inside-out: last annotation = innermost, first = outermost.
+    private void generateInterceptorWrapping(PrintWriter out,
+                                              SliceModel model,
+                                              List<InterceptorEntry> allInterceptors,
+                                              String indent,
+                                              ImportTracker importTracker) {
+        var wrapperName = model.simpleName() + "Wrapper";
+        // Build dedup key -> varName map
+        var interceptorVarMap = new LinkedHashMap<String, String>();
+        for (var ie : allInterceptors) {
+            interceptorVarMap.put(ie.qualifier().deduplicationKey(), ie.varName());
+        }
+        for (var method : model.methods()) {
+            var wrappedVar = method.name() + "Wrapped";
+            if (method.hasInterceptors()) {
+                // Build interceptor chain inside-out
+                var interceptors = method.interceptors();
+                String expression;
+                if (method.hasNoParams()) {
+                    expression = "(Unit _unit) -> impl." + method.name() + "()";
+                } else if (method.hasSingleParam()) {
+                    expression = "impl::" + method.name();
+                } else {
+                    var requestRecordName = capitalize(method.name()) + "Request";
+                    var argList = method.parameters()
+                                        .stream()
+                                        .map(p -> "req." + p.name() + "()")
+                                        .collect(Collectors.joining(", "));
+                    expression = "(" + requestRecordName + " req) -> impl." + method.name() + "(" + argList + ")";
+                }
+                for (int i = interceptors.size() - 1; i >= 0; i--) {
+                    var ic = interceptors.get(i);
+                    var icVarName = interceptorVarMap.get(ic.deduplicationKey());
+                    expression = icVarName + ".intercept(" + expression + ")";
+                }
+                out.println(indent + "var " + wrappedVar + " = " + expression + ";");
+            } else {
+                var responseType = importTracker.use(method.responseType().toString());
+                var effectiveType = effectiveParamTypeString(method, model, importTracker);
+                if (method.hasNoParams()) {
+                    out.println(indent + "Fn1<Promise<" + responseType + ">, Unit> " + wrappedVar
+                                + " = _unit -> impl." + method.name() + "();");
+                } else if (method.hasSingleParam()) {
+                    out.println(indent + "Fn1<Promise<" + responseType + ">, " + effectiveType + "> " + wrappedVar
+                                + " = impl::" + method.name() + ";");
+                } else {
+                    var requestRecordName = capitalize(method.name()) + "Request";
+                    var argList = method.parameters()
+                                        .stream()
+                                        .map(p -> "req." + p.name() + "()")
+                                        .collect(Collectors.joining(", "));
+                    out.println(indent + "Fn1<Promise<" + responseType + ">, " + requestRecordName + "> " + wrappedVar
+                                + " = req -> impl." + method.name() + "(" + argList + ");");
+                }
+            }
+        }
+        out.println();
+        var wrappedArgs = model.methods()
+                               .stream()
+                               .map(m -> m.name() + "Wrapped")
+                               .toList();
+        out.println(indent + "return aspect.apply(new " + wrapperName + "(" + String.join(", ", wrappedArgs) + "));");
+    }
+
+    /// Generate interceptor provisioning call with optional ProvisioningContext.
+    private String generateInterceptorProvideCall(InterceptorEntry entry, SliceModel model, ImportTracker importTracker) {
+        var qualifier = entry.qualifier();
+        var configSection = escapeJavaString(qualifier.configSection());
+        return findKeyInfoForInterceptor(entry, model)
+        .fold(() -> "ctx.resources().provide(MethodInterceptor.class, \"" + configSection + "\")",
+              ki -> generateProvideWithContext(configSection, ki, entry.firstMethod(), model, importTracker));
+    }
+
+    private String generateProvideWithContext(String configSection,
+                                               KeyExtractorInfo ki,
+                                               MethodModel method,
+                                               SliceModel model,
+                                               ImportTracker importTracker) {
+        var paramType = effectiveParamTypeString(method, model, importTracker);
+        var responseType = importTracker.use(method.responseType().toString());
+        return "ctx.resources().provide(MethodInterceptor.class, \"" + configSection + "\",\n"
+               + "                ProvisioningContext.provisioningContext()\n"
+               + "                    .withTypeToken(new TypeToken<" + importTracker.use(ki.keyType()) + ">() {})\n"
+               + "                    .withTypeToken(new TypeToken<" + responseType + ">() {})\n"
+               + "                    .withKeyExtractor((Fn1<" + importTracker.use(ki.keyType()) + ", " + paramType + ">) "
+               + ki.extractorExpression() + "))";
+    }
+
+    private Option<KeyExtractorInfo> findKeyInfoForInterceptor(InterceptorEntry entry, SliceModel model) {
+        for (var method : model.methods()) {
+            for (var interceptor : method.interceptors()) {
+                if (interceptor.deduplicationKey()
+                               .equals(entry.qualifier()
+                                            .deduplicationKey())) {
+                    if (method.keyExtractor().isPresent()) {
+                        return method.keyExtractor();
+                    }
+                    // Check multi-param key resolution — use simple record name (inner record of factory class)
+                    if (method.multiParamKeyParam().isPresent()) {
+                        var keyParam = method.multiParamKeyParam().unwrap();
+                        var requestRecordName = capitalize(method.name()) + "Request";
+                        return KeyExtractorInfo.single(keyParam.type().toString(), keyParam.name(), requestRecordName)
+                                               .fold(_ -> Option.none(), Option::some);
+                    }
+                }
+            }
+        }
+        return Option.none();
+    }
+
+    private List<String> buildFactoryArgs(SliceModel model, List<DependencyModel> plainDeps) {
+        return model.dependencies()
+                    .stream()
+                    .map(DependencyModel::parameterName)
+                    .toList();
     }
 
     private record HandleInfo(DependencyModel dep, ProxyMethodInfo method) {
@@ -488,17 +601,55 @@ public class FactoryClassGenerator {
         }
     }
 
-    private String generateMethodHandleCall(HandleInfo handle) {
+    private String generateMethodHandleCall(HandleInfo handle, ImportTracker importTracker) {
         var artifact = escapeJavaString(handle.dep.fullArtifact()
                                               .or(() -> "UNRESOLVED"));
         var methodName = escapeJavaString(handle.method.name);
+        var requestType = resolveProxyRequestType(handle, importTracker);
+        var responseType = importTracker.use(handle.method.responseType);
         return "ctx.invoker().methodHandle(\"" + artifact + "\", \"" + methodName + "\",\n"
-               + "                                                     new TypeToken<" + handle.method.paramType
-               + ">() {},\n" + "                                                     new TypeToken<" + handle.method.responseType
+               + "                                                     new TypeToken<" + requestType
+               + ">() {},\n" + "                                                     new TypeToken<" + responseType
                + ">() {}).async()";
     }
 
-    private record ProxyMethodInfo(String name, String responseType, String paramType) {}
+    private String resolveProxyRequestType(HandleInfo handle, ImportTracker importTracker) {
+        if (handle.method.hasNoParams()) {
+            return "Unit";
+        }
+        if (handle.method.hasSingleParam()) {
+            return importTracker.use(handle.method.params.getFirst().type());
+        }
+        return handle.dep.parameterName() + "_" + capitalize(handle.method.name) + "Request";
+    }
+
+    private record ProxyParamInfo(String name, String type) {}
+
+    private record ProxyMethodInfo(String name, String responseType, List<ProxyParamInfo> params) {
+        boolean hasNoParams() {
+            return params.isEmpty();
+        }
+
+        boolean hasSingleParam() {
+            return params.size() == 1;
+        }
+
+        boolean hasMultipleParams() {
+            return params.size() > 1;
+        }
+
+        String effectiveRequestType() {
+            if (hasNoParams()) {
+                return "Unit";
+            }
+            if (hasSingleParam()) {
+                return params.getFirst().type();
+            }
+            // For multi-param, the request record is not used for proxy — the dep interface defines
+            // the method, so we use the dep's generated record name which is resolved by the caller
+            throw new IllegalStateException("effectiveRequestType called on multi-param proxy method");
+        }
+    }
 
     private List<ProxyMethodInfo> collectProxyMethods(DependencyModel dep) {
         var methods = new ArrayList<ProxyMethodInfo>();
@@ -510,20 +661,10 @@ public class FactoryClassGenerator {
                     if (!method.getModifiers()
                                .contains(Modifier.STATIC) &&
                     !method.getModifiers()
-                           .contains(Modifier.DEFAULT) &&
-                    method.getParameters()
-                          .size() == 1) {
+                           .contains(Modifier.DEFAULT)) {
                         extractPromiseTypeArg(method.getReturnType())
-                        .onPresent(responseType -> {
-                                       var paramType = method.getParameters()
-                                                             .getFirst()
-                                                             .asType()
-                                                             .toString();
-                                       methods.add(new ProxyMethodInfo(method.getSimpleName()
-                                                                             .toString(),
-                                                                       responseType,
-                                                                       paramType));
-                                   });
+                        .map(responseType -> toProxyMethodInfo(method, responseType))
+                        .onPresent(methods::add);
                     }
                 }
             }
@@ -531,36 +672,83 @@ public class FactoryClassGenerator {
         return methods;
     }
 
+    private ProxyMethodInfo toProxyMethodInfo(ExecutableElement method, String responseType) {
+        var params = method.getParameters()
+                           .stream()
+                           .map(p -> new ProxyParamInfo(p.getSimpleName().toString(), p.asType().toString()))
+                           .toList();
+        return new ProxyMethodInfo(method.getSimpleName()
+                                         .toString(),
+                                   responseType,
+                                   params);
+    }
+
     private void generateLocalProxyRecord(PrintWriter out,
                                           DependencyModel dep,
-                                          Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
+                                          Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
+                                          ImportTracker importTracker) {
         var recordName = dep.localRecordName();
-        var interfaceName = dep.interfaceSimpleName();
+        var interfaceName = dep.interfaceLocalName();
         var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
+        // Generate request records for multi-param proxy methods BEFORE the proxy record
+        for (var method : methods) {
+            if (method.hasMultipleParams()) {
+                var proxyRequestRecordName = dep.parameterName() + "_" + capitalize(method.name) + "Request";
+                var reqComponents = method.params.stream()
+                                                 .map(p -> importTracker.use(p.type()) + " " + p.name())
+                                                 .collect(Collectors.joining(", "));
+                out.println("        record " + proxyRequestRecordName + "(" + reqComponents + ") {}");
+                out.println();
+            }
+        }
         // Generate record with MethodHandle components
-        var components = methods.stream()
-                                .map(m -> "MethodHandle<" + m.responseType + ", " + m.paramType + "> " + m.name
-                                          + "Handle")
-                                .toList();
+        var components = new ArrayList<String>();
+        for (var m : methods) {
+            var respType = importTracker.use(m.responseType);
+            if (m.hasNoParams()) {
+                components.add("MethodHandle<" + respType + ", Unit> " + m.name + "Handle");
+            } else if (m.hasSingleParam()) {
+                components.add("MethodHandle<" + respType + ", " + importTracker.use(m.params.getFirst().type()) + "> " + m.name + "Handle");
+            } else {
+                var proxyRequestRecordName = dep.parameterName() + "_" + capitalize(m.name) + "Request";
+                components.add("MethodHandle<" + respType + ", " + proxyRequestRecordName + "> " + m.name + "Handle");
+            }
+        }
         out.println("        record " + recordName + "(" + String.join(", ", components) + ") implements " + interfaceName
                     + " {");
         // Generate method implementations
         for (var method : methods) {
-            generateProxyMethod(out, method);
+            generateProxyMethod(out, method, dep, importTracker);
         }
         out.println("        }");
     }
 
-    private void generateProxyMethod(PrintWriter out, ProxyMethodInfo method) {
+    private void generateProxyMethod(PrintWriter out, ProxyMethodInfo method, DependencyModel dep, ImportTracker importTracker) {
+        var respType = importTracker.use(method.responseType);
         out.println();
         out.println("            @Override");
-        out.println("            public Promise<" + method.responseType + "> " + method.name + "(" + method.paramType
-                    + " request) {");
-        out.println("                return " + method.name + "Handle.invoke(request);");
+        if (method.hasNoParams()) {
+            out.println("            public Promise<" + respType + "> " + method.name + "() {");
+            out.println("                return " + method.name + "Handle.invoke(Unit.unit());");
+        } else if (method.hasSingleParam()) {
+            out.println("            public Promise<" + respType + "> " + method.name + "("
+                        + importTracker.use(method.params.getFirst().type()) + " " + method.params.getFirst().name() + ") {");
+            out.println("                return " + method.name + "Handle.invoke(" + method.params.getFirst().name() + ");");
+        } else {
+            var paramList = method.params.stream()
+                                         .map(p -> importTracker.use(p.type()) + " " + p.name())
+                                         .collect(Collectors.joining(", "));
+            var proxyRequestRecordName = dep.parameterName() + "_" + capitalize(method.name) + "Request";
+            var argList = method.params.stream()
+                                       .map(ProxyParamInfo::name)
+                                       .collect(Collectors.joining(", "));
+            out.println("            public Promise<" + respType + "> " + method.name + "(" + paramList + ") {");
+            out.println("                return " + method.name + "Handle.invoke(new " + proxyRequestRecordName + "(" + argList + "));");
+        }
         out.println("            }");
     }
 
-    private void generateCreateSliceMethod(PrintWriter out, SliceModel model) {
+    private void generateCreateSliceMethod(PrintWriter out, SliceModel model, ImportTracker importTracker) {
         var sliceName = model.simpleName();
         var methodName = lowercaseFirst(sliceName);
         var sliceRecordName = methodName + "Slice";
@@ -580,13 +768,27 @@ public class FactoryClassGenerator {
                         ? ","
                         : "";
             var escapedMethodName = escapeJavaString(method.name());
-            // Note: MethodName.unwrap() is safe here because method names are validated
-            // at annotation processing time per RFC-0001
+            var responseType = importTracker.use(method.responseType().toString());
             out.println("                    new SliceMethod<>(");
             out.println("                        MethodName.methodName(\"" + escapedMethodName + "\").unwrap(),");
-            out.println("                        delegate::" + method.name() + ",");
-            out.println("                        new TypeToken<" + method.responseType() + ">() {},");
-            out.println("                        new TypeToken<" + method.parameterType() + ">() {}");
+            if (method.hasNoParams()) {
+                out.println("                        _unit -> delegate." + method.name() + "(),");
+                out.println("                        new TypeToken<" + responseType + ">() {},");
+                out.println("                        new TypeToken<Unit>() {}");
+            } else if (method.hasSingleParam()) {
+                out.println("                        delegate::" + method.name() + ",");
+                out.println("                        new TypeToken<" + responseType + ">() {},");
+                out.println("                        new TypeToken<" + importTracker.use(method.parameters().getFirst().type().toString()) + ">() {}");
+            } else {
+                var requestRecordName = capitalize(method.name()) + "Request";
+                var argList = method.parameters()
+                                    .stream()
+                                    .map(p -> "request." + p.name() + "()")
+                                    .collect(Collectors.joining(", "));
+                out.println("                        request -> delegate." + method.name() + "(" + argList + "),");
+                out.println("                        new TypeToken<" + responseType + ">() {},");
+                out.println("                        new TypeToken<" + requestRecordName + ">() {}");
+            }
             out.println("                    )" + comma);
         }
         out.println("                );");
@@ -595,9 +797,27 @@ public class FactoryClassGenerator {
         for (var method : methods) {
             out.println();
             out.println("            @Override");
-            out.println("            public " + method.returnType() + " " + method.name() + "(" + method.parameterType()
-                        + " " + method.parameterName() + ") {");
-            out.println("                return delegate." + method.name() + "(" + method.parameterName() + ");");
+            var responseType = importTracker.use(method.responseType().toString());
+            if (method.hasNoParams()) {
+                out.println("            public Promise<" + responseType + "> " + method.name() + "() {");
+                out.println("                return delegate." + method.name() + "();");
+            } else if (method.hasSingleParam()) {
+                var paramType = importTracker.use(method.parameters().getFirst().type().toString());
+                out.println("            public Promise<" + responseType + "> " + method.name() + "(" + paramType
+                            + " " + method.parameters().getFirst().name() + ") {");
+                out.println("                return delegate." + method.name() + "(" + method.parameters().getFirst().name() + ");");
+            } else {
+                var paramList = method.parameters()
+                                      .stream()
+                                      .map(p -> importTracker.use(p.type().toString()) + " " + p.name())
+                                      .collect(Collectors.joining(", "));
+                var argList = method.parameters()
+                                    .stream()
+                                    .map(MethodParameterInfo::name)
+                                    .collect(Collectors.joining(", "));
+                out.println("            public Promise<" + responseType + "> " + method.name() + "(" + paramList + ") {");
+                out.println("                return delegate." + method.name() + "(" + argList + ");");
+            }
             out.println("            }");
         }
         out.println("        }");
@@ -605,6 +825,18 @@ public class FactoryClassGenerator {
         out.println("        return " + methodName + "(aspect, ctx)");
         out.println("                   .map(" + sliceRecordName + "::new);");
         out.println("    }");
+    }
+
+    /// Returns the effective parameter type string for a method.
+    /// 0-param -> "Unit", 1-param -> the param type, N-param -> generated request record name.
+    private String effectiveParamTypeString(MethodModel method, SliceModel model, ImportTracker importTracker) {
+        if (method.hasNoParams()) {
+            return "Unit";
+        }
+        if (method.hasSingleParam()) {
+            return importTracker.use(method.parameters().getFirst().type().toString());
+        }
+        return capitalize(method.name()) + "Request";
     }
 
     private Option<String> extractPromiseTypeArg(TypeMirror type) {
@@ -619,7 +851,6 @@ public class FactoryClassGenerator {
     }
 
     /// Escapes a string for safe embedding in Java string literals.
-    /// Handles quotes, backslashes, and common control characters.
     private String escapeJavaString(String input) {
         if (input == null) {
             return "";
@@ -640,53 +871,119 @@ public class FactoryClassGenerator {
     }
 
     /// Converts first letter to lowercase following JBCT naming conventions.
-    /// Handles acronyms properly: "HTTPService" -> "httpService", "IOReader" -> "ioReader"
     private String lowercaseFirst(String name) {
         if (name == null || name.isEmpty()) {
             return "";
         }
-        // Find the end of leading uppercase sequence
         int i = 0;
         while (i < name.length() && Character.isUpperCase(name.charAt(i))) {
             i++;
         }
         if (i == 0) {
-            // Already lowercase
             return name;
         }
         if (i == 1) {
-            // Single uppercase letter: "Service" -> "service"
             return Character.toLowerCase(name.charAt(0)) + name.substring(1);
         }
-        // Acronym: "HTTPService" -> "httpService", "HTTP" -> "http"
-        // Lowercase all but last uppercase if followed by lowercase
         if (i < name.length()) {
-            // There's more after the acronym, keep last uppercase
             return name.substring(0, i - 1)
                        .toLowerCase() + name.substring(i - 1);
         }
-        // Entire string is uppercase acronym: "HTTP" -> "http"
         return name.toLowerCase();
     }
 
-    private String generateInfraCall(DependencyModel infra) {
-        var interfaceName = infra.interfaceSimpleName();
-        var factoryMethodName = toFactoryMethodName(interfaceName);
-        return "Promise.success(" + interfaceName + "." + factoryMethodName + "())";
+    private String capitalize(String name) {
+        if (name == null || name.isEmpty()) {
+            return "";
+        }
+        return Character.toUpperCase(name.charAt(0)) + name.substring(1);
     }
 
     /// Generate resource provisioning call: ctx.resources().provide(Type.class, "config.section")
     private String generateResourceProvideCall(DependencyModel resource) {
-        var qualifier = resource.resourceQualifier()
-                                .or(() -> {
-            throw new IllegalStateException("Resource dependency without @ResourceQualifier: " + resource.parameterName());
-        });
-        var resourceType = qualifier.resourceTypeSimpleName();
-        var configSection = escapeJavaString(qualifier.configSection());
-        return "ctx.resources().provide(" + resourceType + ".class, \"" + configSection + "\")";
+        return resource.resourceQualifier()
+                       .map(qualifier -> "ctx.resources().provide("
+                                         + qualifier.resourceTypeSimpleName()
+                                         + ".class, \"" + escapeJavaString(qualifier.configSection()) + "\")")
+                       .or("ctx.resources().provide(Object.class, \"unknown\")");
     }
 
-    private String toFactoryMethodName(String className) {
-        return lowercaseFirst(className);
+    /// Tracks imports during two-phase code generation.
+    /// Resolves qualified names to simple names where possible, falling back to FQCN on collisions.
+    private static final class ImportTracker {
+        private final String currentPackage;
+        private final Map<String, String> simpleToQualified = new LinkedHashMap<>();
+        private final Set<String> conflicts = new LinkedHashSet<>();
+
+        ImportTracker(String currentPackage) {
+            this.currentPackage = currentPackage;
+        }
+
+        String use(String qualifiedName) {
+            if (qualifiedName == null || qualifiedName.isEmpty()) {
+                return qualifiedName;
+            }
+            // Handle generic types — only import the raw type
+            var genericIdx = qualifiedName.indexOf('<');
+            if (genericIdx > 0) {
+                var rawType = qualifiedName.substring(0, genericIdx);
+                var rest = qualifiedName.substring(genericIdx);
+                return use(rawType) + rest;
+            }
+            // Handle array types
+            if (qualifiedName.endsWith("[]")) {
+                return use(qualifiedName.substring(0, qualifiedName.length() - 2)) + "[]";
+            }
+            // Primitives and no-package types
+            if (!qualifiedName.contains(".")) {
+                return qualifiedName;
+            }
+            var simpleName = extractSimpleName(qualifiedName);
+            if (isJavaLang(qualifiedName)) {
+                return simpleName;
+            }
+            if (isInCurrentPackage(qualifiedName)) {
+                return simpleName;
+            }
+            var existing = simpleToQualified.get(simpleName);
+            if (existing == null) {
+                simpleToQualified.put(simpleName, qualifiedName);
+                return simpleName;
+            }
+            if (existing.equals(qualifiedName)) {
+                return simpleName;
+            }
+            conflicts.add(qualifiedName);
+            return qualifiedName;
+        }
+
+        List<String> imports() {
+            return simpleToQualified.values()
+                                    .stream()
+                                    .filter(q -> !isInCurrentPackage(q) && !isJavaLang(q))
+                                    .sorted()
+                                    .toList();
+        }
+
+        private String extractSimpleName(String qualifiedName) {
+            var lastDot = qualifiedName.lastIndexOf('.');
+            return lastDot >= 0 ? qualifiedName.substring(lastDot + 1) : qualifiedName;
+        }
+
+        private boolean isInCurrentPackage(String qualifiedName) {
+            if (!qualifiedName.startsWith(currentPackage + ".")) {
+                return false;
+            }
+            var remainder = qualifiedName.substring(currentPackage.length() + 1);
+            return !remainder.contains(".");
+        }
+
+        private boolean isJavaLang(String qualifiedName) {
+            if (!qualifiedName.startsWith("java.lang.")) {
+                return false;
+            }
+            var remainder = qualifiedName.substring("java.lang.".length());
+            return !remainder.contains(".");
+        }
     }
 }

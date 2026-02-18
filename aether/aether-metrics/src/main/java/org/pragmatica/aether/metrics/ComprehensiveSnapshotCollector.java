@@ -9,6 +9,8 @@ import org.pragmatica.aether.metrics.gc.GCMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.network.NetworkMetrics;
 import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
@@ -21,6 +23,8 @@ import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Result.unitResult;
 
 /// Collects comprehensive metrics from all subsystems and feeds MinuteAggregator.
 ///
@@ -69,12 +73,13 @@ public final class ComprehensiveSnapshotCollector {
         this.derivedCalculator = derivedCalculator;
         this.osMxBean = ManagementFactory.getOperatingSystemMXBean();
         this.memoryMxBean = ManagementFactory.getMemoryMXBean();
-        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-                                                                        var thread = new Thread(r,
-                                                                                                "comprehensive-snapshot-collector");
-                                                                        thread.setDaemon(true);
-                                                                        return thread;
-                                                                    });
+        this.scheduler = Executors.newSingleThreadScheduledExecutor(ComprehensiveSnapshotCollector::createDaemonThread);
+    }
+
+    private static Thread createDaemonThread(Runnable r) {
+        var thread = new Thread(r, "comprehensive-snapshot-collector");
+        thread.setDaemon(true);
+        return thread;
     }
 
     /// Factory method following JBCT naming convention.
@@ -111,28 +116,26 @@ public final class ComprehensiveSnapshotCollector {
     }
 
     /// Start collecting snapshots on 1-second interval.
-    public void start() {
+    public Result<Unit> start() {
         if (started) {
-            return;
+            return unitResult();
         }
         started = true;
-        // Start GC collector
         gcCollector.start();
-        // Start event loop collector with shared scheduler
-        // EventLoopGroups are registered by AetherNode after cluster starts via Server.bossGroup()/workerGroup()
         eventLoopCollector.start(scheduler);
-        // Schedule snapshot collection
         collectionTask = scheduler.scheduleAtFixedRate(this::collectSnapshot,
                                                        COLLECTION_INTERVAL_MS,
                                                        COLLECTION_INTERVAL_MS,
                                                        TimeUnit.MILLISECONDS);
         log.info("Comprehensive snapshot collection started (interval: {}ms)", COLLECTION_INTERVAL_MS);
+        return unitResult();
     }
 
     /// Stop collecting snapshots.
-    public void stop() {
+    @SuppressWarnings("JBCT-EX-01")
+    public Result<Unit> stop() {
         if (!started) {
-            return;
+            return unitResult();
         }
         started = false;
         if (collectionTask != null) {
@@ -141,6 +144,12 @@ public final class ComprehensiveSnapshotCollector {
         }
         gcCollector.stop();
         eventLoopCollector.stop();
+        shutdownScheduler();
+        log.info("Comprehensive snapshot collection stopped");
+        return unitResult();
+    }
+
+    private void shutdownScheduler() {
         scheduler.shutdown();
         try{
             if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
@@ -151,7 +160,6 @@ public final class ComprehensiveSnapshotCollector {
             Thread.currentThread()
                   .interrupt();
         }
-        log.info("Comprehensive snapshot collection stopped");
     }
 
     /// Get the MinuteAggregator (for TTM access).
@@ -165,6 +173,7 @@ public final class ComprehensiveSnapshotCollector {
     }
 
     /// Collect a single comprehensive snapshot from all subsystems.
+    @SuppressWarnings("JBCT-EX-01")
     private void collectSnapshot() {
         try{
             var snapshot = buildSnapshot();

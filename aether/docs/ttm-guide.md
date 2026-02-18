@@ -52,7 +52,7 @@ Metrics Collectors ──> ComprehensiveSnapshotCollector (1s)
 
 ## Prerequisites
 
-- Docker + Docker Compose (for deployment)
+- Podman + Podman Compose (for deployment)
 - Python 3.11+ (for training only)
 - NVIDIA GPU (optional, speeds up training)
 - At least 4GB RAM for training
@@ -142,7 +142,7 @@ mvn package -pl aether/node -am -DskipTests -Pwith-ttm
 unzip -l target/aether-node.jar | grep onnxruntime | head -5
 ```
 
-Docker image:
+Container image:
 ```dockerfile
 FROM eclipse-temurin:25-jre-alpine
 WORKDIR /app
@@ -172,7 +172,7 @@ Deploy TTM by adding the jar:
 mvn package -pl aether/aether-ttm-onnx -am -DskipTests
 
 # Copy to extensions
-cp aether/aether-ttm-onnx/target/aether-ttm-onnx-0.15.1.jar /app/extensions/
+cp aether/aether-ttm-onnx/target/aether-ttm-onnx-0.16.0.jar /app/extensions/
 cp models/ttm-aether.onnx /app/models/
 ```
 
@@ -189,7 +189,7 @@ cp models/ttm-aether.onnx /app/models/
 
 Memory considerations:
 - ONNX Runtime allocates native memory outside the JVM heap
-- Set Docker `--memory` limit to at least `JVM heap + 512MB`
+- Set Podman `--memory` limit to at least `JVM heap + 512MB`
 - Monitor RSS vs heap in container metrics
 
 ---
@@ -202,9 +202,9 @@ Memory considerations:
 cd aether/aether-ttm-onnx/training/
 ```
 
-**Option A — Docker (recommended):**
+**Option A — Podman (recommended):**
 ```bash
-docker build -t ttm-training -f Dockerfile.training .
+podman build -t ttm-training -f Dockerfile.training .
 ```
 
 **Option B — Local Python:**
@@ -353,7 +353,7 @@ make train DATA=data.csv  # Train model
 make export             # Export to ONNX
 make validate           # Validate ONNX model
 make all DATA=data.csv  # Full pipeline
-make docker-train DATA=data.csv  # Train in Docker
+make podman-train DATA=data.csv  # Train in Podman
 make clean              # Remove generated files
 ```
 
@@ -459,7 +459,7 @@ Timeline from startup:
 ### High Memory Usage
 
 - ONNX Runtime uses native memory outside JVM heap
-- Set `-XX:MaxDirectMemorySize` or Docker `--memory` limit
+- Set `-XX:MaxDirectMemorySize` or Podman `--memory` limit
 - Monitor: RSS vs heap in container metrics
 - Typical overhead: ~200MB for ONNX Runtime + model
 

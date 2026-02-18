@@ -2,6 +2,11 @@ package org.pragmatica.aether.slice;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.Unit.unit;
 
 /// Provides access to runtime services for slices.
 ///
@@ -28,35 +33,48 @@ import org.pragmatica.lang.Result;
 /// This approach allows slices to remain records (immutable) while still
 /// accessing runtime services. The trade-off is global state, but this is
 /// acceptable for ambient runtime services that are set once at startup.
-public final class SliceRuntime {
-    private static volatile SliceInvokerFacade sliceInvoker;
-
-    private SliceRuntime() {}
+public sealed interface SliceRuntime {
+    record unused() implements SliceRuntime {
+        static Result<unused> unused() {
+            return success(new unused());
+        }
+    }
 
     /// Get the SliceInvoker for inter-slice communication.
     ///
     /// @return Result containing the SliceInvoker, or failure if not configured
-    public static Result<SliceInvokerFacade> getSliceInvoker() {
-        return Option.option(sliceInvoker)
-                     .toResult(SliceRuntimeError.InvokerNotConfigured.INSTANCE);
+    static Result<SliceInvokerFacade> getSliceInvoker() {
+        return option(SliceRuntimeHolder.INVOKER_REF.get()).toResult(SliceRuntimeError.InvokerNotConfigured.INSTANCE);
     }
 
     /// Get the SliceInvoker if configured.
     ///
     /// @return Option containing the SliceInvoker, or empty if not configured
-    public static Option<SliceInvokerFacade> trySliceInvoker() {
-        return Option.option(sliceInvoker);
+    static Option<SliceInvokerFacade> trySliceInvoker() {
+        return option(SliceRuntimeHolder.INVOKER_REF.get());
     }
 
     /// Configure the SliceInvoker. Called by the runtime during startup.
     ///
     /// @param invoker the SliceInvoker to use
-    public static void setSliceInvoker(SliceInvokerFacade invoker) {
-        sliceInvoker = invoker;
+    /// @return Result<Unit> indicating success
+    static Result<Unit> setSliceInvoker(SliceInvokerFacade invoker) {
+        SliceRuntimeHolder.INVOKER_REF.set(invoker);
+        return success(unit());
     }
 
     /// Clear all runtime services. Called during shutdown.
-    public static void clear() {
-        sliceInvoker = null;
+    ///
+    /// @return Result<Unit> indicating success
+    static Result<Unit> clear() {
+        SliceRuntimeHolder.INVOKER_REF.set(null);
+        return success(unit());
     }
+}
+
+/// Internal mutable state holder for SliceRuntime.
+sealed interface SliceRuntimeHolder {
+    record unused() implements SliceRuntimeHolder {}
+
+    java.util.concurrent.atomic.AtomicReference<SliceInvokerFacade> INVOKER_REF = new java.util.concurrent.atomic.AtomicReference<>();
 }

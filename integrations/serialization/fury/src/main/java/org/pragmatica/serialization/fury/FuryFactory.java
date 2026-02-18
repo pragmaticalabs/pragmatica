@@ -23,21 +23,29 @@ import java.util.stream.Stream;
 import org.apache.fury.Fury;
 import org.apache.fury.ThreadSafeFury;
 import org.apache.fury.config.Language;
+import org.apache.fury.logging.LoggerFactory;
 
 /// Factory for creating thread-safe Fury instances.
 public sealed interface FuryFactory {
+    /// Route Fury's internal logging through SLF4J so our Log4j2 config controls it.
+    private static void configureLogging() {
+        LoggerFactory.useSlf4jLogging(true);
+    }
+
     /// Create a thread-safe Fury instance with the given class registrators.
     ///
     /// @param registrators class registrators to apply
     /// @return a thread-safe Fury instance
     static ThreadSafeFury fury(ClassRegistrator... registrators) {
+        configureLogging();
         int coreCount = Runtime.getRuntime()
                                .availableProcessors();
         var fury = Fury.builder()
                        .withLanguage(Language.JAVA)
                        .buildThreadSafeFuryPool(coreCount * 2, coreCount * 4);
         Stream.of(registrators)
-              .forEach(registrator -> registrator.registerClasses(fury::register));
+              .flatMap(registrator -> registrator.classesToRegister().stream())
+              .forEach(fury::register);
         return fury;
     }
 

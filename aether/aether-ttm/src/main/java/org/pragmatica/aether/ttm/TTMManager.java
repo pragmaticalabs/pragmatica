@@ -1,8 +1,6 @@
 package org.pragmatica.aether.ttm;
 
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.Metrics;
-import org.pragmatica.aether.config.TTMConfig;
+import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.metrics.MinuteAggregator;
 import org.pragmatica.aether.ttm.error.TTMError;
@@ -22,6 +20,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Metrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,6 +29,7 @@ import org.slf4j.LoggerFactory;
 ///
 /// Only runs inference on the leader node. Followers receive state updates
 /// via Rabia replication (through the DecisionTreeController threshold adjustments).
+@SuppressWarnings("JBCT-RET-01") // MessageReceiver callbacks and registration methods — void is intentional
 public interface TTMManager {
     /// React to leader changes.
     @MessageReceiver
@@ -44,7 +45,7 @@ public interface TTMManager {
     void onForecast(Consumer<TTMForecast> callback);
 
     /// Get the TTM configuration.
-    TTMConfig config();
+    TtmConfig config();
 
     /// Check if TTM is actually enabled and functional.
     /// Returns false for NoOpTTMManager or if model failed to load.
@@ -60,7 +61,7 @@ public interface TTMManager {
     /// @param controllerConfigSupplier Supplier for current controller config
     ///
     /// @return Result containing TTMManager or error
-    static Result<TTMManager> ttmManager(TTMConfig config,
+    static Result<TTMManager> ttmManager(TtmConfig config,
                                          MinuteAggregator aggregator,
                                          Supplier<ControllerConfig> controllerConfigSupplier) {
         if (!config.enabled()) {
@@ -70,7 +71,7 @@ public interface TTMManager {
                            .map(predictor -> createManager(config, predictor, aggregator, controllerConfigSupplier));
     }
 
-    private static TTMManager createManager(TTMConfig config,
+    private static TTMManager createManager(TtmConfig config,
                                             TTMPredictor predictor,
                                             MinuteAggregator aggregator,
                                             Supplier<ControllerConfig> controllerConfigSupplier) {
@@ -81,24 +82,24 @@ public interface TTMManager {
                                                                        return thread;
                                                                    });
         return new ActiveTTMManager(config,
-                              predictor,
-                              analyzer,
-                              aggregator,
-                              controllerConfigSupplier,
-                              scheduler,
-                              new AtomicReference<>(),
-                              new AtomicReference<>(),
-                              new AtomicReference<>(TTMState.STOPPED),
-                              new CopyOnWriteArrayList<>());
+                                    predictor,
+                                    analyzer,
+                                    aggregator,
+                                    controllerConfigSupplier,
+                                    scheduler,
+                                    new AtomicReference<>(),
+                                    new AtomicReference<>(),
+                                    new AtomicReference<>(TTMState.STOPPED),
+                                    new CopyOnWriteArrayList<>());
     }
 
     /// Create a no-op TTM manager (for when TTM is disabled).
-    static TTMManager noOp(TTMConfig config) {
+    static TTMManager noOp(TtmConfig config) {
         return new NoOpTTMManager(config);
     }
 
     /// No-op implementation for when TTM is disabled.
-    record NoOpTTMManager(TTMConfig config) implements TTMManager {
+    record NoOpTTMManager(TtmConfig config) implements TTMManager {
         @Override
         public void onLeaderChange(LeaderChange leaderChange) {}
 
@@ -127,7 +128,7 @@ public interface TTMManager {
     }
 
     /// Implementation of TTMManager.
-    record ActiveTTMManager(TTMConfig config,
+    record ActiveTTMManager(TtmConfig config,
                             TTMPredictor predictor,
                             ForecastAnalyzer analyzer,
                             MinuteAggregator aggregator,

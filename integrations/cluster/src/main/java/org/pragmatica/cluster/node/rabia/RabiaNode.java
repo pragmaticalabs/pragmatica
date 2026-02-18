@@ -56,8 +56,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Tuple.Tuple2;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
-
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.MessageRouter.DelegateRouter;
@@ -80,6 +78,7 @@ import io.netty.channel.ChannelHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.messaging.MessageRouter.Entry.route;
 
 public interface RabiaNode<C extends Command> extends ClusterNode<C> {

@@ -44,7 +44,7 @@ class RollbackManagerTest {
 
     @BeforeEach
     void setup() {
-        config = RollbackConfig.defaultConfig();
+        config = RollbackConfig.rollbackConfig();
         clusterNode = new TestClusterNode(SELF);
         kvStore = new TestKVStore();
         rollbackManager = RollbackManager.rollbackManager(SELF, config, clusterNode, kvStore);

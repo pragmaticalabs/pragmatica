@@ -1,10 +1,14 @@
 package org.pragmatica.aether.metrics;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.RingBuffer;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+
+import static org.pragmatica.lang.Result.unitResult;
 
 /// Aggregates {@link ComprehensiveSnapshot} samples into minute-level summaries.
 ///
@@ -40,7 +44,7 @@ public final class MinuteAggregator {
     }
 
     /// Add a snapshot sample. Automatically rolls over on minute boundaries.
-    public void addSample(ComprehensiveSnapshot snapshot) {
+    public Result<Unit> addSample(ComprehensiveSnapshot snapshot) {
         lock.writeLock()
             .lock();
         try{
@@ -58,10 +62,11 @@ public final class MinuteAggregator {
             lock.writeLock()
                 .unlock();
         }
+        return unitResult();
     }
 
     /// Force finalization of current minute (useful at shutdown).
-    public void flush() {
+    public Result<Unit> flush() {
         lock.writeLock()
             .lock();
         try{
@@ -72,6 +77,7 @@ public final class MinuteAggregator {
             lock.writeLock()
                 .unlock();
         }
+        return unitResult();
     }
 
     /// Get all minute aggregates.

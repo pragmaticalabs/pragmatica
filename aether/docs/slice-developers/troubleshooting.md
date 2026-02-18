@@ -21,7 +21,7 @@ public interface OrderService {
 
     // Add this
     static OrderService orderService() {
-        return new OrderServiceImpl();
+        return OrderServiceImpl.orderServiceImpl();
     }
 }
 ```
@@ -62,23 +62,24 @@ OrderResult placeOrder(PlaceOrderRequest request);
 Promise<OrderResult> placeOrder(PlaceOrderRequest request);
 ```
 
-### "Method must have exactly one parameter"
+### "Overloaded slice method is not supported"
 
 **Error:**
 ```
-error: Method 'placeOrder' must have exactly one parameter, found: 2
+error: Overloaded slice method 'getUser' is not supported. Use distinct method names.
 ```
 
-**Cause:** Slice methods must have exactly one parameter.
+**Cause:** Slice methods cannot be overloaded. Each method name must be unique within the slice.
 
-**Fix:** Wrap parameters in a request record:
+**Fix:** Use distinct method names:
 ```java
-// Wrong
-Promise<OrderResult> placeOrder(String customerId, List<LineItem> items);
+// Wrong - overloaded methods
+Promise<User> getUser(Long id);
+Promise<User> getUser(String email);
 
-// Correct
-public record PlaceOrderRequest(String customerId, List<LineItem> items) {}
-Promise<OrderResult> placeOrder(PlaceOrderRequest request);
+// Correct - distinct names
+Promise<User> getUserById(Long id);
+Promise<User> getUserByEmail(String email);
 ```
 
 ### "Generated sources not found"
@@ -388,7 +389,7 @@ when(inventory.reserve(any())).thenReturn(null);
 
 // Correct
 when(inventory.reserve(any()))
-    .thenReturn(Promise.successful(new ReserveResult("RES-123")));
+    .thenReturn(Promise.success(new ReserveResult("RES-123")));
 ```
 
 ### "Factory requires SliceInvokerFacade"
@@ -402,7 +403,7 @@ Cannot invoke factory - missing invoker parameter
 ```java
 var invoker = mock(SliceInvokerFacade.class);
 when(invoker.invoke(anyString(), anyString(), any(), any()))
-    .thenReturn(Promise.successful(expectedResponse));
+    .thenReturn(Promise.success(expectedResponse));
 
 var slice = OrderServiceFactory.create(Aspect.identity(), invoker)
                                .await()
@@ -418,7 +419,7 @@ var slice = OrderServiceFactory.create(Aspect.identity(), invoker)
 @Override
 public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
     var result = processOrder(request);  // Blocking call
-    return Promise.successful(result);
+    return Promise.success(result);
 }
 
 // Correct - non-blocking
@@ -462,7 +463,7 @@ public class OrderServiceImpl implements OrderService {
     @Override
     public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
         orderCount++;  // Race condition
-        return Promise.successful(new OrderResult("ORD-" + orderCount));
+        return Promise.success(new OrderResult("ORD-" + orderCount));
     }
 }
 

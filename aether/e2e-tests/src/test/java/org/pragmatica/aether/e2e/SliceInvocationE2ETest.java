@@ -38,14 +38,14 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class SliceInvocationE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.15.1");
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.16.0");
     private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
 
     // Common timeouts (CI gets 2x via adapt())
     private static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(30).seconds().duration());
     private static final Duration DEPLOY_TIMEOUT = adapt(timeSpan(3).minutes().duration());
     private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
-    private static final Duration CLEANUP_TIMEOUT = adapt(timeSpan(60).seconds().duration());
+    private static final Duration CLEANUP_TIMEOUT = adapt(timeSpan(2).minutes().duration());
 
     private static AetherCluster cluster;
 
@@ -87,7 +87,7 @@ class SliceInvocationE2ETest {
                                 .toResult(Causes.cause("No leader"))
                                 .unwrap();
 
-            var slices = leader.getSlices();
+            var slices = leader.getSlicesStatus();
             System.out.println("[DEBUG] Deployed slices: " + slices);
 
             if (slices.contains(TEST_ARTIFACT)) {
@@ -100,14 +100,8 @@ class SliceInvocationE2ETest {
     }
 
     private void awaitNoSlices() {
-        await().atMost(CLEANUP_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .ignoreExceptions()
-               .until(() -> {
-                   var slices = cluster.anyNode().getSlices();
-                   System.out.println("[DEBUG] Waiting for no slices, current: " + slices);
-                   return !slices.contains(TEST_ARTIFACT);
-               });
+        undeployAllSlices();
+        cluster.awaitSliceUndeployed(TEST_ARTIFACT, CLEANUP_TIMEOUT);
     }
 
     private boolean sliceIsActive(String artifact) {
@@ -175,16 +169,11 @@ class SliceInvocationE2ETest {
         void afterSliceDeployment_routesAreAvailable() {
             // Deploy a slice via leader
             var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
-            leader.deploy(TEST_ARTIFACT, 1);
+            var deployResponse = leader.deploy(TEST_ARTIFACT, 1);
+            assertThat(deployResponse).doesNotContain("\"error\"");
 
-            await().atMost(DEPLOY_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .failFast(() -> {
-                       if (sliceHasFailed(TEST_ARTIFACT)) {
-                           throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
-                       }
-                   })
-                   .until(() -> sliceIsActive(TEST_ARTIFACT));
+            // Delegates to cluster which has stuck-state detection
+            cluster.awaitSliceActive(TEST_ARTIFACT, DEPLOY_TIMEOUT);
 
             // Check routes endpoint
             var routes = cluster.anyNode().getRoutes();
@@ -221,22 +210,16 @@ class SliceInvocationE2ETest {
             // Deploy via leader
             var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
             leader.deploy(TEST_ARTIFACT, 1);
-            await().atMost(DEPLOY_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .failFast(() -> {
-                       if (sliceHasFailed(TEST_ARTIFACT)) {
-                           throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
-                       }
-                   })
-                   .until(() -> sliceIsActive(TEST_ARTIFACT));
+            cluster.awaitSliceActive(TEST_ARTIFACT, DEPLOY_TIMEOUT);
 
             // Undeploy via leader
             cluster.leader().toResult(Causes.cause("No leader")).unwrap().undeploy(TEST_ARTIFACT);
             await().atMost(CLEANUP_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
+                   .ignoreExceptions()
                    .until(() -> {
-                       var slices = cluster.anyNode().getSlices();
-                       return !slices.contains("echo-slice");
+                       var status = cluster.anyNode().getSlicesStatus();
+                       return !status.contains("echo-slice");
                    });
 
             // Invoke should fail (no routes)
@@ -256,15 +239,7 @@ class SliceInvocationE2ETest {
             // Deploy slice across all nodes via leader
             var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
             leader.deploy(TEST_ARTIFACT, 3);
-
-            await().atMost(DEPLOY_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .failFast(() -> {
-                       if (sliceHasFailed(TEST_ARTIFACT)) {
-                           throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
-                       }
-                   })
-                   .until(() -> sliceIsActive(TEST_ARTIFACT));
+            cluster.awaitSliceActive(TEST_ARTIFACT, DEPLOY_TIMEOUT);
 
             // All nodes should be able to respond to requests
             for (var node : cluster.nodes()) {

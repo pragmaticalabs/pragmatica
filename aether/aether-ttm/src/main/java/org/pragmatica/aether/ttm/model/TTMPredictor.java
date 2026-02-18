@@ -1,6 +1,6 @@
 package org.pragmatica.aether.ttm.model;
 
-import org.pragmatica.aether.config.TTMConfig;
+import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.ttm.error.TTMError;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -29,13 +29,13 @@ public interface TTMPredictor {
     Unit close();
 
     /// Create predictor from config.
-    static Result<TTMPredictor> ttmPredictor(TTMConfig config) {
+    static Result<TTMPredictor> ttmPredictor(TtmConfig config) {
         if (!config.enabled()) {
             return Result.success(noOp());
         }
-        return TTMPredictorFactory.INSTANCE
-            .fold(() -> TTMError.NoProvider.noProvider().<TTMPredictor>result(),
-                  factory -> factory.ttmPredictor(config));
+        return TTMPredictorFactory.INSTANCE.fold(() -> TTMError.NoProvider.noProvider()
+                                                               .<TTMPredictor> result(),
+                                                 factory -> factory.ttmPredictor(config));
     }
 
     /// Create a no-op predictor for testing or when TTM is disabled.

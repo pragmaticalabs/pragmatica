@@ -12,7 +12,7 @@ public interface OrderService {
     Promise<OrderResult> placeOrder(PlaceOrderRequest request);
 
     static OrderService orderService(InventoryService inventory) {
-        return new OrderServiceImpl(inventory);
+        return OrderServiceImpl.orderServiceImpl(inventory);
     }
 }
 ```
@@ -29,6 +29,8 @@ public interface OrderService {
 | [Infrastructure Services](infra-services.md) | Using infrastructure slices |
 | [Forge Guide](forge-guide.md) | Local development with Forge |
 | [Troubleshooting](troubleshooting.md) | Common issues and solutions |
+| [Migration Guide](migration-guide.md) | Moving from monolith to slices |
+| [Demos](demos.md) | Example applications and walkthroughs |
 
 ## Key Concepts
 

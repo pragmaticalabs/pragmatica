@@ -32,14 +32,14 @@ public final class DynamicAspectRoutes implements RouteSource {
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(// GET - list all configured aspects
-        Route.<Object>get("/api/aspects")
+        Route.<Object> get("/api/aspects")
              .toJson(aspectManager::aspectsAsJson),
         // POST - set aspect mode
-        Route.<AspectModeSetResponse>post("/api/aspects")
+        Route.<AspectModeSetResponse> post("/api/aspects")
              .withBody(SetAspectRequest.class)
              .toJson(this::handleSetAspect),
         // DELETE - remove aspect config using path parameter
-        Route.<AspectRemovedResponse>delete("/api/aspects")
+        Route.<AspectRemovedResponse> delete("/api/aspects")
              .withPath(aString())
              .to(this::handleDeleteAspect)
              .asJson());
@@ -47,14 +47,16 @@ public final class DynamicAspectRoutes implements RouteSource {
 
     private Promise<AspectModeSetResponse> handleSetAspect(SetAspectRequest req) {
         return validateSetRequest(req).async()
-                                      .flatMap(valid -> {
-                                          var mode = DynamicAspectMode.valueOf(valid.mode());
-                                          return aspectManager.setAspectMode(valid.artifact(), valid.method(), mode)
-                                                              .map(_ -> new AspectModeSetResponse("aspect_set",
-                                                                                                  valid.artifact(),
-                                                                                                  valid.method(),
-                                                                                                  valid.mode()));
-                                      });
+                                 .flatMap(valid -> {
+                                              var mode = DynamicAspectMode.valueOf(valid.mode());
+                                              return aspectManager.setAspectMode(valid.artifact(),
+                                                                                 valid.method(),
+                                                                                 mode)
+                                                                  .map(_ -> new AspectModeSetResponse("aspect_set",
+                                                                                                      valid.artifact(),
+                                                                                                      valid.method(),
+                                                                                                      valid.mode()));
+                                          });
     }
 
     private Result<SetAspectRequest> validateSetRequest(SetAspectRequest req) {
@@ -70,7 +72,7 @@ public final class DynamicAspectRoutes implements RouteSource {
                                      .isEmpty()) {
             return AspectError.MISSING_FIELDS.result();
         }
-        try {
+        try{
             DynamicAspectMode.valueOf(req.mode());
         } catch (IllegalArgumentException e) {
             return AspectError.INVALID_MODE.result();
@@ -84,7 +86,7 @@ public final class DynamicAspectRoutes implements RouteSource {
         }
         // Key format: artifactBase/methodName (URL-encoded slash becomes path segments)
         var slashIndex = key.indexOf('/');
-        if (slashIndex == -1) {
+        if (slashIndex == - 1) {
             return AspectError.KEY_REQUIRED.promise();
         }
         var artifact = key.substring(0, slashIndex);

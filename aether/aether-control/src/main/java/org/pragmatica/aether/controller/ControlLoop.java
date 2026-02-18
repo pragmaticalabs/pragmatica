@@ -48,6 +48,7 @@ import org.slf4j.LoggerFactory;
 ///   - Periodically evaluate controller with current metrics
 ///   - Apply scaling decisions by updating blueprints in KVStore
 ///
+@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"}) // MessageReceiver callbacks + framework lifecycle methods
 public interface ControlLoop {
     @MessageReceiver
     void onLeaderChange(LeaderChange leaderChange);
@@ -142,8 +143,10 @@ public interface ControlLoop {
                 var value = valuePut.cause()
                                     .value();
                 switch (key) {
-                    case SliceTargetKey(var artifactBase) when value instanceof SliceTargetValue sliceTargetValue -> registerBlueprint(artifactBase.withVersion(sliceTargetValue.currentVersion()), sliceTargetValue.targetInstances());
-                    case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue(SliceState state) -> handleSliceStateChange(sliceNodeKey, state);
+                    case SliceTargetKey(var artifactBase) when value instanceof SliceTargetValue sliceTargetValue -> registerBlueprint(artifactBase.withVersion(sliceTargetValue.currentVersion()),
+                                                                                                                                       sliceTargetValue.targetInstances());
+                    case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue(SliceState state) -> handleSliceStateChange(sliceNodeKey,
+                                                                                                                                    state);
                     case null, default -> {}
                 }
             }
@@ -206,7 +209,7 @@ public interface ControlLoop {
 
             private void runEvaluation() {
                 // Scheduler boundary - generic catch prevents scheduler thread death
-                try {
+                try{
                     if (blueprints.isEmpty()) {
                         log.trace("No blueprints registered, skipping evaluation");
                         return;
@@ -242,7 +245,7 @@ public interface ControlLoop {
                 var context = new ControlContext(metricsCollector.allMetrics(), Map.copyOf(blueprints), topology.get());
                 controller.evaluate(context)
                           .onSuccess(decisions -> applyDecisionsWithGuards(decisions, loadFactorResult))
-                          .onFailure(cause -> log.error("Controller evaluation failed: {}",
+                          .onFailure(cause -> log.error("Failed to evaluate controller: {}",
                                                         cause.message()));
             }
 
@@ -327,7 +330,8 @@ public interface ControlLoop {
                     log.trace("No scaling decisions");
                     return;
                 }
-                var scalingConfig = configRef.get().scalingConfig();
+                var scalingConfig = configRef.get()
+                                             .scalingConfig();
                 var errorRateHigh = compositeLoadFactor.isErrorRateHigh();
                 for (var change : decisions.changes()) {
                     var shouldApply = shouldApplyScalingDecision(change, loadFactorResult, scalingConfig, errorRateHigh);
@@ -417,7 +421,8 @@ public interface ControlLoop {
             }
 
             private boolean isSliceCooldownExpired(Map.Entry<Artifact, Long> entry, long now) {
-                return (now - entry.getValue()) >= configRef.get().sliceCooldownMs();
+                return (now - entry.getValue()) >= configRef.get()
+                                                            .sliceCooldownMs();
             }
 
             private void applyChange(BlueprintChange change) {

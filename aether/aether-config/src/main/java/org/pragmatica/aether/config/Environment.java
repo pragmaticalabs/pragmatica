@@ -2,8 +2,12 @@ package org.pragmatica.aether.config;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
 
 /// Deployment environment with environment-specific defaults.
 ///
@@ -45,14 +49,16 @@ public enum Environment {
     ///
     /// @return parsed environment, or failure if unknown
     public static Result<Environment> environment(String value) {
-        if (value == null || value.isBlank()) {
-            return Result.success(DOCKER);
-        }
-        return switch (value.toLowerCase()
-                            .trim()) {
-            case "local" -> Result.success(LOCAL);
-            case "docker" -> Result.success(DOCKER);
-            case "kubernetes", "k8s" -> Result.success(KUBERNETES);
+        return option(value).map(String::trim)
+                     .filter(s -> !s.isEmpty())
+                     .fold(() -> success(DOCKER),
+                           Environment::fromNormalized);
+    }
+    private static Result<Environment> fromNormalized(String value) {
+        return switch (value.toLowerCase()) {
+            case "local" -> success(LOCAL);
+            case "docker" -> success(DOCKER);
+            case "kubernetes", "k8s" -> success(KUBERNETES);
             default -> UNKNOWN_ENVIRONMENT.apply(value)
                                           .result();
         };

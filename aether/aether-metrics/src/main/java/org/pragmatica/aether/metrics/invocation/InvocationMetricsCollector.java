@@ -13,6 +13,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.unitResult;
+
 /// Collects per-method invocation metrics with threshold-based slow call capture.
 ///
 /// This collector implements the dual-track metrics approach:
@@ -69,66 +72,57 @@ public final class InvocationMetricsCollector {
     /// @param requestBytes  Size of serialized request
     /// @param responseBytes Size of serialized response (0 for fire-and-forget or failures)
     /// @param errorType     Error type class name if failed
-    public void record(Artifact artifact,
-                       MethodName method,
-                       long durationNs,
-                       boolean success,
-                       int requestBytes,
-                       int responseBytes,
-                       Option<String> errorType) {
+    public Result<Unit> record(Artifact artifact,
+                               MethodName method,
+                               long durationNs,
+                               boolean success,
+                               int requestBytes,
+                               int responseBytes,
+                               Option<String> errorType) {
         var methodMetrics = getOrCreateMetrics(artifact, method);
         // Tier 1: Always record to aggregated metrics
         methodMetrics.metrics.record(durationNs, success);
         // Update adaptive threshold
         thresholdStrategy.observe(method, durationNs);
         // Tier 2: Capture if slow
-        if (thresholdStrategy.isSlow(method, durationNs)) {
-            var slow = success
-                       ? SlowInvocation.slowInvocation(method,
-                                                       System.nanoTime(),
-                                                       durationNs,
-                                                       requestBytes,
-                                                       responseBytes)
-                       : SlowInvocation.slowInvocation(method,
-                                                       System.nanoTime(),
-                                                       durationNs,
-                                                       requestBytes,
-                                                       errorType.or("Unknown"));
-            methodMetrics.addSlowInvocation(slow);
-        }
+        captureIfSlow(methodMetrics, method, durationNs, success, requestBytes, responseBytes, errorType);
+        return unitResult();
     }
 
     /// Convenience method for recording success.
-    public void recordSuccess(Artifact artifact,
-                              MethodName method,
-                              long durationNs,
-                              int requestBytes,
-                              int responseBytes) {
-        record(artifact, method, durationNs, true, requestBytes, responseBytes, Option.empty());
+    public Result<Unit> recordSuccess(Artifact artifact,
+                                      MethodName method,
+                                      long durationNs,
+                                      int requestBytes,
+                                      int responseBytes) {
+        return record(artifact, method, durationNs, true, requestBytes, responseBytes, Option.empty());
     }
 
     /// Record that an invocation has started for active invocation tracking.
     ///
     /// @param artifact Slice artifact
     /// @param method   Method name
-    public void recordStart(Artifact artifact, MethodName method) {
+    public Result<Unit> recordStart(Artifact artifact, MethodName method) {
         getOrCreateMetrics(artifact, method).metrics.recordStart();
+        return unitResult();
     }
 
     /// Record that an invocation has completed for active invocation tracking.
     ///
     /// @param artifact Slice artifact
     /// @param method   Method name
-    public void recordComplete(Artifact artifact, MethodName method) {
+    public Result<Unit> recordComplete(Artifact artifact, MethodName method) {
         getOrCreateMetrics(artifact, method).metrics.recordComplete();
+        return unitResult();
     }
 
     /// Record a serialization operation duration.
     ///
     /// @param durationNs Duration of serialization in nanoseconds
-    public void recordSerialization(long durationNs) {
+    public Result<Unit> recordSerialization(long durationNs) {
         totalSerializationNs.addAndGet(durationNs);
         serializationCount.incrementAndGet();
+        return unitResult();
     }
 
     /// Get the average serialization time in nanoseconds.
@@ -154,12 +148,12 @@ public final class InvocationMetricsCollector {
     }
 
     /// Convenience method for recording failure.
-    public void recordFailure(Artifact artifact,
-                              MethodName method,
-                              long durationNs,
-                              int requestBytes,
-                              String errorType) {
-        record(artifact, method, durationNs, false, requestBytes, 0, Option.option(errorType));
+    public Result<Unit> recordFailure(Artifact artifact,
+                                      MethodName method,
+                                      long durationNs,
+                                      int requestBytes,
+                                      String errorType) {
+        return record(artifact, method, durationNs, false, requestBytes, 0, option(errorType));
     }
 
     /// Take snapshot of all metrics and reset counters.
@@ -167,34 +161,18 @@ public final class InvocationMetricsCollector {
     /// @return List of method snapshots with slow invocations
     public List<MethodSnapshot> snapshotAndReset() {
         var result = new ArrayList<MethodSnapshot>();
-        metricsMap.forEach((artifact, methods) -> {
-                               methods.forEach((method, collector) -> {
-                                                   var metricsSnapshot = collector.metrics.snapshotAndReset();
-                                                   var slowCalls = collector.drainSlowInvocations();
-                                                   var threshold = thresholdStrategy.thresholdNs(method);
-                                                   result.add(new MethodSnapshot(artifact,
-                                                                                 metricsSnapshot,
-                                                                                 slowCalls,
-                                                                                 threshold));
-                                               });
-                           });
+        metricsMap.forEach((artifact, methods) -> methods.forEach((method, collector) -> result.add(buildSnapshot(artifact,
+                                                                                                                  collector,
+                                                                                                                  true))));
         return result;
     }
 
     /// Take snapshot without resetting (for monitoring).
     public List<MethodSnapshot> snapshot() {
         var result = new ArrayList<MethodSnapshot>();
-        metricsMap.forEach((artifact, methods) -> {
-                               methods.forEach((method, collector) -> {
-                                                   var metricsSnapshot = collector.metrics.snapshot();
-                                                   var slowCalls = collector.copySlowInvocations();
-                                                   var threshold = thresholdStrategy.thresholdNs(method);
-                                                   result.add(new MethodSnapshot(artifact,
-                                                                                 metricsSnapshot,
-                                                                                 slowCalls,
-                                                                                 threshold));
-                                               });
-                           });
+        metricsMap.forEach((artifact, methods) -> methods.forEach((method, collector) -> result.add(buildSnapshot(artifact,
+                                                                                                                  collector,
+                                                                                                                  false))));
         return result;
     }
 
@@ -214,18 +192,41 @@ public final class InvocationMetricsCollector {
     ///
     /// @return failure indicating strategy change is not supported
     public Result<Unit> setThresholdStrategy(ThresholdStrategy strategy) {
-        // Note: This class uses final field, so we need a different approach
-        // For now, this is a no-op placeholder - actual implementation would need
-        // to use AtomicReference or similar. The current strategy is effectively immutable.
         return MetricsError.StrategyChangeNotSupported.INSTANCE.result();
     }
 
+    private void captureIfSlow(MethodMetricsWithSlowCalls methodMetrics,
+                               MethodName method,
+                               long durationNs,
+                               boolean success,
+                               int requestBytes,
+                               int responseBytes,
+                               Option<String> errorType) {
+        if (!thresholdStrategy.isSlow(method, durationNs)) {
+            return;
+        }
+        var slow = success
+                   ? SlowInvocation.slowInvocation(method, System.nanoTime(), durationNs, requestBytes, responseBytes)
+                   : SlowInvocation.slowInvocation(method,
+                                                   System.nanoTime(),
+                                                   durationNs,
+                                                   requestBytes,
+                                                   errorType.or("Unknown"));
+        methodMetrics.addSlowInvocation(slow);
+    }
+
+    private MethodSnapshot buildSnapshot(Artifact artifact, MethodMetricsWithSlowCalls collector, boolean reset) {
+        var metricsSnapshot = reset
+                              ? collector.metrics.snapshotAndReset()
+                              : collector.metrics.snapshot();
+        var slowCalls = reset
+                        ? collector.drainSlowInvocations()
+                        : collector.copySlowInvocations();
+        var threshold = thresholdStrategy.thresholdNs(collector.metrics.methodName());
+        return new MethodSnapshot(artifact, metricsSnapshot, slowCalls, threshold);
+    }
+
     private MethodMetricsWithSlowCalls getOrCreateMetrics(Artifact artifact, MethodName method) {
-        // Note: Nested computeIfAbsent may allocate on every call when the outer map exists
-        // but the inner key is new. This is acceptable because:
-        // 1. After warm-up, all methods are registered and allocations stop
-        // 2. Alternative (caching per-artifact map) adds complexity for marginal gain
-        // 3. The allocation cost is O(1) per new method, not per invocation
         return metricsMap.computeIfAbsent(artifact,
                                           _ -> new ConcurrentHashMap<>())
                          .computeIfAbsent(method, MethodMetricsWithSlowCalls::new);
@@ -261,7 +262,6 @@ public final class InvocationMetricsCollector {
             lock.lock();
             try{
                 var result = copySlowInvocationsUnlocked();
-                // Reset
                 writeIndex = 0;
                 count = 0;
                 for (int i = 0; i < MAX_SLOW_INVOCATIONS_PER_METHOD; i++) {

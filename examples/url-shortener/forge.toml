@@ -10,5 +10,5 @@ app_http_port = 8070
 enabled = true
 port = 9092
 name = "forge"
-persistent = false
+persistent = true
 init_script = "./schema/url-shortener.sql"

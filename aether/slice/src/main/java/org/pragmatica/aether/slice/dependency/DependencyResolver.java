@@ -2,6 +2,7 @@ package org.pragmatica.aether.slice.dependency;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.ResourceProviderFacade;
 import org.pragmatica.aether.slice.SharedLibraryClassLoader;
 import org.pragmatica.aether.slice.Slice;
@@ -32,6 +33,9 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.utils.Causes.cause;
+
 /// Orchestrates dependency resolution for slices.
 ///
 /// Resolution process:
@@ -46,6 +50,7 @@ import org.slf4j.LoggerFactory;
 /// 9. Register in registry
 ///
 /// Thread-safe: Uses SliceRegistry for synchronization.
+@SuppressWarnings({"JBCT-VO-01", "JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"})
 public interface DependencyResolver {
     Logger log = LoggerFactory.getLogger(DependencyResolver.class);
 
@@ -120,18 +125,30 @@ public interface DependencyResolver {
                                                      SliceRegistry registry,
                                                      SharedLibraryClassLoader sharedLibraryLoader,
                                                      SliceInvokerFacade invokerFacade) {
-        return resolveWithContext(artifact, repository, registry, sharedLibraryLoader, invokerFacade, noOpResourceProvider());
+        return resolveWithContext(artifact,
+                                  repository,
+                                  registry,
+                                  sharedLibraryLoader,
+                                  invokerFacade,
+                                  noOpResourceProvider());
     }
 
     /// Returns a no-op resource provider for backward compatibility.
     /// This provider fails for any resource request.
     private static ResourceProviderFacade noOpResourceProvider() {
         return new ResourceProviderFacade() {
+            private static final Cause NOT_CONFIGURED = cause("Resource provisioning not configured. "
+                                                              + "Use resolveWithContext(artifact, repo, registry, loader, invoker, resourceFacade) "
+                                                              + "to enable resource provisioning.");
+
             @Override
             public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                return Causes.cause("Resource provisioning not configured. " +
-                    "Use resolveWithContext(artifact, repo, registry, loader, invoker, resourceFacade) " +
-                    "to enable resource provisioning.").promise();
+                return NOT_CONFIGURED.promise();
+            }
+
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+                return NOT_CONFIGURED.promise();
             }
         };
     }
@@ -161,7 +178,7 @@ public interface DependencyResolver {
                                                                                    loadingContext,
                                                                                    resolutionPath))
                          .onSuccess(_ -> {
-                                        log.info("Successfully resolved artifact {} with context",
+                                        log.info("Resolved artifact {} with context",
                                                  artifact.asString());
                                         resolutionPath.remove(artifactKey);
                                     })
@@ -290,20 +307,20 @@ public interface DependencyResolver {
                                        .map(slice -> new ResolvedSlice(slice, loadingContext));
         }
         return resolveArtifactDependenciesWithContextSequentially(sliceDeps,
-                                                                   repository,
-                                                                   registry,
-                                                                   sharedLibraryLoader,
-                                                                   loadingContext,
-                                                                   resolutionPath,
-                                                                   List.of()).onSuccess(resolved -> log.info("Resolved all {} slice dependencies for {} with context",
-                                                                                                             resolved.size(),
-                                                                                                             artifact.asString()))
-                                                                  .flatMap(resolvedSlices -> createAndRegisterSliceWithContext(artifact,
-                                                                                                                               sliceClass,
-                                                                                                                               loadingContext,
-                                                                                                                               resolvedSlices,
-                                                                                                                               sliceDeps,
-                                                                                                                               registry));
+                                                                  repository,
+                                                                  registry,
+                                                                  sharedLibraryLoader,
+                                                                  loadingContext,
+                                                                  resolutionPath,
+                                                                  List.of()).onSuccess(resolved -> log.info("Resolved all {} slice dependencies for {} with context",
+                                                                                                            resolved.size(),
+                                                                                                            artifact.asString()))
+                                                                 .flatMap(resolvedSlices -> createAndRegisterSliceWithContext(artifact,
+                                                                                                                              sliceClass,
+                                                                                                                              loadingContext,
+                                                                                                                              resolvedSlices,
+                                                                                                                              sliceDeps,
+                                                                                                                              registry));
     }
 
     private static Promise<ResolvedSlice> createAndRegisterSliceWithContext(Artifact artifact,
@@ -384,7 +401,7 @@ public interface DependencyResolver {
                                                                          invokerFacade,
                                                                          resolutionPath))
                          .onSuccess(_ -> {
-                                        log.info("Successfully resolved artifact {}",
+                                        log.info("Resolved artifact {}",
                                                  artifact.asString());
                                         resolutionPath.remove(artifactKey);
                                     })
@@ -644,33 +661,38 @@ public interface DependencyResolver {
     }
 
     private static Promise<List<Slice>> resolveArtifactDependenciesWithContextSequentially(List<ArtifactDependency> dependencies,
-                                                                                            Repository repository,
-                                                                                            SliceRegistry registry,
-                                                                                            SharedLibraryClassLoader sharedLibraryLoader,
-                                                                                            SliceLoadingContext loadingContext,
-                                                                                            Set<String> resolutionPath,
-                                                                                            List<Slice> accumulated) {
+                                                                                           Repository repository,
+                                                                                           SliceRegistry registry,
+                                                                                           SharedLibraryClassLoader sharedLibraryLoader,
+                                                                                           SliceLoadingContext loadingContext,
+                                                                                           Set<String> resolutionPath,
+                                                                                           List<Slice> accumulated) {
         if (dependencies.isEmpty()) {
             return Promise.success(accumulated);
         }
         var dep = dependencies.getFirst();
         var remaining = dependencies.subList(1, dependencies.size());
-        return resolveArtifactDependencyWithContext(dep, repository, registry, sharedLibraryLoader, loadingContext, resolutionPath)
+        return resolveArtifactDependencyWithContext(dep,
+                                                    repository,
+                                                    registry,
+                                                    sharedLibraryLoader,
+                                                    loadingContext,
+                                                    resolutionPath)
         .flatMap(slice -> resolveArtifactDependenciesWithContextSequentially(remaining,
-                                                                              repository,
-                                                                              registry,
-                                                                              sharedLibraryLoader,
-                                                                              loadingContext,
-                                                                              resolutionPath,
-                                                                              appendToList(accumulated, slice)));
+                                                                             repository,
+                                                                             registry,
+                                                                             sharedLibraryLoader,
+                                                                             loadingContext,
+                                                                             resolutionPath,
+                                                                             appendToList(accumulated, slice)));
     }
 
     private static Promise<Slice> resolveArtifactDependencyWithContext(ArtifactDependency dependency,
-                                                                        Repository repository,
-                                                                        SliceRegistry registry,
-                                                                        SharedLibraryClassLoader sharedLibraryLoader,
-                                                                        SliceLoadingContext loadingContext,
-                                                                        Set<String> resolutionPath) {
+                                                                       Repository repository,
+                                                                       SliceRegistry registry,
+                                                                       SharedLibraryClassLoader sharedLibraryLoader,
+                                                                       SliceLoadingContext loadingContext,
+                                                                       Set<String> resolutionPath) {
         var inRegistry = registry.findByArtifactKey(dependency.groupId(),
                                                     dependency.artifactId(),
                                                     dependency.versionPattern());
@@ -688,11 +710,11 @@ public interface DependencyResolver {
     }
 
     private static Promise<Slice> resolveArtifactFromRepositoryWithContext(ArtifactDependency dependency,
-                                                                            Repository repository,
-                                                                            SliceRegistry registry,
-                                                                            SharedLibraryClassLoader sharedLibraryLoader,
-                                                                            SliceLoadingContext loadingContext,
-                                                                            Set<String> resolutionPath) {
+                                                                           Repository repository,
+                                                                           SliceRegistry registry,
+                                                                           SharedLibraryClassLoader sharedLibraryLoader,
+                                                                           SliceLoadingContext loadingContext,
+                                                                           Set<String> resolutionPath) {
         return toArtifact(dependency).async()
                          .flatMap(artifact -> resolveWithSharedLoaderAndContext(artifact,
                                                                                 repository,
@@ -715,6 +737,8 @@ public interface DependencyResolver {
             case VersionPattern.Comparison(_, Version version) -> version;
             case VersionPattern.Tilde(Version version) -> version;
             case VersionPattern.Caret(Version version) -> version;
+            case VersionPattern.unused _ -> Version.version("0.0.0")
+                                                   .unwrap();
         };
     }
 
@@ -727,7 +751,7 @@ public interface DependencyResolver {
                                            .map(dep -> new DependencyDescriptor(ArtifactMapper.toClassName(dep.groupId(),
                                                                                                            dep.artifactId()),
                                                                                 dep.versionPattern(),
-                                                                                Option.none()))
+                                                                                none()))
                                            .toList();
         return SliceFactory.createSlice(sliceClass, creationContext, dependencies, legacyDescriptors);
     }
@@ -757,10 +781,10 @@ public interface DependencyResolver {
     }
 
     private static Cause circularDependencyDetected(String artifactKey) {
-        return Causes.cause("Circular dependency detected during resolution: " + artifactKey);
+        return cause("Circular dependency detected during resolution: " + artifactKey);
     }
 
     private static Cause artifactMismatch(Artifact requested, Artifact declared) {
-        return Causes.cause("Artifact mismatch: requested " + requested.asString() + " but JAR manifest declares " + declared.asString());
+        return cause("Artifact mismatch: requested " + requested.asString() + " but JAR manifest declares " + declared.asString());
     }
 }

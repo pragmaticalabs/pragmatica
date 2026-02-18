@@ -3,10 +3,15 @@ package org.pragmatica.aether.forge.simulator;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 import java.time.Duration;
 import java.util.Set;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
 
 /// Chaos events that can be injected into the system for resilience testing.
 public sealed interface ChaosEvent {
@@ -37,20 +42,16 @@ public sealed interface ChaosEvent {
             return "Kill node " + nodeId;
         }
 
-        public static Result<NodeKill> kill(String nodeId, Option<Duration> duration) {
-            if (nodeId == null || nodeId.isBlank()) {
-                return NODE_ID_REQUIRED.result();
-            }
-            return Result.success(new NodeKill(nodeId, duration));
+        public static Result<NodeKill> nodeKill(String nodeId, Option<Duration> duration) {
+            return ensureNotBlank(nodeId, NODE_ID_REQUIRED).map(id -> new NodeKill(id, duration));
         }
 
-        public static Result<NodeKill> killFor(String nodeId, long seconds) {
-            return kill(nodeId,
-                        Option.some(Duration.ofSeconds(seconds)));
+        public static Result<NodeKill> nodeKill(String nodeId, long seconds) {
+            return nodeKill(nodeId, some(Duration.ofSeconds(seconds)));
         }
 
-        public static Result<NodeKill> killPermanent(String nodeId) {
-            return kill(nodeId, Option.none());
+        public static Result<NodeKill> nodeKill(String nodeId) {
+            return nodeKill(nodeId, none());
         }
     }
 
@@ -79,16 +80,17 @@ public sealed interface ChaosEvent {
             return "Network partition between " + group1 + " and " + group2;
         }
 
-        public static Result<NetworkPartition> between(Set<String> group1,
-                                                       Set<String> group2,
-                                                       Option<Duration> duration) {
-            if (group1 == null || group1.isEmpty()) {
-                return GROUP1_EMPTY.result();
-            }
-            if (group2 == null || group2.isEmpty()) {
-                return GROUP2_EMPTY.result();
-            }
-            return Result.success(new NetworkPartition(group1, group2, duration));
+        public static Result<NetworkPartition> networkPartition(Set<String> group1,
+                                                                Set<String> group2,
+                                                                Option<Duration> duration) {
+            return ensureNonEmptyGroup(group1, GROUP1_EMPTY).flatMap(_ -> ensureNonEmptyGroup(group2, GROUP2_EMPTY))
+                                      .map(_ -> new NetworkPartition(group1, group2, duration));
+        }
+
+        private static Result<Set<String>> ensureNonEmptyGroup(Set<String> group, Cause cause) {
+            return Verify.ensure(group, Verify.Is::notNull, cause)
+                         .filter(cause,
+                                 g -> !g.isEmpty());
         }
     }
 
@@ -106,14 +108,11 @@ public sealed interface ChaosEvent {
             return "Add " + latencyMs + "ms latency to node " + nodeId;
         }
 
-        public static Result<LatencySpike> addLatency(String nodeId, long latencyMs, Option<Duration> duration) {
-            if (nodeId == null || nodeId.isBlank()) {
-                return NODE_ID_REQUIRED.result();
-            }
-            if (latencyMs < 0) {
-                return LATENCY_NEGATIVE.result();
-            }
-            return Result.success(new LatencySpike(nodeId, latencyMs, duration));
+        public static Result<LatencySpike> latencySpike(String nodeId, long latencyMs, Option<Duration> duration) {
+            return ensureNotBlank(nodeId, NODE_ID_REQUIRED).flatMap(_ -> Verify.ensure(latencyMs,
+                                                                                       Verify.Is::nonNegative,
+                                                                                       LATENCY_NEGATIVE))
+                                 .map(_ -> new LatencySpike(nodeId, latencyMs, duration));
         }
     }
 
@@ -133,15 +132,12 @@ public sealed interface ChaosEvent {
             return "Crash slice " + sliceArtifact + target;
         }
 
-        public static Result<SliceCrash> crashSlice(String artifact, Option<String> nodeId, Option<Duration> duration) {
-            if (artifact == null || artifact.isBlank()) {
-                return ARTIFACT_REQUIRED.result();
-            }
-            return Result.success(new SliceCrash(artifact, nodeId, duration));
+        public static Result<SliceCrash> sliceCrash(String artifact, Option<String> nodeId, Option<Duration> duration) {
+            return ensureNotBlank(artifact, ARTIFACT_REQUIRED).map(a -> new SliceCrash(a, nodeId, duration));
         }
 
-        public static Result<SliceCrash> crashSliceEverywhere(String artifact, Option<Duration> duration) {
-            return crashSlice(artifact, Option.none(), duration);
+        public static Result<SliceCrash> sliceCrash(String artifact, Option<Duration> duration) {
+            return sliceCrash(artifact, none(), duration);
         }
     }
 
@@ -154,17 +150,16 @@ public sealed interface ChaosEvent {
 
         @Override
         public String description() {
-            return String.format("Simulate %.0f%% memory pressure on node %s", level * 100, nodeId);
+            return formatPercentageMessage("memory pressure", level, nodeId);
         }
 
-        public static Result<MemoryPressure> onNode(String nodeId, double level, Option<Duration> duration) {
-            if (nodeId == null || nodeId.isBlank()) {
-                return NODE_ID_REQUIRED.result();
-            }
-            if (level < 0 || level > 1) {
-                return LEVEL_OUT_OF_RANGE.result();
-            }
-            return Result.success(new MemoryPressure(nodeId, level, duration));
+        public static Result<MemoryPressure> memoryPressure(String nodeId, double level, Option<Duration> duration) {
+            return ensureNotBlank(nodeId, NODE_ID_REQUIRED).flatMap(_ -> Verify.ensure(level,
+                                                                                       Verify.Is::between,
+                                                                                       0.0,
+                                                                                       1.0,
+                                                                                       LEVEL_OUT_OF_RANGE))
+                                 .map(_ -> new MemoryPressure(nodeId, level, duration));
         }
     }
 
@@ -177,17 +172,16 @@ public sealed interface ChaosEvent {
 
         @Override
         public String description() {
-            return String.format("Simulate %.0f%% CPU usage on node %s", level * 100, nodeId);
+            return formatPercentageMessage("CPU usage", level, nodeId);
         }
 
-        public static Result<CpuSpike> onNode(String nodeId, double level, Option<Duration> duration) {
-            if (nodeId == null || nodeId.isBlank()) {
-                return NODE_ID_REQUIRED.result();
-            }
-            if (level < 0 || level > 1) {
-                return LEVEL_OUT_OF_RANGE.result();
-            }
-            return Result.success(new CpuSpike(nodeId, level, duration));
+        public static Result<CpuSpike> cpuSpike(String nodeId, double level, Option<Duration> duration) {
+            return ensureNotBlank(nodeId, NODE_ID_REQUIRED).flatMap(_ -> Verify.ensure(level,
+                                                                                       Verify.Is::between,
+                                                                                       0.0,
+                                                                                       1.0,
+                                                                                       LEVEL_OUT_OF_RANGE))
+                                 .map(_ -> new CpuSpike(nodeId, level, duration));
         }
     }
 
@@ -204,17 +198,15 @@ public sealed interface ChaosEvent {
             return String.format("Inject %.0f%% failure rate for %s", failureRate * 100, target);
         }
 
-        public static Result<InvocationFailure> forSlice(Option<String> artifact,
-                                                         double rate,
-                                                         Option<Duration> duration) {
-            if (rate < 0 || rate > 1) {
-                return FAILURE_RATE_OUT_OF_RANGE.result();
-            }
-            return Result.success(new InvocationFailure(artifact, rate, duration));
+        public static Result<InvocationFailure> invocationFailure(Option<String> artifact,
+                                                                  double rate,
+                                                                  Option<Duration> duration) {
+            return Verify.ensure(rate, Verify.Is::between, 0.0, 1.0, FAILURE_RATE_OUT_OF_RANGE)
+                         .map(_ -> new InvocationFailure(artifact, rate, duration));
         }
 
-        public static Result<InvocationFailure> forAllSlices(double rate, Option<Duration> duration) {
-            return forSlice(Option.none(), rate, duration);
+        public static Result<InvocationFailure> invocationFailure(double rate, Option<Duration> duration) {
+            return invocationFailure(none(), rate, duration);
         }
     }
 
@@ -233,17 +225,43 @@ public sealed interface ChaosEvent {
             return descriptionText.or(name);
         }
 
-        public static Result<CustomChaos> custom(String name,
-                                                 Option<String> descriptionText,
-                                                 Runnable action,
-                                                 Option<Duration> duration) {
-            if (name == null || name.isBlank()) {
-                return NAME_REQUIRED.result();
-            }
-            if (action == null) {
-                return ACTION_REQUIRED.result();
-            }
-            return Result.success(new CustomChaos(name, descriptionText, action, duration));
+        public static Result<CustomChaos> customChaos(String name,
+                                                      Option<String> descriptionText,
+                                                      Runnable action,
+                                                      Option<Duration> duration) {
+            return ensureNotBlank(name, NAME_REQUIRED).flatMap(_ -> Verify.ensure(action,
+                                                                                  Verify.Is::notNull,
+                                                                                  ACTION_REQUIRED))
+                                 .map(_ -> new CustomChaos(name, descriptionText, action, duration));
+        }
+    }
+
+    /// Validate that a string field is non-null and non-blank.
+    private static Result<String> ensureNotBlank(String value, Cause cause) {
+        return Verify.ensure(value, Verify.Is::notNull, cause)
+                     .filter(cause,
+                             v -> !v.isBlank());
+    }
+
+    /// Format a percentage-based simulation description.
+    private static String formatPercentageMessage(String metricName, double level, String nodeId) {
+        return String.format("Simulate %.0f%% %s on node %s", level * 100, metricName, nodeId);
+    }
+
+    record unused() implements ChaosEvent {
+        @Override
+        public String type() {
+            return "";
+        }
+
+        @Override
+        public String description() {
+            return "";
+        }
+
+        @Override
+        public Option<Duration> duration() {
+            return none();
         }
     }
 }

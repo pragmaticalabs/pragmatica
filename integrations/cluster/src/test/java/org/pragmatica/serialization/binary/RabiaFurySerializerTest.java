@@ -19,8 +19,8 @@ import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 class RabiaFurySerializerTest {
     @Test
     void roundTrip_succeeds_forProtocolMessage() {
-        var serializer = furySerializer(CustomClasses::configure, StringKey::register);
-        var deserializer = furyDeserializer(CustomClasses::configure, StringKey::register);
+        var serializer = furySerializer(CustomClasses.INSTANCE, StringKey.registrator());
+        var deserializer = furyDeserializer(CustomClasses.INSTANCE, StringKey.registrator());
 
         var commands = List.of(new KVCommand.Put<>(key("k1"), "v1"),
                                new KVCommand.Get<>(key("k2")),

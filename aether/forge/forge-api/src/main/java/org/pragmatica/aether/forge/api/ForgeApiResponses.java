@@ -2,12 +2,22 @@ package org.pragmatica.aether.forge.api;
 
 import org.pragmatica.lang.Option;
 
+import java.time.Duration;
 import java.util.List;
 
 /// API response records for Forge endpoints.
 /// Organized by domain for clarity and discoverability.
 public final class ForgeApiResponses {
     private ForgeApiResponses() {}
+
+    /// Format a Duration as HH:MM:SS.
+    static String formatDuration(Duration duration) {
+        var totalSeconds = duration.toSeconds();
+        var hours = totalSeconds / 3600;
+        var minutes = (totalSeconds % 3600) / 60;
+        var seconds = totalSeconds % 60;
+        return String.format("%02d:%02d:%02d", hours, minutes, seconds);
+    }
 
     // ========== Common Responses ==========
     /// Generic success response.
@@ -26,6 +36,7 @@ public final class ForgeApiResponses {
     /// Full cluster status response from /api/status endpoint.
     public record FullStatusResponse(ClusterInfo cluster,
                                      MetricsInfo metrics,
+                                     AetherAggregates aetherMetrics,
                                      LoadInfo load,
                                      long uptimeSeconds,
                                      int sliceCount,
@@ -60,6 +71,14 @@ public final class ForgeApiResponses {
                               double avgLatencyMs,
                               long totalSuccess,
                               long totalFailures) {}
+
+    /// Real Aether invocation aggregates (EMA-smoothed).
+    public record AetherAggregates(double rps,
+                                   double successRate,
+                                   double avgLatencyMs,
+                                   long totalInvocations,
+                                   long totalSuccess,
+                                   long totalFailures) {}
 
     /// Load status information derived from ConfigurableLoadRunner.
     public record LoadInfo(String state,
@@ -153,7 +172,6 @@ public final class ForgeApiResponses {
     public record RateSetResponse(boolean success, int newRate) {}
 
     // ========== Simulator Responses ===========
-
     /// Inventory mode response.
     public record InventoryModeResponse(String mode) {}
 
@@ -225,5 +243,4 @@ public final class ForgeApiResponses {
     // ========== Multiplier/Config Responses ==========
     /// Response from multiplier set operation.
     public record MultiplierSetResponse(boolean success, double multiplier) {}
-
 }

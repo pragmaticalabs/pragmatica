@@ -9,11 +9,17 @@ import org.pragmatica.cluster.state.kvstore.StructuredPattern;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
+
 /// Aether KV-Store structured keys for cluster state management
+@SuppressWarnings({"JBCT-VO-01", "JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-NAM-01", "JBCT-STY-04"})
 public sealed interface AetherKey extends StructuredKey {
     /// String representation of the key
     String asString();
@@ -44,6 +50,7 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
+        @SuppressWarnings("JBCT-VO-02")
         public static SliceTargetKey sliceTargetKey(ArtifactBase artifactBase) {
             return new SliceTargetKey(artifactBase);
         }
@@ -94,6 +101,7 @@ public sealed interface AetherKey extends StructuredKey {
                               .map(AppBlueprintKey::new);
         }
 
+        @SuppressWarnings("JBCT-VO-02")
         public static AppBlueprintKey appBlueprintKey(BlueprintId blueprintId) {
             return new AppBlueprintKey(blueprintId);
         }
@@ -224,6 +232,7 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
+        @SuppressWarnings("JBCT-VO-02")
         public static VersionRoutingKey versionRoutingKey(ArtifactBase artifactBase) {
             return new VersionRoutingKey(artifactBase);
         }
@@ -275,7 +284,7 @@ public sealed interface AetherKey extends StructuredKey {
                 return ROLLING_UPDATE_KEY_FORMAT_ERROR.apply(key)
                                                       .result();
             }
-            return Result.success(new RollingUpdateKey(updateId));
+            return success(new RollingUpdateKey(updateId));
         }
     }
 
@@ -306,6 +315,7 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
+        @SuppressWarnings("JBCT-VO-02")
         public static PreviousVersionKey previousVersionKey(ArtifactBase artifactBase) {
             return new PreviousVersionKey(artifactBase);
         }
@@ -347,6 +357,7 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
+        @SuppressWarnings("JBCT-VO-02")
         public static HttpRouteKey httpRouteKey(String httpMethod, String pathPrefix) {
             return new HttpRouteKey(httpMethod.toUpperCase(), normalizePrefix(pathPrefix));
         }
@@ -368,7 +379,7 @@ public sealed interface AetherKey extends StructuredKey {
                 return HTTP_ROUTE_KEY_FORMAT_ERROR.apply(key)
                                                   .result();
             }
-            return Result.success(new HttpRouteKey(httpMethod, pathPrefix));
+            return success(new HttpRouteKey(httpMethod, pathPrefix));
         }
 
         private static String normalizePrefix(String path) {
@@ -383,6 +394,51 @@ public sealed interface AetherKey extends StructuredKey {
                 normalized = normalized + "/";
             }
             return normalized;
+        }
+    }
+
+    /// Log level key format:
+    /// ```
+    /// log-level/{loggerName}
+    /// ```
+    /// Stores runtime log level overrides per logger.
+    record LogLevelKey(String loggerName) implements AetherKey {
+        private static final String PREFIX = "log-level/";
+
+        @Override
+        public boolean matches(StructuredPattern pattern) {
+            return switch (pattern) {
+                case AetherKeyPattern.LogLevelPattern logLevelPattern -> logLevelPattern.matches(this);
+                default -> false;
+            };
+        }
+
+        @Override
+        public String asString() {
+            return PREFIX + loggerName;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static LogLevelKey logLevelKey(String loggerName) {
+            return new LogLevelKey(loggerName);
+        }
+
+        public static Result<LogLevelKey> parseLogLevelKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return LOG_LEVEL_KEY_FORMAT_ERROR.apply(key)
+                                                 .result();
+            }
+            var loggerName = key.substring(PREFIX.length());
+            if (loggerName.isEmpty()) {
+                return LOG_LEVEL_KEY_FORMAT_ERROR.apply(key)
+                                                 .result();
+            }
+            return success(new LogLevelKey(loggerName));
         }
     }
 
@@ -412,6 +468,7 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
+        @SuppressWarnings("JBCT-VO-02")
         public static DynamicAspectKey dynamicAspectKey(String artifactBase, String methodName) {
             return new DynamicAspectKey(artifactBase, methodName);
         }
@@ -419,17 +476,17 @@ public sealed interface AetherKey extends StructuredKey {
         public static Result<DynamicAspectKey> dynamicAspectKey(String key) {
             if (!key.startsWith(PREFIX)) {
                 return DYNAMIC_ASPECT_KEY_FORMAT_ERROR.apply(key)
-                                                       .result();
+                                                      .result();
             }
             var content = key.substring(PREFIX.length());
             var slashIndex = content.indexOf('/');
-            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+            if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {
                 return DYNAMIC_ASPECT_KEY_FORMAT_ERROR.apply(key)
-                                                       .result();
+                                                      .result();
             }
             var artifactBase = content.substring(0, slashIndex);
             var methodName = content.substring(slashIndex + 1);
-            return Result.success(new DynamicAspectKey(artifactBase, methodName));
+            return success(new DynamicAspectKey(artifactBase, methodName));
         }
     }
 
@@ -469,7 +526,76 @@ public sealed interface AetherKey extends StructuredKey {
                 return ALERT_THRESHOLD_KEY_FORMAT_ERROR.apply(key)
                                                        .result();
             }
-            return Result.success(new AlertThresholdKey(metricName));
+            return success(new AlertThresholdKey(metricName));
+        }
+    }
+
+    /// Config key format:
+    /// ```
+    /// config/{key}                    — cluster-wide
+    /// config/node/{nodeId}/{key}      — node-specific
+    /// ```
+    /// Stores dynamic configuration values in the cluster KV store.
+    record ConfigKey(String key, Option<NodeId> nodeScope) implements AetherKey {
+        private static final String CLUSTER_PREFIX = "config/";
+        private static final String NODE_PREFIX = "config/node/";
+
+        @Override
+        public boolean matches(StructuredPattern pattern) {
+            return switch (pattern) {
+                case AetherKeyPattern.ConfigPattern configPattern -> configPattern.matches(this);
+                default -> false;
+            };
+        }
+
+        @Override
+        public String asString() {
+            return nodeScope.fold(() -> CLUSTER_PREFIX + key, nodeId -> NODE_PREFIX + nodeId.id() + "/" + key);
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public boolean isClusterWide() {
+            return nodeScope.isEmpty();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static ConfigKey configKey(String key) {
+            return new ConfigKey(key, none());
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static ConfigKey configKey(String key, NodeId nodeId) {
+            return new ConfigKey(key, some(nodeId));
+        }
+
+        public static Result<ConfigKey> parseConfigKey(String raw) {
+            if (raw.startsWith(NODE_PREFIX)) {
+                var content = raw.substring(NODE_PREFIX.length());
+                var slashIndex = content.indexOf('/');
+                if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                    return CONFIG_KEY_FORMAT_ERROR.apply(raw)
+                                                  .result();
+                }
+                var nodeIdPart = content.substring(0, slashIndex);
+                var keyPart = content.substring(slashIndex + 1);
+                return NodeId.nodeId(nodeIdPart)
+                             .map(nodeId -> new ConfigKey(keyPart,
+                                                          some(nodeId)));
+            }
+            if (raw.startsWith(CLUSTER_PREFIX)) {
+                var keyPart = raw.substring(CLUSTER_PREFIX.length());
+                if (keyPart.isEmpty()) {
+                    return CONFIG_KEY_FORMAT_ERROR.apply(raw)
+                                                  .result();
+                }
+                return success(new ConfigKey(keyPart, none()));
+            }
+            return CONFIG_KEY_FORMAT_ERROR.apply(raw)
+                                          .result();
         }
     }
 
@@ -482,7 +608,9 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> PREVIOUS_VERSION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid previous-version key format: %s");
     Fn1<Cause, String> HTTP_ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid http-routes key format: %s");
     Fn1<Cause, String> ALERT_THRESHOLD_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid alert-threshold key format: %s");
+    Fn1<Cause, String> LOG_LEVEL_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid log-level key format: %s");
     Fn1<Cause, String> DYNAMIC_ASPECT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid dynamic-aspect key format: %s");
+    Fn1<Cause, String> CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid config key format: %s");
 
     /// Aether KV-Store structured patterns for key matching
     sealed interface AetherKeyPattern extends StructuredPattern {
@@ -549,9 +677,23 @@ public sealed interface AetherKey extends StructuredKey {
             }
         }
 
+        /// Pattern for log-level keys: log-level/*
+        record LogLevelPattern() implements AetherKeyPattern {
+            public boolean matches(LogLevelKey key) {
+                return true;
+            }
+        }
+
         /// Pattern for dynamic-aspect keys: dynamic-aspect/*
         record DynamicAspectPattern() implements AetherKeyPattern {
             public boolean matches(DynamicAspectKey key) {
+                return true;
+            }
+        }
+
+        /// Pattern for config keys: config/*
+        record ConfigPattern() implements AetherKeyPattern {
+            public boolean matches(ConfigKey key) {
                 return true;
             }
         }

@@ -82,7 +82,7 @@ class SliceStoreTest {
 
     @Test
     void slice_store_factory_creates_instance() {
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.defaultConfiguration());
+        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
 
         assertThat(store).isNotNull();
         assertThat(store.loaded()).isEmpty();
@@ -141,7 +141,7 @@ class SliceStoreTest {
 
     @Test
     void activate_not_loaded_fails() {
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.defaultConfiguration());
+        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
 
         store.activateSlice(artifact)
              .await()
@@ -206,7 +206,7 @@ class SliceStoreTest {
 
     @Test
     void deactivate_not_loaded_fails() {
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.defaultConfiguration());
+        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
 
         store.deactivateSlice(artifact)
              .await()
@@ -270,7 +270,7 @@ class SliceStoreTest {
 
     @Test
     void unload_nonexistent_succeeds() {
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.defaultConfiguration());
+        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
 
         store.unloadSlice(artifact)
              .await()
@@ -286,7 +286,7 @@ class SliceStoreTest {
         var artifact1 = Artifact.artifact("org.example:slice1:1.0.0").unwrap();
         var artifact2 = Artifact.artifact("org.example:slice2:1.0.0").unwrap();
 
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.defaultConfiguration());
+        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
         addPreloadedSlice(store, artifact1, slice1, EntryState.LOADED);
         addPreloadedSlice(store, artifact2, slice2, EntryState.ACTIVE);
 
@@ -329,7 +329,7 @@ class SliceStoreTest {
     }
 
     private SliceStore createStoreWithPreloadedSlice(Slice slice, EntryState state) {
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.defaultConfiguration());
+        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.sliceActionConfig());
         addPreloadedSlice(store, artifact, slice, state);
         return store;
     }

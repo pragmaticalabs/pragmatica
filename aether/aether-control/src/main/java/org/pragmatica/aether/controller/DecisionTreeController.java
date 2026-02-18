@@ -102,7 +102,7 @@ public interface DecisionTreeController extends ClusterController {
             var currentTime = System.currentTimeMillis();
             long previousTime;
             long expected;
-            do {
+            do{
                 expected = lastEvaluationTime.get();
                 previousTime = expected;
             } while (!lastEvaluationTime.compareAndSet(expected, currentTime));
@@ -201,7 +201,9 @@ public interface DecisionTreeController extends ClusterController {
                 var currentCount = entry.getValue();
                 // put() atomically stores new value and returns previous (or null if absent)
                 var previous = previousCallCounts.put(metricName, currentCount);
-                var previousCount = previous != null ? previous : 0.0;
+                var previousCount = previous != null
+                                    ? previous
+                                    : 0.0;
                 var delta = currentCount - previousCount;
                 var callsPerSecond = delta / elapsedSeconds;
                 if (callsPerSecond > currentConfig.callRateScaleUpThreshold()) {

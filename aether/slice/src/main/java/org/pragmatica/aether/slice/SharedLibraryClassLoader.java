@@ -5,6 +5,8 @@ import org.pragmatica.aether.slice.dependency.ArtifactDependency;
 import org.pragmatica.aether.slice.dependency.CompatibilityResult;
 import org.pragmatica.aether.slice.dependency.VersionPattern;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.io.IOException;
 import java.net.URL;
@@ -14,6 +16,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Option.option;
 
 /// ClassLoader for shared dependencies across all slices.
 ///
@@ -32,6 +36,7 @@ import org.slf4j.LoggerFactory;
 ///
 /// @see SliceClassLoader
 /// @see CompatibilityResult
+@SuppressWarnings("JBCT-SEQ-01")
 public class SharedLibraryClassLoader extends URLClassLoader {
     private static final Logger log = LoggerFactory.getLogger(SharedLibraryClassLoader.class);
 
@@ -61,8 +66,8 @@ public class SharedLibraryClassLoader extends URLClassLoader {
     /// @return Empty if not loaded, or CompatibilityResult indicating compatibility
     public Option<CompatibilityResult> checkCompatibility(String groupId, String artifactId, VersionPattern required) {
         var key = artifactKey(groupId, artifactId);
-        return Option.option(loadedArtifacts.get(key))
-                     .map(loadedVersion -> CompatibilityResult.check(loadedVersion, required));
+        return option(loadedArtifacts.get(key))
+        .map(loadedVersion -> CompatibilityResult.check(loadedVersion, required));
     }
 
     /// Add an artifact JAR to this classloader.
@@ -74,7 +79,7 @@ public class SharedLibraryClassLoader extends URLClassLoader {
     /// @param artifactId Maven artifact ID
     /// @param version    The version being loaded
     /// @param jarUrl     URL to the JAR file
-    public synchronized void addArtifact(String groupId, String artifactId, Version version, URL jarUrl) {
+    public synchronized Result<Unit> addArtifact(String groupId, String artifactId, Version version, URL jarUrl) {
         var key = artifactKey(groupId, artifactId);
         if (loadedArtifacts.containsKey(key)) {
             log.warn("Artifact {} already loaded with version {}, ignoring request to load version {}",
@@ -82,11 +87,12 @@ public class SharedLibraryClassLoader extends URLClassLoader {
                      loadedArtifacts.get(key)
                                     .withQualifier(),
                      version.withQualifier());
-            return;
+            return Result.unitResult();
         }
         addURL(jarUrl);
         loadedArtifacts.put(key, version);
         log.debug("Added shared artifact {}:{} from {}", key, version.withQualifier(), jarUrl);
+        return Result.unitResult();
     }
 
     /// Register an artifact as provided by the runtime (e.g., embedded in a shaded JAR).
@@ -98,12 +104,13 @@ public class SharedLibraryClassLoader extends URLClassLoader {
     /// @param groupId    Maven group ID
     /// @param artifactId Maven artifact ID
     /// @param version    The version being provided
-    public synchronized void registerRuntimeProvided(String groupId, String artifactId, Version version) {
+    public synchronized Result<Unit> registerRuntimeProvided(String groupId, String artifactId, Version version) {
         var key = artifactKey(groupId, artifactId);
         if (!loadedArtifacts.containsKey(key)) {
             loadedArtifacts.put(key, version);
             log.debug("Registered runtime-provided artifact {}:{}", key, version.withQualifier());
         }
+        return Result.unitResult();
     }
 
     /// Check if an artifact is already loaded.
@@ -121,7 +128,7 @@ public class SharedLibraryClassLoader extends URLClassLoader {
     /// @param artifactId Maven artifact ID
     /// @return The loaded version, or empty if not loaded
     public Option<Version> getLoadedVersion(String groupId, String artifactId) {
-        return Option.option(loadedArtifacts.get(artifactKey(groupId, artifactId)));
+        return option(loadedArtifacts.get(artifactKey(groupId, artifactId)));
     }
 
     /// Get all loaded artifacts.
@@ -131,6 +138,8 @@ public class SharedLibraryClassLoader extends URLClassLoader {
         return Map.copyOf(loadedArtifacts);
     }
 
+    /// JDK override — kept as void/throws per URLClassLoader contract.
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
     @Override
     public void close() throws IOException {
         loadedArtifacts.clear();

@@ -138,11 +138,11 @@ aether health
 Deploy a slice:
 
 ```bash
-aether deploy <artifact> [instances]
+aether deploy <artifact> [-n <instances>]
 
 # Examples
 aether deploy org.example:order:1.0.0
-aether deploy org.example:order:1.0.0 3
+aether deploy org.example:order:1.0.0 -n 3
 ```
 
 #### scale
@@ -175,16 +175,38 @@ Artifact repository operations:
 # Deploy JAR to repository
 aether artifact deploy <jar-path> -g <groupId> -a <artifactId> -v <version>
 
+# Push artifact from local Maven repository to cluster
+aether artifact push <group:artifact:version>
+
 # List artifacts
 aether artifact list
 
 # List versions
 aether artifact versions <group:artifact>
+
+# Show artifact metadata
+aether artifact info <group:artifact:version>
+
+# Delete an artifact
+aether artifact delete <group:artifact:version>
+
+# Show artifact storage metrics
+aether artifact metrics
 ```
 
-Example:
+Examples:
 ```bash
+# Deploy a JAR file directly
 aether artifact deploy target/my-slice.jar -g com.example -a my-slice -v 1.0.0
+
+# Push from local Maven repository (~/.m2/repository)
+aether artifact push com.example:my-slice:1.0.0
+
+# View artifact details
+aether artifact info com.example:my-slice:1.0.0
+
+# Remove an artifact
+aether artifact delete com.example:my-slice:1.0.0
 ```
 
 #### blueprint
@@ -194,6 +216,21 @@ Blueprint management:
 ```bash
 # Apply a blueprint file
 aether blueprint apply <file.toml>
+
+# List all deployed blueprints
+aether blueprint list [--format table|json]
+
+# Get blueprint details
+aether blueprint get <blueprintId> [--format table|json]
+
+# Show deployment status of a blueprint
+aether blueprint status <blueprintId> [--format table|json]
+
+# Validate a blueprint file without deploying
+aether blueprint validate <file.toml>
+
+# Delete a blueprint
+aether blueprint delete <blueprintId> [-f|--force]
 ```
 
 Example blueprint file (`order-system.toml`):
@@ -209,9 +246,25 @@ artifact = "org.example:inventory:1.0.0"
 instances = 2
 ```
 
-Apply it:
+Example workflow:
 ```bash
+# Validate before deploying
+aether blueprint validate order-system.toml
+
+# Apply the blueprint
 aether blueprint apply order-system.toml
+
+# Check deployment status
+aether blueprint status order-system:1.0.0
+
+# List all blueprints
+aether blueprint list
+
+# Get details for a specific blueprint
+aether blueprint get order-system:1.0.0
+
+# Delete a blueprint (with force to skip confirmation)
+aether blueprint delete order-system:1.0.0 -f
 ```
 
 #### update
@@ -337,6 +390,76 @@ aether thresholds set cpu -w 0.7 -c 0.9
 aether thresholds remove cpu
 ```
 
+#### aspects
+
+Manage dynamic aspects on slice methods:
+
+```bash
+# List all configured aspects
+aether aspects list
+
+# Set aspect mode on a method
+aether aspects set org.example:my-slice:1.0.0#processOrder LOG_AND_METRICS
+
+# Remove aspect configuration
+aether aspects remove org.example:my-slice:1.0.0#processOrder
+```
+
+Available modes: `NONE`, `LOG`, `METRICS`, `LOG_AND_METRICS`
+
+#### config
+
+Manage dynamic configuration overrides:
+
+```bash
+# Show all configuration (base + overrides merged)
+aether config list
+
+# Show only dynamic overrides from KV store
+aether config overrides
+
+# Set a cluster-wide override
+aether config set database.pool.max_size 20
+
+# Set a node-specific override
+aether config set server.port 9090 --node node-2
+
+# Remove a cluster-wide override (base value restored)
+aether config remove database.pool.max_size
+
+# Remove a node-specific override
+aether config remove server.port --node node-2
+```
+
+#### logging
+
+Manage runtime log levels:
+
+```bash
+# List all runtime-configured log level overrides
+aether logging list
+
+# Set log level for a specific logger
+aether logging set <logger> <level>
+
+# Reset logger to configuration default
+aether logging reset <logger>
+```
+
+Available levels: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`, `OFF`
+
+Example workflow:
+```bash
+# Enable debug logging for a package
+aether logging set org.pragmatica.aether.node DEBUG
+
+# Check active overrides
+aether logging list
+
+# Reset to default
+aether logging reset org.pragmatica.aether.node
+```
+
 ### REPL Mode
 
 Start interactive mode by omitting the command:
@@ -344,7 +467,7 @@ Start interactive mode by omitting the command:
 ```bash
 ./script/aether.sh --connect localhost:8080
 
-Aether v0.7.2 - Connected to localhost:8080
+Aether v0.16.0 - Connected to localhost:8080
 Type 'help' for available commands, 'exit' to quit.
 
 aether> status
@@ -369,7 +492,7 @@ aether> exit
 ./script/aether.sh --connect node1.example.com:8080 status
 
 # Deploy a slice with 3 instances
-./script/aether.sh deploy org.example:my-slice:1.0.0 3
+./script/aether.sh deploy org.example:my-slice:1.0.0 -n 3
 
 # Interactive mode
 ./script/aether.sh --connect localhost:8080
