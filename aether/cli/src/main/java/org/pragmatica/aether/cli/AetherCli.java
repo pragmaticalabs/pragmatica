@@ -183,7 +183,7 @@ public class AetherCli implements Runnable {
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-UTIL-02"})
     private void runRepl(CommandLine cmd) {
-        System.out.println("Aether v0.15.0 - Connected to " + nodeAddress);
+        System.out.println("Aether v0.16.0 - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
         System.out.println();
         try (var reader = new BufferedReader(new InputStreamReader(System.in))) {
