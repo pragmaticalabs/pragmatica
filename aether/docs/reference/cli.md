@@ -467,7 +467,7 @@ Start interactive mode by omitting the command:
 ```bash
 ./script/aether.sh --connect localhost:8080
 
-Aether v0.16.0 - Connected to localhost:8080
+Aether v0.17.0 - Connected to localhost:8080
 Type 'help' for available commands, 'exit' to quit.
 
 aether> status

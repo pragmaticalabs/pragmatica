@@ -1,8 +1,8 @@
 # Development Priorities
 
-## Current Status (v0.16.0)
+## Current Status (v0.17.0)
 
-Release 0.16.0 continues production hardening with bug fixes and documentation updates.
+Release 0.17.0 continues production hardening with bug fixes and documentation updates.
 
 ## Completed ✅
 

@@ -101,7 +101,7 @@ import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 /// Assembles all components: consensus, KV-store, slice management, deployment managers.
 @SuppressWarnings("JBCT-RET-01")
 public interface AetherNode {
-    String VERSION = "0.16.0";
+    String VERSION = "0.17.0";
     NodeId self();
 
     Promise<Unit> start();

@@ -12,7 +12,7 @@ modify it to make it your own, and deploy it to a local Forge.
 |----------|----------|------------------|
 | Java     | 25+      | `java --version` |
 | Maven    | 3.8+     | `mvn --version`  |
-| JBCT CLI | 0.16.0+  | `jbct --version` |
+| JBCT CLI | 0.17.0+  | `jbct --version` |
 
 > **Don't have the JBCT CLI?** Install it with `mvn dependency:copy` or download from Maven Central.
 

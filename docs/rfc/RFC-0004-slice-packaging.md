@@ -103,10 +103,10 @@ Location: `META-INF/dependencies/{FactoryClassName}`
 
 ```
 [shared]
-org.pragmatica-lite:core:^0.16.0
+org.pragmatica-lite:core:^0.17.0
 
 [infra]
-org.pragmatica-lite.aether:infra-cache:^0.16.0
+org.pragmatica-lite.aether:infra-cache:^0.17.0
 
 [slices]
 org.example:inventory-service:^1.0.0
@@ -278,12 +278,12 @@ target/
 
 ```
 [shared]
-org.pragmatica-lite:core:^0.16.0
-org.pragmatica-lite:json:^0.16.0
+org.pragmatica-lite:core:^0.17.0
+org.pragmatica-lite:json:^0.17.0
 
 [infra]
-org.pragmatica-lite.aether:infra-cache:^0.16.0
-org.pragmatica-lite.aether:infra-metrics:^0.16.0
+org.pragmatica-lite.aether:infra-cache:^0.17.0
+org.pragmatica-lite.aether:infra-metrics:^0.17.0
 
 [slices]
 org.example:inventory-service:^1.0.0

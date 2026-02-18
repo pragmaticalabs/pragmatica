@@ -37,8 +37,8 @@ class RollingUpdateTest {
     private static final int BASE_MGMT_PORT = 9100;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String OLD_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
-    private static final String NEW_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.16.0";
+    private static final String OLD_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.16.0";
+    private static final String NEW_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.17.0";
     private static final String ARTIFACT_BASE = "org.pragmatica-lite.aether.test:echo-slice-echo-service";
     private static final String NEW_VERSION_NUMBER = "0.16.0";
 
