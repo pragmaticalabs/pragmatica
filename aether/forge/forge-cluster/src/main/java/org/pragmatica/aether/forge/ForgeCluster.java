@@ -1,6 +1,6 @@
 package org.pragmatica.aether.forge;
 
-import org.pragmatica.aether.config.ConfigurationProvider;
+import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;

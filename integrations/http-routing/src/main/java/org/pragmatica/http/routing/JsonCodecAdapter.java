@@ -41,11 +41,11 @@ public record JsonCodecAdapter(JsonMapper mapper) implements JsonCodec {
     ///
     /// @return JsonCodec implementation with default settings
     public static JsonCodec defaultCodec() {
-        return new JsonCodecAdapter(JsonMapper.jsonMapper()
-                                              .withPragmaticaTypes()
-                                              .configure(builder -> builder.changeDefaultPropertyInclusion(incl -> incl.withValueInclusion(JsonInclude.Include.NON_EMPTY)
-                                                                                                                       .withContentInclusion(JsonInclude.Include.NON_EMPTY)))
-                                              .build());
+        return forMapper(JsonMapper.jsonMapper()
+                                   .withPragmaticaTypes()
+                                   .configure(builder -> builder.changeDefaultPropertyInclusion(incl -> incl.withValueInclusion(JsonInclude.Include.NON_EMPTY)
+                                                                                                            .withContentInclusion(JsonInclude.Include.NON_EMPTY)))
+                                   .build());
     }
 
     @Override
@@ -59,13 +59,6 @@ public record JsonCodecAdapter(JsonMapper mapper) implements JsonCodec {
     @Override
     public <T> Result<T> deserialize(ByteBuf entity, TypeToken<T> token) {
         return deserialize(ByteBufUtil.getBytes(entity), token);
-    }
-
-    @Override
-    public <T> Result<T> deserialize(String json, TypeToken<T> token) {
-        return mapper.readString(json, token)
-                     .mapError(cause -> CodecError.deserializationFailed(cause.message(),
-                                                                         cause));
     }
 
     @Override

@@ -1,6 +1,6 @@
 package org.pragmatica.aether.resource;
 
-import org.pragmatica.aether.config.ConfigService;
+import org.pragmatica.config.ConfigService;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Promise;

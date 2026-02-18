@@ -141,6 +141,11 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
+                <artifactId>config-service</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
                 <artifactId>http-client</artifactId>
                 <version>${project.version}</version>
             </dependency>

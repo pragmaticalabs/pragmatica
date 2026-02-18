@@ -44,7 +44,6 @@
 
     <modules>
         <module>slice-annotations</module>
-        <module>config</module>
         <module>aether-config</module>
         <module>aether-setup</module>
         <module>dashboard</module>
@@ -210,8 +209,8 @@
             </dependency>
 
             <dependency>
-                <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>config</artifactId>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>config-service</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

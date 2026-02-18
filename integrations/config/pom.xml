@@ -17,5 +17,6 @@
 
     <modules>
         <module>toml</module>
+        <module>config-service</module>
     </modules>
 </project>

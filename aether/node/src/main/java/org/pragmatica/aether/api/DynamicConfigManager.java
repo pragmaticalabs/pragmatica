@@ -1,6 +1,6 @@
 package org.pragmatica.aether.api;
 
-import org.pragmatica.aether.config.DynamicConfigurationProvider;
+import org.pragmatica.config.DynamicConfigurationProvider;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;

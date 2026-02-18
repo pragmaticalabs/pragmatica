@@ -5,19 +5,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.utils.Causes;
 
 public sealed interface CodecError extends Cause {
-    record SerializationFailed(String message, Option<Cause> source) implements CodecError {
-        @Override
-        public String message() {
-            return message;
-        }
-    }
+    record SerializationFailed(String message, Option<Cause> source) implements CodecError {}
 
-    record DeserializationFailed(String message, Option<Cause> source) implements CodecError {
-        @Override
-        public String message() {
-            return message;
-        }
-    }
+    record DeserializationFailed(String message, Option<Cause> source) implements CodecError {}
 
     static CodecError serializationFailed(String message, Cause source) {
         return new SerializationFailed(message, Option.option(source));

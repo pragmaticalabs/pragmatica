@@ -1,7 +1,7 @@
 package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.config.AppHttpConfig;
-import org.pragmatica.aether.config.ConfigurationProvider;
+import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TtmConfig;
