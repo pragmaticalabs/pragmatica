@@ -18,17 +18,33 @@ From a `@Slice`-annotated interface, the processor generates:
 
 ### D1: Factory Return Type
 
-**Decision**: Factory methods return `Promise<SliceType>`, never `Result<Promise<...>>` or `Promise<Result<...>>`.
+**Decision**: The *generated* factory method always returns `Promise<SliceType>`. The *user-written* factory method on the `@Slice` interface may return any of the four JBCT return types. The slice processor detects the return type at compile time and generates the appropriate wrapping.
 
-**Rationale**: Promise is the asynchronous version of Result by design. Wrapping one in the other is redundant.
+**Rationale**: Promise is the asynchronous version of Result by design. Wrapping one in the other is redundant in the generated code. However, user-written factories may need validation (`Result<T>`), conditional construction (`Option<T>`), or async initialization (`Promise<T>`).
+
+#### User-Written Factory Return Types
+
+| User factory returns | Generated wrapping (sync path) | Generated wrapping (async path) |
+|---|---|---|
+| `T` (direct) | `Promise.success(aspect.apply(instance))` | `.map((...) -> { return aspect.apply(factory(...)); })` |
+| `Result<T>` | `factory(...).map(aspect::apply).async()` | `.flatMap((...) -> { return factory(...).map(aspect::apply).async(); })` |
+| `Option<T>` | `factory(...).toResult(cause("...")).map(aspect::apply).async()` | `.flatMap((...) -> { return factory(...).toResult(cause("...")).map(aspect::apply).async(); })` |
+| `Promise<T>` | `factory(...).map(aspect::apply)` | `.flatMap((...) -> { return factory(...).map(aspect::apply); })` |
+
+The type argument of `Result<T>`, `Option<T>`, or `Promise<T>` must match the slice interface type; a mismatch is a compile error.
 
 ```java
-// CORRECT
-public static Promise<MySlice> mySlice(Aspect<MySlice> aspect, SliceCreationContext ctx)
+// All four are valid user-written factory return types:
+static MySlice mySlice() { ... }                  // Direct
+static Result<MySlice> mySlice() { ... }           // Validation during construction
+static Option<MySlice> mySlice() { ... }           // Conditional construction
+static Promise<MySlice> mySlice() { ... }          // Async construction
 
-// WRONG - never wrap Result in Promise
+// WRONG - never wrap Result in Promise (generated code handles this)
 public static Promise<Result<MySlice>> mySlice(...)
 ```
+
+**Async path note**: For non-direct return types, the `Promise.all(...).map(...)` chain switches to `.flatMap(...)` because the lambda body returns `Promise<T>` instead of `T`.
 
 ### D2: Aspect Parameter
 
@@ -594,6 +610,12 @@ public interface SliceInvokerFacade {
 | `should_generate_resource_provide_call_for_qualified_parameter` | @ResourceQualifier resource dep |
 | `should_generate_resource_provide_for_plain_interface_factory_params` | Plain interface with @ResourceQualifier factory params |
 | `should_generate_resources_for_multiple_plain_interfaces_with_params` | Multiple plain interfaces with resource params |
+| `should_process_factory_returning_result` | Factory returning `Result<T>` (sync path) |
+| `should_process_factory_returning_option` | Factory returning `Option<T>` (sync path) |
+| `should_process_factory_returning_promise` | Factory returning `Promise<T>` (sync path) |
+| `should_process_result_factory_with_resource_dependency` | `Result<T>` factory with async deps (`.flatMap`) |
+| `should_process_result_factory_with_interceptors` | `Result<T>` factory with interceptors |
+| `should_fail_on_mismatched_result_type_argument` | Compile error on `Result<String>` for non-String slice |
 
 ## Revision History
 
@@ -605,3 +627,4 @@ public interface SliceInvokerFacade {
 | 2026-01-11 | Claude | Fixed: import internal deps from subpackages |
 | 2026-01-14 | Claude | Added D8: Multi-parameter method support with synthetic records |
 | 2026-02-16 | Claude | Updated for SliceCreationContext, resource deps, plain interface deps with transitive provisioning |
+| 2026-02-19 | Claude | D1: Added support for all four JBCT factory return types (T, Result, Option, Promise) |

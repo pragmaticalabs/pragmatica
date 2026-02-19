@@ -19,7 +19,7 @@ final class JdbcRowAccessor implements RowAccessor {
 
     @Override
     public Result<String> getString(String column) {
-        try {
+        try{
             var value = rs.getString(column);
             return rs.wasNull()
                    ? Result.success("")
@@ -33,7 +33,7 @@ final class JdbcRowAccessor implements RowAccessor {
 
     @Override
     public Result<Integer> getInt(String column) {
-        try {
+        try{
             var value = rs.getInt(column);
             return rs.wasNull()
                    ? DatabaseConnectorError.queryFailed("getInt(" + column + ")",
@@ -49,7 +49,7 @@ final class JdbcRowAccessor implements RowAccessor {
 
     @Override
     public Result<Long> getLong(String column) {
-        try {
+        try{
             var value = rs.getLong(column);
             return rs.wasNull()
                    ? DatabaseConnectorError.queryFailed("getLong(" + column + ")",
@@ -65,7 +65,7 @@ final class JdbcRowAccessor implements RowAccessor {
 
     @Override
     public Result<Double> getDouble(String column) {
-        try {
+        try{
             var value = rs.getDouble(column);
             return rs.wasNull()
                    ? DatabaseConnectorError.queryFailed("getDouble(" + column + ")",
@@ -81,7 +81,7 @@ final class JdbcRowAccessor implements RowAccessor {
 
     @Override
     public Result<Boolean> getBoolean(String column) {
-        try {
+        try{
             var value = rs.getBoolean(column);
             return rs.wasNull()
                    ? DatabaseConnectorError.queryFailed("getBoolean(" + column + ")",
@@ -97,7 +97,7 @@ final class JdbcRowAccessor implements RowAccessor {
 
     @Override
     public Result<byte[]> getBytes(String column) {
-        try {
+        try{
             var value = rs.getBytes(column);
             return rs.wasNull()
                    ? Result.success(new byte[0])
@@ -111,13 +111,14 @@ final class JdbcRowAccessor implements RowAccessor {
 
     @Override
     public <V> Result<V> getObject(String column, Class<V> type) {
-        try {
+        try{
             var value = rs.getObject(column, type);
             return rs.wasNull()
                    ? DatabaseConnectorError.queryFailed("getObject(" + column + ", " + type.getSimpleName() + ")",
                                                         "Column value was NULL")
                                            .result()
-                   : option(value).toResult(DatabaseConnectorError.queryFailed("getObject(" + column + ", " + type.getSimpleName() + ")",
+                   : option(value).toResult(DatabaseConnectorError.queryFailed("getObject(" + column + ", " + type.getSimpleName()
+                                                                               + ")",
                                                                                "Column value was NULL"));
         } catch (SQLException e) {
             return DatabaseConnectorError.queryFailed("getObject(" + column + ", " + type.getSimpleName() + ")",

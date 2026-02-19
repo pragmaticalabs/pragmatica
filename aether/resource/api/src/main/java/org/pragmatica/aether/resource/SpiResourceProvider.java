@@ -106,37 +106,44 @@ public final class SpiResourceProvider implements ResourceProvider {
 
     @SuppressWarnings("unchecked")
     private <T> Promise<T> createResource(Class<T> resourceType, String configSection) {
-        return option(factories.get(resourceType))
-            .filter(list -> !list.isEmpty())
-            .map(factoryList -> loadConfigAndInvoke((List<ResourceFactory<T, ?>>) (List<?>) factoryList,
-                                                    resourceType, configSection))
-            .or(() -> ResourceProvisioningError.factoryNotFound(resourceType).promise());
+        return option(factories.get(resourceType)).filter(list -> !list.isEmpty())
+                     .map(factoryList -> loadConfigAndInvoke((List<ResourceFactory<T, ?>>)(List<?>) factoryList,
+                                                             resourceType,
+                                                             configSection))
+                     .or(() -> ResourceProvisioningError.factoryNotFound(resourceType)
+                                                        .promise());
     }
 
     @SuppressWarnings("unchecked")
     private <T> Promise<T> createResourceWithContext(Class<T> resourceType,
                                                      String configSection,
                                                      ProvisioningContext context) {
-        return option(factories.get(resourceType))
-            .filter(list -> !list.isEmpty())
-            .map(factoryList -> loadConfigAndInvokeWithContext((List<ResourceFactory<T, ?>>) (List<?>) factoryList,
-                                                               resourceType, configSection, context))
-            .or(() -> ResourceProvisioningError.factoryNotFound(resourceType).promise());
+        return option(factories.get(resourceType)).filter(list -> !list.isEmpty())
+                     .map(factoryList -> loadConfigAndInvokeWithContext((List<ResourceFactory<T, ?>>)(List<?>) factoryList,
+                                                                        resourceType,
+                                                                        configSection,
+                                                                        context))
+                     .or(() -> ResourceProvisioningError.factoryNotFound(resourceType)
+                                                        .promise());
     }
 
     private <T> Promise<T> loadConfigAndInvoke(List<ResourceFactory<T, ?>> factoryList,
-                                                Class<T> resourceType,
-                                                String configSection) {
-        return loadConfig(configSection, factoryList.getFirst().configType())
-            .flatMap(config -> selectAndInvoke(factoryList, config, resourceType, configSection));
+                                               Class<T> resourceType,
+                                               String configSection) {
+        return loadConfig(configSection,
+                          factoryList.getFirst()
+                                     .configType())
+        .flatMap(config -> selectAndInvoke(factoryList, config, resourceType, configSection));
     }
 
     private <T> Promise<T> loadConfigAndInvokeWithContext(List<ResourceFactory<T, ?>> factoryList,
-                                                           Class<T> resourceType,
-                                                           String configSection,
-                                                           ProvisioningContext context) {
-        return loadConfig(configSection, factoryList.getFirst().configType())
-            .flatMap(config -> selectAndInvokeWithContext(factoryList, config, resourceType, configSection, context));
+                                                          Class<T> resourceType,
+                                                          String configSection,
+                                                          ProvisioningContext context) {
+        return loadConfig(configSection,
+                          factoryList.getFirst()
+                                     .configType())
+        .flatMap(config -> selectAndInvokeWithContext(factoryList, config, resourceType, configSection, context));
     }
 
     @SuppressWarnings("unchecked")

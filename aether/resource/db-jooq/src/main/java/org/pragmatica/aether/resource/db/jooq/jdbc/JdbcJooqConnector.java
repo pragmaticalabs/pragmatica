@@ -105,7 +105,8 @@ public final class JdbcJooqConnector implements JooqConnector {
 
     @Override
     public Promise<Boolean> isHealthy() {
-        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> checkHealth(dataSource))
+        return Promise.lift(DatabaseConnectorError::databaseFailure,
+                            () -> checkHealth(dataSource))
                       .recover(_ -> false);
     }
 
@@ -115,37 +116,41 @@ public final class JdbcJooqConnector implements JooqConnector {
     }
 
     // --- Private helpers: named methods extracted from lambdas ---
-
     private <R extends Record> R doFetchOne(ResultQuery<R> query) throws Exception {
         try (var conn = dataSource.getConnection()) {
-            return JooqConnector.extractSingleResult(DSL.using(conn, dialect).fetch(query));
+            return JooqConnector.extractSingleResult(DSL.using(conn, dialect)
+                                                        .fetch(query));
         }
     }
 
     private <R extends Record> Option<R> doFetchOptional(ResultQuery<R> query) throws Exception {
         try (var conn = dataSource.getConnection()) {
-            return JooqConnector.extractOptionalResult(DSL.using(conn, dialect).fetch(query));
+            return JooqConnector.extractOptionalResult(DSL.using(conn, dialect)
+                                                          .fetch(query));
         }
     }
 
     private <R extends Record> List<R> doFetch(ResultQuery<R> query) throws Exception {
         try (var conn = dataSource.getConnection()) {
-            return DSL.using(conn, dialect).fetch(query);
+            return DSL.using(conn, dialect)
+                      .fetch(query);
         }
     }
 
     private int doExecute(Query query) throws Exception {
         try (var conn = dataSource.getConnection()) {
-            return DSL.using(conn, dialect).execute(query);
+            return DSL.using(conn, dialect)
+                      .execute(query);
         }
     }
 
     private <T> T runTransaction(TransactionCallback<T> callback) throws Exception {
         try (var conn = dataSource.getConnection()) {
             conn.setAutoCommit(false);
-            try {
+            try{
                 var transactionalConnector = new TransactionalJooqConnector(config, conn, dialect);
-                var result = callback.execute(transactionalConnector).await();
+                var result = callback.execute(transactionalConnector)
+                                     .await();
                 return result.fold(cause -> rollbackAndFail(conn, cause), value -> commitAndReturn(conn, value));
             } catch (Exception e) {
                 rollbackSilently(conn);
@@ -156,7 +161,8 @@ public final class JdbcJooqConnector implements JooqConnector {
 
     private <T> T rollbackAndFail(Connection conn, org.pragmatica.lang.Cause cause) {
         rollbackSilently(conn);
-        return cause.<T>result().unwrap();
+        return cause.<T> result()
+                    .unwrap();
     }
 
     private <T> T commitAndReturn(Connection conn, T value) {
@@ -165,7 +171,7 @@ public final class JdbcJooqConnector implements JooqConnector {
     }
 
     private Unit rollbackSilently(Connection conn) {
-        try {
+        try{
             conn.rollback();
         } catch (SQLException e) {
             LOG.log(System.Logger.Level.DEBUG, "Rollback failed", e);
@@ -197,9 +203,9 @@ public final class JdbcJooqConnector implements JooqConnector {
             case SQLTimeoutException _ -> DatabaseConnectorError.timeout(sql);
             case SQLIntegrityConstraintViolationException e -> DatabaseConnectorError.constraintViolation(e.getMessage());
             case SQLTransactionRollbackException e -> DatabaseConnectorError.transactionRollback(e.getMessage());
-            case SQLException e -> option(e.getSQLState())
-                                         .filter(s -> s.startsWith("08"))
-                                         .map(_ -> (DatabaseConnectorError) DatabaseConnectorError.connectionFailed(e.getMessage(), e))
+            case SQLException e -> option(e.getSQLState()).filter(s -> s.startsWith("08"))
+                                         .map(_ -> (DatabaseConnectorError) DatabaseConnectorError.connectionFailed(e.getMessage(),
+                                                                                                                    e))
                                          .or(() -> DatabaseConnectorError.queryFailed(sql, e));
             default -> DatabaseConnectorError.databaseFailure(throwable);
         };
@@ -226,12 +232,16 @@ public final class JdbcJooqConnector implements JooqConnector {
 
         @Override
         public <R extends Record> Promise<List<R>> fetch(ResultQuery<R> query) {
-            return Promise.lift(e -> mapException(e, query.getSQL()), () -> DSL.using(conn, dialect).fetch(query));
+            return Promise.lift(e -> mapException(e, query.getSQL()),
+                                () -> DSL.using(conn, dialect)
+                                         .fetch(query));
         }
 
         @Override
         public Promise<Integer> execute(Query query) {
-            return Promise.lift(e -> mapException(e, query.getSQL()), () -> DSL.using(conn, dialect).execute(query));
+            return Promise.lift(e -> mapException(e, query.getSQL()),
+                                () -> DSL.using(conn, dialect)
+                                         .execute(query));
         }
 
         @Override
@@ -241,16 +251,19 @@ public final class JdbcJooqConnector implements JooqConnector {
 
         @Override
         public Promise<Boolean> isHealthy() {
-            return Promise.lift(DatabaseConnectorError::databaseFailure, () -> conn.isValid(5))
+            return Promise.lift(DatabaseConnectorError::databaseFailure,
+                                () -> conn.isValid(5))
                           .recover(_ -> false);
         }
 
         private <R extends Record> R txFetchOne(ResultQuery<R> query) {
-            return JooqConnector.extractSingleResult(DSL.using(conn, dialect).fetch(query));
+            return JooqConnector.extractSingleResult(DSL.using(conn, dialect)
+                                                        .fetch(query));
         }
 
         private <R extends Record> Option<R> txFetchOptional(ResultQuery<R> query) {
-            return JooqConnector.extractOptionalResult(DSL.using(conn, dialect).fetch(query));
+            return JooqConnector.extractOptionalResult(DSL.using(conn, dialect)
+                                                          .fetch(query));
         }
     }
 }

@@ -106,10 +106,13 @@ public interface JooqConnector extends DatabaseConnector {
     /// Extracts a single record from a jOOQ Result, failing if empty or multiple.
     static <R extends Record> R extractSingleResult(org.jooq.Result<R> result) {
         if (result.isEmpty()) {
-            return DatabaseConnectorError.ResultNotFound.INSTANCE.<R>result().unwrap();
+            return DatabaseConnectorError.ResultNotFound.INSTANCE.<R> result()
+                                         .unwrap();
         }
         if (result.size() > 1) {
-            return DatabaseConnectorError.multipleResults(result.size()).<R>result().unwrap();
+            return DatabaseConnectorError.multipleResults(result.size())
+                                         .<R> result()
+                                         .unwrap();
         }
         return result.getFirst();
     }

@@ -1759,4 +1759,188 @@ class SliceProcessorTest {
         assertCompilation(compilation).failed();
         assertCompilation(compilation).hadErrorContaining("Multiple @Key annotations");
     }
+
+    // ========== Factory Return Type Tests ==========
+
+    @Test
+    void should_process_factory_returning_result() throws Exception {
+        var source = JavaFileObjects.forSourceString("test.ValidatedService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Result;
+            @Slice
+            public interface ValidatedService {
+                Promise<String> doWork(String request);
+                static Result<ValidatedService> validatedService() { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+        var factoryContent = compilation.generatedSourceFile("test.ValidatedServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // Should use Result.map + async instead of Promise.success
+        assertThat(factoryContent).contains(".map(aspect::apply).async()");
+        assertThat(factoryContent).doesNotContain("Promise.success(");
+    }
+
+    @Test
+    void should_process_factory_returning_option() throws Exception {
+        var source = JavaFileObjects.forSourceString("test.OptionalService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Option;
+            @Slice
+            public interface OptionalService {
+                Promise<String> doWork(String request);
+                static Option<OptionalService> optionalService() { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+        var factoryContent = compilation.generatedSourceFile("test.OptionalServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains(".toResult().map(aspect::apply).async()");
+        assertThat(factoryContent).doesNotContain("Promise.success(");
+    }
+
+    @Test
+    void should_process_factory_returning_promise() throws Exception {
+        var source = JavaFileObjects.forSourceString("test.AsyncService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            @Slice
+            public interface AsyncService {
+                Promise<String> doWork(String request);
+                static Promise<AsyncService> asyncService() { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+        var factoryContent = compilation.generatedSourceFile("test.AsyncServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // Promise factory: .map(aspect::apply) without .async()
+        assertThat(factoryContent).contains(".map(aspect::apply)");
+        assertThat(factoryContent).doesNotContain("Promise.success(");
+        assertThat(factoryContent).doesNotContain(".async()");
+    }
+
+    @Test
+    void should_process_result_factory_with_resource_dependency() throws Exception {
+        var primaryDb = JavaFileObjects.forSourceString("test.annotation.PrimaryDb",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = test.infra.DatabaseConnector.class, config = "database.primary")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface PrimaryDb {}
+            """);
+        var databaseConnector = JavaFileObjects.forSourceString("test.infra.DatabaseConnector",
+                                                                """
+            package test.infra;
+            import org.pragmatica.lang.Promise;
+            public interface DatabaseConnector { Promise<String> query(String sql); }
+            """);
+        var source = JavaFileObjects.forSourceString("test.ValidatedRepository",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Result;
+            import test.annotation.PrimaryDb;
+            import test.infra.DatabaseConnector;
+            @Slice
+            public interface ValidatedRepository {
+                Promise<String> findItem(String itemId);
+                static Result<ValidatedRepository> validatedRepository(@PrimaryDb DatabaseConnector db) { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(primaryDb);
+        sources.add(databaseConnector);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+        var factoryContent = compilation.generatedSourceFile("test.ValidatedRepositoryFactory")
+                                        .get().getCharContent(false).toString();
+        // Async path should use .flatMap instead of .map
+        assertThat(factoryContent).contains(".flatMap(");
+        assertThat(factoryContent).contains(".map(aspect::apply).async()");
+        assertThat(factoryContent).contains("ctx.resources().provide(DatabaseConnector.class, \"database.primary\")");
+    }
+
+    @Test
+    void should_process_result_factory_with_interceptors() throws Exception {
+        var withRetry = JavaFileObjects.forSourceString("test.annotation.WithRetry",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.MethodInterceptor;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = MethodInterceptor.class, config = "retry.orders")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface WithRetry {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.ValidatedOrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Result;
+            import test.annotation.WithRetry;
+            @Slice
+            public interface ValidatedOrderService {
+                @WithRetry
+                Promise<String> placeOrder(String orderId);
+                static Result<ValidatedOrderService> validatedOrderService() { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(withRetry);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+        var factoryContent = compilation.generatedSourceFile("test.ValidatedOrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // Should use flatMap and have interceptor wrapping inside .map(impl -> { ... })
+        assertThat(factoryContent).contains(".flatMap(");
+        assertThat(factoryContent).contains(".map(impl -> {");
+        assertThat(factoryContent).contains(".intercept(impl::placeOrder)");
+        assertThat(factoryContent).contains("}).async()");
+    }
+
+    @Test
+    void should_fail_on_mismatched_result_type_argument() {
+        var source = JavaFileObjects.forSourceString("test.BadService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Result;
+            @Slice
+            public interface BadService {
+                Promise<String> doWork(String request);
+                static Result<String> badService() { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("does not match slice type");
+    }
 }

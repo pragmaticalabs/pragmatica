@@ -123,7 +123,8 @@ public final class JdbcSqlConnector implements SqlConnector {
             var results = new ArrayList<T>();
             var accessor = new JdbcRowAccessor(rs);
             while (rs.next()) {
-                results.add(mapper.map(accessor).unwrap());
+                results.add(mapper.map(accessor)
+                                  .unwrap());
             }
             return results;
         }
@@ -150,7 +151,7 @@ public final class JdbcSqlConnector implements SqlConnector {
     private <T> T runTransaction(SqlConnector.TransactionCallback<T> callback) throws Exception {
         try (var conn = dataSource.getConnection()) {
             conn.setAutoCommit(false);
-            try {
+            try{
                 var transactionalConnector = new TransactionalJdbcConnector(config, conn);
                 var result = callback.execute(transactionalConnector)
                                      .await();
@@ -169,7 +170,7 @@ public final class JdbcSqlConnector implements SqlConnector {
     private <T> T rollbackAndFail(Connection conn, org.pragmatica.lang.Cause cause) {
         rollbackSilently(conn);
         return DatabaseConnectorError.connectionFailed(cause.message())
-                                     .<T>result()
+                                     .<T> result()
                                      .unwrap();
     }
 
@@ -195,14 +196,14 @@ public final class JdbcSqlConnector implements SqlConnector {
 
     private static <T> T mapSingleRow(ResultSet rs, RowMapper<T> mapper) throws Exception {
         if (!rs.next()) {
-            return DatabaseConnectorError.ResultNotFound.INSTANCE.<T>result()
+            return DatabaseConnectorError.ResultNotFound.INSTANCE.<T> result()
                                          .unwrap();
         }
         var accessor = new JdbcRowAccessor(rs);
         var result = mapper.map(accessor);
         if (rs.next()) {
             return DatabaseConnectorError.multipleResults(countRemaining(rs) + 2)
-                                         .<T>result()
+                                         .<T> result()
                                          .unwrap();
         }
         return result.unwrap();
@@ -217,7 +218,7 @@ public final class JdbcSqlConnector implements SqlConnector {
     }
 
     private Unit rollbackSilently(Connection conn) {
-        try {
+        try{
             conn.rollback();
         } catch (SQLException e) {
             LOG.log(System.Logger.Level.DEBUG, "Rollback failed", e);
@@ -292,7 +293,8 @@ public final class JdbcSqlConnector implements SqlConnector {
 
         @Override
         public Promise<Boolean> isHealthy() {
-            return Promise.lift(DatabaseConnectorError::databaseFailure, () -> conn.isValid(5))
+            return Promise.lift(DatabaseConnectorError::databaseFailure,
+                                () -> conn.isValid(5))
                           .recover(_ -> false);
         }
 
@@ -322,7 +324,8 @@ public final class JdbcSqlConnector implements SqlConnector {
                 var results = new ArrayList<T>();
                 var accessor = new JdbcRowAccessor(rs);
                 while (rs.next()) {
-                    results.add(mapper.map(accessor).unwrap());
+                    results.add(mapper.map(accessor)
+                                      .unwrap());
                 }
                 return results;
             }

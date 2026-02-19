@@ -15,11 +15,15 @@ public @interface Slice {}
 The annotated interface must:
 
 1. **Be a public interface**
-2. **Have a static factory method** that returns the interface type
+2. **Have a static factory method** that returns one of:
+   - The interface type directly (`T`)
+   - `Result<T>` — for validation during construction
+   - `Option<T>` — for conditional construction
+   - `Promise<T>` — for async construction
 3. **All non-static, non-default methods** must:
    - Return `Promise<T>` where `T` is the response type
 
-### Valid Example
+### Valid Examples
 
 ```java
 @Slice
@@ -28,7 +32,7 @@ public interface OrderService {
     Promise<OrderResult> placeOrder(PlaceOrderRequest request);
     Promise<OrderStatus> getStatus(StatusRequest request);
 
-    // Factory method - not included in API, used for wiring
+    // Factory method returning direct type - not included in API, used for wiring
     static OrderService orderService(InventoryService inventory) {
         return OrderServiceImpl.orderServiceImpl(inventory);
     }
@@ -36,6 +40,26 @@ public interface OrderService {
     // Default methods - not included in API
     default Promise<OrderResult> placeOrderWithDefaults(String customerId) {
         return placeOrder(new PlaceOrderRequest(customerId, List.of(), null));
+    }
+}
+
+// Factory returning Result<T> - validation during construction
+@Slice
+public interface ValidatedService {
+    Promise<Response> process(Request request);
+
+    static Result<ValidatedService> validatedService(Config config) {
+        return config.validate().map(ValidatedServiceImpl::new);
+    }
+}
+
+// Factory returning Promise<T> - async initialization
+@Slice
+public interface AsyncService {
+    Promise<Response> query(QueryRequest request);
+
+    static Promise<AsyncService> asyncService(@PrimaryDb DatabaseConnector db) {
+        return db.connect().map(conn -> new AsyncServiceImpl(conn));
     }
 }
 ```
@@ -474,7 +498,7 @@ mvn jbct:verify-slice
 
 Checks:
 - `@Slice` interface has factory method
-- Factory method returns interface type
+- Factory method returns `T`, `Result<T>`, `Option<T>`, or `Promise<T>` where `T` is the interface type
 - All methods return `Promise<T>`
 - No overloaded method names
 

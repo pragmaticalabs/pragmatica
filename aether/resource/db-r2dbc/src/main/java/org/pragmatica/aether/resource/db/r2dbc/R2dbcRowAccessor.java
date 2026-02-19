@@ -21,44 +21,58 @@ final class R2dbcRowAccessor implements RowAccessor {
 
     @Override
     public Result<String> getString(String column) {
-        return Result.lift(e -> queryError("getString", column, e), () -> row.get(column, String.class))
-                     .flatMap(v -> Option.option(v).toResult(nullColumnError("getString", column)));
+        return Result.lift(e -> queryError("getString", column, e),
+                           () -> row.get(column, String.class))
+                     .flatMap(v -> Option.option(v)
+                                         .toResult(nullColumnError("getString", column)));
     }
 
     @Override
     public Result<Integer> getInt(String column) {
-        return Result.lift(e -> queryError("getInt", column, e), () -> row.get(column, Integer.class))
-                     .flatMap(v -> Option.option(v).toResult(nullColumnError("getInt", column)));
+        return Result.lift(e -> queryError("getInt", column, e),
+                           () -> row.get(column, Integer.class))
+                     .flatMap(v -> Option.option(v)
+                                         .toResult(nullColumnError("getInt", column)));
     }
 
     @Override
     public Result<Long> getLong(String column) {
-        return Result.lift(e -> queryError("getLong", column, e), () -> row.get(column, Long.class))
-                     .flatMap(v -> Option.option(v).toResult(nullColumnError("getLong", column)));
+        return Result.lift(e -> queryError("getLong", column, e),
+                           () -> row.get(column, Long.class))
+                     .flatMap(v -> Option.option(v)
+                                         .toResult(nullColumnError("getLong", column)));
     }
 
     @Override
     public Result<Double> getDouble(String column) {
-        return Result.lift(e -> queryError("getDouble", column, e), () -> row.get(column, Double.class))
-                     .flatMap(v -> Option.option(v).toResult(nullColumnError("getDouble", column)));
+        return Result.lift(e -> queryError("getDouble", column, e),
+                           () -> row.get(column, Double.class))
+                     .flatMap(v -> Option.option(v)
+                                         .toResult(nullColumnError("getDouble", column)));
     }
 
     @Override
     public Result<Boolean> getBoolean(String column) {
-        return Result.lift(e -> queryError("getBoolean", column, e), () -> row.get(column, Boolean.class))
-                     .flatMap(v -> Option.option(v).toResult(nullColumnError("getBoolean", column)));
+        return Result.lift(e -> queryError("getBoolean", column, e),
+                           () -> row.get(column, Boolean.class))
+                     .flatMap(v -> Option.option(v)
+                                         .toResult(nullColumnError("getBoolean", column)));
     }
 
     @Override
     public Result<byte[]> getBytes(String column) {
-        return Result.lift(e -> queryError("getBytes", column, e), () -> row.get(column, byte[].class))
-                     .flatMap(v -> Option.option(v).toResult(nullColumnError("getBytes", column)));
+        return Result.lift(e -> queryError("getBytes", column, e),
+                           () -> row.get(column, byte[].class))
+                     .flatMap(v -> Option.option(v)
+                                         .toResult(nullColumnError("getBytes", column)));
     }
 
     @Override
     public <V> Result<V> getObject(String column, Class<V> type) {
-        return Result.lift(e -> queryError("getObject", column, e), () -> row.get(column, type))
-                     .flatMap(v -> Option.option(v).toResult(nullColumnError("getObject", column)));
+        return Result.lift(e -> queryError("getObject", column, e),
+                           () -> row.get(column, type))
+                     .flatMap(v -> Option.option(v)
+                                         .toResult(nullColumnError("getObject", column)));
     }
 
     private static DatabaseConnectorError queryError(String method, String column, Throwable e) {

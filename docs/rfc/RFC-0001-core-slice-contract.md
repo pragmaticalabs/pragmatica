@@ -4,7 +4,7 @@ Title: Core Slice Contract
 Status: Implemented
 Author: Sergiy Yevtushenko
 Created: 2026-01-15
-Updated: 2026-01-28
+Updated: 2026-02-19
 Affects: [jbct-cli, aether]
 ---
 
@@ -53,6 +53,29 @@ public static Promise<{SliceName}> {sliceName}(
 - First parameter: `Aspect<{SliceName}>` for decoration (use `Aspect.identity()` for no-op)
 - Second parameter: `SliceInvokerFacade` for all dependency invocations (see [RFC-0002](RFC-0002-dependency-protocol.md))
 - All dependencies (slice dependencies) are resolved via `SliceInvokerFacade` proxies - no direct parameters
+
+#### User-Written Factory Return Types
+
+The user-written factory method on the `@Slice` interface may return any of the four JBCT return types. The slice processor detects the return type at compile time and generates the appropriate wrapping so the generated factory method always returns `Promise<{SliceName}>`.
+
+| User factory returns | Generated wrapping |
+|---|---|
+| `T` (direct) | `Promise.success(aspect.apply(instance))` |
+| `Result<T>` | `factory(...).map(aspect::apply).async()` |
+| `Option<T>` | `factory(...).toResult().map(aspect::apply).async()` |
+| `Promise<T>` | `factory(...).map(aspect::apply)` |
+
+The type argument of `Result<T>`, `Option<T>`, or `Promise<T>` must match the slice interface type; a mismatch is a compile error.
+
+```java
+// All four are valid factory return types:
+static MySlice mySlice() { ... }                  // Direct
+static Result<MySlice> mySlice() { ... }           // Validation during construction
+static Option<MySlice> mySlice() { ... }           // Conditional construction
+static Promise<MySlice> mySlice() { ... }          // Async construction
+```
+
+When the factory has async dependencies (resources, slices), the generated `Promise.all(...).map(...)` chain switches to `.flatMap(...)` for non-direct return types, since the lambda body now returns `Promise<T>` instead of `T`.
 
 #### Aether Discovery
 
@@ -272,7 +295,7 @@ processor.version=0.5.0
 |-----------|-------------------|----------------|
 | Factory class | `{SliceName}Factory` | Class name pattern match |
 | Factory method | `{sliceName}(Aspect, SliceInvokerFacade)` | Reflection by name + signature |
-| Return type | `Promise<{SliceName}>` | Unwrapped via `.await()` or composed |
+| Return type | `Promise<{SliceName}>` (generated); user factory may return `T`, `Result<T>`, `Option<T>`, or `Promise<T>` | Unwrapped via `.await()` or composed |
 | Aspect param | First parameter, `Aspect<T>` | Passed by runtime, `identity()` default |
 | Invoker param | Second parameter, `SliceInvokerFacade` | Slice dependencies resolved via proxies |
 | Infra dependencies | Accessed via `InfraStore.instance().get()` | Shared singleton instances |

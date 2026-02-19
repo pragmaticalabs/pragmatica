@@ -116,83 +116,85 @@ public interface UrlShortener {
 
     // === Factory ===
     static UrlShortener urlShortener(@Sql SqlConnector db, Analytics analytics) {
+        record urlShortener(SqlConnector db, Analytics analytics) implements UrlShortener {
+            private static final String SELECT_BY_URL = "SELECT short_code FROM urls WHERE original_url = ?";
+            private static final String SELECT_BY_CODE = "SELECT original_url FROM urls WHERE short_code = ?";
+            private static final String INSERT_URL = "INSERT INTO urls (short_code, original_url) VALUES (?, ?)";
+
+            @Override
+            public Promise<ShortenResponse> shorten(ShortenRequest request) {
+                var url = request.url();
+                return db.queryOptional(SELECT_BY_URL,
+                                        row -> row.getString("short_code"),
+                                        url)
+                         .flatMap(existing -> existing.map(code -> Promise.success(ShortenResponse.shortenResponse(code,
+                                                                                                                   url)))
+                                                      .or(() -> createNewShortUrl(url)));
+            }
+
+            @Override
+            public Promise<ResolveResponse> resolve(ResolveRequest request) {
+                var shortCode = request.shortCode();
+                return db.queryOptional(SELECT_BY_CODE,
+                                        row -> row.getString("original_url"),
+                                        shortCode)
+                         .flatMap(maybeUrl -> maybeUrl.map(url -> recordClickAndRespond(shortCode, url))
+                                                      .or(UrlError.NotFound.INSTANCE::promise));
+            }
+
+            private Promise<ResolveResponse> recordClickAndRespond(String shortCode, String url) {
+                return Analytics.RecordClickRequest.recordClickRequest(shortCode)
+                                .async()
+                                .flatMap(analytics::recordClick)
+                                .map(_ -> ResolveResponse.resolveResponse(shortCode, url));
+            }
+
+            private Promise<ShortenResponse> createNewShortUrl(String url) {
+                return computeShortCode(url).async()
+                                       .flatMap(shortCode -> insertNewUrl(url, shortCode));
+            }
+
+            private Promise<ShortenResponse> insertNewUrl(String url, String shortCode) {
+                return db.update(INSERT_URL, shortCode, url)
+                         .map(_ -> ShortenResponse.shortenResponse(shortCode, url));
+            }
+
+            private static Result<String> computeShortCode(String url) {
+                return getSha256Digest().map(digest -> digest.digest(url.getBytes(StandardCharsets.UTF_8)))
+                                      .map(urlShortener::formatHashBytes)
+                                      .map(urlShortener::sevenBytesToBase62);
+            }
+
+            private static String sevenBytesToBase62(String hexHash) {
+                return toBase62(hexHash, 7);
+            }
+
+            private static Result<MessageDigest> getSha256Digest() {
+                return Result.lift(() -> MessageDigest.getInstance("SHA-256"));
+            }
+
+            private static String formatHashBytes(byte[] hashBytes) {
+                var sb = new StringBuilder();
+                for (int i = 0; i < 8; i++) {
+                    sb.append(String.format("%02x", hashBytes[i]));
+                }
+                return sb.toString();
+            }
+
+            private static String toBase62(String hexHash, int length) {
+                var value = Long.parseUnsignedLong(hexHash.substring(0, 12), 16);
+                var sb = new StringBuilder();
+                while (value > 0 && sb.length() < length) {
+                    sb.insert(0, BASE62_CHARS.charAt((int)(value % 62)));
+                    value /= 62;
+                }
+                while (sb.length() < length) {
+                    sb.insert(0, '0');
+                }
+                return sb.toString();
+            }
+        }
         return new urlShortener(db, analytics);
-    }
-
-    record urlShortener(SqlConnector db, Analytics analytics) implements UrlShortener {
-        private static final String SELECT_BY_URL = "SELECT short_code FROM urls WHERE original_url = ?";
-        private static final String SELECT_BY_CODE = "SELECT original_url FROM urls WHERE short_code = ?";
-        private static final String INSERT_URL = "INSERT INTO urls (short_code, original_url) VALUES (?, ?)";
-
-        @Override
-        public Promise<ShortenResponse> shorten(ShortenRequest request) {
-            var url = request.url();
-            return db.queryOptional(SELECT_BY_URL,
-                                    row -> row.getString("short_code"),
-                                    url)
-                     .flatMap(existing -> existing.map(code -> Promise.success(ShortenResponse.shortenResponse(code, url)))
-                                                  .or(() -> createNewShortUrl(url)));
-        }
-
-        @Override
-        public Promise<ResolveResponse> resolve(ResolveRequest request) {
-            var shortCode = request.shortCode();
-            return db.queryOptional(SELECT_BY_CODE,
-                                    row -> row.getString("original_url"),
-                                    shortCode)
-                     .flatMap(maybeUrl -> maybeUrl.map(url -> recordClickAndRespond(shortCode, url))
-                                                  .or(UrlError.NotFound.INSTANCE::promise));
-        }
-
-        private Promise<ResolveResponse> recordClickAndRespond(String shortCode, String url) {
-            return Analytics.RecordClickRequest.recordClickRequest(shortCode)
-                            .async()
-                            .flatMap(analytics::recordClick)
-                            .map(_ -> ResolveResponse.resolveResponse(shortCode, url));
-        }
-
-        private Promise<ShortenResponse> createNewShortUrl(String url) {
-            var shortCode = computeShortCode(url);
-            return db.update(INSERT_URL, shortCode, url)
-                     .map(_ -> ShortenResponse.shortenResponse(shortCode, url));
-        }
-
-        private static String computeShortCode(String url) {
-            var digest = getSha256Digest();
-            var hashBytes = digest.digest(url.getBytes(StandardCharsets.UTF_8));
-            var hexHash = formatHashBytes(hashBytes);
-            return toBase62(hexHash, 7);
-        }
-
-        private static MessageDigest getSha256Digest() {
-            // SHA-256 is guaranteed available in all Java implementations (JCA spec)
-            try {
-                return MessageDigest.getInstance("SHA-256");
-            } catch (java.security.NoSuchAlgorithmException e) {
-                throw new AssertionError("SHA-256 algorithm must be available per JCA specification", e);
-            }
-        }
-
-        private static String formatHashBytes(byte[] hashBytes) {
-            var sb = new StringBuilder();
-            for (int i = 0; i < 8; i++) {
-                sb.append(String.format("%02x", hashBytes[i]));
-            }
-            return sb.toString();
-        }
-
-        private static String toBase62(String hexHash, int length) {
-            var value = Long.parseUnsignedLong(hexHash.substring(0, 12), 16);
-            var sb = new StringBuilder();
-            while (value > 0 && sb.length() < length) {
-                sb.insert(0, BASE62_CHARS.charAt((int) (value % 62)));
-                value /= 62;
-            }
-            while (sb.length() < length) {
-                sb.insert(0, '0');
-            }
-            return sb.toString();
-        }
     }
 
     // === Convenience factory for testing without database ===

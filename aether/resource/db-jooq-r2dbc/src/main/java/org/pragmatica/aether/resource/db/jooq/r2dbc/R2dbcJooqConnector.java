@@ -84,13 +84,14 @@ public final class R2dbcJooqConnector implements JooqConnector {
 
     @Override
     public <T> Promise<T> transactional(JooqConnector.TransactionCallback<T> callback) {
-        return withConnection(conn -> beginAndExecute(conn, callback)
-                                       .fold(result -> resolveTransaction(conn, result)));
+        return withConnection(conn -> beginAndExecute(conn, callback).fold(result -> resolveTransaction(conn, result)));
     }
 
     private <T> Promise<T> beginAndExecute(Connection conn, JooqConnector.TransactionCallback<T> callback) {
         return ReactiveOperations.fromVoidPublisher(conn.beginTransaction())
-                                 .flatMap(_ -> callback.execute(new TransactionalR2dbcJooqConnector(config, conn, dialect)))
+                                 .flatMap(_ -> callback.execute(new TransactionalR2dbcJooqConnector(config,
+                                                                                                    conn,
+                                                                                                    dialect)))
                                  .flatMap(result -> commitAndResolve(conn, result));
     }
 
@@ -130,11 +131,12 @@ public final class R2dbcJooqConnector implements JooqConnector {
     }
 
     private <T> Promise<T> withConnection(java.util.function.Function<Connection, Promise<T>> operation) {
-        return ReactiveOperations.<Connection>fromPublisher(connectionFactory.create())
+        return ReactiveOperations.<Connection> fromPublisher(connectionFactory.create())
                                  .flatMap(conn -> executeAndClose(conn, operation));
     }
 
-    private <T> Promise<T> executeAndClose(Connection conn, java.util.function.Function<Connection, Promise<T>> operation) {
+    private <T> Promise<T> executeAndClose(Connection conn,
+                                           java.util.function.Function<Connection, Promise<T>> operation) {
         return operation.apply(conn)
                         .fold(result -> closeAndResolve(conn, result));
     }
@@ -171,29 +173,37 @@ public final class R2dbcJooqConnector implements JooqConnector {
 
         @Override
         public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
-            return Promise.lift(e -> mapException(e, query.getSQL()),
-                                () -> JooqConnector.extractSingleResult(DSL.using(connection, dialect).fetch(query)))
+            return Promise.lift(e -> mapException(e,
+                                                  query.getSQL()),
+                                () -> JooqConnector.extractSingleResult(DSL.using(connection, dialect)
+                                                                           .fetch(query)))
                           .mapError(R2dbcJooqConnector::toConnectorError);
         }
 
         @Override
         public <R extends Record> Promise<Option<R>> fetchOptional(ResultQuery<R> query) {
-            return Promise.lift(e -> mapException(e, query.getSQL()),
-                                () -> JooqConnector.extractOptionalResult(DSL.using(connection, dialect).fetch(query)))
+            return Promise.lift(e -> mapException(e,
+                                                  query.getSQL()),
+                                () -> JooqConnector.extractOptionalResult(DSL.using(connection, dialect)
+                                                                             .fetch(query)))
                           .mapError(R2dbcJooqConnector::toConnectorError);
         }
 
         @Override
         public <R extends Record> Promise<List<R>> fetch(ResultQuery<R> query) {
-            return Promise.lift(e -> mapException(e, query.getSQL()),
-                                () -> List.copyOf(DSL.using(connection, dialect).fetch(query)))
+            return Promise.lift(e -> mapException(e,
+                                                  query.getSQL()),
+                                () -> List.copyOf(DSL.using(connection, dialect)
+                                                     .fetch(query)))
                           .mapError(R2dbcJooqConnector::toConnectorError);
         }
 
         @Override
         public Promise<Integer> execute(Query query) {
-            return Promise.lift(e -> mapException(e, query.getSQL()),
-                                () -> DSL.using(connection, dialect).execute(query))
+            return Promise.lift(e -> mapException(e,
+                                                  query.getSQL()),
+                                () -> DSL.using(connection, dialect)
+                                         .execute(query))
                           .mapError(R2dbcJooqConnector::toConnectorError);
         }
 
