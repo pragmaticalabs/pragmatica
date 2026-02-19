@@ -4,7 +4,7 @@ import org.pragmatica.lang.Result;
 
 /// Maps a database row to a domain object.
 ///
-/// Used by DatabaseConnector implementations to transform query results
+/// Used by SqlConnector implementations to transform query results
 /// into domain types with proper error handling.
 ///
 /// @param <T> Target domain type

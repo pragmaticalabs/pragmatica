@@ -10,7 +10,7 @@ import org.pragmatica.lang.Promise;
 ///
 /// Example usage:
 /// ```{@code
-/// ctx.resources().provide(DatabaseConnector.class, "database.primary")
+/// ctx.resources().provide(SqlConnector.class, "database.primary")
 /// }```
 public interface ResourceProviderFacade {
     /// Provide a resource instance for the given type and configuration section.

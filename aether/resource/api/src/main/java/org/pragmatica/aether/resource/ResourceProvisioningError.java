@@ -74,10 +74,4 @@ public sealed interface ResourceProvisioningError extends Cause {
         }
     }
 
-    record unused() implements ResourceProvisioningError {
-        @Override
-        public String message() {
-            return "unused";
-        }
-    }
 }

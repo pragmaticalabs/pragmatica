@@ -1,7 +1,7 @@
 package org.pragmatica.aether.example.urlshortener.analytics;
 
-import org.pragmatica.aether.resource.db.Database;
-import org.pragmatica.aether.resource.db.DatabaseConnector;
+import org.pragmatica.aether.resource.db.Sql;
+import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
@@ -49,9 +49,17 @@ public interface Analytics {
     }
 
     // === Responses ===
-    record RecordClickResponse(String shortCode, long totalClicks) {}
+    record RecordClickResponse(String shortCode, long totalClicks) {
+        public static RecordClickResponse recordClickResponse(String shortCode, long totalClicks) {
+            return new RecordClickResponse(shortCode, totalClicks);
+        }
+    }
 
-    record GetStatsResponse(String shortCode, long clickCount) {}
+    record GetStatsResponse(String shortCode, long clickCount) {
+        public static GetStatsResponse getStatsResponse(String shortCode, long clickCount) {
+            return new GetStatsResponse(shortCode, clickCount);
+        }
+    }
 
     // === Errors ===
     sealed interface AnalyticsError extends Cause {
@@ -80,11 +88,11 @@ public interface Analytics {
     Promise<GetStatsResponse> getStats(GetStatsRequest request);
 
     // === Factory ===
-    static Analytics analytics(@Database DatabaseConnector db) {
+    static Analytics analytics(@Sql SqlConnector db) {
         return new analytics(db);
     }
 
-    record analytics(DatabaseConnector db) implements Analytics {
+    record analytics(SqlConnector db) implements Analytics {
         private static final String INSERT_CLICK = "INSERT INTO clicks (short_code) VALUES (?)";
         private static final String COUNT_CLICKS = "SELECT COUNT(*) as click_count FROM clicks WHERE short_code = ?";
 
@@ -93,13 +101,13 @@ public interface Analytics {
             var shortCode = request.shortCode();
             return db.update(INSERT_CLICK, shortCode)
                      .flatMap(_ -> getClickCount(shortCode))
-                     .map(count -> new RecordClickResponse(shortCode, count));
+                     .map(count -> RecordClickResponse.recordClickResponse(shortCode, count));
         }
 
         @Override
         public Promise<GetStatsResponse> getStats(GetStatsRequest request) {
             var shortCode = request.shortCode();
-            return getClickCount(shortCode).map(count -> new GetStatsResponse(shortCode, count));
+            return getClickCount(shortCode).map(count -> GetStatsResponse.getStatsResponse(shortCode, count));
         }
 
         private Promise<Long> getClickCount(String shortCode) {
@@ -112,12 +120,12 @@ public interface Analytics {
         return new Analytics() {
             @Override
             public Promise<RecordClickResponse> recordClick(RecordClickRequest request) {
-                return Promise.success(new RecordClickResponse(request.shortCode(), 0));
+                return Promise.success(RecordClickResponse.recordClickResponse(request.shortCode(), 0));
             }
 
             @Override
             public Promise<GetStatsResponse> getStats(GetStatsRequest request) {
-                return Promise.success(new GetStatsResponse(request.shortCode(), 0));
+                return Promise.success(GetStatsResponse.getStatsResponse(request.shortCode(), 0));
             }
         };
     }

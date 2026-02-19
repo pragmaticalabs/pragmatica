@@ -1,29 +1,33 @@
 package org.pragmatica.aether.example.urlshortener.shortener;
 
-import org.pragmatica.aether.resource.db.DatabaseConnector;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.DatabaseConnectorError;
+import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.RowMapper;
-import org.pragmatica.aether.resource.db.TransactionCallback;
-
+import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
-
-
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
-/// In-memory DatabaseConnector implementation for testing.
+import static org.pragmatica.lang.Option.option;
+
+/// In-memory SqlConnector implementation for testing.
 ///
 /// Simulates database behavior using in-memory data structures.
 /// Supports the specific SQL queries used by UrlShortener and Analytics.
-public final class InMemoryDatabaseConnector implements DatabaseConnector {
-    private final Map<String, String> urlsByCode = new HashMap<>();
-    private final Map<String, String> codesByUrl = new HashMap<>();
-    private final Map<String, AtomicLong> clickCounts = new HashMap<>();
+public final class InMemoryDatabaseConnector implements SqlConnector {
+    private final Map<String, String> urlsByCode = new ConcurrentHashMap<>();
+    private final Map<String, String> codesByUrl = new ConcurrentHashMap<>();
+    private final Map<String, AtomicLong> clickCounts = new ConcurrentHashMap<>();
+
+    private static final DatabaseConnectorConfig CONFIG = DatabaseConnectorConfig.databaseConnectorConfig(
+        "in-memory", DatabaseType.H2, "localhost", "test", "sa", ""
+    ).unwrap();
 
     private InMemoryDatabaseConnector() {}
 
@@ -57,13 +61,13 @@ public final class InMemoryDatabaseConnector implements DatabaseConnector {
     }
 
     @Override
-    public <T> Promise<T> transactional(TransactionCallback<T> callback) {
+    public <T> Promise<T> transactional(SqlConnector.TransactionCallback<T> callback) {
         return callback.execute(this);
     }
 
     @Override
     public DatabaseConnectorConfig config() {
-        return null;
+        return CONFIG;
     }
 
     @Override
@@ -81,7 +85,7 @@ public final class InMemoryDatabaseConnector implements DatabaseConnector {
             return mapper.map(new InMemoryRowAccessor(Map.of("click_count", count))).unwrap();
         }
 
-        throw new UnsupportedOperationException("Query not supported: " + sql);
+        return DatabaseConnectorError.queryFailed(sql, "Query not supported").<T>result().unwrap();
     }
 
     private <T> Option<T> executeQueryOptional(String sql, RowMapper<T> mapper, Object[] params) {
@@ -89,22 +93,14 @@ public final class InMemoryDatabaseConnector implements DatabaseConnector {
 
         // SELECT by URL to get existing short_code
         if (sqlLower.contains("short_code") && sqlLower.contains("original_url = ?")) {
-            var url = (String) params[0];
-            var code = codesByUrl.get(url);
-            if (code == null) {
-                return Option.none();
-            }
-            return mapper.map(new InMemoryRowAccessor(Map.of("short_code", code))).option();
+            return option(codesByUrl.get((String) params[0]))
+                .flatMap(code -> mapper.map(new InMemoryRowAccessor(Map.of("short_code", code))).option());
         }
 
         // SELECT by code to get original_url
         if (sqlLower.contains("original_url") && sqlLower.contains("short_code = ?")) {
-            var shortCode = (String) params[0];
-            var url = urlsByCode.get(shortCode);
-            if (url == null) {
-                return Option.none();
-            }
-            return mapper.map(new InMemoryRowAccessor(Map.of("original_url", url))).option();
+            return option(urlsByCode.get((String) params[0]))
+                .flatMap(url -> mapper.map(new InMemoryRowAccessor(Map.of("original_url", url))).option());
         }
 
         return Option.none();
@@ -136,59 +132,61 @@ public final class InMemoryDatabaseConnector implements DatabaseConnector {
     private record InMemoryRowAccessor(Map<String, Object> data) implements RowMapper.RowAccessor {
         @Override
         public Result<String> getString(String column) {
-            var value = data.get(column);
-            return value != null
-                ? Result.success((String) value)
-                : Result.success(null);
+            return option(data.get(column))
+                .map(v -> Result.success((String) v))
+                .or(() -> Result.success(""));
         }
 
         @Override
         public Result<Integer> getInt(String column) {
-            var value = data.get(column);
-            return value != null
-                ? Result.success(((Number) value).intValue())
-                : Result.success(0);
+            return option(data.get(column))
+                .map(v -> Result.success(((Number) v).intValue()))
+                .or(() -> Result.success(0));
         }
 
         @Override
         public Result<Long> getLong(String column) {
-            var value = data.get(column);
-            return value != null
-                ? Result.success(((Number) value).longValue())
-                : Result.success(0L);
+            return option(data.get(column))
+                .map(v -> Result.success(((Number) v).longValue()))
+                .or(() -> Result.success(0L));
         }
 
         @Override
         public Result<Double> getDouble(String column) {
-            var value = data.get(column);
-            return value != null
-                ? Result.success(((Number) value).doubleValue())
-                : Result.success(0.0);
+            return option(data.get(column))
+                .map(v -> Result.success(((Number) v).doubleValue()))
+                .or(() -> Result.success(0.0));
         }
 
         @Override
         public Result<Boolean> getBoolean(String column) {
-            var value = data.get(column);
-            return value != null
-                ? Result.success((Boolean) value)
-                : Result.success(false);
+            return option(data.get(column))
+                .map(v -> Result.success((Boolean) v))
+                .or(() -> Result.success(false));
         }
 
         @Override
         public Result<byte[]> getBytes(String column) {
-            var value = data.get(column);
-            return value != null
-                ? Result.success((byte[]) value)
-                : Result.success(new byte[0]);
+            return option(data.get(column))
+                .map(v -> Result.success((byte[]) v))
+                .or(() -> Result.success(new byte[0]));
         }
 
         @Override
         @SuppressWarnings("unchecked")
         public <V> Result<V> getObject(String column, Class<V> type) {
-            var value = data.get(column);
-            return value != null
-                ? Result.success((V) value)
-                : Result.success(null);
+            return option(data.get(column))
+                .map(v -> Result.success((V) v))
+                .or(() -> Result.success(type.cast(defaultForType(type))));
+        }
+
+        private static Object defaultForType(Class<?> type) {
+            if (type == String.class) return "";
+            if (type == Integer.class) return 0;
+            if (type == Long.class) return 0L;
+            if (type == Double.class) return 0.0;
+            if (type == Boolean.class) return false;
+            return "";
         }
     }
 }

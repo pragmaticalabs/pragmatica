@@ -207,6 +207,11 @@
                 <artifactId>resource-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>resource-db-jooq-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
 
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>

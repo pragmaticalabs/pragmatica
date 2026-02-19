@@ -11,12 +11,12 @@ import org.pragmatica.lang.Promise;
 ///
 /// Example implementation:
 /// ```{@code
-/// public final class JdbcDatabaseConnectorFactory
-///        implements ResourceFactory<DatabaseConnector, DatabaseConnectorConfig> {
+/// public final class JdbcSqlConnectorFactory
+///        implements ResourceFactory<SqlConnector, DatabaseConnectorConfig> {
 ///
 ///     @Override
-///     public Class<DatabaseConnector> resourceType() {
-///         return DatabaseConnector.class;
+///     public Class<SqlConnector> resourceType() {
+///         return SqlConnector.class;
 ///     }
 ///
 ///     @Override
@@ -25,15 +25,15 @@ import org.pragmatica.lang.Promise;
 ///     }
 ///
 ///     @Override
-///     public Promise<DatabaseConnector> provision(DatabaseConnectorConfig config) {
-///         return JdbcDatabaseConnector.jdbcDatabaseConnector(config);
+///     public Promise<SqlConnector> provision(DatabaseConnectorConfig config) {
+///         return JdbcSqlConnector.jdbcSqlConnector(config);
 ///     }
 /// }
 /// }```
 ///
 /// Registration via META-INF/services/org.pragmatica.aether.resource.ResourceFactory:
 /// ```
-/// org.pragmatica.aether.resource.db.jdbc.JdbcDatabaseConnectorFactory
+/// org.pragmatica.aether.resource.db.jdbc.JdbcSqlConnectorFactory
 /// ```
 ///
 /// @param <T> Resource type created by this factory
@@ -66,5 +66,28 @@ public interface ResourceFactory<T, C> {
     /// @return Promise containing the provisioned resource or error
     default Promise<T> provision(C config, ProvisioningContext context) {
         return provision(config);
+    }
+
+    /// Returns the priority of this factory.
+    ///
+    /// When multiple factories support the same resource type, the one with the
+    /// highest priority that supports the current configuration is selected.
+    /// Default is 0 (lowest priority — fallback).
+    ///
+    /// @return Factory priority (higher = more preferred)
+    default int priority() {
+        return 0;
+    }
+
+    /// Checks if this factory supports the given configuration.
+    ///
+    /// Used by SpiResourceProvider to select the appropriate factory when
+    /// multiple factories are registered for the same resource type.
+    /// For example, an R2DBC factory returns true only when r2dbcUrl is present.
+    ///
+    /// @param config Configuration to check
+    /// @return true if this factory can handle the configuration
+    default boolean supports(C config) {
+        return true;
     }
 }

@@ -11,7 +11,7 @@
 
     <artifactId>resource-db-jooq-r2dbc</artifactId>
     <name>Aether Resource: Database Connector jOOQ R2DBC</name>
-    <description>jOOQ R2DBC implementation of DatabaseConnector for reactive type-safe SQL queries.</description>
+    <description>R2DBC implementation of JooqConnector for reactive type-safe SQL queries.</description>
 
     <licenses>
         <license>
@@ -28,8 +28,7 @@
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>resource-db-r2dbc</artifactId>
-            <version>${project.version}</version>
+            <artifactId>resource-db-jooq-api</artifactId>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>

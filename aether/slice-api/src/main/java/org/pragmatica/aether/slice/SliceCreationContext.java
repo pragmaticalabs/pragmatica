@@ -17,7 +17,7 @@ import static org.pragmatica.lang.Result.success;
 /// public static Promise<OrderRepository> orderRepository(Aspect<OrderRepository> aspect,
 ///                                                         SliceCreationContext ctx) {
 ///     return Promise.all(
-///             ctx.resources().provide(DatabaseConnector.class, "database.primary"),
+///             ctx.resources().provide(SqlConnector.class, "database.primary"),
 ///             ctx.invoker().methodHandle("inventory:artifact", "check", ...),
 ///             ctx.invoker().methodHandle("inventory:artifact", "save", ...))
 ///         .map((db, checkHandle, saveHandle) -> {
@@ -40,7 +40,7 @@ public interface SliceCreationContext {
 
     /// Get the resource provider for infrastructure resource provisioning.
     ///
-    /// Use this to obtain infrastructure resources like DatabaseConnector,
+    /// Use this to obtain infrastructure resources like SqlConnector,
     /// HttpClient, etc. based on configuration sections.
     ///
     /// @return ResourceProviderFacade instance
