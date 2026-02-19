@@ -61,19 +61,25 @@ public final class R2dbcSqlConnector implements SqlConnector {
 
     @Override
     public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
-        return operations.queryOne(sql, (row, meta) -> mapRow(row, mapper), params)
+        return operations.queryOne(sql,
+                                   (row, meta) -> mapRow(row, mapper),
+                                   params)
                          .flatMap(R2dbcSqlConnector::unwrapMappedResult);
     }
 
     @Override
     public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
-        return operations.queryOptional(sql, (row, meta) -> mapRow(row, mapper), params)
+        return operations.queryOptional(sql,
+                                        (row, meta) -> mapRow(row, mapper),
+                                        params)
                          .flatMap(R2dbcSqlConnector::unwrapOptionalResult);
     }
 
     @Override
     public <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params) {
-        return operations.queryList(sql, (row, meta) -> mapRow(row, mapper), params)
+        return operations.queryList(sql,
+                                    (row, meta) -> mapRow(row, mapper),
+                                    params)
                          .flatMap(R2dbcSqlConnector::collectSuccessfulResults);
     }
 
@@ -93,8 +99,7 @@ public final class R2dbcSqlConnector implements SqlConnector {
 
     @Override
     public <T> Promise<T> transactional(SqlConnector.TransactionCallback<T> callback) {
-        return withConnection(conn -> beginAndExecute(conn, callback)
-                                       .fold(result -> resolveTransaction(conn, result)));
+        return withConnection(conn -> beginAndExecute(conn, callback).fold(result -> resolveTransaction(conn, result)));
     }
 
     @Override
@@ -104,7 +109,8 @@ public final class R2dbcSqlConnector implements SqlConnector {
 
     @Override
     public Promise<Boolean> isHealthy() {
-        return operations.queryOne("SELECT 1", (row, meta) -> 1)
+        return operations.queryOne("SELECT 1",
+                                   (row, meta) -> 1)
                          .map(_ -> true)
                          .recover(_ -> false);
     }
@@ -118,27 +124,23 @@ public final class R2dbcSqlConnector implements SqlConnector {
     }
 
     // --- Leaf: Row mapping ---
-
     private static <T> Result<T> mapRow(Row row, RowMapper<T> mapper) {
         return mapper.map(new R2dbcRowAccessor(row));
     }
 
     // --- Leaf: Unwrap single mapped result ---
-
     private static <T> Promise<T> unwrapMappedResult(Result<T> result) {
         return result.mapError(R2dbcSqlConnector::toConnectorError)
                      .async();
     }
 
     // --- Leaf: Unwrap optional mapped result ---
-
     private static <T> Promise<Option<T>> unwrapOptionalResult(Option<Result<T>> opt) {
         return opt.map(result -> unwrapMappedResult(result).map(Option::some))
                   .or(() -> Promise.success(Option.none()));
     }
 
     // --- Leaf: Collect results, fail-fast on first failure ---
-
     private static <T> Promise<List<T>> collectSuccessfulResults(List<Result<T>> results) {
         return Result.allOf(results)
                      .mapError(R2dbcSqlConnector::toConnectorError)
@@ -146,13 +148,13 @@ public final class R2dbcSqlConnector implements SqlConnector {
     }
 
     // --- Sequencer: Connection lifecycle ---
-
     private <T> Promise<T> withConnection(java.util.function.Function<Connection, Promise<T>> operation) {
-        return ReactiveOperations.<Connection>fromPublisher(connectionFactory.create())
+        return ReactiveOperations.<Connection> fromPublisher(connectionFactory.create())
                                  .flatMap(conn -> executeAndClose(conn, operation));
     }
 
-    private <T> Promise<T> executeAndClose(Connection conn, java.util.function.Function<Connection, Promise<T>> operation) {
+    private <T> Promise<T> executeAndClose(Connection conn,
+                                           java.util.function.Function<Connection, Promise<T>> operation) {
         return operation.apply(conn)
                         .fold(result -> closeAndResolve(conn, result));
     }
@@ -163,7 +165,6 @@ public final class R2dbcSqlConnector implements SqlConnector {
     }
 
     // --- Sequencer: Transaction lifecycle ---
-
     private <T> Promise<T> beginAndExecute(Connection conn, SqlConnector.TransactionCallback<T> callback) {
         return ReactiveOperations.fromVoidPublisher(conn.beginTransaction())
                                  .flatMap(_ -> callback.execute(new TransactionalR2dbcConnector(config, conn)))
@@ -185,16 +186,16 @@ public final class R2dbcSqlConnector implements SqlConnector {
     }
 
     // --- Sequencer: Batch execution ---
-
     private static Promise<int[]> executeBatch(Connection conn, String sql, List<Object[]> paramsList) {
         var stmt = buildBatchStatement(conn, sql, paramsList);
-        return ReactiveOperations.<io.r2dbc.spi.Result>collectFromPublisher(stmt.execute(),
+        return ReactiveOperations.<io.r2dbc.spi.Result> collectFromPublisher(stmt.execute(),
                                                                              e -> R2dbcError.fromException(e, sql))
-                                 .flatMap(results -> collectUpdateCounts(results, new int[results.size()], 0));
+                                 .flatMap(results -> collectUpdateCounts(results,
+                                                                         new int[results.size()],
+                                                                         0));
     }
 
     // --- Leaf: Build batch statement ---
-
     private static Statement buildBatchStatement(Connection conn, String sql, List<Object[]> paramsList) {
         var stmt = conn.createStatement(sql);
         for (int i = 0; i < paramsList.size(); i++) {
@@ -213,12 +214,12 @@ public final class R2dbcSqlConnector implements SqlConnector {
     }
 
     // --- Iteration: Collect update counts recursively ---
-
     private static Promise<int[]> collectUpdateCounts(List<io.r2dbc.spi.Result> results, int[] counts, int index) {
         if (index >= results.size()) {
             return Promise.success(counts);
         }
-        return ReactiveOperations.<Long>fromPublisher(results.get(index).getRowsUpdated())
+        return ReactiveOperations.<Long> fromPublisher(results.get(index)
+                                                              .getRowsUpdated())
                                  .map(count -> recordCount(counts, index, count))
                                  .flatMap(_ -> collectUpdateCounts(results, counts, index + 1));
     }
@@ -229,7 +230,6 @@ public final class R2dbcSqlConnector implements SqlConnector {
     }
 
     // --- Error mapping ---
-
     static DatabaseConnectorError toConnectorError(Cause cause) {
         if (cause instanceof R2dbcError r2dbcError) {
             return mapR2dbcError(r2dbcError);
@@ -255,7 +255,7 @@ public final class R2dbcSqlConnector implements SqlConnector {
         @Override
         public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
             var stmt = createStatement(connection, sql, params);
-            return ReactiveOperations.<Result<T>>fromPublisher(flatMapResult(stmt.execute(),
+            return ReactiveOperations.<Result<T>> fromPublisher(flatMapResult(stmt.execute(),
                                                                               (row, meta) -> mapRow(row, mapper)),
                                                                 e -> R2dbcError.fromException(e, sql))
                                      .flatMap(R2dbcSqlConnector::unwrapMappedResult);
@@ -264,7 +264,7 @@ public final class R2dbcSqlConnector implements SqlConnector {
         @Override
         public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
             var stmt = createStatement(connection, sql, params);
-            return ReactiveOperations.<Result<T>>firstFromPublisher(flatMapResult(stmt.execute(),
+            return ReactiveOperations.<Result<T>> firstFromPublisher(flatMapResult(stmt.execute(),
                                                                                    (row, meta) -> mapRow(row, mapper)),
                                                                      e -> R2dbcError.fromException(e, sql))
                                      .flatMap(R2dbcSqlConnector::unwrapOptionalResult);
@@ -273,7 +273,7 @@ public final class R2dbcSqlConnector implements SqlConnector {
         @Override
         public <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params) {
             var stmt = createStatement(connection, sql, params);
-            return ReactiveOperations.<Result<T>>collectFromPublisher(flatMapResult(stmt.execute(),
+            return ReactiveOperations.<Result<T>> collectFromPublisher(flatMapResult(stmt.execute(),
                                                                                      (row, meta) -> mapRow(row, mapper)),
                                                                        e -> R2dbcError.fromException(e, sql))
                                      .flatMap(R2dbcSqlConnector::collectSuccessfulResults);
@@ -282,10 +282,11 @@ public final class R2dbcSqlConnector implements SqlConnector {
         @Override
         public Promise<Integer> update(String sql, Object... params) {
             var stmt = createStatement(connection, sql, params);
-            return ReactiveOperations.<io.r2dbc.spi.Result>fromPublisher(stmt.execute(),
+            return ReactiveOperations.<io.r2dbc.spi.Result> fromPublisher(stmt.execute(),
                                                                           e -> R2dbcError.fromException(e, sql))
                                      .flatMap(result -> ReactiveOperations.fromPublisher(result.getRowsUpdated(),
-                                                                                         e -> R2dbcError.fromException(e, sql)))
+                                                                                         e -> R2dbcError.fromException(e,
+                                                                                                                       sql)))
                                      .map(Long::intValue);
         }
 
@@ -295,9 +296,11 @@ public final class R2dbcSqlConnector implements SqlConnector {
                 return Promise.success(new int[0]);
             }
             var stmt = buildBatchStatement(connection, sql, paramsList);
-            return ReactiveOperations.<io.r2dbc.spi.Result>collectFromPublisher(stmt.execute(),
+            return ReactiveOperations.<io.r2dbc.spi.Result> collectFromPublisher(stmt.execute(),
                                                                                  e -> R2dbcError.fromException(e, sql))
-                                     .flatMap(results -> collectUpdateCounts(results, new int[results.size()], 0));
+                                     .flatMap(results -> collectUpdateCounts(results,
+                                                                             new int[results.size()],
+                                                                             0));
         }
 
         @Override
@@ -329,6 +332,7 @@ public final class R2dbcSqlConnector implements SqlConnector {
         }
 
         /// Subscriber that flat-maps R2DBC Result into mapped row values.
+        @SuppressWarnings("JBCT-RET-01") // Reactive Streams Subscriber interface requires void methods
         private static final class ResultFlatMapSubscriber<T> implements org.reactivestreams.Subscriber<io.r2dbc.spi.Result> {
             private final org.reactivestreams.Subscriber<? super T> downstream;
             private final java.util.function.BiFunction<Row, RowMetadata, T> mapper;
