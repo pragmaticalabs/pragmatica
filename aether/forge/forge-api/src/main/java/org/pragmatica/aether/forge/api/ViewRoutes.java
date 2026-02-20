@@ -132,6 +132,9 @@ public sealed interface ViewRoutes {
                             <button class="btn btn-primary btn-small" onclick="setTotalRate(2000)">2K</button>
                             <button class="btn btn-primary btn-small" onclick="setTotalRate(5000)">5K</button>
                             <button class="btn btn-primary btn-small" onclick="setTotalRate(10000)">10K</button>
+                            <button class="btn btn-primary btn-small" onclick="setTotalRate(20000)">20K</button>
+                            <button class="btn btn-primary btn-small" onclick="setTotalRate(50000)">50K</button>
+                            <button class="btn btn-primary btn-small" onclick="setTotalRate(100000)">100K</button>
                         </div>
                         <span class="controls-separator"></span>
                         <button id="btn-reset" class="btn btn-secondary btn-small" onclick="resetMetrics()">Reset Metrics</button>
