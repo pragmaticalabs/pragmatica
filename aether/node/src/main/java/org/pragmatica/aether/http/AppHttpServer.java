@@ -715,6 +715,7 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     private void handleNodeDeparture(NodeId departedNode) {
+        routeRegistry.evictNode(departedNode);
         Option.option(pendingForwardsByNode.remove(departedNode))
               .filter(ids -> !ids.isEmpty())
               .onPresent(correlationIds -> retryPendingForwards(departedNode, correlationIds));

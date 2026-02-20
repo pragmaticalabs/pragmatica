@@ -8,6 +8,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -52,6 +53,14 @@ public interface HttpRouteRegistry {
 
     /// Get all registered routes (for monitoring/debugging and router building).
     List<RouteInfo> allRoutes();
+
+    /// Immediately evict a node from all cached routes.
+    /// Local-only operation — does not affect KV store.
+    /// Used for fast-path route cleanup on node departure.
+    ///
+    /// @param nodeId the departed node to remove from all routes
+    @SuppressWarnings("JBCT-RET-01") // Fire-and-forget local cache mutation, no result needed
+    void evictNode(NodeId nodeId);
 
     /// Route information with set of nodes that can handle the route.
     ///
@@ -152,6 +161,43 @@ public interface HttpRouteRegistry {
                                      .flatMap(map -> map.values()
                                                         .stream())
                                      .toList();
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void evictNode(NodeId nodeId) {
+                var totalAffected = new int[]{0};
+                routesByMethod.values()
+                              .forEach(ref -> totalAffected[0] += evictNodeFromMethodRoutes(ref, nodeId));
+                log.info("Evicted node {} from route cache, {} routes affected", nodeId, totalAffected[0]);
+            }
+
+            private int evictNodeFromMethodRoutes(AtomicReference<TreeMap<String, RouteInfo>> ref, NodeId nodeId) {
+                var affected = new int[]{0};
+                ref.updateAndGet(current -> buildEvictedMap(current, nodeId, affected));
+                return affected[0];
+            }
+
+            private TreeMap<String, RouteInfo> buildEvictedMap(TreeMap<String, RouteInfo> current,
+                                                               NodeId nodeId,
+                                                               int[] affected) {
+                var updated = new TreeMap<String, RouteInfo>();
+                for (var entry : current.entrySet()) {
+                    var route = entry.getValue();
+                    if (!route.nodes()
+                              .contains(nodeId)) {
+                        updated.put(entry.getKey(), route);
+                        continue;
+                    }
+                    affected[0]++;
+                    var remaining = new HashSet<>(route.nodes());
+                    remaining.remove(nodeId);
+                    if (!remaining.isEmpty()) {
+                        updated.put(entry.getKey(),
+                                    RouteInfo.routeInfo(route.httpMethod(), route.pathPrefix(), Set.copyOf(remaining)));
+                    }
+                }
+                return updated;
             }
 
             private String normalizePath(String path) {
