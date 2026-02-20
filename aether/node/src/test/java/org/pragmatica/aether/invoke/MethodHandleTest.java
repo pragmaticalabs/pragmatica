@@ -225,6 +225,16 @@ class MethodHandleTest {
         }
 
         @Override
+        public Unit registerAffinityResolver(Artifact artifact, MethodName method, CacheAffinityResolver resolver) {
+            return unit();
+        }
+
+        @Override
+        public Unit unregisterAffinityResolver(Artifact artifact, MethodName method) {
+            return unit();
+        }
+
+        @Override
         public Result<Unit> verifyEndpointExists(Artifact artifact, MethodName method) {
             return Result.unitResult();
         }

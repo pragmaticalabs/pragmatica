@@ -7,9 +7,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.endpoint.EndpointRegistry.Endpoint;
 import org.pragmatica.aether.slice.MethodName;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.aether.update.RollingUpdateManager;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -63,8 +61,8 @@ class SliceInvokerAffinityTest {
     private void registerEndpoint(Artifact artifact, MethodName method, int instance, NodeId nodeId) {
         var key = new EndpointKey(artifact, method, instance);
         var value = EndpointValue.endpointValue(nodeId);
-        var put = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-        registry.onValuePut(new ValuePut<>(put, Option.none()));
+        var put = new KVCommand.Put<EndpointKey, EndpointValue>(key, value);
+        registry.onEndpointPut(new ValuePut<>(put, Option.none()));
     }
 
     @Nested

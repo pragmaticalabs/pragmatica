@@ -62,7 +62,7 @@ class LoadBalancerManagerTest {
     @Nested
     class DormantState {
         @Test
-        void dormantState_onValuePut_doesNothing() {
+        void dormantState_onRoutePut_doesNothing() {
             var routeKey = HttpRouteKey.httpRouteKey("GET", "/api/test");
             var routeValue = HttpRouteValue.httpRouteValue(Set.of(node1));
             fireValuePut(routeKey, routeValue);
@@ -155,16 +155,7 @@ class LoadBalancerManagerTest {
             assertThat(provider.nodeRemovals).containsExactly("10.0.0.1");
         }
 
-        @Test
-        void activeState_onNonHttpRouteKey_doesNothing() {
-            var artifactBase = org.pragmatica.aether.artifact.ArtifactBase.artifactBase("org.example:test-slice").unwrap();
-            var sliceTargetKey = AetherKey.SliceTargetKey.sliceTargetKey(artifactBase);
-            var sliceTargetValue = AetherValue.SliceTargetValue.sliceTargetValue(
-                org.pragmatica.aether.artifact.Version.version("1.0.0").unwrap(), 3);
-            fireValuePut(sliceTargetKey, sliceTargetValue);
-
-            assertThat(provider.routeChanges).isEmpty();
-        }
+        // Non-HTTP-route keys are now prevented by the type system — onRoutePut only accepts HttpRouteKey
     }
 
     // === Helpers ===
@@ -173,10 +164,10 @@ class LoadBalancerManagerTest {
         manager.onLeaderChange(LeaderNotification.leaderChange(Option.some(selfNode), true));
     }
 
-    private void fireValuePut(AetherKey key, AetherValue value) {
-        var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+    private void fireValuePut(HttpRouteKey key, HttpRouteValue value) {
+        var command = new KVCommand.Put<HttpRouteKey, HttpRouteValue>(key, value);
         var notification = new ValuePut<>(command, Option.none());
-        manager.onValuePut(notification);
+        manager.onRoutePut(notification);
     }
 
     // === Recording Stubs ===

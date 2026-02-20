@@ -5,6 +5,9 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DynamicAspectKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DynamicAspectValue;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -130,33 +133,35 @@ public class DynamicAspectRegistry {
     /// Handle KV-Store update notification for aspect changes from other nodes.
     ///
     /// <p>Called by AetherNode when it receives KV-Store value updates.
-    public void onKvStoreUpdate(AetherKey key, AetherValue value) {
-        if (key instanceof DynamicAspectKey aspectKey &&
-        value instanceof DynamicAspectValue aspectValue) {
-            var registryKey = aspectKey.artifactBase() + "/" + aspectKey.methodName();
-            try{
-                var mode = DynamicAspectMode.valueOf(aspectValue.mode());
-                if (mode == DynamicAspectMode.NONE) {
-                    registry.remove(registryKey);
-                } else {
-                    registry.put(registryKey, mode);
-                }
-                log.debug("Aspect updated from cluster: {} -> {}",
-                          registryKey,
-                          mode);
-            } catch (IllegalArgumentException e) {
-                log.warn("Invalid aspect mode from cluster for {}: {}", registryKey, aspectValue.mode());
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    public void onAspectPut(ValuePut<DynamicAspectKey, DynamicAspectValue> valuePut) {
+        var aspectKey = valuePut.cause().key();
+        var aspectValue = valuePut.cause().value();
+        var registryKey = aspectKey.artifactBase() + "/" + aspectKey.methodName();
+        try {
+            var mode = DynamicAspectMode.valueOf(aspectValue.mode());
+            if (mode == DynamicAspectMode.NONE) {
+                registry.remove(registryKey);
+            } else {
+                registry.put(registryKey, mode);
             }
+            log.debug("Aspect updated from cluster: {} -> {}",
+                      registryKey,
+                      mode);
+        } catch (IllegalArgumentException e) {
+            log.warn("Invalid aspect mode from cluster for {}: {}", registryKey, aspectValue.mode());
         }
     }
 
     /// Handle KV-Store remove notification for aspect deletions from other nodes.
-    public void onKvStoreRemove(AetherKey key) {
-        if (key instanceof DynamicAspectKey aspectKey) {
-            var registryKey = aspectKey.artifactBase() + "/" + aspectKey.methodName();
-            registry.remove(registryKey);
-            log.debug("Aspect removed from cluster: {}", registryKey);
-        }
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    public void onAspectRemove(ValueRemove<DynamicAspectKey, DynamicAspectValue> valueRemove) {
+        var aspectKey = valueRemove.cause().key();
+        var registryKey = aspectKey.artifactBase() + "/" + aspectKey.methodName();
+        registry.remove(registryKey);
+        log.debug("Aspect removed from cluster: {}", registryKey);
     }
 
     /// Build JSON representation of all configured aspects for dashboard integration.

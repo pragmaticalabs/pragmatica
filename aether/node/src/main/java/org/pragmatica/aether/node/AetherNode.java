@@ -92,8 +92,7 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.cluster.state.kvstore.KVStoreNotification.filterPut;
-import static org.pragmatica.cluster.state.kvstore.KVStoreNotification.filterRemove;
+import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import static org.pragmatica.serialization.fury.FuryDeserializer.furyDeserializer;
 import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 
@@ -857,90 +856,63 @@ public interface AetherNode {
                                                                     AppHttpServer appHttpServer,
                                                                     Option<LoadBalancerManager> loadBalancerManager) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
-        // KVStore notifications - ORDER MATTERS!
-        // EndpointRegistry MUST process before ClusterDeploymentManager so endpoints
-        // are available when ClusterDeploymentManager triggers dependent slice activation.
-        // NOTE: All handlers are wrapped with filterPut/filterRemove to avoid ClassCastException
-        // due to type erasure. Without filters, ValuePut<LeaderKey, LeaderValue> notifications
-        // would be routed to handlers expecting ValuePut<AetherKey, AetherValue>.
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, nodeDeploymentManager::onValuePut)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, endpointRegistry::onValuePut)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, clusterDeploymentManager::onValuePut)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class, nodeDeploymentManager::onValueRemove)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class, endpointRegistry::onValueRemove)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class, clusterDeploymentManager::onValueRemove)));
-        // HTTP route registry for application HTTP routing
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, httpRouteRegistry::onValuePut)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class, httpRouteRegistry::onValueRemove)));
-        // Artifact metrics tracking via KV-Store
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, artifactMetricsCollector::onValuePut)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class, artifactMetricsCollector::onValueRemove)));
-        // DeploymentMap: event-driven slice-node index
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, deploymentMap::onValuePut)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class, deploymentMap::onValueRemove)));
-        // ControlLoop blueprint sync via KV-Store
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, controlLoop::onValuePut)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class, controlLoop::onValueRemove)));
-        // Alert threshold sync via KV-Store
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey, AetherValue> notification) -> alertManager.onKvStoreUpdate(notification.cause()
-                                                                                                                                                                        .key(),
-                                                                                                                                                            notification.cause()
-                                                                                                                                                                        .value()))));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class,
-                                                           notification -> alertManager.onKvStoreRemove(notification.cause()
-                                                                                                                    .key()))));
-        // Dynamic aspect sync via KV-Store
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey, AetherValue> notification) -> aspectRegistry.onKvStoreUpdate(notification.cause()
-                                                                                                                                                                          .key(),
-                                                                                                                                                              notification.cause()
-                                                                                                                                                                          .value()))));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class,
-                                                           notification -> aspectRegistry.onKvStoreRemove(notification.cause()
-                                                                                                                      .key()))));
-        // Log level sync via KV-Store
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey, AetherValue> notification) -> logLevelRegistry.onKvStoreUpdate(notification.cause()
-                                                                                                                                                                            .key(),
-                                                                                                                                                                notification.cause()
-                                                                                                                                                                            .value()))));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class,
-                                                           notification -> logLevelRegistry.onKvStoreRemove(notification.cause()
-                                                                                                                        .key()))));
-        // Dynamic config sync via KV-Store
-        dynamicConfigManager.onPresent(dcm -> {
-                                           entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                                                                 filterPut(AetherKey.class,
-                                                                                           (KVStoreNotification.ValuePut<AetherKey, AetherValue> notification) -> dcm.onKvStoreUpdate(notification.cause()
-                                                                                                                                                                                                  .key(),
-                                                                                                                                                                                      notification.cause()
-                                                                                                                                                                                                  .value()))));
-                                           entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                                                                 filterRemove(AetherKey.class,
-                                                                                              notification -> dcm.onKvStoreRemove(notification.cause()
-                                                                                                                                              .key()))));
-                                       });
+        // KV-Store notification sub-router — type-safe key-based dispatch.
+        // Replaces per-handler filterPut/filterRemove with key-type dispatch via KVNotificationRouter.
+        // Registration order within each key type = dispatch order.
+        var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
+            // EndpointRegistry — EndpointKey
+            .onPut(AetherKey.EndpointKey.class, endpointRegistry::onEndpointPut)
+            .onRemove(AetherKey.EndpointKey.class, endpointRegistry::onEndpointRemove)
+            // NodeDeploymentManager — SliceNodeKey
+            .onPut(AetherKey.SliceNodeKey.class, nodeDeploymentManager::onSliceNodePut)
+            .onRemove(AetherKey.SliceNodeKey.class, nodeDeploymentManager::onSliceNodeRemove)
+            // ClusterDeploymentManager — AppBlueprintKey, SliceTargetKey, SliceNodeKey, VersionRoutingKey
+            .onPut(AetherKey.AppBlueprintKey.class, clusterDeploymentManager::onAppBlueprintPut)
+            .onPut(AetherKey.SliceTargetKey.class, clusterDeploymentManager::onSliceTargetPut)
+            .onPut(AetherKey.SliceNodeKey.class, clusterDeploymentManager::onSliceNodePut)
+            .onPut(AetherKey.VersionRoutingKey.class, clusterDeploymentManager::onVersionRoutingPut)
+            .onRemove(AetherKey.AppBlueprintKey.class, clusterDeploymentManager::onAppBlueprintRemove)
+            .onRemove(AetherKey.SliceTargetKey.class, clusterDeploymentManager::onSliceTargetRemove)
+            .onRemove(AetherKey.SliceNodeKey.class, clusterDeploymentManager::onSliceNodeRemove)
+            .onRemove(AetherKey.VersionRoutingKey.class, clusterDeploymentManager::onVersionRoutingRemove)
+            // HttpRouteRegistry — HttpRouteKey
+            .onPut(AetherKey.HttpRouteKey.class, httpRouteRegistry::onRoutePut)
+            .onRemove(AetherKey.HttpRouteKey.class, httpRouteRegistry::onRouteRemove)
+            // ArtifactDeploymentTracker — SliceNodeKey (direct, bypassing ArtifactMetricsCollector indirection)
+            .onPut(AetherKey.SliceNodeKey.class, artifactMetricsCollector.deploymentTracker()::onSliceNodePut)
+            .onRemove(AetherKey.SliceNodeKey.class, artifactMetricsCollector.deploymentTracker()::onSliceNodeRemove)
+            // DeploymentMap — SliceNodeKey
+            .onPut(AetherKey.SliceNodeKey.class, deploymentMap::onSliceNodePut)
+            .onRemove(AetherKey.SliceNodeKey.class, deploymentMap::onSliceNodeRemove)
+            // ControlLoop — SliceTargetKey, SliceNodeKey
+            .onPut(AetherKey.SliceTargetKey.class, controlLoop::onSliceTargetPut)
+            .onPut(AetherKey.SliceNodeKey.class, controlLoop::onSliceNodePut)
+            .onRemove(AetherKey.SliceTargetKey.class, controlLoop::onSliceTargetRemove)
+            .onRemove(AetherKey.SliceNodeKey.class, controlLoop::onSliceNodeRemove)
+            // AlertManager — AlertThresholdKey
+            .onPut(AetherKey.AlertThresholdKey.class, alertManager::onAlertThresholdPut)
+            .onRemove(AetherKey.AlertThresholdKey.class, alertManager::onAlertThresholdRemove)
+            // DynamicAspectRegistry — DynamicAspectKey
+            .onPut(AetherKey.DynamicAspectKey.class, aspectRegistry::onAspectPut)
+            .onRemove(AetherKey.DynamicAspectKey.class, aspectRegistry::onAspectRemove)
+            // LogLevelRegistry — LogLevelKey
+            .onPut(AetherKey.LogLevelKey.class, logLevelRegistry::onLogLevelPut)
+            .onRemove(AetherKey.LogLevelKey.class, logLevelRegistry::onLogLevelRemove)
+            // RollbackManager — SliceTargetKey, PreviousVersionKey
+            .onPut(AetherKey.SliceTargetKey.class, rollbackManager::onSliceTargetPut)
+            .onPut(AetherKey.PreviousVersionKey.class, rollbackManager::onPreviousVersionPut)
+            // AppHttpServer — HttpRouteKey (for router rebuild on route changes)
+            .onPut(AetherKey.HttpRouteKey.class, appHttpServer::onRoutePut)
+            .onRemove(AetherKey.HttpRouteKey.class, appHttpServer::onRouteRemove);
+        // Dynamic config manager (optional)
+        dynamicConfigManager.onPresent(dcm -> kvRouterBuilder
+            .onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
+            .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
+        // Load balancer manager KV routes (optional)
+        loadBalancerManager.onPresent(lbm -> kvRouterBuilder
+            .onPut(AetherKey.HttpRouteKey.class, lbm::onRoutePut)
+            .onRemove(AetherKey.HttpRouteKey.class, lbm::onRouteRemove));
+        entries.addAll(kvRouterBuilder.build().asRouteEntries());
         // Quorum state notifications - these handlers activate/deactivate components.
         // NOTE: RabiaNode's handlers run first (consensus activates before LeaderManager emits LeaderChange).
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
@@ -962,9 +934,7 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               rollingUpdateManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, rollbackManager::onLeaderChange));
-        // RollbackManager KV-Store notifications and slice failure events
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, rollbackManager::onValuePut)));
+        // RollbackManager slice failure events (KV-Store notifications handled by sub-router above)
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               rollbackManager::onAllInstancesFailed));
         // Topology change notifications - must register for each subtype since router uses exact class matching
@@ -1051,26 +1021,15 @@ public interface AetherNode {
                                               appHttpServer::onHttpForwardRequest));
         entries.add(MessageRouter.Entry.route(org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse.class,
                                               appHttpServer::onHttpForwardResponse));
-        // AppHttpServer route registry updates (to rebuild router when routes change)
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, appHttpServer::onValuePut)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class, appHttpServer::onValueRemove)));
         // KVStore local operations
         entries.add(MessageRouter.Entry.route(KVStoreLocalIO.Request.Find.class, kvStore::find));
         // Leader election commit listener - notifies LeaderManager when leader is committed through consensus
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                               notification -> handleLeaderCommit(notification, leaderManager)));
-        // Load balancer manager routes
+        // Load balancer manager routes (KV routes handled by sub-router above)
         loadBalancerManager.onPresent(lbm -> {
                                           entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                                                 lbm::onLeaderChange));
-                                          entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                                                                filterPut(AetherKey.class,
-                                                                                          lbm::onValuePut)));
-                                          entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                                                                filterRemove(AetherKey.class,
-                                                                                             lbm::onValueRemove)));
                                           entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
                                                                                 lbm::onTopologyChange));
                                           entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,

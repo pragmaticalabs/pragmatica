@@ -40,7 +40,6 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -52,10 +51,10 @@ public interface NodeDeploymentManager {
     record SliceDeployment(SliceNodeKey key, SliceState state, long timestamp) {}
 
     @MessageReceiver
-    void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
+    void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut);
 
     @MessageReceiver
-    void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
+    void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove);
 
     @MessageReceiver
     void onQuorumStateChange(QuorumStateNotification quorumStateNotification);
@@ -67,9 +66,9 @@ public interface NodeDeploymentManager {
     record SuspendedSlice(SliceNodeKey key, SliceDeployment deployment) {}
 
     sealed interface NodeDeploymentState {
-        default void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {}
+        default void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {}
 
-        default void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {}
+        default void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {}
 
         /// Dormant state with optional suspended slices for reactivation.
         record DormantNodeDeploymentState(List<SuspendedSlice> suspendedSlices) implements NodeDeploymentState {
@@ -90,8 +89,6 @@ public interface NodeDeploymentManager {
                                          Option<SliceInvokerFacade> sliceInvokerFacade) implements NodeDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(ActiveNodeDeploymentState.class);
 
-            private static final Fn1<Cause, Class<?>> UNEXPECTED_VALUE_TYPE = Causes.forOneValue("Unexpected value type for slice-node key: {}");
-
             private static final Fn1<Cause, SliceNodeKey> CLEANUP_FAILED = Causes.forOneValue("Failed to cleanup slice {} during abrupt removal");
 
             private static final Fn1<Cause, SliceNodeKey> STATE_UPDATE_FAILED = Causes.forOneValue("Failed to update slice state for {}");
@@ -106,39 +103,23 @@ public interface NodeDeploymentManager {
                                              .findFirst());
             }
 
-            public void whenOurKeyMatches(AetherKey key, Consumer<SliceNodeKey> action) {
-                switch (key) {
-                    case SliceNodeKey sliceKey when sliceKey.isForNode(self) -> action.accept(sliceKey);
-                    default -> {}
+            @Override
+            public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
+                var sliceKey = valuePut.cause().key();
+                if (sliceKey.isForNode(self)) {
+                    var state = valuePut.cause().value().state();
+                    log.debug("ValuePut received for key: {}, state: {}", sliceKey, state);
+                    recordDeployment(sliceKey, state);
+                    processStateTransition(sliceKey, state);
                 }
             }
 
             @Override
-            public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                whenOurKeyMatches(valuePut.cause()
-                                          .key(),
-                                  sliceKey -> handleSliceValuePut(sliceKey,
-                                                                  valuePut.cause()
-                                                                          .value()));
-            }
-
-            private void handleSliceValuePut(SliceNodeKey sliceKey, AetherValue value) {
-                switch (value) {
-                    case SliceNodeValue(SliceState state) -> {
-                        log.debug("ValuePut received for key: {}, state: {}", sliceKey, state);
-                        recordDeployment(sliceKey, state);
-                        processStateTransition(sliceKey, state);
-                    }
-                    default -> log.warn(UNEXPECTED_VALUE_TYPE.apply(value.getClass())
-                                                             .message());
+            public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
+                var sliceKey = valueRemove.cause().key();
+                if (sliceKey.isForNode(self)) {
+                    handleSliceValueRemove(sliceKey);
                 }
-            }
-
-            @Override
-            public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-                whenOurKeyMatches(valueRemove.cause()
-                                             .key(),
-                                  this::handleSliceValueRemove);
             }
 
             private void handleSliceValueRemove(SliceNodeKey sliceKey) {
@@ -739,15 +720,15 @@ public interface NodeDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(NodeDeploymentManager.class);
 
             @Override
-            public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
+            public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
                 state.get()
-                     .onValuePut(valuePut);
+                     .onSliceNodePut(valuePut);
             }
 
             @Override
-            public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
+            public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
                 state.get()
-                     .onValueRemove(valueRemove);
+                     .onSliceNodeRemove(valueRemove);
             }
 
             @Override

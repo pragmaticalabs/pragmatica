@@ -4,6 +4,9 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.LogLevelKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.LogLevelValue;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -96,24 +99,26 @@ public class LogLevelRegistry {
     }
 
     /// Handle KV-Store update notification for log level changes from other nodes.
-    public void onKvStoreUpdate(AetherKey key, AetherValue value) {
-        if (key instanceof LogLevelKey logLevelKey &&
-        value instanceof LogLevelValue logLevelValue) {
-            registry.put(logLevelKey.loggerName(), logLevelValue.level());
-            applyLevel(logLevelKey.loggerName(), logLevelValue.level());
-            log.debug("Log level updated from cluster: {} -> {}",
-                      logLevelKey.loggerName(),
-                      logLevelValue.level());
-        }
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    public void onLogLevelPut(ValuePut<LogLevelKey, LogLevelValue> valuePut) {
+        var logLevelKey = valuePut.cause().key();
+        var logLevelValue = valuePut.cause().value();
+        registry.put(logLevelKey.loggerName(), logLevelValue.level());
+        applyLevel(logLevelKey.loggerName(), logLevelValue.level());
+        log.debug("Log level updated from cluster: {} -> {}",
+                  logLevelKey.loggerName(),
+                  logLevelValue.level());
     }
 
     /// Handle KV-Store remove notification for log level deletions from other nodes.
-    public void onKvStoreRemove(AetherKey key) {
-        if (key instanceof LogLevelKey logLevelKey) {
-            registry.remove(logLevelKey.loggerName());
-            resetLogLevel(logLevelKey.loggerName());
-            log.debug("Log level reset from cluster: {}", logLevelKey.loggerName());
-        }
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    public void onLogLevelRemove(ValueRemove<LogLevelKey, LogLevelValue> valueRemove) {
+        var logLevelKey = valueRemove.cause().key();
+        registry.remove(logLevelKey.loggerName());
+        resetLogLevel(logLevelKey.loggerName());
+        log.debug("Log level reset from cluster: {}", logLevelKey.loggerName());
     }
 
     private Unit applyAndStore(String loggerName, String level) {

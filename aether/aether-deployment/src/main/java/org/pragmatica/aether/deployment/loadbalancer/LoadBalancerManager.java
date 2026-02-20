@@ -40,18 +40,18 @@ public interface LoadBalancerManager {
     void onLeaderChange(LeaderChange leaderChange);
 
     @MessageReceiver
-    void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
+    void onRoutePut(ValuePut<HttpRouteKey, HttpRouteValue> valuePut);
 
     @MessageReceiver
-    void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
+    void onRouteRemove(ValueRemove<HttpRouteKey, HttpRouteValue> valueRemove);
 
     @MessageReceiver
     void onTopologyChange(TopologyChangeNotification topologyChange);
 
     sealed interface LoadBalancerManagerState {
-        default void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {}
+        default void onRoutePut(ValuePut<HttpRouteKey, HttpRouteValue> valuePut) {}
 
-        default void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {}
+        default void onRouteRemove(ValueRemove<HttpRouteKey, HttpRouteValue> valueRemove) {}
 
         default void onTopologyChange(TopologyChangeNotification topologyChange) {}
 
@@ -65,14 +65,8 @@ public interface LoadBalancerManager {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
 
             @Override
-            public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                var key = valuePut.cause()
-                                  .key();
-                var value = valuePut.cause()
-                                    .value();
-                if (key instanceof HttpRouteKey routeKey && value instanceof HttpRouteValue routeValue) {
-                    handleRouteChange(routeKey, routeValue);
-                }
+            public void onRoutePut(ValuePut<HttpRouteKey, HttpRouteValue> valuePut) {
+                handleRouteChange(valuePut.cause().key(), valuePut.cause().value());
             }
 
             @Override
@@ -184,15 +178,13 @@ public interface LoadBalancerManager {
             }
 
             @Override
-            public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                state.get()
-                     .onValuePut(valuePut);
+            public void onRoutePut(ValuePut<HttpRouteKey, HttpRouteValue> valuePut) {
+                state.get().onRoutePut(valuePut);
             }
 
             @Override
-            public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-                state.get()
-                     .onValueRemove(valueRemove);
+            public void onRouteRemove(ValueRemove<HttpRouteKey, HttpRouteValue> valueRemove) {
+                state.get().onRouteRemove(valueRemove);
             }
 
             @Override

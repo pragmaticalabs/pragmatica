@@ -49,7 +49,6 @@ public interface AetherCustomClasses extends ClassRegistrator {
         // Aether key/value types
         classes.addAll(concreteSubtypes(AetherKey.class));
         classes.addAll(concreteSubtypes(AetherValue.class));
-        classes.addAll(concreteSubtypes(AetherKey.AetherKeyPattern.class));
         // Artifact types
         Stream.of(Artifact.class,
                   ArtifactBase.class,
@@ -74,7 +73,6 @@ public interface AetherCustomClasses extends ClassRegistrator {
         classes.addAll(concreteSubtypes(HttpForwardMessage.class));
         // Leader election types (for consensus-based leader election)
         Stream.of(LeaderKey.class,
-                  LeaderKey.LeaderKeyPattern.class,
                   LeaderValue.class,
                   // HTTP handler types (for remote slice invocation)
         HttpRequestContext.class,

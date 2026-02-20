@@ -8,9 +8,8 @@ import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationContext;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -72,11 +71,11 @@ public interface AppHttpServer {
 
     /// Handle KV-Store updates to rebuild router when routes change.
     @MessageReceiver
-    void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
+    void onRoutePut(ValuePut<HttpRouteKey, HttpRouteValue> valuePut);
 
     /// Handle KV-Store removals to rebuild router when routes change.
     @MessageReceiver
-    void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
+    void onRouteRemove(ValueRemove<HttpRouteKey, HttpRouteValue> valueRemove);
 
     /// Handle incoming HTTP forward request from another node.
     @MessageReceiver
@@ -255,23 +254,17 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     @Override
-    public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-        if (valuePut.cause()
-                    .key() instanceof HttpRouteKey) {
-            routeSyncReceived.set(true);
-            log.debug("HttpRouteKey added, rebuilding router");
-            rebuildRouter();
-        }
+    public void onRoutePut(ValuePut<HttpRouteKey, HttpRouteValue> valuePut) {
+        routeSyncReceived.set(true);
+        log.debug("HttpRouteKey added, rebuilding router");
+        rebuildRouter();
     }
 
     @Override
-    public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-        if (valueRemove.cause()
-                       .key() instanceof HttpRouteKey) {
-            routeSyncReceived.set(true);
-            log.debug("HttpRouteKey removed, rebuilding router");
-            rebuildRouter();
-        }
+    public void onRouteRemove(ValueRemove<HttpRouteKey, HttpRouteValue> valueRemove) {
+        routeSyncReceived.set(true);
+        log.debug("HttpRouteKey removed, rebuilding router");
+        rebuildRouter();
     }
 
     // ================== Request Handling ==================

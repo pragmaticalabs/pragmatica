@@ -49,7 +49,10 @@ public interface RollbackManager {
     void onLeaderChange(LeaderChange leaderChange);
 
     @MessageReceiver
-    void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
+    void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
+
+    @MessageReceiver
+    void onPreviousVersionPut(ValuePut<PreviousVersionKey, PreviousVersionValue> valuePut);
 
     @MessageReceiver
     void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event);
@@ -221,18 +224,13 @@ public interface RollbackManager {
             }
 
             @Override
-            public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                var key = valuePut.cause()
-                                  .key();
-                var value = valuePut.cause()
-                                    .value();
-                switch (key) {
-                    case SliceTargetKey sliceTargetKey when value instanceof SliceTargetValue sliceTargetValue ->
-                    trackVersionChange(sliceTargetKey.artifactBase(), sliceTargetValue);
-                    case PreviousVersionKey previousVersionKey when value instanceof PreviousVersionValue previousVersionValue ->
-                    updateLocalPreviousVersion(previousVersionKey.artifactBase(), previousVersionValue);
-                    default -> {}
-                }
+            public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
+                trackVersionChange(valuePut.cause().key().artifactBase(), valuePut.cause().value());
+            }
+
+            @Override
+            public void onPreviousVersionPut(ValuePut<PreviousVersionKey, PreviousVersionValue> valuePut) {
+                updateLocalPreviousVersion(valuePut.cause().key().artifactBase(), valuePut.cause().value());
             }
 
             @Override
@@ -434,7 +432,9 @@ public interface RollbackManager {
         @Override
         public void onLeaderChange(LeaderChange leaderChange) {}
         @Override
-        public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {}
+        public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {}
+        @Override
+        public void onPreviousVersionPut(ValuePut<PreviousVersionKey, PreviousVersionValue> valuePut) {}
         @Override
         public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
             log.debug("Rollback disabled, ignoring AllInstancesFailed for {}", event.artifact());

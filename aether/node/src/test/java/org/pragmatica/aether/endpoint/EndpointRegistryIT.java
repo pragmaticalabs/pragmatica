@@ -7,9 +7,7 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.endpoint.EndpointRegistry.Endpoint;
 import org.pragmatica.aether.slice.MethodName;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.aether.update.VersionRouting;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -220,11 +218,10 @@ class EndpointRegistryIT {
         registerDirectEndpoint(artifact, method, instance, nodeId);
     }
 
-    @SuppressWarnings("unchecked")
     private void registerDirectEndpoint(Artifact artifact, MethodName method, int instance, String nodeId) {
         var key = new EndpointKey(artifact, method, instance);
         var value = new EndpointValue(nodeId(nodeId).unwrap());
-        var put = (KVCommand.Put<AetherKey, AetherValue>) (KVCommand.Put<?, ?>) new KVCommand.Put<>(key, value);
-        registry.onValuePut(new ValuePut<>(put, Option.empty()));
+        var put = new KVCommand.Put<>(key, value);
+        registry.onEndpointPut(new ValuePut<>(put, Option.empty()));
     }
 }

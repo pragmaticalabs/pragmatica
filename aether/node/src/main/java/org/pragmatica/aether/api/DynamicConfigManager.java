@@ -5,6 +5,9 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -81,23 +84,25 @@ public class DynamicConfigManager {
     /// Handle KV-Store update notification for config changes from other nodes.
     ///
     /// <p>Called by AetherNode when it receives KV-Store value updates.
-    public void onKvStoreUpdate(AetherKey key, AetherValue value) {
-        if (key instanceof ConfigKey configKey &&
-        value instanceof ConfigValue configValue) {
-            if (shouldApply(configKey)) {
-                provider.put(configValue.key(), configValue.value());
-                log.debug("Config updated from cluster: {}={}", configValue.key(), configValue.value());
-            }
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    public void onConfigPut(ValuePut<ConfigKey, ConfigValue> valuePut) {
+        var configKey = valuePut.cause().key();
+        var configValue = valuePut.cause().value();
+        if (shouldApply(configKey)) {
+            provider.put(configValue.key(), configValue.value());
+            log.debug("Config updated from cluster: {}={}", configValue.key(), configValue.value());
         }
     }
 
     /// Handle KV-Store remove notification for config deletions from other nodes.
-    public void onKvStoreRemove(AetherKey key) {
-        if (key instanceof ConfigKey configKey) {
-            if (shouldApply(configKey)) {
-                provider.remove(configKey.key());
-                log.debug("Config removed from cluster: {}", configKey.key());
-            }
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    public void onConfigRemove(ValueRemove<ConfigKey, ConfigValue> valueRemove) {
+        var configKey = valueRemove.cause().key();
+        if (shouldApply(configKey)) {
+            provider.remove(configKey.key());
+            log.debug("Config removed from cluster: {}", configKey.key());
         }
     }
 

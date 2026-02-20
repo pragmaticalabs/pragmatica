@@ -187,9 +187,9 @@ class RollbackManagerTest {
     private void simulateSliceTargetChange(Artifact artifact) {
         var key = SliceTargetKey.sliceTargetKey(artifact.base());
         var value = SliceTargetValue.sliceTargetValue(artifact.version(), 1);
-        var put = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+        var put = new KVCommand.Put<SliceTargetKey, SliceTargetValue>(key, value);
         var notification = new ValuePut<>(put, Option.none());
-        rollbackManager.onValuePut(notification);
+        rollbackManager.onSliceTargetPut(notification);
     }
 
     private SliceFailureEvent.AllInstancesFailed createFailureEvent(Artifact artifact) {

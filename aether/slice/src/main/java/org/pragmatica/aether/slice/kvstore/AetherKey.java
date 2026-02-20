@@ -5,7 +5,6 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
-import org.pragmatica.cluster.state.kvstore.StructuredPattern;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -31,14 +30,6 @@ public sealed interface AetherKey extends StructuredKey {
     /// Stores runtime scaling targets for slices (instance count, current version, owning blueprint).
     record SliceTargetKey(ArtifactBase artifactBase) implements AetherKey {
         private static final String PREFIX = "slice-target/";
-
-        @Override
-        public boolean matches(StructuredPattern pattern) {
-            return switch (pattern) {
-                case AetherKeyPattern.SliceTargetPattern sliceTargetPattern -> sliceTargetPattern.matches(this);
-                default -> false;
-            };
-        }
 
         @Override
         public String asString() {
@@ -74,14 +65,6 @@ public sealed interface AetherKey extends StructuredKey {
         private static final String PREFIX = "app-blueprint/";
 
         @Override
-        public boolean matches(StructuredPattern pattern) {
-            return switch (pattern) {
-                case AetherKeyPattern.AppBlueprintPattern appBlueprintPattern -> appBlueprintPattern.matches(this);
-                default -> false;
-            };
-        }
-
-        @Override
         public String asString() {
             return PREFIX + blueprintId.asString();
         }
@@ -112,14 +95,6 @@ public sealed interface AetherKey extends StructuredKey {
     /// slices/{nodeId}/{groupId}:{artifactId}:{version}
     /// ```
     record SliceNodeKey(Artifact artifact, NodeId nodeId) implements AetherKey {
-        @Override
-        public boolean matches(StructuredPattern pattern) {
-            return switch (pattern) {
-                case AetherKeyPattern.SliceNodePattern sliceNodePattern -> sliceNodePattern.matches(this);
-                default -> false;
-            };
-        }
-
         public boolean isForNode(NodeId nodeId) {
             return this.nodeId.equals(nodeId);
         }
@@ -160,14 +135,6 @@ public sealed interface AetherKey extends StructuredKey {
     /// ```
     record EndpointKey(Artifact artifact, MethodName methodName, int instanceNumber) implements AetherKey {
         private static final String PREFIX = "endpoints/";
-
-        @Override
-        public boolean matches(StructuredPattern pattern) {
-            return switch (pattern) {
-                case AetherKeyPattern.EndpointPattern endpointPattern -> endpointPattern.matches(this);
-                default -> false;
-            };
-        }
 
         @Override
         public String asString() {
@@ -215,14 +182,6 @@ public sealed interface AetherKey extends StructuredKey {
         private static final String PREFIX = "version-routing/";
 
         @Override
-        public boolean matches(StructuredPattern pattern) {
-            return switch (pattern) {
-                case AetherKeyPattern.VersionRoutingPattern versionRoutingPattern -> versionRoutingPattern.matches(this);
-                default -> false;
-            };
-        }
-
-        @Override
         public String asString() {
             return PREFIX + artifactBase.asString();
         }
@@ -255,14 +214,6 @@ public sealed interface AetherKey extends StructuredKey {
     /// Stores rolling update state for tracking update progress.
     record RollingUpdateKey(String updateId) implements AetherKey {
         private static final String PREFIX = "rolling-update/";
-
-        @Override
-        public boolean matches(StructuredPattern pattern) {
-            return switch (pattern) {
-                case AetherKeyPattern.RollingUpdatePattern rollingUpdatePattern -> rollingUpdatePattern.matches(this);
-                default -> false;
-            };
-        }
 
         @Override
         public String asString() {
@@ -298,14 +249,6 @@ public sealed interface AetherKey extends StructuredKey {
         private static final String PREFIX = "previous-version/";
 
         @Override
-        public boolean matches(StructuredPattern pattern) {
-            return switch (pattern) {
-                case AetherKeyPattern.PreviousVersionPattern previousVersionPattern -> previousVersionPattern.matches(this);
-                default -> false;
-            };
-        }
-
-        @Override
         public String asString() {
             return PREFIX + artifactBase.asString();
         }
@@ -338,14 +281,6 @@ public sealed interface AetherKey extends StructuredKey {
     /// Maps HTTP method + path prefix to artifact + slice method for cluster-wide HTTP routing.
     record HttpRouteKey(String httpMethod, String pathPrefix) implements AetherKey {
         private static final String PREFIX = "http-routes/";
-
-        @Override
-        public boolean matches(StructuredPattern pattern) {
-            return switch (pattern) {
-                case AetherKeyPattern.HttpRoutePattern httpRoutePattern -> httpRoutePattern.matches(this);
-                default -> false;
-            };
-        }
 
         @Override
         public String asString() {
@@ -406,14 +341,6 @@ public sealed interface AetherKey extends StructuredKey {
         private static final String PREFIX = "log-level/";
 
         @Override
-        public boolean matches(StructuredPattern pattern) {
-            return switch (pattern) {
-                case AetherKeyPattern.LogLevelPattern logLevelPattern -> logLevelPattern.matches(this);
-                default -> false;
-            };
-        }
-
-        @Override
         public String asString() {
             return PREFIX + loggerName;
         }
@@ -449,14 +376,6 @@ public sealed interface AetherKey extends StructuredKey {
     /// Stores runtime aspect configuration (logging/metrics) per artifact method.
     record DynamicAspectKey(String artifactBase, String methodName) implements AetherKey {
         private static final String PREFIX = "dynamic-aspect/";
-
-        @Override
-        public boolean matches(StructuredPattern pattern) {
-            return switch (pattern) {
-                case AetherKeyPattern.DynamicAspectPattern dynamicAspectPattern -> dynamicAspectPattern.matches(this);
-                default -> false;
-            };
-        }
 
         @Override
         public String asString() {
@@ -499,14 +418,6 @@ public sealed interface AetherKey extends StructuredKey {
         private static final String PREFIX = "alert-threshold/";
 
         @Override
-        public boolean matches(StructuredPattern pattern) {
-            return switch (pattern) {
-                case AetherKeyPattern.AlertThresholdPattern alertThresholdPattern -> alertThresholdPattern.matches(this);
-                default -> false;
-            };
-        }
-
-        @Override
         public String asString() {
             return PREFIX + metricName;
         }
@@ -539,14 +450,6 @@ public sealed interface AetherKey extends StructuredKey {
     record ConfigKey(String key, Option<NodeId> nodeScope) implements AetherKey {
         private static final String CLUSTER_PREFIX = "config/";
         private static final String NODE_PREFIX = "config/node/";
-
-        @Override
-        public boolean matches(StructuredPattern pattern) {
-            return switch (pattern) {
-                case AetherKeyPattern.ConfigPattern configPattern -> configPattern.matches(this);
-                default -> false;
-            };
-        }
 
         @Override
         public String asString() {
@@ -612,90 +515,4 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> DYNAMIC_ASPECT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid dynamic-aspect key format: %s");
     Fn1<Cause, String> CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid config key format: %s");
 
-    /// Aether KV-Store structured patterns for key matching
-    sealed interface AetherKeyPattern extends StructuredPattern {
-        /// Pattern for slice-target keys: slice-target/*
-        record SliceTargetPattern() implements AetherKeyPattern {
-            public boolean matches(SliceTargetKey key) {
-                return true;
-            }
-        }
-
-        /// Pattern for app-blueprint keys: app-blueprint/*
-        record AppBlueprintPattern() implements AetherKeyPattern {
-            public boolean matches(AppBlueprintKey key) {
-                return true;
-            }
-        }
-
-        /// Pattern for slice-node keys: slices/*/*
-        record SliceNodePattern() implements AetherKeyPattern {
-            public boolean matches(SliceNodeKey key) {
-                return true;
-            }
-        }
-
-        /// Pattern for endpoint keys: endpoints/*/*
-        record EndpointPattern() implements AetherKeyPattern {
-            public boolean matches(EndpointKey key) {
-                return true;
-            }
-        }
-
-        /// Pattern for version-routing keys: version-routing/*
-        record VersionRoutingPattern() implements AetherKeyPattern {
-            public boolean matches(VersionRoutingKey key) {
-                return true;
-            }
-        }
-
-        /// Pattern for rolling-update keys: rolling-update/*
-        record RollingUpdatePattern() implements AetherKeyPattern {
-            public boolean matches(RollingUpdateKey key) {
-                return true;
-            }
-        }
-
-        /// Pattern for previous-version keys: previous-version/*
-        record PreviousVersionPattern() implements AetherKeyPattern {
-            public boolean matches(PreviousVersionKey key) {
-                return true;
-            }
-        }
-
-        /// Pattern for http-routes keys: http-routes/*
-        record HttpRoutePattern() implements AetherKeyPattern {
-            public boolean matches(HttpRouteKey key) {
-                return true;
-            }
-        }
-
-        /// Pattern for alert-threshold keys: alert-threshold/*
-        record AlertThresholdPattern() implements AetherKeyPattern {
-            public boolean matches(AlertThresholdKey key) {
-                return true;
-            }
-        }
-
-        /// Pattern for log-level keys: log-level/*
-        record LogLevelPattern() implements AetherKeyPattern {
-            public boolean matches(LogLevelKey key) {
-                return true;
-            }
-        }
-
-        /// Pattern for dynamic-aspect keys: dynamic-aspect/*
-        record DynamicAspectPattern() implements AetherKeyPattern {
-            public boolean matches(DynamicAspectKey key) {
-                return true;
-            }
-        }
-
-        /// Pattern for config keys: config/*
-        record ConfigPattern() implements AetherKeyPattern {
-            public boolean matches(ConfigKey key) {
-                return true;
-            }
-        }
-    }
 }

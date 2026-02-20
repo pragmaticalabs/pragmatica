@@ -4,9 +4,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.MethodName;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.aether.invoke.InvocationContext;
 import org.pragmatica.aether.update.VersionRouting;
@@ -42,11 +40,11 @@ import org.slf4j.LoggerFactory;
 public interface EndpointRegistry {
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
-    void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
+    void onEndpointPut(ValuePut<EndpointKey, EndpointValue> valuePut);
 
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
-    void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
+    void onEndpointRemove(ValueRemove<EndpointKey, EndpointValue> valueRemove);
 
     /// Find all endpoints for a given artifact and method.
     List<Endpoint> findEndpoints(Artifact artifact, MethodName methodName);
@@ -127,30 +125,23 @@ public interface EndpointRegistry {
 
             @Override
             @SuppressWarnings("JBCT-RET-01")
-            public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                var key = valuePut.cause()
-                                  .key();
-                var value = valuePut.cause()
-                                    .value();
-                if (key instanceof EndpointKey endpointKey && value instanceof EndpointValue endpointValue) {
-                    var endpoint = new Endpoint(endpointKey.artifact(),
-                                                endpointKey.methodName(),
-                                                endpointKey.instanceNumber(),
-                                                endpointValue.nodeId());
-                    endpoints.put(endpointKey, endpoint);
-                    log.debug("Registered endpoint: {}", endpoint);
-                }
+            public void onEndpointPut(ValuePut<EndpointKey, EndpointValue> valuePut) {
+                var endpointKey = valuePut.cause().key();
+                var endpointValue = valuePut.cause().value();
+                var endpoint = new Endpoint(endpointKey.artifact(),
+                                            endpointKey.methodName(),
+                                            endpointKey.instanceNumber(),
+                                            endpointValue.nodeId());
+                endpoints.put(endpointKey, endpoint);
+                log.debug("Registered endpoint: {}", endpoint);
             }
 
             @Override
             @SuppressWarnings("JBCT-RET-01")
-            public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-                var key = valueRemove.cause()
-                                     .key();
-                if (key instanceof EndpointKey endpointKey) {
-                    Option.option(endpoints.remove(endpointKey))
-                          .onPresent(removed -> log.debug("Unregistered endpoint: {}", removed));
-                }
+            public void onEndpointRemove(ValueRemove<EndpointKey, EndpointValue> valueRemove) {
+                var endpointKey = valueRemove.cause().key();
+                Option.option(endpoints.remove(endpointKey))
+                      .onPresent(removed -> log.debug("Unregistered endpoint: {}", removed));
             }
 
             @Override

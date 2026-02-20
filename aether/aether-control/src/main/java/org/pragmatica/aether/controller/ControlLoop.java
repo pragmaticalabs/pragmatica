@@ -56,13 +56,21 @@ public interface ControlLoop {
     @MessageReceiver
     void onTopologyChange(TopologyChangeNotification topologyChange);
 
-    /// Handle blueprint creation/update from KVStore.
+    /// Handle slice target creation/update from KVStore.
     @MessageReceiver
-    void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
+    void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
 
-    /// Handle blueprint removal from KVStore.
+    /// Handle slice node state change from KVStore.
     @MessageReceiver
-    void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
+    void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut);
+
+    /// Handle slice target removal from KVStore.
+    @MessageReceiver
+    void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
+
+    /// Handle slice node removal from KVStore.
+    @MessageReceiver
+    void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove);
 
     /// Handle quorum state changes (stop evaluation when quorum disappears).
     @MessageReceiver
@@ -137,36 +145,33 @@ public interface ControlLoop {
             }
 
             @Override
-            public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                var key = valuePut.cause()
-                                  .key();
-                var value = valuePut.cause()
-                                    .value();
-                switch (key) {
-                    case SliceTargetKey(var artifactBase) when value instanceof SliceTargetValue sliceTargetValue -> registerBlueprint(artifactBase.withVersion(sliceTargetValue.currentVersion()),
-                                                                                                                                       sliceTargetValue.targetInstances());
-                    case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue(SliceState state) -> handleSliceStateChange(sliceNodeKey,
-                                                                                                                                    state);
-                    case null, default -> {}
-                }
+            public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
+                var artifactBase = valuePut.cause().key().artifactBase();
+                var sliceTargetValue = valuePut.cause().value();
+                registerBlueprint(artifactBase.withVersion(sliceTargetValue.currentVersion()),
+                                  sliceTargetValue.targetInstances());
             }
 
             @Override
-            public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-                var key = valueRemove.cause()
-                                     .key();
-                switch (key) {
-                    case SliceTargetKey(var artifactBase) -> blueprints.keySet()
-                                                                       .stream()
-                                                                       .filter(artifactBase::matches)
-                                                                       .findFirst()
-                                                                       .ifPresent(this::unregisterBlueprint);
-                    case SliceNodeKey sliceNodeKey -> {
-                        sliceStates.remove(sliceNodeKey);
-                        log.debug("Removed slice state tracking for {}", sliceNodeKey);
-                    }
-                    case null, default -> {}
-                }
+            public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
+                handleSliceStateChange(valuePut.cause().key(), valuePut.cause().value().state());
+            }
+
+            @Override
+            public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
+                var artifactBase = valueRemove.cause().key().artifactBase();
+                blueprints.keySet()
+                          .stream()
+                          .filter(artifactBase::matches)
+                          .findFirst()
+                          .ifPresent(this::unregisterBlueprint);
+            }
+
+            @Override
+            public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
+                var sliceNodeKey = valueRemove.cause().key();
+                sliceStates.remove(sliceNodeKey);
+                log.debug("Removed slice state tracking for {}", sliceNodeKey);
             }
 
             @Override

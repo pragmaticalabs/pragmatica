@@ -183,7 +183,7 @@ class ClusterDeploymentManagerTest {
         clusterNode.appliedCommands.clear();
 
         var artifact = createTestArtifact();
-        emptyTopologyManager.onValuePut(sliceTargetPut(artifact, 3));
+        emptyTopologyManager.onSliceTargetPut(sliceTargetPut(artifact, 3));
 
         assertThat(clusterNode.appliedCommands).isEmpty();
     }
@@ -459,36 +459,36 @@ class ClusterDeploymentManagerTest {
     }
 
     private void sendSliceTargetPut(Artifact artifact, int instanceCount) {
-        manager.onValuePut(sliceTargetPut(artifact, instanceCount));
+        manager.onSliceTargetPut(sliceTargetPut(artifact, instanceCount));
     }
 
-    private ValuePut<AetherKey, AetherValue> sliceTargetPut(Artifact artifact, int instanceCount) {
+    private ValuePut<SliceTargetKey, SliceTargetValue> sliceTargetPut(Artifact artifact, int instanceCount) {
         var key = SliceTargetKey.sliceTargetKey(artifact.base());
         var value = SliceTargetValue.sliceTargetValue(artifact.version(), instanceCount);
-        var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+        var command = new KVCommand.Put<>(key, value);
         return new ValuePut<>(command, Option.none());
     }
 
     private void sendSliceTargetRemove(Artifact artifact) {
         var key = SliceTargetKey.sliceTargetKey(artifact.base());
-        var command = new KVCommand.Remove<AetherKey>(key);
-        var notification = new ValueRemove<AetherKey, AetherValue>(command, Option.none());
-        manager.onValueRemove(notification);
+        var command = new KVCommand.Remove<SliceTargetKey>(key);
+        var notification = new ValueRemove<SliceTargetKey, SliceTargetValue>(command, Option.none());
+        manager.onSliceTargetRemove(notification);
     }
 
     private void trackSliceState(Artifact artifact, NodeId nodeId, SliceState state) {
         var key = new SliceNodeKey(artifact, nodeId);
         var value = new SliceNodeValue(state);
-        var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+        var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
-        manager.onValuePut(notification);
+        manager.onSliceNodePut(notification);
     }
 
     private void sendSliceStateRemove(Artifact artifact, NodeId nodeId) {
         var key = new SliceNodeKey(artifact, nodeId);
-        var command = new KVCommand.Remove<AetherKey>(key);
-        var notification = new ValueRemove<AetherKey, AetherValue>(command, Option.none());
-        manager.onValueRemove(notification);
+        var command = new KVCommand.Remove<SliceNodeKey>(key);
+        var notification = new ValueRemove<SliceNodeKey, SliceNodeValue>(command, Option.none());
+        manager.onSliceNodeRemove(notification);
     }
 
     private void assertAllCommandsAreLoadFor(Artifact artifact) {

@@ -11,12 +11,14 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -81,19 +83,49 @@ public interface ClusterDeploymentManager {
     void onLeaderChange(LeaderChange leaderChange);
 
     @MessageReceiver
-    void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
+    void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut);
 
     @MessageReceiver
-    void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
+    void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
+
+    @MessageReceiver
+    void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut);
+
+    @MessageReceiver
+    void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut);
+
+    @MessageReceiver
+    void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove);
+
+    @MessageReceiver
+    void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
+
+    @MessageReceiver
+    void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove);
+
+    @MessageReceiver
+    void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove);
 
     @MessageReceiver
     void onTopologyChange(TopologyChangeNotification topologyChange);
 
     /// State of the cluster deployment manager.
     sealed interface ClusterDeploymentState {
-        default void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {}
+        default void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) {}
 
-        default void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {}
+        default void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {}
+
+        default void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {}
+
+        default void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {}
+
+        default void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove) {}
+
+        default void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {}
+
+        default void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {}
+
+        default void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) {}
 
         default void onTopologyChange(TopologyChangeNotification topologyChange) {}
 
@@ -235,37 +267,45 @@ public interface ClusterDeploymentManager {
             }
 
             @Override
-            public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                var key = valuePut.cause()
-                                  .key();
-                var value = valuePut.cause()
-                                    .value();
-                switch (key) {
-                    case AppBlueprintKey appBlueprintKey when value instanceof AppBlueprintValue appBlueprintValue ->
-                    handleAppBlueprintChange(appBlueprintKey, appBlueprintValue);
-                    case SliceTargetKey sliceTargetKey when value instanceof SliceTargetValue sliceTargetValue ->
-                    handleSliceTargetChange(sliceTargetKey, sliceTargetValue);
-                    case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue sliceNodeValue ->
-                    trackSliceState(sliceNodeKey, sliceNodeValue.state());
-                    case AetherKey.VersionRoutingKey routingKey -> {
-                        log.info("Rolling update started for {}", routingKey.artifactBase());
-                        activeRoutings.add(routingKey.artifactBase());
-                    }
-                    default -> {}
-                }
+            public void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) {
+                handleAppBlueprintChange(valuePut.cause().key(), valuePut.cause().value());
             }
 
             @Override
-            public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-                var key = valueRemove.cause()
-                                     .key();
-                switch (key) {
-                    case SliceTargetKey sliceTargetKey -> handleSliceTargetRemoval(sliceTargetKey);
-                    case AppBlueprintKey appKey -> handleAppBlueprintRemoval(appKey);
-                    case SliceNodeKey sliceNodeKey -> handleSliceNodeRemoval(sliceNodeKey);
-                    case AetherKey.VersionRoutingKey routingKey -> handleRoutingRemoval(routingKey);
-                    default -> {}
-                }
+            public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
+                handleSliceTargetChange(valuePut.cause().key(), valuePut.cause().value());
+            }
+
+            @Override
+            public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
+                trackSliceState(valuePut.cause().key(), valuePut.cause().value().state());
+            }
+
+            @Override
+            public void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {
+                var routingKey = valuePut.cause().key();
+                log.info("Rolling update started for {}", routingKey.artifactBase());
+                activeRoutings.add(routingKey.artifactBase());
+            }
+
+            @Override
+            public void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove) {
+                handleAppBlueprintRemoval(valueRemove.cause().key());
+            }
+
+            @Override
+            public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
+                handleSliceTargetRemoval(valueRemove.cause().key());
+            }
+
+            @Override
+            public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
+                handleSliceNodeRemoval(valueRemove.cause().key());
+            }
+
+            @Override
+            public void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) {
+                handleRoutingRemoval(valueRemove.cause().key());
             }
 
             private void handleSliceNodeRemoval(SliceNodeKey sliceNodeKey) {
@@ -980,7 +1020,7 @@ public interface ClusterDeploymentManager {
             private void issueLoadCommand(SliceNodeKey sliceKey) {
                 log.debug("Issuing LOAD command for {}", sliceKey);
                 // Optimistic tracking: add to sliceStates BEFORE consensus to prevent duplicates
-                // The actual state will be updated via onValuePut when consensus commits
+                // The actual state will be updated via onSliceNodePut when consensus commits
                 sliceStates.put(sliceKey, SliceState.LOAD);
                 // Emit deployment started event for metrics via MessageRouter
                 var timestamp = System.currentTimeMillis();
@@ -1138,15 +1178,43 @@ public interface ClusterDeploymentManager {
             }
 
             @Override
-            public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                state.get()
-                     .onValuePut(valuePut);
+            public void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) {
+                state.get().onAppBlueprintPut(valuePut);
             }
 
             @Override
-            public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-                state.get()
-                     .onValueRemove(valueRemove);
+            public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
+                state.get().onSliceTargetPut(valuePut);
+            }
+
+            @Override
+            public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
+                state.get().onSliceNodePut(valuePut);
+            }
+
+            @Override
+            public void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {
+                state.get().onVersionRoutingPut(valuePut);
+            }
+
+            @Override
+            public void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove) {
+                state.get().onAppBlueprintRemove(valueRemove);
+            }
+
+            @Override
+            public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
+                state.get().onSliceTargetRemove(valueRemove);
+            }
+
+            @Override
+            public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
+                state.get().onSliceNodeRemove(valueRemove);
+            }
+
+            @Override
+            public void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) {
+                state.get().onVersionRoutingRemove(valueRemove);
             }
 
             @Override

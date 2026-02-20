@@ -7,6 +7,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AlertThresholdKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AlertThresholdValue;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -204,24 +206,26 @@ public class AlertManager {
     ///
     ///
     /// Called by AetherNode when it receives KV-Store value updates.
-    public void onKvStoreUpdate(AetherKey key, AetherValue value) {
-        if (key instanceof AetherKey.AlertThresholdKey thresholdKey &&
-        value instanceof AetherValue.AlertThresholdValue thresholdValue) {
-            thresholds.put(thresholdKey.metricName(),
-                           new Threshold(thresholdValue.warningThreshold(), thresholdValue.criticalThreshold()));
-            log.debug("Threshold updated from cluster: {} warning={}, critical={}",
-                      thresholdKey.metricName(),
-                      thresholdValue.warningThreshold(),
-                      thresholdValue.criticalThreshold());
-        }
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    public void onAlertThresholdPut(ValuePut<AlertThresholdKey, AlertThresholdValue> valuePut) {
+        var thresholdKey = valuePut.cause().key();
+        var thresholdValue = valuePut.cause().value();
+        thresholds.put(thresholdKey.metricName(),
+                       new Threshold(thresholdValue.warningThreshold(), thresholdValue.criticalThreshold()));
+        log.debug("Threshold updated from cluster: {} warning={}, critical={}",
+                  thresholdKey.metricName(),
+                  thresholdValue.warningThreshold(),
+                  thresholdValue.criticalThreshold());
     }
 
     /// Handle KV-Store remove notification for threshold deletions from other nodes.
-    public void onKvStoreRemove(AetherKey key) {
-        if (key instanceof AetherKey.AlertThresholdKey thresholdKey) {
-            thresholds.remove(thresholdKey.metricName());
-            log.debug("Threshold removed from cluster: {}", thresholdKey.metricName());
-        }
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    public void onAlertThresholdRemove(ValueRemove<AlertThresholdKey, AlertThresholdValue> valueRemove) {
+        var thresholdKey = valueRemove.cause().key();
+        thresholds.remove(thresholdKey.metricName());
+        log.debug("Threshold removed from cluster: {}", thresholdKey.metricName());
     }
 
     private String buildAlertMessage(ActiveAlert alert) {

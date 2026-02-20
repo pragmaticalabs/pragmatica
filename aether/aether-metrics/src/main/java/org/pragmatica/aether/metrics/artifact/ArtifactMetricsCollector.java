@@ -2,11 +2,6 @@ package org.pragmatica.aether.metrics.artifact;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
-import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
-import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.Map;
 import java.util.Set;
@@ -31,16 +26,6 @@ public interface ArtifactMetricsCollector {
     String ARTIFACT_MEMORY_BYTES = "artifact.memory.bytes";
     String ARTIFACT_COUNT = "artifact.count";
     String ARTIFACT_DEPLOYED_COUNT = "artifact.deployed.count";
-
-    /// Handle slice deployment event.
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
-
-    /// Handle slice removal event.
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
 
     /// Collect all artifact metrics.
     Map<String, Double> collectMetrics();
@@ -73,18 +58,6 @@ class ArtifactMetricsCollectorImpl implements ArtifactMetricsCollector {
                                  ArtifactDeploymentTracker deploymentTracker) {
         this.artifactStore = artifactStore;
         this.deploymentTracker = deploymentTracker;
-    }
-
-    @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-        deploymentTracker.onValuePut(valuePut);
-    }
-
-    @Override
-    @SuppressWarnings("JBCT-RET-01")
-    public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-        deploymentTracker.onValueRemove(valueRemove);
     }
 
     @Override

@@ -7,12 +7,7 @@ import java.util.Map;
 
 public sealed interface KVStoreLocalIO extends Message.Local {
     sealed interface Request extends KVStoreLocalIO {
-        record Find(StructuredPattern pattern) implements Request {
-            public <K extends StructuredKey, V> boolean matches(Map.Entry<K, V> entry) {
-                return entry.getKey()
-                            .matches(pattern);
-            }
-        }
+        record Find() implements Request {}
     }
 
     sealed interface Response extends KVStoreLocalIO {

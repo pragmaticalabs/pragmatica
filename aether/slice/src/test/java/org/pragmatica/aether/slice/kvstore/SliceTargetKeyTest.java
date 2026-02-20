@@ -54,22 +54,6 @@ class SliceTargetKeyTest {
     }
 
     @Test
-    void sliceTargetKey_matches_sliceTargetPattern() {
-        var artifactBase = ArtifactBase.artifactBase("org.example:test-slice").unwrap();
-        var key = SliceTargetKey.sliceTargetKey(artifactBase);
-        var pattern = new AetherKey.AetherKeyPattern.SliceTargetPattern();
-        assertThat(key.matches(pattern)).isTrue();
-    }
-
-    @Test
-    void sliceTargetKey_does_not_match_other_patterns() {
-        var artifactBase = ArtifactBase.artifactBase("org.example:test-slice").unwrap();
-        var key = SliceTargetKey.sliceTargetKey(artifactBase);
-        var endpointPattern = new AetherKey.AetherKeyPattern.EndpointPattern();
-        assertThat(key.matches(endpointPattern)).isFalse();
-    }
-
-    @Test
     void sliceTargetKey_equality_works() {
         var artifactBase = ArtifactBase.artifactBase("org.example:test-slice").unwrap();
         var key1 = SliceTargetKey.sliceTargetKey(artifactBase);
