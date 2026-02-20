@@ -146,20 +146,29 @@ public interface ControlLoop {
 
             @Override
             public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
-                var artifactBase = valuePut.cause().key().artifactBase();
-                var sliceTargetValue = valuePut.cause().value();
+                var artifactBase = valuePut.cause()
+                                           .key()
+                                           .artifactBase();
+                var sliceTargetValue = valuePut.cause()
+                                               .value();
                 registerBlueprint(artifactBase.withVersion(sliceTargetValue.currentVersion()),
                                   sliceTargetValue.targetInstances());
             }
 
             @Override
             public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
-                handleSliceStateChange(valuePut.cause().key(), valuePut.cause().value().state());
+                handleSliceStateChange(valuePut.cause()
+                                               .key(),
+                                       valuePut.cause()
+                                               .value()
+                                               .state());
             }
 
             @Override
             public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
-                var artifactBase = valueRemove.cause().key().artifactBase();
+                var artifactBase = valueRemove.cause()
+                                              .key()
+                                              .artifactBase();
                 blueprints.keySet()
                           .stream()
                           .filter(artifactBase::matches)
@@ -169,7 +178,8 @@ public interface ControlLoop {
 
             @Override
             public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
-                var sliceNodeKey = valueRemove.cause().key();
+                var sliceNodeKey = valueRemove.cause()
+                                              .key();
                 sliceStates.remove(sliceNodeKey);
                 log.debug("Removed slice state tracking for {}", sliceNodeKey);
             }

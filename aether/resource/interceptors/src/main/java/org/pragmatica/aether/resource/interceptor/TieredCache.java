@@ -45,8 +45,9 @@ final class TieredCache implements CacheBackend {
     private Promise<Option<Object>> promoteFromL2(Object key) {
         return l2.get(key)
                  .flatMap(l2Result -> l2Result.isPresent()
-                                      ? l1.put(key, l2Result.unwrap())
-                                           .map(_ -> l2Result)
+                                      ? l1.put(key,
+                                               l2Result.unwrap())
+                                          .map(_ -> l2Result)
                                       : Promise.success(Option.none()));
     }
 }

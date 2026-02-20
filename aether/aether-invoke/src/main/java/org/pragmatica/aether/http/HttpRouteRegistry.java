@@ -78,8 +78,10 @@ public interface HttpRouteRegistry {
             @Override
             @SuppressWarnings("JBCT-RET-01")
             public void onRoutePut(ValuePut<HttpRouteKey, HttpRouteValue> valuePut) {
-                var httpRouteKey = valuePut.cause().key();
-                var httpRouteValue = valuePut.cause().value();
+                var httpRouteKey = valuePut.cause()
+                                           .key();
+                var httpRouteValue = valuePut.cause()
+                                             .value();
                 log.debug("HttpRouteRegistry: Processing HttpRouteKey {} {}",
                           httpRouteKey.httpMethod(),
                           httpRouteKey.pathPrefix());
@@ -103,7 +105,8 @@ public interface HttpRouteRegistry {
             @Override
             @SuppressWarnings("JBCT-RET-01")
             public void onRouteRemove(ValueRemove<HttpRouteKey, HttpRouteValue> valueRemove) {
-                var httpRouteKey = valueRemove.cause().key();
+                var httpRouteKey = valueRemove.cause()
+                                              .key();
                 Option.option(routesByMethod.get(httpRouteKey.httpMethod()))
                       .onPresent(ref -> {
                                      // Atomic copy-on-write: copy current map, remove entry, swap

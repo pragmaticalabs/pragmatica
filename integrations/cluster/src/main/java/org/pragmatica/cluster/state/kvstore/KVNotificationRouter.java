@@ -1,5 +1,6 @@
 package org.pragmatica.cluster.state.kvstore;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
 
 import java.util.ArrayList;
@@ -10,7 +11,6 @@ import java.util.function.Consumer;
 
 /// Sub-router for KV-Store notifications that dispatches by key type.
 /// Replaces per-handler filterPut/filterRemove boilerplate with type-safe key-based dispatch.
-@SuppressWarnings("JBCT-RET-01")
 public final class KVNotificationRouter<K extends StructuredKey, V> {
     private final Map<Class<? extends K>, List<Consumer<KVStoreNotification.ValuePut<?, ?>>>> putHandlers;
     private final Map<Class<? extends K>, List<Consumer<KVStoreNotification.ValueRemove<?, ?>>>> removeHandlers;
@@ -24,6 +24,7 @@ public final class KVNotificationRouter<K extends StructuredKey, V> {
         this.removeHandlers = Map.copyOf(removeHandlers);
     }
 
+    @SuppressWarnings("JBCT-RET-01")
     void handlePut(KVStoreNotification.ValuePut<?, ?> notification) {
         var key = notification.cause().key();
 
@@ -31,13 +32,11 @@ public final class KVNotificationRouter<K extends StructuredKey, V> {
             return;
         }
 
-        var handlers = putHandlers.get(key.getClass());
-
-        if (handlers != null) {
-            handlers.forEach(h -> h.accept(notification));
-        }
+        Option.option(putHandlers.get(key.getClass()))
+              .onPresent(handlers -> handlers.forEach(h -> h.accept(notification)));
     }
 
+    @SuppressWarnings("JBCT-RET-01")
     void handleRemove(KVStoreNotification.ValueRemove<?, ?> notification) {
         var key = notification.cause().key();
 
@@ -45,11 +44,8 @@ public final class KVNotificationRouter<K extends StructuredKey, V> {
             return;
         }
 
-        var handlers = removeHandlers.get(key.getClass());
-
-        if (handlers != null) {
-            handlers.forEach(h -> h.accept(notification));
-        }
+        Option.option(removeHandlers.get(key.getClass()))
+              .onPresent(handlers -> handlers.forEach(h -> h.accept(notification)));
     }
 
     /// Produce MessageRouter.Entry list for main router registration.

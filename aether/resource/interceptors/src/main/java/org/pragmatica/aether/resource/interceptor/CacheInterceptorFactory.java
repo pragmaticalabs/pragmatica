@@ -39,11 +39,14 @@ public final class CacheInterceptorFactory implements ResourceFactory<CacheMetho
     @Override
     @SuppressWarnings("unchecked")
     public Promise<CacheMethodInterceptor> provision(CacheConfig config, ProvisioningContext context) {
-        var keyExtractor = (Fn1<Object, ?>) context.keyExtractor().or(Fn1.id());
-
-        return createCache(config, context).map(cache -> cacheRegistry.computeIfAbsent(config.cacheName(), _ -> cache))
-                                           .map(cache -> new CacheMethodInterceptor(cache, config.strategy(), keyExtractor))
-                                           .async();
+        var keyExtractor = (Fn1<Object, ?>) context.keyExtractor()
+                                                  .or(Fn1.id());
+        return createCache(config, context).map(cache -> cacheRegistry.computeIfAbsent(config.cacheName(),
+                                                                                       _ -> cache))
+                          .map(cache -> new CacheMethodInterceptor(cache,
+                                                                   config.strategy(),
+                                                                   keyExtractor))
+                          .async();
     }
 
     private Result<? extends CacheBackend> createCache(CacheConfig config, ProvisioningContext context) {

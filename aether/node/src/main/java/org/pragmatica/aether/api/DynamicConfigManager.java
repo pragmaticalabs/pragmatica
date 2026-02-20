@@ -66,19 +66,17 @@ public class DynamicConfigManager {
 
     private void loadConfig(ConfigKey key, ConfigValue value) {
         if (key.isClusterWide()) {
-            provider.put(value.key(), value.value());
-            log.debug("Loaded cluster-wide config from KV-Store: {}={}", value.key(), value.value());
+            applyLoadedConfig(value);
         } else {
             key.nodeScope()
                .filter(self::equals)
-               .onPresent(_ -> {
-                              provider.put(value.key(),
-                                           value.value());
-                              log.debug("Loaded node-scoped config from KV-Store: {}={}",
-                                        value.key(),
-                                        value.value());
-                          });
+               .onPresent(_ -> applyLoadedConfig(value));
         }
+    }
+
+    private void applyLoadedConfig(ConfigValue value) {
+        provider.put(value.key(), value.value());
+        log.debug("Loaded config from KV-Store: {}={}", value.key(), value.value());
     }
 
     /// Handle KV-Store update notification for config changes from other nodes.
@@ -87,8 +85,10 @@ public class DynamicConfigManager {
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
     public void onConfigPut(ValuePut<ConfigKey, ConfigValue> valuePut) {
-        var configKey = valuePut.cause().key();
-        var configValue = valuePut.cause().value();
+        var configKey = valuePut.cause()
+                                .key();
+        var configValue = valuePut.cause()
+                                  .value();
         if (shouldApply(configKey)) {
             provider.put(configValue.key(), configValue.value());
             log.debug("Config updated from cluster: {}={}", configValue.key(), configValue.value());
@@ -99,7 +99,8 @@ public class DynamicConfigManager {
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
     public void onConfigRemove(ValueRemove<ConfigKey, ConfigValue> valueRemove) {
-        var configKey = valueRemove.cause().key();
+        var configKey = valueRemove.cause()
+                                   .key();
         if (shouldApply(configKey)) {
             provider.remove(configKey.key());
             log.debug("Config removed from cluster: {}", configKey.key());
@@ -111,15 +112,11 @@ public class DynamicConfigManager {
     /// @return Promise that completes when config is persisted across cluster
     @SuppressWarnings("unchecked")
     public Promise<Unit> setConfig(String key, String value) {
-        var configKey = ConfigKey.configKey(key);
+        var configKey = ConfigKey.forKey(key);
         var configValue = ConfigValue.configValue(key, value);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(configKey, configValue);
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> {
-                                   provider.put(key, value);
-                                   log.info("Config set and persisted: {}={}", key, value);
-                                   return Unit.unit();
-                               })
+                          .map(_ -> applyClusterConfig(key, value))
                           .onFailure(cause -> log.error("Failed to persist config {}: {}",
                                                         key,
                                                         cause.message()));
@@ -130,20 +127,11 @@ public class DynamicConfigManager {
     /// @return Promise that completes when config is persisted across cluster
     @SuppressWarnings("unchecked")
     public Promise<Unit> setNodeConfig(String key, String value, NodeId nodeId) {
-        var configKey = ConfigKey.configKey(key, nodeId);
+        var configKey = ConfigKey.forKey(key, nodeId);
         var configValue = ConfigValue.configValue(key, value);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(configKey, configValue);
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> {
-                                   if (nodeId.equals(self)) {
-                                       provider.put(key, value);
-                                   }
-                                   log.info("Node config set and persisted: {}={} for node {}",
-                                            key,
-                                            value,
-                                            nodeId.id());
-                                   return Unit.unit();
-                               })
+                          .map(_ -> applyNodeConfig(key, value, nodeId))
                           .onFailure(cause -> log.error("Failed to persist node config {} for {}: {}",
                                                         key,
                                                         nodeId.id(),
@@ -155,14 +143,10 @@ public class DynamicConfigManager {
     /// @return Promise that completes when removal is persisted across cluster
     @SuppressWarnings("unchecked")
     public Promise<Unit> removeConfig(String key) {
-        var configKey = ConfigKey.configKey(key);
+        var configKey = ConfigKey.forKey(key);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(configKey);
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> {
-                                   provider.remove(key);
-                                   log.info("Config removed and persisted: {}", key);
-                                   return Unit.unit();
-                               })
+                          .map(_ -> removeClusterConfig(key))
                           .onFailure(cause -> log.error("Failed to persist config removal {}: {}",
                                                         key,
                                                         cause.message()));
@@ -173,18 +157,10 @@ public class DynamicConfigManager {
     /// @return Promise that completes when removal is persisted across cluster
     @SuppressWarnings("unchecked")
     public Promise<Unit> removeNodeConfig(String key, NodeId nodeId) {
-        var configKey = ConfigKey.configKey(key, nodeId);
+        var configKey = ConfigKey.forKey(key, nodeId);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(configKey);
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> {
-                                   if (nodeId.equals(self)) {
-                                       provider.remove(key);
-                                   }
-                                   log.info("Node config removed and persisted: {} for node {}",
-                                            key,
-                                            nodeId.id());
-                                   return Unit.unit();
-                               })
+                          .map(_ -> removeNodeScopedConfig(key, nodeId))
                           .onFailure(cause -> log.error("Failed to persist node config removal {} for {}: {}",
                                                         key,
                                                         nodeId.id(),
@@ -204,6 +180,34 @@ public class DynamicConfigManager {
     /// Get only the overlay overrides as JSON.
     public String overridesAsJson() {
         return mapToJson(provider.overlayMap());
+    }
+
+    private Unit applyClusterConfig(String key, String value) {
+        provider.put(key, value);
+        log.info("Config set and persisted: {}={}", key, value);
+        return Unit.unit();
+    }
+
+    private Unit applyNodeConfig(String key, String value, NodeId nodeId) {
+        if (nodeId.equals(self)) {
+            provider.put(key, value);
+        }
+        log.info("Node config set and persisted: {}={} for node {}", key, value, nodeId.id());
+        return Unit.unit();
+    }
+
+    private Unit removeClusterConfig(String key) {
+        provider.remove(key);
+        log.info("Config removed and persisted: {}", key);
+        return Unit.unit();
+    }
+
+    private Unit removeNodeScopedConfig(String key, NodeId nodeId) {
+        if (nodeId.equals(self)) {
+            provider.remove(key);
+        }
+        log.info("Node config removed and persisted: {} for node {}", key, nodeId.id());
+        return Unit.unit();
     }
 
     private boolean shouldApply(ConfigKey configKey) {

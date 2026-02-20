@@ -126,8 +126,10 @@ public interface EndpointRegistry {
             @Override
             @SuppressWarnings("JBCT-RET-01")
             public void onEndpointPut(ValuePut<EndpointKey, EndpointValue> valuePut) {
-                var endpointKey = valuePut.cause().key();
-                var endpointValue = valuePut.cause().value();
+                var endpointKey = valuePut.cause()
+                                          .key();
+                var endpointValue = valuePut.cause()
+                                            .value();
                 var endpoint = new Endpoint(endpointKey.artifact(),
                                             endpointKey.methodName(),
                                             endpointKey.instanceNumber(),
@@ -139,7 +141,8 @@ public interface EndpointRegistry {
             @Override
             @SuppressWarnings("JBCT-RET-01")
             public void onEndpointRemove(ValueRemove<EndpointKey, EndpointValue> valueRemove) {
-                var endpointKey = valueRemove.cause().key();
+                var endpointKey = valueRemove.cause()
+                                             .key();
                 Option.option(endpoints.remove(endpointKey))
                       .onPresent(removed -> log.debug("Unregistered endpoint: {}", removed));
             }
@@ -191,11 +194,12 @@ public interface EndpointRegistry {
 
             @Override
             public Option<Endpoint> selectEndpointByAffinity(Artifact artifact,
-                                                              MethodName methodName,
-                                                              NodeId affinityNode) {
+                                                             MethodName methodName,
+                                                             NodeId affinityNode) {
                 var available = findEndpoints(artifact, methodName);
                 var affinity = available.stream()
-                                        .filter(e -> e.nodeId().equals(affinityNode))
+                                        .filter(e -> e.nodeId()
+                                                      .equals(affinityNode))
                                         .findFirst();
                 if (affinity.isPresent()) {
                     return Option.some(affinity.get());

@@ -32,7 +32,7 @@ import org.slf4j.LoggerFactory;
 ///
 /// Thresholds are persisted to consensus KV-Store for cluster-wide consistency
 /// and survival across node restarts.
-@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
+@SuppressWarnings("JBCT-RET-01")
 public class AlertManager {
     private static final Logger log = LoggerFactory.getLogger(AlertManager.class);
     private static final int MAX_ALERT_HISTORY = 100;
@@ -93,18 +93,16 @@ public class AlertManager {
         var value = AetherValue.AlertThresholdValue.alertThresholdValue(metric, warning, critical);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> {
-                                   thresholds.put(metric,
-                                                  new Threshold(warning, critical));
-                                   log.info("Threshold set and persisted for {}: warning={}, critical={}",
-                                            metric,
-                                            warning,
-                                            critical);
-                                   return Unit.unit();
-                               })
+                          .mapToUnit()
+                          .onSuccess(_ -> applyThreshold(metric, warning, critical))
                           .onFailure(cause -> log.error("Failed to persist threshold for {}: {}",
                                                         metric,
                                                         cause.message()));
+    }
+
+    private void applyThreshold(String metric, double warning, double critical) {
+        thresholds.put(metric, new Threshold(warning, critical));
+        log.info("Threshold set and persisted for {}: warning={}, critical={}", metric, warning, critical);
     }
 
     /// Remove threshold for a metric and persist removal to KV-Store.
@@ -115,16 +113,16 @@ public class AlertManager {
         var key = new AetherKey.AlertThresholdKey(metric);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> {
-                                   var removed = thresholds.remove(metric);
-                                   if (removed != null) {
-                                       log.info("Threshold removed and persisted for {}", metric);
-                                   }
-                                   return Unit.unit();
-                               })
+                          .mapToUnit()
+                          .onSuccess(_ -> applyThresholdRemoval(metric))
                           .onFailure(cause -> log.error("Failed to persist threshold removal for {}: {}",
                                                         metric,
                                                         cause.message()));
+    }
+
+    private void applyThresholdRemoval(String metric) {
+        Option.option(thresholds.remove(metric))
+              .onPresent(_ -> log.info("Threshold removed and persisted for {}", metric));
     }
 
     /// Get all configured thresholds.
@@ -148,35 +146,29 @@ public class AlertManager {
     /// Check if a metric value exceeds threshold and return alert JSON if triggered.
     public Option<String> checkThreshold(String metric, NodeId nodeId, double value) {
         return Option.option(thresholds.get(metric))
-                     .flatMap(threshold -> {
-                                  var alertKey = metric + ":" + nodeId.id();
-                                  var existing = Option.option(activeAlerts.get(alertKey));
-                                  return threshold.severity(value)
-                                                  .fold(() -> handleNormalValue(alertKey,
-                                                                                existing,
-                                                                                metric,
-                                                                                nodeId,
-                                                                                value),
-                                                        severity -> handleAlertValue(alertKey,
-                                                                                     existing,
-                                                                                     severity,
-                                                                                     metric,
-                                                                                     nodeId,
-                                                                                     value,
-                                                                                     threshold));
-                              });
+                     .flatMap(threshold -> evaluateThreshold(threshold, metric, nodeId, value));
     }
 
-    private Option<String> handleNormalValue(String alertKey,
-                                             Option<ActiveAlert> existing,
-                                             String metric,
-                                             NodeId nodeId,
-                                             double value) {
-        existing.onPresent(alert -> {
-                               activeAlerts.remove(alertKey);
-                               addToHistory(metric, nodeId, value, alert.severity, "RESOLVED");
-                           });
-        return Option.none();
+    private Option<String> evaluateThreshold(Threshold threshold, String metric, NodeId nodeId, double value) {
+        var alertKey = metric + ":" + nodeId.id();
+        var existing = Option.option(activeAlerts.get(alertKey));
+
+        return threshold.severity(value)
+                        .onEmpty(() -> resolveExistingAlert(alertKey, existing, metric, nodeId, value))
+                        .flatMap(severity -> handleAlertValue(alertKey, existing, severity, metric, nodeId, value, threshold));
+    }
+
+    private void resolveExistingAlert(String alertKey,
+                                       Option<ActiveAlert> existing,
+                                       String metric,
+                                       NodeId nodeId,
+                                       double value) {
+        existing.onPresent(alert -> resolveAlert(alertKey, metric, nodeId, value, alert));
+    }
+
+    private void resolveAlert(String alertKey, String metric, NodeId nodeId, double value, ActiveAlert alert) {
+        activeAlerts.remove(alertKey);
+        addToHistory(metric, nodeId, value, alert.severity, "RESOLVED");
     }
 
     private Option<String> handleAlertValue(String alertKey,
@@ -209,8 +201,10 @@ public class AlertManager {
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
     public void onAlertThresholdPut(ValuePut<AlertThresholdKey, AlertThresholdValue> valuePut) {
-        var thresholdKey = valuePut.cause().key();
-        var thresholdValue = valuePut.cause().value();
+        var thresholdKey = valuePut.cause()
+                                   .key();
+        var thresholdValue = valuePut.cause()
+                                     .value();
         thresholds.put(thresholdKey.metricName(),
                        new Threshold(thresholdValue.warningThreshold(), thresholdValue.criticalThreshold()));
         log.debug("Threshold updated from cluster: {} warning={}, critical={}",
@@ -223,15 +217,19 @@ public class AlertManager {
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
     public void onAlertThresholdRemove(ValueRemove<AlertThresholdKey, AlertThresholdValue> valueRemove) {
-        var thresholdKey = valueRemove.cause().key();
+        var thresholdKey = valueRemove.cause()
+                                      .key();
         thresholds.remove(thresholdKey.metricName());
         log.debug("Threshold removed from cluster: {}", thresholdKey.metricName());
     }
 
     private String buildAlertMessage(ActiveAlert alert) {
-        return "{\"type\":\"ALERT\",\"timestamp\":" + System.currentTimeMillis() + ",\"data\":{" + "\"metric\":\"" + alert.metric
-               + "\"," + "\"nodeId\":\"" + alert.nodeId.id() + "\"," + "\"value\":" + alert.value + ","
-               + "\"threshold\":" + alert.threshold + "," + "\"severity\":\"" + alert.severity + "\"}}";
+        return "{\"type\":\"ALERT\",\"timestamp\":" + System.currentTimeMillis() + ",\"data\":{"
+               + "\"metric\":\"" + escapeJson(alert.metric) + "\","
+               + "\"nodeId\":\"" + escapeJson(alert.nodeId.id()) + "\","
+               + "\"value\":" + alert.value + ","
+               + "\"threshold\":" + alert.threshold + ","
+               + "\"severity\":\"" + escapeJson(alert.severity) + "\"}}";
     }
 
     private void addToHistory(String metric, NodeId nodeId, double value, String severity, String status) {
@@ -250,7 +248,7 @@ public class AlertManager {
         for (var entry : thresholds.entrySet()) {
             if (!first) sb.append(",");
             sb.append("\"")
-              .append(entry.getKey())
+              .append(escapeJson(entry.getKey()))
               .append("\":{");
             sb.append("\"warning\":")
               .append(entry.getValue().warning)
@@ -273,10 +271,10 @@ public class AlertManager {
             if (!first) sb.append(",");
             sb.append("{");
             sb.append("\"metric\":\"")
-              .append(alert.metric)
+              .append(escapeJson(alert.metric))
               .append("\",");
             sb.append("\"nodeId\":\"")
-              .append(alert.nodeId.id())
+              .append(escapeJson(alert.nodeId.id()))
               .append("\",");
             sb.append("\"value\":")
               .append(alert.value)
@@ -285,7 +283,7 @@ public class AlertManager {
               .append(alert.threshold)
               .append(",");
             sb.append("\"severity\":\"")
-              .append(alert.severity)
+              .append(escapeJson(alert.severity))
               .append("\",");
             sb.append("\"triggeredAt\":")
               .append(alert.triggeredAt);
@@ -308,19 +306,19 @@ public class AlertManager {
               .append(entry.timestamp)
               .append(",");
             sb.append("\"metric\":\"")
-              .append(entry.metric)
+              .append(escapeJson(entry.metric))
               .append("\",");
             sb.append("\"nodeId\":\"")
-              .append(entry.nodeId)
+              .append(escapeJson(entry.nodeId))
               .append("\",");
             sb.append("\"value\":")
               .append(entry.value)
               .append(",");
             sb.append("\"severity\":\"")
-              .append(entry.severity)
+              .append(escapeJson(entry.severity))
               .append("\",");
             sb.append("\"status\":\"")
-              .append(entry.status)
+              .append(escapeJson(entry.status))
               .append("\"");
             sb.append("}");
             first = false;
@@ -406,20 +404,20 @@ public class AlertManager {
             sb.append("\"type\":\"SLICE_ALL_INSTANCES_FAILED\",");
             sb.append("\"severity\":\"CRITICAL\",");
             sb.append("\"artifact\":\"")
-              .append(alert.artifact.asString())
+              .append(escapeJson(alert.artifact.asString()))
               .append("\",");
             sb.append("\"method\":\"")
-              .append(alert.method.name())
+              .append(escapeJson(alert.method.name()))
               .append("\",");
             sb.append("\"requestId\":\"")
-              .append(alert.requestId)
+              .append(escapeJson(alert.requestId))
               .append("\",");
             sb.append("\"attemptedNodes\":[");
             boolean firstNode = true;
             for (var nodeId : alert.attemptedNodes) {
                 if (!firstNode) sb.append(",");
                 sb.append("\"")
-                  .append(nodeId.id())
+                  .append(escapeJson(nodeId.id()))
                   .append("\"");
                 firstNode = false;
             }
@@ -449,20 +447,20 @@ public class AlertManager {
               .append(entry.timestamp)
               .append(",");
             sb.append("\"requestId\":\"")
-              .append(entry.requestId)
+              .append(escapeJson(entry.requestId))
               .append("\",");
             sb.append("\"artifact\":\"")
-              .append(entry.artifact)
+              .append(escapeJson(entry.artifact))
               .append("\",");
             sb.append("\"method\":\"")
-              .append(entry.method)
+              .append(escapeJson(entry.method))
               .append("\",");
             sb.append("\"attemptedNodes\":[");
             boolean firstNode = true;
             for (var nodeId : entry.attemptedNodes) {
                 if (!firstNode) sb.append(",");
                 sb.append("\"")
-                  .append(nodeId)
+                  .append(escapeJson(nodeId))
                   .append("\"");
                 firstNode = false;
             }

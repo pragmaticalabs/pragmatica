@@ -69,7 +69,7 @@ public class LogLevelRegistry {
     /// @return Promise that completes when log level is persisted across cluster
     @SuppressWarnings("unchecked")
     public Promise<Unit> setLevel(String loggerName, String level) {
-        var key = LogLevelKey.logLevelKey(loggerName);
+        var key = LogLevelKey.forLogger(loggerName);
         var value = LogLevelValue.logLevelValue(loggerName, level);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
         return clusterNode.<Unit> apply(List.of(command))
@@ -84,7 +84,7 @@ public class LogLevelRegistry {
     /// @return Promise that completes when removal is persisted across cluster
     @SuppressWarnings("unchecked")
     public Promise<Unit> resetLevel(String loggerName) {
-        var key = LogLevelKey.logLevelKey(loggerName);
+        var key = LogLevelKey.forLogger(loggerName);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
         return clusterNode.<Unit> apply(List.of(command))
                           .map(_ -> removeAndReset(loggerName))
@@ -102,8 +102,10 @@ public class LogLevelRegistry {
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
     public void onLogLevelPut(ValuePut<LogLevelKey, LogLevelValue> valuePut) {
-        var logLevelKey = valuePut.cause().key();
-        var logLevelValue = valuePut.cause().value();
+        var logLevelKey = valuePut.cause()
+                                  .key();
+        var logLevelValue = valuePut.cause()
+                                    .value();
         registry.put(logLevelKey.loggerName(), logLevelValue.level());
         applyLevel(logLevelKey.loggerName(), logLevelValue.level());
         log.debug("Log level updated from cluster: {} -> {}",
@@ -115,7 +117,8 @@ public class LogLevelRegistry {
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
     public void onLogLevelRemove(ValueRemove<LogLevelKey, LogLevelValue> valueRemove) {
-        var logLevelKey = valueRemove.cause().key();
+        var logLevelKey = valueRemove.cause()
+                                     .key();
         registry.remove(logLevelKey.loggerName());
         resetLogLevel(logLevelKey.loggerName());
         log.debug("Log level reset from cluster: {}", logLevelKey.loggerName());

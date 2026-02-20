@@ -14,7 +14,11 @@ import static org.pragmatica.lang.Verify.ensure;
 /// @param mode       Cache storage mode (local, distributed, or tiered)
 public record CacheConfig(String cacheName, CacheStrategy strategy, int ttlSeconds, int maxEntries, CacheMode mode) {
     @SuppressWarnings("JBCT-VO-02")
-    private static final CacheConfig DEFAULTS = new CacheConfig("default", CacheStrategy.CACHE_ASIDE, 300, 10_000, CacheMode.LOCAL);
+    private static final CacheConfig DEFAULTS = new CacheConfig("default",
+                                                                CacheStrategy.CACHE_ASIDE,
+                                                                300,
+                                                                10_000,
+                                                                CacheMode.LOCAL);
 
     /// Create cache configuration with default values.
     public static CacheConfig cacheConfig() {

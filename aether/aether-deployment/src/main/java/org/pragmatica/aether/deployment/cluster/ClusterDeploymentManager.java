@@ -268,44 +268,59 @@ public interface ClusterDeploymentManager {
 
             @Override
             public void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) {
-                handleAppBlueprintChange(valuePut.cause().key(), valuePut.cause().value());
+                handleAppBlueprintChange(valuePut.cause()
+                                                 .key(),
+                                         valuePut.cause()
+                                                 .value());
             }
 
             @Override
             public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
-                handleSliceTargetChange(valuePut.cause().key(), valuePut.cause().value());
+                handleSliceTargetChange(valuePut.cause()
+                                                .key(),
+                                        valuePut.cause()
+                                                .value());
             }
 
             @Override
             public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
-                trackSliceState(valuePut.cause().key(), valuePut.cause().value().state());
+                trackSliceState(valuePut.cause()
+                                        .key(),
+                                valuePut.cause()
+                                        .value()
+                                        .state());
             }
 
             @Override
             public void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {
-                var routingKey = valuePut.cause().key();
+                var routingKey = valuePut.cause()
+                                         .key();
                 log.info("Rolling update started for {}", routingKey.artifactBase());
                 activeRoutings.add(routingKey.artifactBase());
             }
 
             @Override
             public void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove) {
-                handleAppBlueprintRemoval(valueRemove.cause().key());
+                handleAppBlueprintRemoval(valueRemove.cause()
+                                                     .key());
             }
 
             @Override
             public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
-                handleSliceTargetRemoval(valueRemove.cause().key());
+                handleSliceTargetRemoval(valueRemove.cause()
+                                                    .key());
             }
 
             @Override
             public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
-                handleSliceNodeRemoval(valueRemove.cause().key());
+                handleSliceNodeRemoval(valueRemove.cause()
+                                                  .key());
             }
 
             @Override
             public void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) {
-                handleRoutingRemoval(valueRemove.cause().key());
+                handleRoutingRemoval(valueRemove.cause()
+                                                .key());
             }
 
             private void handleSliceNodeRemoval(SliceNodeKey sliceNodeKey) {
@@ -1179,42 +1194,50 @@ public interface ClusterDeploymentManager {
 
             @Override
             public void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) {
-                state.get().onAppBlueprintPut(valuePut);
+                state.get()
+                     .onAppBlueprintPut(valuePut);
             }
 
             @Override
             public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
-                state.get().onSliceTargetPut(valuePut);
+                state.get()
+                     .onSliceTargetPut(valuePut);
             }
 
             @Override
             public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
-                state.get().onSliceNodePut(valuePut);
+                state.get()
+                     .onSliceNodePut(valuePut);
             }
 
             @Override
             public void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {
-                state.get().onVersionRoutingPut(valuePut);
+                state.get()
+                     .onVersionRoutingPut(valuePut);
             }
 
             @Override
             public void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove) {
-                state.get().onAppBlueprintRemove(valueRemove);
+                state.get()
+                     .onAppBlueprintRemove(valueRemove);
             }
 
             @Override
             public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
-                state.get().onSliceTargetRemove(valueRemove);
+                state.get()
+                     .onSliceTargetRemove(valueRemove);
             }
 
             @Override
             public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
-                state.get().onSliceNodeRemove(valueRemove);
+                state.get()
+                     .onSliceNodeRemove(valueRemove);
             }
 
             @Override
             public void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) {
-                state.get().onVersionRoutingRemove(valueRemove);
+                state.get()
+                     .onVersionRoutingRemove(valueRemove);
             }
 
             @Override

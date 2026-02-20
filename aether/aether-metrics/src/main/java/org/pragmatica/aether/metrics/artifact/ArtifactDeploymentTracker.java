@@ -60,17 +60,19 @@ class ArtifactDeploymentTrackerImpl implements ArtifactDeploymentTracker {
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
-        var artifact = valuePut.cause().key().artifact();
+        var artifact = valuePut.cause()
+                               .key()
+                               .artifact();
         deploymentCounts.compute(artifact, (_, count) -> incrementCount(count));
-        log.debug("Artifact deployed: {} (total deployments: {})",
-                  artifact.asString(),
-                  deploymentCounts.get(artifact));
+        log.debug("Artifact deployed: {} (total deployments: {})", artifact.asString(), deploymentCounts.get(artifact));
     }
 
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
-        var artifact = valueRemove.cause().key().artifact();
+        var artifact = valueRemove.cause()
+                                  .key()
+                                  .artifact();
         deploymentCounts.compute(artifact, (_, count) -> decrementCount(count));
         log.debug("Artifact undeployed: {} (remaining deployments: {})",
                   artifact.asString(),

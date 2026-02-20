@@ -66,7 +66,10 @@ public interface LoadBalancerManager {
 
             @Override
             public void onRoutePut(ValuePut<HttpRouteKey, HttpRouteValue> valuePut) {
-                handleRouteChange(valuePut.cause().key(), valuePut.cause().value());
+                handleRouteChange(valuePut.cause()
+                                          .key(),
+                                  valuePut.cause()
+                                          .value());
             }
 
             @Override
@@ -84,13 +87,18 @@ public interface LoadBalancerManager {
                 kvStore.forEach(HttpRouteKey.class,
                                 HttpRouteValue.class,
                                 (key, value) -> collectRouteForReconciliation(key, value, allNodeIps, routes));
-                trackedNodeIps.clear();
-                trackedNodeIps.addAll(allNodeIps);
-                var state = loadBalancerState(allNodeIps, routes).unwrap();
+                replaceTrackedIps(allNodeIps);
                 log.info("Reconciling load balancer: {} routes, {} node IPs", routes.size(), allNodeIps.size());
-                provider.reconcile(state)
-                        .onFailure(cause -> log.error("Load balancer reconciliation failed: {}",
-                                                      cause.message()));
+                loadBalancerState(allNodeIps, routes)
+                    .onSuccess(state -> provider.reconcile(state)
+                                                .onFailure(cause -> log.error("Load balancer reconciliation failed: {}",
+                                                                              cause.message())))
+                    .onFailure(cause -> log.error("Failed to build load balancer state: {}", cause.message()));
+            }
+
+            private void replaceTrackedIps(Set<String> newIps) {
+                trackedNodeIps.retainAll(newIps);
+                trackedNodeIps.addAll(newIps);
             }
 
             private void collectRouteForReconciliation(HttpRouteKey routeKey,
@@ -100,23 +108,28 @@ public interface LoadBalancerManager {
                 var nodeIps = resolveNodeIps(routeValue.nodes());
                 allNodeIps.addAll(nodeIps);
                 if (!nodeIps.isEmpty()) {
-                    routes.add(routeChange(routeKey.httpMethod(), routeKey.pathPrefix(), nodeIps).unwrap());
+                    routeChange(routeKey.httpMethod(), routeKey.pathPrefix(), nodeIps)
+                        .onSuccess(routes::add)
+                        .onFailure(cause -> log.warn("Failed to create route change for {} {}: {}",
+                                                     routeKey.httpMethod(), routeKey.pathPrefix(), cause.message()));
                 }
             }
 
             private void handleRouteChange(HttpRouteKey routeKey, HttpRouteValue routeValue) {
                 var nodeIps = resolveNodeIps(routeValue.nodes());
                 trackedNodeIps.addAll(nodeIps);
-                var change = routeChange(routeKey.httpMethod(), routeKey.pathPrefix(), nodeIps).unwrap();
                 log.debug("Route changed: {} {} -> {} nodes",
                           routeKey.httpMethod(),
                           routeKey.pathPrefix(),
                           nodeIps.size());
-                provider.onRouteChanged(change)
-                        .onFailure(cause -> log.error("Failed to update load balancer route {} {}: {}",
-                                                      routeKey.httpMethod(),
-                                                      routeKey.pathPrefix(),
-                                                      cause.message()));
+                routeChange(routeKey.httpMethod(), routeKey.pathPrefix(), nodeIps)
+                    .onSuccess(change -> provider.onRouteChanged(change)
+                                                 .onFailure(cause -> log.error("Failed to update load balancer route {} {}: {}",
+                                                                               routeKey.httpMethod(),
+                                                                               routeKey.pathPrefix(),
+                                                                               cause.message())))
+                    .onFailure(cause -> log.error("Failed to create route change for {} {}: {}",
+                                                  routeKey.httpMethod(), routeKey.pathPrefix(), cause.message()));
             }
 
             private void handleNodeDeparture(NodeId departedNode) {
@@ -179,12 +192,14 @@ public interface LoadBalancerManager {
 
             @Override
             public void onRoutePut(ValuePut<HttpRouteKey, HttpRouteValue> valuePut) {
-                state.get().onRoutePut(valuePut);
+                state.get()
+                     .onRoutePut(valuePut);
             }
 
             @Override
             public void onRouteRemove(ValueRemove<HttpRouteKey, HttpRouteValue> valueRemove) {
-                state.get().onRouteRemove(valueRemove);
+                state.get()
+                     .onRouteRemove(valueRemove);
             }
 
             @Override

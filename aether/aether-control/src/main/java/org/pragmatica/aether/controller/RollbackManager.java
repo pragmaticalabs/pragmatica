@@ -225,12 +225,20 @@ public interface RollbackManager {
 
             @Override
             public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
-                trackVersionChange(valuePut.cause().key().artifactBase(), valuePut.cause().value());
+                trackVersionChange(valuePut.cause()
+                                           .key()
+                                           .artifactBase(),
+                                   valuePut.cause()
+                                           .value());
             }
 
             @Override
             public void onPreviousVersionPut(ValuePut<PreviousVersionKey, PreviousVersionValue> valuePut) {
-                updateLocalPreviousVersion(valuePut.cause().key().artifactBase(), valuePut.cause().value());
+                updateLocalPreviousVersion(valuePut.cause()
+                                                   .key()
+                                                   .artifactBase(),
+                                           valuePut.cause()
+                                                   .value());
             }
 
             @Override
@@ -267,10 +275,12 @@ public interface RollbackManager {
             @Override
             public void resetRollbackCount(ArtifactBase artifactBase) {
                 rollbackStates.computeIfPresent(artifactBase,
-                                                (_, state) -> {
-                                                    log.info("Rollback count reset for {}", artifactBase);
-                                                    return state.withReset();
-                                                });
+                                                (_, state) -> resetState(artifactBase, state));
+            }
+
+            private RollbackState resetState(ArtifactBase artifactBase, RollbackState state) {
+                log.info("Rollback count reset for {}", artifactBase);
+                return state.withReset();
             }
 
             private void loadPreviousVersionsFromKvStore() {
@@ -287,12 +297,15 @@ public interface RollbackManager {
 
             private void updateLocalPreviousVersion(ArtifactBase artifactBase, PreviousVersionValue value) {
                 rollbackStates.compute(artifactBase,
-                                       (ab, existing) -> Option.option(existing)
-                                                               .map(state -> state.withKVStoreUpdate(value.previousVersion(),
-                                                                                                     value.currentVersion()))
-                                                               .or(() -> RollbackState.fromKVStore(ab,
-                                                                                                   value.previousVersion(),
-                                                                                                   value.currentVersion())));
+                                       (ab, existing) -> computePreviousVersionUpdate(ab, existing, value));
+            }
+
+            private RollbackState computePreviousVersionUpdate(ArtifactBase ab,
+                                                                RollbackState existing,
+                                                                PreviousVersionValue value) {
+                return Option.option(existing)
+                             .map(state -> state.withKVStoreUpdate(value.previousVersion(), value.currentVersion()))
+                             .or(() -> RollbackState.fromKVStore(ab, value.previousVersion(), value.currentVersion()));
             }
 
             private void trackVersionChange(ArtifactBase artifactBase, SliceTargetValue sliceTargetValue) {
@@ -301,15 +314,23 @@ public interface RollbackManager {
                 }
                 var currentVersion = sliceTargetValue.currentVersion();
                 rollbackStates.compute(artifactBase,
-                                       (ab, existing) -> Option.option(existing)
-                                                               .map(state -> computeVersionChange(state,
-                                                                                                  artifactBase,
-                                                                                                  currentVersion))
-                                                               .or(() -> {
-                                                                       log.debug("First deployment of {}, no previous version to track",
-                                                                                 artifactBase);
-                                                                       return RollbackState.initial(ab, currentVersion);
-                                                                   }));
+                                       (ab, existing) -> computeVersionTracking(ab, existing, artifactBase, currentVersion));
+            }
+
+            private RollbackState computeVersionTracking(ArtifactBase ab,
+                                                          RollbackState existing,
+                                                          ArtifactBase artifactBase,
+                                                          Version currentVersion) {
+                return Option.option(existing)
+                             .map(state -> computeVersionChange(state, artifactBase, currentVersion))
+                             .or(() -> initialDeploymentState(ab, artifactBase, currentVersion));
+            }
+
+            private RollbackState initialDeploymentState(ArtifactBase ab,
+                                                          ArtifactBase artifactBase,
+                                                          Version currentVersion) {
+                log.debug("First deployment of {}, no previous version to track", artifactBase);
+                return RollbackState.initial(ab, currentVersion);
             }
 
             private RollbackState computeVersionChange(RollbackState state,
@@ -387,25 +408,32 @@ public interface RollbackManager {
                                            .or(1);
                 var value = SliceTargetValue.sliceTargetValue(decision.targetVersion(), instanceCount);
                 var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-                // Capture values needed for state update
                 var failedVersion = decision.failedVersion();
                 var targetVersion = decision.targetVersion();
                 cluster.apply(List.of(command))
-                       .onSuccess(_ -> {
-                                      var timestamp = System.currentTimeMillis();
-                                      rollbackStates.computeIfPresent(artifactBase,
-                                                                      (_, state) -> state.withRollbackCompleted(failedVersion,
-                                                                                                                targetVersion,
-                                                                                                                timestamp));
-                                      log.info("[requestId={}] ROLLBACK INITIATED: SliceTarget updated to {} with {} instances",
-                                               requestId,
-                                               rollbackArtifact,
-                                               instanceCount);
-                                  })
+                       .onSuccess(_ -> recordRollbackCompleted(artifactBase, failedVersion, targetVersion,
+                                                                requestId, rollbackArtifact, instanceCount))
                        .onFailure(cause -> log.error("[requestId={}] ROLLBACK FAILED: Could not update slice target for {}: {}",
                                                      requestId,
                                                      rollbackArtifact,
                                                      cause.message()));
+            }
+
+            private void recordRollbackCompleted(ArtifactBase artifactBase,
+                                                  Version failedVersion,
+                                                  Version targetVersion,
+                                                  String requestId,
+                                                  Artifact rollbackArtifact,
+                                                  int instanceCount) {
+                var timestamp = System.currentTimeMillis();
+                rollbackStates.computeIfPresent(artifactBase,
+                                                (_, state) -> state.withRollbackCompleted(failedVersion,
+                                                                                          targetVersion,
+                                                                                          timestamp));
+                log.info("[requestId={}] ROLLBACK INITIATED: SliceTarget updated to {} with {} instances",
+                         requestId,
+                         rollbackArtifact,
+                         instanceCount);
             }
         }
         var manager = new rollbackManager(self,

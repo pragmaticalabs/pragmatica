@@ -78,16 +78,7 @@ public class DynamicAspectRegistry {
         var value = DynamicAspectValue.dynamicAspectValue(artifactBase, methodName, mode.name());
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> {
-                                   var registryKey = artifactBase + "/" + methodName;
-                                   if (mode == DynamicAspectMode.NONE) {
-                                       registry.remove(registryKey);
-                                   } else {
-                                       registry.put(registryKey, mode);
-                                   }
-                                   log.info("Aspect mode set for {}/{}: {}", artifactBase, methodName, mode);
-                                   return Unit.unit();
-                               })
+                          .map(_ -> applyAspectMode(artifactBase, methodName, mode))
                           .onFailure(cause -> log.error("Failed to persist aspect mode for {}/{}: {}",
                                                         artifactBase,
                                                         methodName,
@@ -102,12 +93,7 @@ public class DynamicAspectRegistry {
         var key = DynamicAspectKey.dynamicAspectKey(artifactBase, methodName);
         var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
         return clusterNode.<Unit> apply(List.of(command))
-                          .map(_ -> {
-                                   var registryKey = artifactBase + "/" + methodName;
-                                   registry.remove(registryKey);
-                                   log.info("Aspect removed for {}/{}", artifactBase, methodName);
-                                   return Unit.unit();
-                               })
+                          .map(_ -> removeAspectFromRegistry(artifactBase, methodName))
                           .onFailure(cause -> log.error("Failed to persist aspect removal for {}/{}: {}",
                                                         artifactBase,
                                                         methodName,
@@ -136,10 +122,12 @@ public class DynamicAspectRegistry {
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
     public void onAspectPut(ValuePut<DynamicAspectKey, DynamicAspectValue> valuePut) {
-        var aspectKey = valuePut.cause().key();
-        var aspectValue = valuePut.cause().value();
+        var aspectKey = valuePut.cause()
+                                .key();
+        var aspectValue = valuePut.cause()
+                                  .value();
         var registryKey = aspectKey.artifactBase() + "/" + aspectKey.methodName();
-        try {
+        try{
             var mode = DynamicAspectMode.valueOf(aspectValue.mode());
             if (mode == DynamicAspectMode.NONE) {
                 registry.remove(registryKey);
@@ -158,7 +146,8 @@ public class DynamicAspectRegistry {
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
     public void onAspectRemove(ValueRemove<DynamicAspectKey, DynamicAspectValue> valueRemove) {
-        var aspectKey = valueRemove.cause().key();
+        var aspectKey = valueRemove.cause()
+                                   .key();
         var registryKey = aspectKey.artifactBase() + "/" + aspectKey.methodName();
         registry.remove(registryKey);
         log.debug("Aspect removed from cluster: {}", registryKey);
@@ -172,7 +161,7 @@ public class DynamicAspectRegistry {
         for (var entry : registry.entrySet()) {
             if (!first) sb.append(",");
             sb.append("\"")
-              .append(entry.getKey())
+              .append(escapeJson(entry.getKey()))
               .append("\":\"")
               .append(entry.getValue()
                            .name())
@@ -181,5 +170,32 @@ public class DynamicAspectRegistry {
         }
         sb.append("}");
         return sb.toString();
+    }
+
+    private Unit applyAspectMode(String artifactBase, String methodName, DynamicAspectMode mode) {
+        var registryKey = artifactBase + "/" + methodName;
+        if (mode == DynamicAspectMode.NONE) {
+            registry.remove(registryKey);
+        } else {
+            registry.put(registryKey, mode);
+        }
+        log.info("Aspect mode set for {}/{}: {}", artifactBase, methodName, mode);
+        return Unit.unit();
+    }
+
+    private Unit removeAspectFromRegistry(String artifactBase, String methodName) {
+        var registryKey = artifactBase + "/" + methodName;
+        registry.remove(registryKey);
+        log.info("Aspect removed for {}/{}", artifactBase, methodName);
+        return Unit.unit();
+    }
+
+    private static String escapeJson(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
     }
 }

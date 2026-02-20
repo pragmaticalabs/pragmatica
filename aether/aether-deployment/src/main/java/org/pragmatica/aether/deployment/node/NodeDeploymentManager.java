@@ -105,9 +105,12 @@ public interface NodeDeploymentManager {
 
             @Override
             public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
-                var sliceKey = valuePut.cause().key();
+                var sliceKey = valuePut.cause()
+                                       .key();
                 if (sliceKey.isForNode(self)) {
-                    var state = valuePut.cause().value().state();
+                    var state = valuePut.cause()
+                                        .value()
+                                        .state();
                     log.debug("ValuePut received for key: {}, state: {}", sliceKey, state);
                     recordDeployment(sliceKey, state);
                     processStateTransition(sliceKey, state);
@@ -116,7 +119,8 @@ public interface NodeDeploymentManager {
 
             @Override
             public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
-                var sliceKey = valueRemove.cause().key();
+                var sliceKey = valueRemove.cause()
+                                          .key();
                 if (sliceKey.isForNode(self)) {
                     handleSliceValueRemove(sliceKey);
                 }

@@ -54,14 +54,17 @@ final class DeploymentMapImpl implements DeploymentMap {
 
     @Override
     public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
-        var key = valuePut.cause().key();
-        var value = valuePut.cause().value();
+        var key = valuePut.cause()
+                          .key();
+        var value = valuePut.cause()
+                            .value();
         index.put(key, value.state());
     }
 
     @Override
     public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
-        var key = valueRemove.cause().key();
+        var key = valueRemove.cause()
+                             .key();
         index.remove(key);
     }
 

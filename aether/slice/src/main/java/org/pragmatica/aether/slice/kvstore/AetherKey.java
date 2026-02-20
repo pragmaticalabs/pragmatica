@@ -351,11 +351,11 @@ public sealed interface AetherKey extends StructuredKey {
         }
 
         @SuppressWarnings("JBCT-VO-02")
-        public static LogLevelKey logLevelKey(String loggerName) {
+        public static LogLevelKey forLogger(String loggerName) {
             return new LogLevelKey(loggerName);
         }
 
-        public static Result<LogLevelKey> parseLogLevelKey(String key) {
+        public static Result<LogLevelKey> logLevelKey(String key) {
             if (!key.startsWith(PREFIX)) {
                 return LOG_LEVEL_KEY_FORMAT_ERROR.apply(key)
                                                  .result();
@@ -466,16 +466,16 @@ public sealed interface AetherKey extends StructuredKey {
         }
 
         @SuppressWarnings("JBCT-VO-02")
-        public static ConfigKey configKey(String key) {
+        public static ConfigKey forKey(String key) {
             return new ConfigKey(key, none());
         }
 
         @SuppressWarnings("JBCT-VO-02")
-        public static ConfigKey configKey(String key, NodeId nodeId) {
+        public static ConfigKey forKey(String key, NodeId nodeId) {
             return new ConfigKey(key, some(nodeId));
         }
 
-        public static Result<ConfigKey> parseConfigKey(String raw) {
+        public static Result<ConfigKey> configKey(String raw) {
             if (raw.startsWith(NODE_PREFIX)) {
                 var content = raw.substring(NODE_PREFIX.length());
                 var slashIndex = content.indexOf('/');
@@ -514,5 +514,4 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> LOG_LEVEL_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid log-level key format: %s");
     Fn1<Cause, String> DYNAMIC_ASPECT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid dynamic-aspect key format: %s");
     Fn1<Cause, String> CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid config key format: %s");
-
 }

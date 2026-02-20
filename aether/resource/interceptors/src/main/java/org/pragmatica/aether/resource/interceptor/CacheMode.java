@@ -1,5 +1,4 @@
 package org.pragmatica.aether.resource.interceptor;
-
 /// Cache storage mode.
 ///
 /// Controls where cached data is stored:

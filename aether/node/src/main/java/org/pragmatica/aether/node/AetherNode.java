@@ -85,6 +85,7 @@ import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -92,7 +93,6 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import static org.pragmatica.serialization.fury.FuryDeserializer.furyDeserializer;
 import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 
@@ -414,15 +414,15 @@ public interface AetherNode {
 
             private void printStartupBanner() {
                 var nodeId = self().id();
-                var clusterPort = config.topology()
-                                        .coreNodes()
-                                        .stream()
-                                        .filter(n -> n.id()
-                                                      .equals(self()))
-                                        .findFirst()
-                                        .map(n -> n.address()
-                                                   .port())
-                                        .orElse(0);
+                var clusterPort = Option.from(config.topology()
+                                                       .coreNodes()
+                                                       .stream()
+                                                       .filter(n -> n.id()
+                                                                     .equals(self()))
+                                                       .findFirst())
+                                       .map(n -> n.address()
+                                                  .port())
+                                       .or(0);
                 var mgmtPort = config.managementPort();
                 var appHttpPort = config.appHttp()
                                         .enabled()
@@ -859,60 +859,69 @@ public interface AetherNode {
         // KV-Store notification sub-router — type-safe key-based dispatch.
         // Replaces per-handler filterPut/filterRemove with key-type dispatch via KVNotificationRouter.
         // Registration order within each key type = dispatch order.
-        var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue>builder(AetherKey.class)
-            // EndpointRegistry — EndpointKey
-            .onPut(AetherKey.EndpointKey.class, endpointRegistry::onEndpointPut)
-            .onRemove(AetherKey.EndpointKey.class, endpointRegistry::onEndpointRemove)
-            // NodeDeploymentManager — SliceNodeKey
-            .onPut(AetherKey.SliceNodeKey.class, nodeDeploymentManager::onSliceNodePut)
-            .onRemove(AetherKey.SliceNodeKey.class, nodeDeploymentManager::onSliceNodeRemove)
-            // ClusterDeploymentManager — AppBlueprintKey, SliceTargetKey, SliceNodeKey, VersionRoutingKey
-            .onPut(AetherKey.AppBlueprintKey.class, clusterDeploymentManager::onAppBlueprintPut)
-            .onPut(AetherKey.SliceTargetKey.class, clusterDeploymentManager::onSliceTargetPut)
-            .onPut(AetherKey.SliceNodeKey.class, clusterDeploymentManager::onSliceNodePut)
-            .onPut(AetherKey.VersionRoutingKey.class, clusterDeploymentManager::onVersionRoutingPut)
-            .onRemove(AetherKey.AppBlueprintKey.class, clusterDeploymentManager::onAppBlueprintRemove)
-            .onRemove(AetherKey.SliceTargetKey.class, clusterDeploymentManager::onSliceTargetRemove)
-            .onRemove(AetherKey.SliceNodeKey.class, clusterDeploymentManager::onSliceNodeRemove)
-            .onRemove(AetherKey.VersionRoutingKey.class, clusterDeploymentManager::onVersionRoutingRemove)
-            // HttpRouteRegistry — HttpRouteKey
-            .onPut(AetherKey.HttpRouteKey.class, httpRouteRegistry::onRoutePut)
-            .onRemove(AetherKey.HttpRouteKey.class, httpRouteRegistry::onRouteRemove)
-            // ArtifactDeploymentTracker — SliceNodeKey (direct, bypassing ArtifactMetricsCollector indirection)
-            .onPut(AetherKey.SliceNodeKey.class, artifactMetricsCollector.deploymentTracker()::onSliceNodePut)
-            .onRemove(AetherKey.SliceNodeKey.class, artifactMetricsCollector.deploymentTracker()::onSliceNodeRemove)
-            // DeploymentMap — SliceNodeKey
-            .onPut(AetherKey.SliceNodeKey.class, deploymentMap::onSliceNodePut)
-            .onRemove(AetherKey.SliceNodeKey.class, deploymentMap::onSliceNodeRemove)
-            // ControlLoop — SliceTargetKey, SliceNodeKey
-            .onPut(AetherKey.SliceTargetKey.class, controlLoop::onSliceTargetPut)
-            .onPut(AetherKey.SliceNodeKey.class, controlLoop::onSliceNodePut)
-            .onRemove(AetherKey.SliceTargetKey.class, controlLoop::onSliceTargetRemove)
-            .onRemove(AetherKey.SliceNodeKey.class, controlLoop::onSliceNodeRemove)
-            // AlertManager — AlertThresholdKey
-            .onPut(AetherKey.AlertThresholdKey.class, alertManager::onAlertThresholdPut)
-            .onRemove(AetherKey.AlertThresholdKey.class, alertManager::onAlertThresholdRemove)
-            // DynamicAspectRegistry — DynamicAspectKey
-            .onPut(AetherKey.DynamicAspectKey.class, aspectRegistry::onAspectPut)
-            .onRemove(AetherKey.DynamicAspectKey.class, aspectRegistry::onAspectRemove)
-            // LogLevelRegistry — LogLevelKey
-            .onPut(AetherKey.LogLevelKey.class, logLevelRegistry::onLogLevelPut)
-            .onRemove(AetherKey.LogLevelKey.class, logLevelRegistry::onLogLevelRemove)
-            // RollbackManager — SliceTargetKey, PreviousVersionKey
-            .onPut(AetherKey.SliceTargetKey.class, rollbackManager::onSliceTargetPut)
-            .onPut(AetherKey.PreviousVersionKey.class, rollbackManager::onPreviousVersionPut)
-            // AppHttpServer — HttpRouteKey (for router rebuild on route changes)
-            .onPut(AetherKey.HttpRouteKey.class, appHttpServer::onRoutePut)
-            .onRemove(AetherKey.HttpRouteKey.class, appHttpServer::onRouteRemove);
+        var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                                  .onPut(AetherKey.EndpointKey.class, endpointRegistry::onEndpointPut)
+                                                  .onRemove(AetherKey.EndpointKey.class,
+                                                            endpointRegistry::onEndpointRemove)
+                                                  .onPut(AetherKey.SliceNodeKey.class,
+                                                         nodeDeploymentManager::onSliceNodePut)
+                                                  .onRemove(AetherKey.SliceNodeKey.class,
+                                                            nodeDeploymentManager::onSliceNodeRemove)
+                                                  .onPut(AetherKey.AppBlueprintKey.class,
+                                                         clusterDeploymentManager::onAppBlueprintPut)
+                                                  .onPut(AetherKey.SliceTargetKey.class,
+                                                         clusterDeploymentManager::onSliceTargetPut)
+                                                  .onPut(AetherKey.SliceNodeKey.class,
+                                                         clusterDeploymentManager::onSliceNodePut)
+                                                  .onPut(AetherKey.VersionRoutingKey.class,
+                                                         clusterDeploymentManager::onVersionRoutingPut)
+                                                  .onRemove(AetherKey.AppBlueprintKey.class,
+                                                            clusterDeploymentManager::onAppBlueprintRemove)
+                                                  .onRemove(AetherKey.SliceTargetKey.class,
+                                                            clusterDeploymentManager::onSliceTargetRemove)
+                                                  .onRemove(AetherKey.SliceNodeKey.class,
+                                                            clusterDeploymentManager::onSliceNodeRemove)
+                                                  .onRemove(AetherKey.VersionRoutingKey.class,
+                                                            clusterDeploymentManager::onVersionRoutingRemove)
+                                                  .onPut(AetherKey.HttpRouteKey.class, httpRouteRegistry::onRoutePut)
+                                                  .onRemove(AetherKey.HttpRouteKey.class,
+                                                            httpRouteRegistry::onRouteRemove)
+                                                  .onPut(AetherKey.SliceNodeKey.class,
+                                                         artifactMetricsCollector.deploymentTracker()::onSliceNodePut)
+                                                  .onRemove(AetherKey.SliceNodeKey.class,
+                                                            artifactMetricsCollector.deploymentTracker()::onSliceNodeRemove)
+                                                  .onPut(AetherKey.SliceNodeKey.class, deploymentMap::onSliceNodePut)
+                                                  .onRemove(AetherKey.SliceNodeKey.class,
+                                                            deploymentMap::onSliceNodeRemove)
+                                                  .onPut(AetherKey.SliceTargetKey.class, controlLoop::onSliceTargetPut)
+                                                  .onPut(AetherKey.SliceNodeKey.class, controlLoop::onSliceNodePut)
+                                                  .onRemove(AetherKey.SliceTargetKey.class,
+                                                            controlLoop::onSliceTargetRemove)
+                                                  .onRemove(AetherKey.SliceNodeKey.class, controlLoop::onSliceNodeRemove)
+                                                  .onPut(AetherKey.AlertThresholdKey.class,
+                                                         alertManager::onAlertThresholdPut)
+                                                  .onRemove(AetherKey.AlertThresholdKey.class,
+                                                            alertManager::onAlertThresholdRemove)
+                                                  .onPut(AetherKey.DynamicAspectKey.class, aspectRegistry::onAspectPut)
+                                                  .onRemove(AetherKey.DynamicAspectKey.class,
+                                                            aspectRegistry::onAspectRemove)
+                                                  .onPut(AetherKey.LogLevelKey.class, logLevelRegistry::onLogLevelPut)
+                                                  .onRemove(AetherKey.LogLevelKey.class,
+                                                            logLevelRegistry::onLogLevelRemove)
+                                                  .onPut(AetherKey.SliceTargetKey.class,
+                                                         rollbackManager::onSliceTargetPut)
+                                                  .onPut(AetherKey.PreviousVersionKey.class,
+                                                         rollbackManager::onPreviousVersionPut)
+                                                  .onPut(AetherKey.HttpRouteKey.class, appHttpServer::onRoutePut)
+                                                  .onRemove(AetherKey.HttpRouteKey.class, appHttpServer::onRouteRemove);
         // Dynamic config manager (optional)
-        dynamicConfigManager.onPresent(dcm -> kvRouterBuilder
-            .onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
-            .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
+        dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
+                                                             .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
         // Load balancer manager KV routes (optional)
-        loadBalancerManager.onPresent(lbm -> kvRouterBuilder
-            .onPut(AetherKey.HttpRouteKey.class, lbm::onRoutePut)
-            .onRemove(AetherKey.HttpRouteKey.class, lbm::onRouteRemove));
-        entries.addAll(kvRouterBuilder.build().asRouteEntries());
+        loadBalancerManager.onPresent(lbm -> kvRouterBuilder.onPut(AetherKey.HttpRouteKey.class, lbm::onRoutePut)
+                                                            .onRemove(AetherKey.HttpRouteKey.class, lbm::onRouteRemove));
+        entries.addAll(kvRouterBuilder.build()
+                                      .asRouteEntries());
         // Quorum state notifications - these handlers activate/deactivate components.
         // NOTE: RabiaNode's handlers run first (consensus activates before LeaderManager emits LeaderChange).
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, nodeDeploymentManager::onQuorumStateChange));

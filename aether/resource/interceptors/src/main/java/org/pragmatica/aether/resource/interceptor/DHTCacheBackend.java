@@ -21,16 +21,20 @@ final class DHTCacheBackend implements CacheBackend {
     private final Deserializer deserializer;
     private final String namespace;
 
-    private DHTCacheBackend(DHTClient dhtClient, Serializer serializer,
-                            Deserializer deserializer, String namespace) {
+    private DHTCacheBackend(DHTClient dhtClient,
+                            Serializer serializer,
+                            Deserializer deserializer,
+                            String namespace) {
         this.dhtClient = dhtClient;
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.namespace = namespace;
     }
 
-    static DHTCacheBackend dhtCacheBackend(DHTClient dhtClient, Serializer serializer,
-                                           Deserializer deserializer, String namespace) {
+    static DHTCacheBackend dhtCacheBackend(DHTClient dhtClient,
+                                           Serializer serializer,
+                                           Deserializer deserializer,
+                                           String namespace) {
         return new DHTCacheBackend(dhtClient, serializer, deserializer, namespace);
     }
 
