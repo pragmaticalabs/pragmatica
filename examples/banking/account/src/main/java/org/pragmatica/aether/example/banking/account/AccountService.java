@@ -71,10 +71,12 @@ public interface AccountService {
     Promise<Unit> closeAccount(AccountId accountId);
 
     /// Credit an account. 2-param method.
-    Promise<Unit> credit(AccountId accountId, Money amount);
+    @InvalidateBalanceOnCredit
+    Promise<Unit> credit(@Key AccountId accountId, Money amount);
 
     /// Debit an account. 2-param method.
-    Promise<Unit> debit(AccountId accountId, Money amount);
+    @InvalidateBalanceOnDebit
+    Promise<Unit> debit(@Key AccountId accountId, Money amount);
 
     // === Factory ===
     static AccountService accountService(@Sql SqlConnector db) {

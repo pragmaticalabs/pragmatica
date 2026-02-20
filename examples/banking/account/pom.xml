@@ -26,6 +26,11 @@
             <artifactId>resource-api</artifactId>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-interceptors</artifactId>
+            <scope>provided</scope>
+        </dependency>
         <!-- slice-api, slice-annotations, core inherited from parent with provided scope -->
     </dependencies>
 

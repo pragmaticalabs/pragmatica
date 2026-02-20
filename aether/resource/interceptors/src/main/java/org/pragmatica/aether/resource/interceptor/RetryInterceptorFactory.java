@@ -1,18 +1,17 @@
 package org.pragmatica.aether.resource.interceptor;
 
 import org.pragmatica.aether.resource.ResourceFactory;
-import org.pragmatica.aether.slice.MethodInterceptor;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Retry;
 
-/// Factory that provisions a {@link MethodInterceptor} wrapping calls with retry logic.
+/// Factory that provisions a {@link RetryMethodInterceptor} wrapping calls with retry logic.
 ///
 /// Delegates to the core {@link Retry} utility. Each intercepted method invocation
 /// is retried according to the configured backoff strategy and max attempts.
-public final class RetryInterceptorFactory implements ResourceFactory<MethodInterceptor, RetryConfig> {
+public final class RetryInterceptorFactory implements ResourceFactory<RetryMethodInterceptor, RetryConfig> {
     @Override
-    public Class<MethodInterceptor> resourceType() {
-        return MethodInterceptor.class;
+    public Class<RetryMethodInterceptor> resourceType() {
+        return RetryMethodInterceptor.class;
     }
 
     @Override
@@ -21,11 +20,11 @@ public final class RetryInterceptorFactory implements ResourceFactory<MethodInte
     }
 
     @Override
-    public Promise<MethodInterceptor> provision(RetryConfig config) {
+    public Promise<RetryMethodInterceptor> provision(RetryConfig config) {
         return Promise.success(interceptor(config));
     }
 
-    private static MethodInterceptor interceptor(RetryConfig config) {
+    private static RetryMethodInterceptor interceptor(RetryConfig config) {
         var retry = Retry.retry()
                          .attempts(config.maxAttempts())
                          .strategy(config.backoffStrategy());

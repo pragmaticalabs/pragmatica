@@ -108,7 +108,6 @@ public class FactoryClassGenerator {
         importTracker.use("org.pragmatica.lang.Unit");
         importTracker.use("org.pragmatica.lang.type.TypeToken");
         if (model.hasMethodInterceptors()) {
-            importTracker.use("org.pragmatica.aether.slice.MethodInterceptor");
             importTracker.use("org.pragmatica.aether.slice.ProvisioningContext");
             importTracker.use("org.pragmatica.lang.Functions.Fn1");
         }
@@ -639,19 +638,21 @@ public class FactoryClassGenerator {
     private String generateInterceptorProvideCall(InterceptorEntry entry, SliceModel model, ImportTracker importTracker) {
         var qualifier = entry.qualifier();
         var configSection = escapeJavaString(qualifier.configSection());
+        var typeName = importTracker.use(qualifier.resourceType().toString());
         return findKeyInfoForInterceptor(entry, model)
-        .fold(() -> "ctx.resources().provide(MethodInterceptor.class, \"" + configSection + "\")",
-              ki -> generateProvideWithContext(configSection, ki, entry.firstMethod(), model, importTracker));
+        .fold(() -> "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\")",
+              ki -> generateProvideWithContext(configSection, ki, entry.firstMethod(), model, importTracker, typeName));
     }
 
     private String generateProvideWithContext(String configSection,
                                                KeyExtractorInfo ki,
                                                MethodModel method,
                                                SliceModel model,
-                                               ImportTracker importTracker) {
+                                               ImportTracker importTracker,
+                                               String typeName) {
         var paramType = effectiveParamTypeString(method, model, importTracker);
         var responseType = importTracker.use(method.responseType().toString());
-        return "ctx.resources().provide(MethodInterceptor.class, \"" + configSection + "\",\n"
+        return "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\",\n"
                + "                ProvisioningContext.provisioningContext()\n"
                + "                    .withTypeToken(new TypeToken<" + importTracker.use(ki.keyType()) + ">() {})\n"
                + "                    .withTypeToken(new TypeToken<" + responseType + ">() {})\n"

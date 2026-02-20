@@ -3,3 +3,4 @@ org.pragmatica.aether.resource.interceptor.CircuitBreakerInterceptorFactory
 org.pragmatica.aether.resource.interceptor.RateLimitInterceptorFactory
 org.pragmatica.aether.resource.interceptor.LoggingInterceptorFactory
 org.pragmatica.aether.resource.interceptor.MetricsInterceptorFactory
+org.pragmatica.aether.resource.interceptor.CacheInterceptorFactory

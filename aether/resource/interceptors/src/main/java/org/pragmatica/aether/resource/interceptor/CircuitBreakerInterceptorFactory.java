@@ -1,18 +1,17 @@
 package org.pragmatica.aether.resource.interceptor;
 
 import org.pragmatica.aether.resource.ResourceFactory;
-import org.pragmatica.aether.slice.MethodInterceptor;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.CircuitBreaker;
 
-/// Factory that provisions a {@link MethodInterceptor} wrapping calls with circuit breaker logic.
+/// Factory that provisions a {@link CircuitBreakerMethodInterceptor} wrapping calls with circuit breaker logic.
 ///
 /// Delegates to the core {@link CircuitBreaker} utility. When the failure threshold is reached,
 /// subsequent calls are rejected immediately until the reset timeout expires.
-public final class CircuitBreakerInterceptorFactory implements ResourceFactory<MethodInterceptor, CircuitBreakerConfig> {
+public final class CircuitBreakerInterceptorFactory implements ResourceFactory<CircuitBreakerMethodInterceptor, CircuitBreakerConfig> {
     @Override
-    public Class<MethodInterceptor> resourceType() {
-        return MethodInterceptor.class;
+    public Class<CircuitBreakerMethodInterceptor> resourceType() {
+        return CircuitBreakerMethodInterceptor.class;
     }
 
     @Override
@@ -21,11 +20,11 @@ public final class CircuitBreakerInterceptorFactory implements ResourceFactory<M
     }
 
     @Override
-    public Promise<MethodInterceptor> provision(CircuitBreakerConfig config) {
+    public Promise<CircuitBreakerMethodInterceptor> provision(CircuitBreakerConfig config) {
         return Promise.success(interceptor(config));
     }
 
-    private static MethodInterceptor interceptor(CircuitBreakerConfig config) {
+    private static CircuitBreakerMethodInterceptor interceptor(CircuitBreakerConfig config) {
         var breaker = CircuitBreaker.builder()
                                     .failureThreshold(config.failureThreshold())
                                     .resetTimeout(config.resetTimeout())
