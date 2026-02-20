@@ -32,7 +32,12 @@ public record HttpClientConfig(Option<String> baseUrl,
     private static final Redirect DEFAULT_REDIRECT = Redirect.NORMAL;
 
     public static Result<HttpClientConfig> httpClientConfig() {
-        return success(new HttpClientConfig(none(), DEFAULT_CONNECT_TIMEOUT, DEFAULT_REQUEST_TIMEOUT, DEFAULT_REDIRECT, none(), Map.of()));
+        return success(new HttpClientConfig(none(),
+                                            DEFAULT_CONNECT_TIMEOUT,
+                                            DEFAULT_REQUEST_TIMEOUT,
+                                            DEFAULT_REDIRECT,
+                                            none(),
+                                            Map.of()));
     }
 
     public static Result<HttpClientConfig> httpClientConfig(String baseUrl) {
@@ -47,7 +52,12 @@ public record HttpClientConfig(Option<String> baseUrl,
     public static Result<HttpClientConfig> httpClientConfig(String baseUrl,
                                                             TimeSpan connectTimeout,
                                                             TimeSpan requestTimeout) {
-        return success(new HttpClientConfig(option(baseUrl), connectTimeout, requestTimeout, DEFAULT_REDIRECT, none(), Map.of()));
+        return success(new HttpClientConfig(option(baseUrl),
+                                            connectTimeout,
+                                            requestTimeout,
+                                            DEFAULT_REDIRECT,
+                                            none(),
+                                            Map.of()));
     }
 
     public static Result<HttpClientConfig> httpClientConfig(Option<String> baseUrl,
@@ -63,7 +73,12 @@ public record HttpClientConfig(Option<String> baseUrl,
                                                             Redirect followRedirects,
                                                             Option<JsonConfig> json,
                                                             Map<String, String> defaultHeaders) {
-        return success(new HttpClientConfig(baseUrl, connectTimeout, requestTimeout, followRedirects, json, defaultHeaders));
+        return success(new HttpClientConfig(baseUrl,
+                                            connectTimeout,
+                                            requestTimeout,
+                                            followRedirects,
+                                            json,
+                                            defaultHeaders));
     }
 
     public HttpClientConfig withBaseUrl(String url) {
@@ -83,7 +98,12 @@ public record HttpClientConfig(Option<String> baseUrl,
     }
 
     public HttpClientConfig withJson(JsonConfig jsonConfig) {
-        return httpClientConfig(baseUrl, connectTimeout, requestTimeout, followRedirects, option(jsonConfig), defaultHeaders).unwrap();
+        return httpClientConfig(baseUrl,
+                                connectTimeout,
+                                requestTimeout,
+                                followRedirects,
+                                option(jsonConfig),
+                                defaultHeaders).unwrap();
     }
 
     public HttpClientConfig withDefaultHeaders(Map<String, String> headers) {

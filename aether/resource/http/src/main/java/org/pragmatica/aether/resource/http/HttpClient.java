@@ -105,7 +105,6 @@ public interface HttpClient {
     HttpClientConfig config();
 
     // ═══ Typed JSON API — abstract methods ═══
-
     /// Sends a GET request and deserializes the response as JSON.
     <T> Promise<T> getJson(String path, TypeToken<T> responseType, Option<TypeToken<?>> errorType);
 
@@ -125,7 +124,6 @@ public interface HttpClient {
     Promise<Unit> deleteJsonVoid(String path);
 
     // ═══ Typed JSON API — GET defaults ═══
-
     /// Sends a GET request and deserializes the response as JSON.
     default <T> Promise<T> getJson(Class<T> type) {
         return getJson("", typeToken(type), none());
@@ -147,7 +145,6 @@ public interface HttpClient {
     }
 
     // ═══ Typed JSON API — POST defaults ═══
-
     /// Sends a POST request with JSON body and deserializes the response.
     default <T> Promise<T> postJson(Object body, Class<T> type) {
         return postJson("", body, typeToken(type), none());
@@ -169,7 +166,6 @@ public interface HttpClient {
     }
 
     // ═══ Typed JSON API — PUT defaults ═══
-
     /// Sends a PUT request with JSON body and deserializes the response.
     default <T> Promise<T> putJson(Object body, Class<T> type) {
         return putJson("", body, typeToken(type), none());
@@ -191,7 +187,6 @@ public interface HttpClient {
     }
 
     // ═══ Typed JSON API — PATCH defaults ═══
-
     /// Sends a PATCH request with JSON body and deserializes the response.
     default <T> Promise<T> patchJson(Object body, Class<T> type) {
         return patchJson("", body, typeToken(type), none());
@@ -213,7 +208,6 @@ public interface HttpClient {
     }
 
     // ═══ Typed JSON API — DELETE defaults ═══
-
     /// Sends a DELETE request and deserializes the response as JSON.
     default <T> Promise<T> deleteJson(Class<T> type) {
         return deleteJson("", typeToken(type), none());

@@ -10,17 +10,16 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Network;
 import org.pragmatica.lang.type.TypeToken;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
-
-import tools.jackson.databind.DeserializationFeature;
-import tools.jackson.databind.PropertyNamingStrategies;
-
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpRequest.BodyPublishers;
 import java.time.Duration;
 import java.util.Map;
 import java.util.function.BiFunction;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.PropertyNamingStrategies;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Unit.unit;
@@ -180,19 +179,22 @@ final class JdkHttpClient implements HttpClient {
     }
 
     private void applyHeaders(HttpRequest.Builder builder, Map<String, String> requestHeaders) {
-        config.defaultHeaders().forEach(builder::header);
+        config.defaultHeaders()
+              .forEach(builder::header);
         requestHeaders.forEach(builder::header);
     }
 
     // ═══ Typed JSON API ═══
-
     @Override
     public <T> Promise<T> getJson(String path, TypeToken<T> responseType, Option<TypeToken<?>> errorType) {
         return get(path).flatMap(result -> parseResponse(result, responseType, errorType));
     }
 
     @Override
-    public <T> Promise<T> postJson(String path, Object body, TypeToken<T> responseType, Option<TypeToken<?>> errorType) {
+    public <T> Promise<T> postJson(String path,
+                                   Object body,
+                                   TypeToken<T> responseType,
+                                   Option<TypeToken<?>> errorType) {
         return serializeAndSend(path, body, this::post).flatMap(result -> parseResponse(result, responseType, errorType));
     }
 
@@ -202,7 +204,10 @@ final class JdkHttpClient implements HttpClient {
     }
 
     @Override
-    public <T> Promise<T> patchJson(String path, Object body, TypeToken<T> responseType, Option<TypeToken<?>> errorType) {
+    public <T> Promise<T> patchJson(String path,
+                                    Object body,
+                                    TypeToken<T> responseType,
+                                    Option<TypeToken<?>> errorType) {
         return serializeAndSend(path, body, this::patch).flatMap(result -> parseResponse(result, responseType, errorType));
     }
 
@@ -217,7 +222,6 @@ final class JdkHttpClient implements HttpClient {
     }
 
     // ═══ JSON helpers ═══
-
     private JsonMapper jsonMapper() {
         var mapper = jsonMapper;
         if (mapper == null) {
@@ -235,7 +239,6 @@ final class JdkHttpClient implements HttpClient {
     private JsonMapper createJsonMapper() {
         var jsonConfig = config.json()
                                .or(JsonConfig::jsonConfig);
-
         return JsonMapper.jsonMapper()
                          .withPragmaticaTypes()
                          .configure(b -> configureNaming(b, jsonConfig))
@@ -248,22 +251,21 @@ final class JdkHttpClient implements HttpClient {
         switch (jsonConfig.naming()) {
             case SNAKE_CASE -> builder.propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
             case KEBAB_CASE -> builder.propertyNamingStrategy(PropertyNamingStrategies.KEBAB_CASE);
-            case CAMEL_CASE -> { }
+            case CAMEL_CASE -> {}
         }
     }
 
-    private static void configureInclusion(tools.jackson.databind.json.JsonMapper.Builder builder, JsonConfig jsonConfig) {
+    private static void configureInclusion(tools.jackson.databind.json.JsonMapper.Builder builder,
+                                           JsonConfig jsonConfig) {
         switch (jsonConfig.nullInclusion()) {
-            case EXCLUDE -> builder.changeDefaultPropertyInclusion(
-                incl -> incl.withValueInclusion(JsonInclude.Include.NON_NULL));
-            case NON_EMPTY -> builder.changeDefaultPropertyInclusion(
-                incl -> incl.withValueInclusion(JsonInclude.Include.NON_EMPTY));
-            case INCLUDE -> builder.changeDefaultPropertyInclusion(
-                incl -> incl.withValueInclusion(JsonInclude.Include.ALWAYS));
+            case EXCLUDE -> builder.changeDefaultPropertyInclusion(incl -> incl.withValueInclusion(JsonInclude.Include.NON_NULL));
+            case NON_EMPTY -> builder.changeDefaultPropertyInclusion(incl -> incl.withValueInclusion(JsonInclude.Include.NON_EMPTY));
+            case INCLUDE -> builder.changeDefaultPropertyInclusion(incl -> incl.withValueInclusion(JsonInclude.Include.ALWAYS));
         }
     }
 
-    private static void configureUnknownProperties(tools.jackson.databind.json.JsonMapper.Builder builder, JsonConfig jsonConfig) {
+    private static void configureUnknownProperties(tools.jackson.databind.json.JsonMapper.Builder builder,
+                                                   JsonConfig jsonConfig) {
         if (jsonConfig.failOnUnknown()) {
             builder.enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
         } else {
@@ -271,41 +273,40 @@ final class JdkHttpClient implements HttpClient {
         }
     }
 
-    private Promise<HttpResult<String>> serializeAndSend(String path, Object body,
-                                                          BiFunction<String, String, Promise<HttpResult<String>>> sender) {
+    private Promise<HttpResult<String>> serializeAndSend(String path,
+                                                         Object body,
+                                                         BiFunction<String, String, Promise<HttpResult<String>>> sender) {
         return jsonMapper().writeAsString(body)
-                           .fold(
-                               cause -> new HttpClientError.SerializationFailed(cause.message()).<HttpResult<String>>promise(),
-                               json -> sender.apply(path, json)
-                           );
+                         .fold(cause -> new HttpClientError.SerializationFailed(cause.message()).<HttpResult<String>>promise(),
+                               json -> sender.apply(path, json));
     }
 
     private <T> Promise<T> parseResponse(HttpResult<String> result,
-                                          TypeToken<T> responseType,
-                                          Option<TypeToken<?>> errorType) {
+                                         TypeToken<T> responseType,
+                                         Option<TypeToken<?>> errorType) {
         if (result.isSuccess()) {
             return deserializeSuccess(result, responseType);
         }
-        return errorType.fold(
-            () -> new HttpClientError.RequestFailed(result.statusCode(), result.body()).<T>promise(),
-            et -> tryParseError(result, et)
-        );
+        return errorType.fold(() -> new HttpClientError.RequestFailed(result.statusCode(), result.body()).<T>promise(),
+                              et -> tryParseError(result, et));
     }
 
     private <T> Promise<T> deserializeSuccess(HttpResult<String> result, TypeToken<T> responseType) {
-        return jsonMapper().readString(result.body(), responseType)
-                           .fold(
-                               cause -> new HttpClientError.DeserializationFailed(cause.message(), result.body()).<T>promise(),
-                               Promise::success
-                           );
+        return jsonMapper().readString(result.body(),
+                                       responseType)
+                         .fold(cause -> new HttpClientError.DeserializationFailed(cause.message(),
+                                                                                  result.body()).<T>promise(),
+                               Promise::success);
     }
 
     private <T> Promise<T> tryParseError(HttpResult<String> result, TypeToken<?> errorType) {
-        return jsonMapper().readString(result.body(), errorType)
-                           .fold(
-                               _ -> new HttpClientError.RequestFailed(result.statusCode(), result.body()).<T>promise(),
-                               parsedError -> new HttpClientError.RequestFailedWithBody(result.statusCode(), parsedError, result.body()).<T>promise()
-                           );
+        return jsonMapper().readString(result.body(),
+                                       errorType)
+                         .fold(_ -> new HttpClientError.RequestFailed(result.statusCode(),
+                                                                      result.body()).<T>promise(),
+                               parsedError -> new HttpClientError.RequestFailedWithBody(result.statusCode(),
+                                                                                        parsedError,
+                                                                                        result.body()).<T>promise());
     }
 
     private Promise<Unit> handleVoidResponse(HttpResult<String> result) {

@@ -133,10 +133,10 @@ public interface LoadBalancerManager {
                                                                                                 routeKey.httpMethod(),
                                                                                                 routeKey.pathPrefix(),
                                                                                                 cause.message())))
-                            .onFailure(cause -> log.error("Failed to create route change for removal of {} {}: {}",
-                                                          routeKey.httpMethod(),
-                                                          routeKey.pathPrefix(),
-                                                          cause.message()));
+                           .onFailure(cause -> log.error("Failed to create route change for removal of {} {}: {}",
+                                                         routeKey.httpMethod(),
+                                                         routeKey.pathPrefix(),
+                                                         cause.message()));
             }
 
             private void handleRouteChange(HttpRouteKey routeKey, HttpRouteValue routeValue) {
