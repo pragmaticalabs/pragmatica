@@ -38,7 +38,7 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
 - **Fast-Path Route Eviction** - Immediate local cache eviction from `HttpRouteRegistry` on node departure, eliminating ~5s window of failed forwards during rolling restarts
 - **Dynamic Aspects** - Runtime-togglable per-method LOG/METRICS/LOG_AND_METRICS modes via `DynamicAspectRegistry`, REST API (`/api/aspects`), KV-store consensus sync, and `DynamicAspectInterceptor` wired into both local and remote invocation paths
 - **Dynamic Configuration** - Runtime config updates via consensus KV store with REST API. Config overlay pattern: base config from TOML/env/system properties, overrides from KV store. Cluster-wide and per-node scoped keys. No restart required.
-- **Logging Overhaul (tinylog → Log4j2)** - Production-grade structured logging: request ID auto-injected via SLF4J MDC (`[rid=%X{requestId}]`), optional JSON output via `-Dlog4j2.appender=JsonConsole`, runtime log level management via Management API (`/api/logging/levels`) with cluster-wide KV-store consensus sync, noise reduction (Fury→error, Netty→warn, H2→error), shared `test-logging` module replacing 47 per-module tinylog configs. Unblocks RFC-0009 Tier 2.
+- **Logging Overhaul (tinylog → Log4j2)** - Production-grade structured logging: request ID auto-injected via SLF4J MDC (`[rid=%X{requestId}]`), optional JSON output via `-Dlog4j2.appender=JsonConsole`, runtime log level management via Management API (`/api/logging/levels`) with cluster-wide KV-store consensus sync, noise reduction (Fury→error, Netty→warn, H2→error), shared `test-logging` module replacing 47 per-module tinylog configs. Unblocks structured logging in RFC-0010 (SLF4J bridge).
 
 ### Dashboard & Real-Time
 - **WebSocket Push** - Zero-polling dashboard via `/ws/status` with polling fallback
@@ -110,14 +110,16 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
 
 ### HIGH PRIORITY - Observability & Operations
 
-1. **Built-in Request Tracing** ← recommended next — [RFC-0009](../../../../docs/rfc/RFC-0009-request-tracing.md)
-   - Two-tier: in-memory ring buffer (dashboard) + structured logging (persistence)
-   - Single instrumentation point at invocation boundary (DynamicAspectInterceptor pipeline)
-   - Management API: `/api/traces`, `/api/traces/{requestId}`, `/api/traces/stats`
+1. **Unified Invocation Observability** ← recommended next — [RFC-0010](../../../../docs/rfc/RFC-0010-unified-invocation-observability.md)
+   - Single invocation tree: tracing (timing/flow) + depth-logging (input/output) + metrics
+   - Automatic instrumentation at dependency boundaries — zero business logic logging code
+   - Depth-based verbosity control: adjust detail level dynamically per method via KV store
+   - SLF4J bridge: projects depth → traditional severity levels for standard log consumers
+   - Ring buffer for dashboard + structured logging for persistence
+   - Management API: `/api/traces`, `/api/traces/{requestId}`, `/api/observability/depth`
    - Foundation exists: request ID propagation, InvocationTimingContext, DynamicAspectInterceptor
-   - OpenTelemetry rejected: heavyweight dependency, gRPC mismatch, microservices-oriented
-   - Logging Overhaul complete — Tier 2 structured logging unblocked
-   - Dashboard UI tracked separately in Dashboard & UI section (#6)
+   - Supersedes RFC-0009 (Request Tracing)
+   - **Separate design decisions:** redaction strategy, dashboard UI, serialization limits, sampling
 
 2. **Dependency Lifecycle Management**
    - Block manual unload while dependents are ACTIVE
@@ -156,13 +158,14 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
    - Backend REST API (`/api/aspects`) and KV-store sync already implemented
    - Smallest UI task — good starting point for establishing dashboard patterns
 
-6. **Request Tracing Dashboard Tab**
-   - "Requests" tab: table view with timestamp, requestId, source → target.method, duration, status
-   - Click-to-expand waterfall view for multi-hop request visualization
-   - Filters: time range, slice, method, status (success/failure)
+6. **Invocation Observability Dashboard Tab**
+   - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
+   - Click-to-expand tree view showing invocation depth with input/output at each level
+   - Waterfall view for multi-hop request visualization
+   - Filters: time range, slice, method, status, depth range
    - Auto-refresh via existing WebSocket push
-   - See [RFC-0009](../../../../docs/rfc/RFC-0009-request-tracing.md) for full specification
-   - Depends on: Built-in Request Tracing (#1) backend
+   - See [RFC-0010](../../../../docs/rfc/RFC-0010-unified-invocation-observability.md) for data model and API
+   - Depends on: Unified Invocation Observability (#1) backend
 
 7. **Log Level Management UI**
    - Per-package log level controls in dashboard
