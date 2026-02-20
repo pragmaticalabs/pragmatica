@@ -27,6 +27,7 @@ public interface OrderService {
 | [Testing Slices](testing-slices.md) | Unit and integration testing |
 | [Deployment](deployment.md) | Blueprints, environments, CI/CD |
 | [Infrastructure Services](infra-services.md) | Using infrastructure slices |
+| [Resource Reference](resource-reference.md) | Resource provisioning & configuration |
 | [Forge Guide](forge-guide.md) | Local development with Forge |
 | [Troubleshooting](troubleshooting.md) | Common issues and solutions |
 | [Migration Guide](migration-guide.md) | Moving from monolith to slices |
