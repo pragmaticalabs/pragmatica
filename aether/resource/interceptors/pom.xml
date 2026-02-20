@@ -39,6 +39,15 @@
             <artifactId>micrometer-core</artifactId>
         </dependency>
 
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>dht</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-api</artifactId>
+        </dependency>
+
         <!-- Logging -->
         <dependency>
             <groupId>org.slf4j</groupId>

@@ -66,6 +66,16 @@ public interface EndpointRegistry {
                                              MethodName methodName,
                                              java.util.Set<NodeId> excludeNodes);
 
+    /// Select endpoint by cache affinity — route to the node owning the DHT partition for the key.
+    /// Prefers the endpoint on the given affinity node. Falls back to round-robin if the
+    /// affinity node has no endpoint for this artifact/method.
+    ///
+    /// @param artifact the slice artifact
+    /// @param methodName the method to invoke
+    /// @param affinityNode the preferred node for cache locality
+    /// @return selected endpoint, or empty if none available
+    Option<Endpoint> selectEndpointByAffinity(Artifact artifact, MethodName methodName, NodeId affinityNode);
+
     /// Select an endpoint with version-aware weighted routing.
     ///
     ///
@@ -186,6 +196,20 @@ public interface EndpointRegistry {
                 var counter = roundRobinCounters.computeIfAbsent(lookupKey, _ -> new AtomicInteger(0));
                 var index = (counter.getAndIncrement() & 0x7FFFFFFF) % available.size();
                 return Option.option(available.get(index));
+            }
+
+            @Override
+            public Option<Endpoint> selectEndpointByAffinity(Artifact artifact,
+                                                              MethodName methodName,
+                                                              NodeId affinityNode) {
+                var available = findEndpoints(artifact, methodName);
+                var affinity = available.stream()
+                                        .filter(e -> e.nodeId().equals(affinityNode))
+                                        .findFirst();
+                if (affinity.isPresent()) {
+                    return Option.some(affinity.get());
+                }
+                return selectEndpoint(artifact, methodName);
             }
 
             @Override

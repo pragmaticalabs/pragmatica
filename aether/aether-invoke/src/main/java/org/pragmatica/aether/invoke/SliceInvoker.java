@@ -205,6 +205,34 @@ public interface SliceInvoker extends SliceInvokerFacade {
     /// Called when all instances of a slice fail during invocation.
     Unit setFailureListener(SliceFailureListener listener);
 
+    /// Resolves the preferred node for cache-affinity routing.
+    /// Given a request, extracts the cache key and determines which node
+    /// owns the DHT partition for that key.
+    @FunctionalInterface
+    interface CacheAffinityResolver {
+        /// Resolve the affinity node for the given request.
+        /// Returns the NodeId of the node that should handle this request for cache locality,
+        /// or empty if affinity cannot be determined.
+        Option<NodeId> resolveAffinityNode(Object request);
+    }
+
+    /// Register a cache affinity resolver for a specific slice method.
+    /// When registered, invocations of this method will prefer routing to the node
+    /// owning the DHT partition for the cache key.
+    ///
+    /// @param artifact the slice artifact
+    /// @param method the method name
+    /// @param resolver the affinity resolver
+    /// @return unit
+    Unit registerAffinityResolver(Artifact artifact, MethodName method, CacheAffinityResolver resolver);
+
+    /// Unregister a cache affinity resolver.
+    ///
+    /// @param artifact the slice artifact
+    /// @param method the method name
+    /// @return unit
+    Unit unregisterAffinityResolver(Artifact artifact, MethodName method);
+
     /// Create a new SliceInvoker.
     static SliceInvoker sliceInvoker(NodeId self,
                                      ClusterNetwork network,
@@ -272,6 +300,8 @@ class SliceInvokerImpl implements SliceInvoker {
 
     // Secondary index: NodeId -> Set of correlationIds for that node (for fast lookup on node departure)
     private final Map<NodeId, Set<String>> pendingInvocationsByNode = new ConcurrentHashMap<>();
+
+    private final Map<String, CacheAffinityResolver> affinityResolvers = new ConcurrentHashMap<>();
 
     private volatile boolean stopped = false;
     private volatile Option<SliceFailureListener> failureListener = Option.none();
@@ -345,6 +375,7 @@ class SliceInvokerImpl implements SliceInvoker {
         pendingInvocations.forEach(this::cancelPendingInvocation);
         pendingInvocations.clear();
         pendingInvocationsByNode.clear();
+        affinityResolvers.clear();
         // Shutdown scheduler
         scheduler.shutdown();
         try{
@@ -367,7 +398,7 @@ class SliceInvokerImpl implements SliceInvoker {
 
     @Override
     public Promise<Unit> invoke(Artifact slice, MethodName method, Object request) {
-        return selectEndpoint(slice, method)
+        return selectEndpointWithAffinity(slice, method, request)
         .flatMap(endpoint -> endpoint.nodeId()
                                      .equals(self)
                              ? invokeLocalFireAndForget(slice, method, request)
@@ -409,7 +440,7 @@ class SliceInvokerImpl implements SliceInvoker {
         if (stopped) {
             return INVOKER_STOPPED.promise();
         }
-        return selectEndpoint(slice, method)
+        return selectEndpointWithAffinity(slice, method, request)
         .flatMap(endpoint -> endpoint.nodeId()
                                      .equals(self)
                              ? invokeLocal(slice, method, request, responseType)
@@ -665,6 +696,22 @@ class SliceInvokerImpl implements SliceInvoker {
         return unit();
     }
 
+    @Override
+    public Unit registerAffinityResolver(Artifact artifact, MethodName method, CacheAffinityResolver resolver) {
+        affinityResolvers.put(affinityLookupKey(artifact, method), resolver);
+        return unit();
+    }
+
+    @Override
+    public Unit unregisterAffinityResolver(Artifact artifact, MethodName method) {
+        affinityResolvers.remove(affinityLookupKey(artifact, method));
+        return unit();
+    }
+
+    private static String affinityLookupKey(Artifact artifact, MethodName method) {
+        return artifact.asString() + "/" + method.name();
+    }
+
     private void publishFailureEvent(SliceFailureEvent event) {
         var requestId = extractRequestId(event);
         log.warn("[requestId={}] SliceFailureEvent: {}", requestId, event);
@@ -820,6 +867,16 @@ class SliceInvokerImpl implements SliceInvoker {
                                    .map(update -> selectEndpointWithWeightedRouting(slice, artifactBase, method, update))
                                    .or(() -> endpointRegistry.selectEndpoint(slice, method)
                                                              .async(NO_ENDPOINT_FOUND));
+    }
+
+    private Promise<Endpoint> selectEndpointWithAffinity(Artifact slice, MethodName method, Object request) {
+        var resolver = Option.option(affinityResolvers.get(affinityLookupKey(slice, method)));
+        var affinityEndpoint = resolver.flatMap(r -> r.resolveAffinityNode(request))
+                                       .flatMap(node -> endpointRegistry.selectEndpointByAffinity(slice, method, node));
+        if (affinityEndpoint.isPresent()) {
+            return affinityEndpoint.async(NO_ENDPOINT_FOUND);
+        }
+        return selectEndpoint(slice, method);
     }
 
     private Promise<Endpoint> selectEndpointWithWeightedRouting(Artifact slice,

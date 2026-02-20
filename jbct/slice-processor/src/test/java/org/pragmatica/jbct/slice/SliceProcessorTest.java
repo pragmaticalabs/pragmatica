@@ -126,20 +126,32 @@ class SliceProcessorTest {
             import org.pragmatica.lang.type.TypeToken;
 
             import java.util.ArrayList;
+            import java.util.HashMap;
             import java.util.List;
+            import java.util.Map;
 
             public record ProvisioningContext(List<TypeToken<?>> typeTokens,
-                                              Option<Fn1<?, ?>> keyExtractor) {
+                                              Option<Fn1<?, ?>> keyExtractor,
+                                              Map<Class<?>, Object> extensions) {
                 public static ProvisioningContext provisioningContext() {
-                    return new ProvisioningContext(List.of(), Option.none());
+                    return new ProvisioningContext(List.of(), Option.none(), Map.of());
                 }
                 public ProvisioningContext withTypeToken(TypeToken<?> token) {
                     var tokens = new ArrayList<>(typeTokens);
                     tokens.add(token);
-                    return new ProvisioningContext(List.copyOf(tokens), keyExtractor);
+                    return new ProvisioningContext(List.copyOf(tokens), keyExtractor, extensions);
                 }
                 public ProvisioningContext withKeyExtractor(Fn1<?, ?> extractor) {
-                    return new ProvisioningContext(typeTokens, Option.some(extractor));
+                    return new ProvisioningContext(typeTokens, Option.some(extractor), extensions);
+                }
+                @SuppressWarnings("unchecked")
+                public <T> Option<T> extension(Class<T> type) {
+                    return Option.option((T) extensions.get(type));
+                }
+                public <T> ProvisioningContext withExtension(Class<T> type, T value) {
+                    var newExtensions = new HashMap<>(extensions);
+                    newExtensions.put(type, value);
+                    return new ProvisioningContext(typeTokens, keyExtractor, Map.copyOf(newExtensions));
                 }
             }
             """);

@@ -1,11 +1,16 @@
 package org.pragmatica.aether.slice;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
+import org.pragmatica.lang.utils.Causes;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /// Context for resource provisioning, carrying additional type and key information.
 ///
@@ -22,12 +27,15 @@ import java.util.List;
 /// ctx.resources().provide(EventStore.class, "events.orders", context);
 /// }```
 public record ProvisioningContext(List<TypeToken<?>> typeTokens,
-                                  Option<Fn1<?, ?>> keyExtractor) {
+                                  Option<Fn1<?, ?>> keyExtractor,
+                                  Map<Class<?>, Object> extensions) {
+    private static final Fn1<Cause, String> MISSING_EXTENSION = Causes.forOneValue("Context does not contain %s");
+
     /// Create an empty provisioning context.
     ///
     /// @return New empty ProvisioningContext
     public static ProvisioningContext provisioningContext() {
-        return new ProvisioningContext(List.of(), Option.none());
+        return new ProvisioningContext(List.of(), Option.none(), Map.of());
     }
 
     /// Add a type token to this context.
@@ -37,7 +45,7 @@ public record ProvisioningContext(List<TypeToken<?>> typeTokens,
     public ProvisioningContext withTypeToken(TypeToken<?> token) {
         var tokens = new ArrayList<>(typeTokens);
         tokens.add(token);
-        return new ProvisioningContext(List.copyOf(tokens), keyExtractor);
+        return new ProvisioningContext(List.copyOf(tokens), keyExtractor, extensions);
     }
 
     /// Set the key extractor for this context.
@@ -45,6 +53,27 @@ public record ProvisioningContext(List<TypeToken<?>> typeTokens,
     /// @param extractor Key extractor function
     /// @return New ProvisioningContext with the key extractor set
     public ProvisioningContext withKeyExtractor(Fn1<?, ?> extractor) {
-        return new ProvisioningContext(typeTokens, Option.some(extractor));
+        return new ProvisioningContext(typeTokens, Option.some(extractor), extensions);
+    }
+
+    /// Retrieve a typed extension from this context.
+    ///
+    /// @param type Extension class key
+    /// @return Option containing the extension value, or none if absent
+    @SuppressWarnings("unchecked")
+    public <T> Result<T> extension(Class<T> type) {
+        return Option.option((T) extensions.get(type))
+                     .toResult(MISSING_EXTENSION.apply(type.getSimpleName()));
+    }
+
+    /// Add a typed extension to this context.
+    ///
+    /// @param type  Extension class key
+    /// @param value Extension value
+    /// @return New ProvisioningContext with the extension added
+    public <T> ProvisioningContext withExtension(Class<T> type, T value) {
+        var newExtensions = new HashMap<>(extensions);
+        newExtensions.put(type, value);
+        return new ProvisioningContext(typeTokens, keyExtractor, Map.copyOf(newExtensions));
     }
 }

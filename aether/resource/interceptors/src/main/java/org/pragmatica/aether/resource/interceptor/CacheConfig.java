@@ -3,7 +3,6 @@ package org.pragmatica.aether.resource.interceptor;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 
-import static org.pragmatica.lang.Result.all;
 import static org.pragmatica.lang.Verify.ensure;
 
 /// Configuration for cache interceptor.
@@ -12,9 +11,10 @@ import static org.pragmatica.lang.Verify.ensure;
 /// @param strategy   Caching strategy to apply
 /// @param ttlSeconds Time-to-live for cached entries in seconds
 /// @param maxEntries Maximum number of entries in the cache
-public record CacheConfig(String cacheName, CacheStrategy strategy, int ttlSeconds, int maxEntries) {
+/// @param mode       Cache storage mode (local, distributed, or tiered)
+public record CacheConfig(String cacheName, CacheStrategy strategy, int ttlSeconds, int maxEntries, CacheMode mode) {
     @SuppressWarnings("JBCT-VO-02")
-    private static final CacheConfig DEFAULTS = new CacheConfig("default", CacheStrategy.CACHE_ASIDE, 300, 10_000);
+    private static final CacheConfig DEFAULTS = new CacheConfig("default", CacheStrategy.CACHE_ASIDE, 300, 10_000, CacheMode.LOCAL);
 
     /// Create cache configuration with default values.
     public static CacheConfig cacheConfig() {
@@ -25,16 +25,23 @@ public record CacheConfig(String cacheName, CacheStrategy strategy, int ttlSecon
     public static Result<CacheConfig> cacheConfig(String cacheName,
                                                   CacheStrategy strategy,
                                                   int ttlSeconds,
-                                                  int maxEntries) {
-        var validName = ensure(cacheName, Verify.Is::notBlank);
-        var validStrategy = ensure(strategy, Verify.Is::notNull);
-        var validTtl = ensure(ttlSeconds, Verify.Is::positive);
-        var validMax = ensure(maxEntries, Verify.Is::positive);
-        return all(validName, validStrategy, validTtl, validMax).map(CacheConfig::new);
+                                                  int maxEntries,
+                                                  CacheMode mode) {
+        return Result.all(ensure(cacheName, Verify.Is::present),
+                          ensure(strategy, Verify.Is::notNull),
+                          ensure(ttlSeconds, Verify.Is::positive),
+                          ensure(maxEntries, Verify.Is::positive),
+                          ensure(mode, Verify.Is::notNull))
+                     .map(CacheConfig::new);
     }
 
-    /// Create cache configuration with name and strategy, using default TTL and max entries.
+    /// Create cache configuration with name and strategy, using default TTL, max entries, and local mode.
     public static Result<CacheConfig> cacheConfig(String cacheName, CacheStrategy strategy) {
-        return cacheConfig(cacheName, strategy, 300, 10_000);
+        return cacheConfig(cacheName, strategy, 300, 10_000, CacheMode.LOCAL);
+    }
+
+    /// Create cache configuration with name, strategy, and mode, using default TTL and max entries.
+    public static Result<CacheConfig> cacheConfig(String cacheName, CacheStrategy strategy, CacheMode mode) {
+        return cacheConfig(cacheName, strategy, 300, 10_000, mode);
     }
 }
