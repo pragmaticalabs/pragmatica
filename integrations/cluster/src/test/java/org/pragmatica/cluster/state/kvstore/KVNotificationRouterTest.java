@@ -132,6 +132,50 @@ class KVNotificationRouterTest {
     }
 
     @Nested
+    class ErrorIsolation {
+        @Test
+        void handlePut_exception_in_first_handler_prevents_subsequent_handlers() {
+            // Known limitation: handlers use List.forEach which propagates exceptions,
+            // so a throwing handler prevents remaining handlers for the same key type from running.
+            var received = new ArrayList<String>();
+            var router = KVNotificationRouter.<TestKey, String>builder(TestKey.class)
+                .onPut(AlphaKey.class, n -> { throw new RuntimeException("handler failure"); })
+                .onPut(AlphaKey.class, n -> received.add("second"))
+                .build();
+
+            try {
+                router.handlePut(putNotification(new AlphaKey("a1"), "val"));
+            } catch (RuntimeException e) {
+                // Expected: exception propagates out of handlePut
+            }
+
+            // Known limitation: the second handler does not run because the first handler's
+            // exception propagates through List.forEach, aborting iteration.
+            assertThat(received).isEmpty();
+        }
+
+        @Test
+        void handlePut_exception_in_handler_does_not_affect_different_keyType_handlers() {
+            var received = new ArrayList<String>();
+            var router = KVNotificationRouter.<TestKey, String>builder(TestKey.class)
+                .onPut(AlphaKey.class, n -> { throw new RuntimeException("handler failure"); })
+                .onPut(BetaKey.class, n -> received.add("beta"))
+                .build();
+
+            try {
+                router.handlePut(putNotification(new AlphaKey("a1"), "val"));
+            } catch (RuntimeException e) {
+                // Expected: alpha handler throws
+            }
+
+            // Beta handler is for a different key type, so dispatching a BetaKey works independently
+            router.handlePut(putNotification(new BetaKey("b1"), "val"));
+
+            assertThat(received).containsExactly("beta");
+        }
+    }
+
+    @Nested
     class RouteEntries {
         @Test
         void asRouteEntries_returns_two_entries() {

@@ -117,7 +117,6 @@ public interface AppHttpServer {
                                      deserializer,
                                      tls);
     }
-
 }
 
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
@@ -299,22 +298,22 @@ class AppHttpServerImpl implements AppHttpServer {
                                                         String method,
                                                         String normalizedPath) {
         return Option.from(localRoutes.stream()
-                                        .filter(key -> key.httpMethod()
-                                                          .equalsIgnoreCase(method))
-                                        .filter(key -> pathMatchesPrefix(normalizedPath,
-                                                                         key.pathPrefix()))
-                                        .findFirst());
+                                      .filter(key -> key.httpMethod()
+                                                        .equalsIgnoreCase(method))
+                                      .filter(key -> pathMatchesPrefix(normalizedPath,
+                                                                       key.pathPrefix()))
+                                      .findFirst());
     }
 
     private Option<HttpRouteRegistry.RouteInfo> findMatchingRemoteRoute(List<HttpRouteRegistry.RouteInfo> remoteRoutes,
                                                                         String method,
                                                                         String normalizedPath) {
         return Option.from(remoteRoutes.stream()
-                                         .filter(route -> route.httpMethod()
-                                                               .equalsIgnoreCase(method))
-                                         .filter(route -> pathMatchesPrefix(normalizedPath,
-                                                                            route.pathPrefix()))
-                                         .findFirst());
+                                       .filter(route -> route.httpMethod()
+                                                             .equalsIgnoreCase(method))
+                                       .filter(route -> pathMatchesPrefix(normalizedPath,
+                                                                          route.pathPrefix()))
+                                       .findFirst());
     }
 
     private boolean pathMatchesPrefix(String normalizedPath, String pathPrefix) {
@@ -695,7 +694,8 @@ class AppHttpServerImpl implements AppHttpServer {
                                       response.correlationId()))
               .onPresent(pending -> {
                              // Remove from secondary index
-                             removeFromNodeIndex(response.correlationId(), pending.targetNode());
+        removeFromNodeIndex(response.correlationId(),
+                            pending.targetNode());
                              if (response.success()) {
                                  handleSuccessfulForwardResponse(pending, response);
                              } else {
@@ -723,7 +723,8 @@ class AppHttpServerImpl implements AppHttpServer {
     private void retryPendingForwards(NodeId departedNode, Set<String> correlationIds) {
         var affectedRequestIds = correlationIds.stream()
                                                .map(pendingForwards::get)
-                                               .flatMap(p -> Option.option(p).stream())
+                                               .flatMap(p -> Option.option(p)
+                                                                   .stream())
                                                .map(PendingForward::requestId)
                                                .limit(5)
                                                .toList();
@@ -738,8 +739,8 @@ class AppHttpServerImpl implements AppHttpServer {
                                            pending.requestId(),
                                            departedNode);
                                  // Fail the promise to trigger onFailure callback which handles retry
-                                 pending.promise()
-                                        .fail(Causes.cause("Target node " + departedNode + " departed"));
+            pending.promise()
+                   .fail(Causes.cause("Target node " + departedNode + " departed"));
                              });
         }
     }
@@ -754,7 +755,7 @@ class AppHttpServerImpl implements AppHttpServer {
               .onPresent(nodeCorrelations -> {
                              nodeCorrelations.remove(correlationId);
                              // Clean up empty sets
-                             if (nodeCorrelations.isEmpty()) {
+        if (nodeCorrelations.isEmpty()) {
                                  pendingForwardsByNode.remove(targetNode, nodeCorrelations);
                              }
                          });
@@ -862,10 +863,7 @@ class AppHttpServerImpl implements AppHttpServer {
             var truncatedBody = fullBody.length() > MAX_WARN_BODY_LENGTH
                                 ? fullBody.substring(0, MAX_WARN_BODY_LENGTH) + "...(truncated)"
                                 : fullBody;
-            log.warn("HTTP error response [{}]: {} body={}",
-                     requestId,
-                     responseData.statusCode(),
-                     truncatedBody);
+            log.warn("HTTP error response [{}]: {} body={}", requestId, responseData.statusCode(), truncatedBody);
             log.debug("HTTP error response full body [{}]: {}", requestId, fullBody);
         } else {
             log.trace("Sending response [{}]: {} {}", requestId, responseData.statusCode(), responseData.headers());

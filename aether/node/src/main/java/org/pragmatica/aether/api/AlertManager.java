@@ -152,17 +152,22 @@ public class AlertManager {
     private Option<String> evaluateThreshold(Threshold threshold, String metric, NodeId nodeId, double value) {
         var alertKey = metric + ":" + nodeId.id();
         var existing = Option.option(activeAlerts.get(alertKey));
-
         return threshold.severity(value)
                         .onEmpty(() -> resolveExistingAlert(alertKey, existing, metric, nodeId, value))
-                        .flatMap(severity -> handleAlertValue(alertKey, existing, severity, metric, nodeId, value, threshold));
+                        .flatMap(severity -> handleAlertValue(alertKey,
+                                                              existing,
+                                                              severity,
+                                                              metric,
+                                                              nodeId,
+                                                              value,
+                                                              threshold));
     }
 
     private void resolveExistingAlert(String alertKey,
-                                       Option<ActiveAlert> existing,
-                                       String metric,
-                                       NodeId nodeId,
-                                       double value) {
+                                      Option<ActiveAlert> existing,
+                                      String metric,
+                                      NodeId nodeId,
+                                      double value) {
         existing.onPresent(alert -> resolveAlert(alertKey, metric, nodeId, value, alert));
     }
 
@@ -224,12 +229,9 @@ public class AlertManager {
     }
 
     private String buildAlertMessage(ActiveAlert alert) {
-        return "{\"type\":\"ALERT\",\"timestamp\":" + System.currentTimeMillis() + ",\"data\":{"
-               + "\"metric\":\"" + escapeJson(alert.metric) + "\","
-               + "\"nodeId\":\"" + escapeJson(alert.nodeId.id()) + "\","
-               + "\"value\":" + alert.value + ","
-               + "\"threshold\":" + alert.threshold + ","
-               + "\"severity\":\"" + escapeJson(alert.severity) + "\"}}";
+        return "{\"type\":\"ALERT\",\"timestamp\":" + System.currentTimeMillis() + ",\"data\":{" + "\"metric\":\"" + escapeJson(alert.metric)
+               + "\"," + "\"nodeId\":\"" + escapeJson(alert.nodeId.id()) + "\"," + "\"value\":" + alert.value + ","
+               + "\"threshold\":" + alert.threshold + "," + "\"severity\":\"" + escapeJson(alert.severity) + "\"}}";
     }
 
     private void addToHistory(String metric, NodeId nodeId, double value, String severity, String status) {

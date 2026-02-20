@@ -415,14 +415,14 @@ public interface AetherNode {
             private void printStartupBanner() {
                 var nodeId = self().id();
                 var clusterPort = Option.from(config.topology()
-                                                       .coreNodes()
-                                                       .stream()
-                                                       .filter(n -> n.id()
-                                                                     .equals(self()))
-                                                       .findFirst())
-                                       .map(n -> n.address()
-                                                  .port())
-                                       .or(0);
+                                                    .coreNodes()
+                                                    .stream()
+                                                    .filter(n -> n.id()
+                                                                  .equals(self()))
+                                                    .findFirst())
+                                        .map(n -> n.address()
+                                                   .port())
+                                        .or(0);
                 var mgmtPort = config.managementPort();
                 var appHttpPort = config.appHttp()
                                         .enabled()

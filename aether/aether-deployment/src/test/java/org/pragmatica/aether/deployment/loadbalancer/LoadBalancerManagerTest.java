@@ -72,6 +72,14 @@ class LoadBalancerManagerTest {
         }
 
         @Test
+        void dormantState_onRouteRemove_doesNothing() {
+            var routeKey = HttpRouteKey.httpRouteKey("GET", "/api/test");
+            fireValueRemove(routeKey, null);
+
+            assertThat(provider.routeChanges).isEmpty();
+        }
+
+        @Test
         void dormantState_onTopologyChange_doesNothing() {
             manager.onTopologyChange(TopologyChangeNotification.nodeRemoved(node1, List.of()));
 
@@ -155,6 +163,38 @@ class LoadBalancerManagerTest {
             assertThat(provider.nodeRemovals).containsExactly("10.0.0.1");
         }
 
+        @Test
+        void activeState_onRouteRemove_callsProviderWithEmptyNodeIps() {
+            var routeKey = HttpRouteKey.httpRouteKey("DELETE", "/api/items");
+            var routeValue = HttpRouteValue.httpRouteValue(Set.of(node1));
+
+            // First add the route
+            fireValuePut(routeKey, routeValue);
+            provider.clear();
+
+            // Now remove the route
+            fireValueRemove(routeKey, routeValue);
+
+            assertThat(provider.routeChanges).hasSize(1);
+            var change = provider.routeChanges.getFirst();
+            assertThat(change.httpMethod()).isEqualTo("DELETE");
+            assertThat(change.pathPrefix()).isEqualTo("/api/items/");
+            assertThat(change.nodeIps()).isEmpty();
+        }
+
+        @Test
+        void activeState_onRouteRemove_withoutPriorPut_stillNotifiesProvider() {
+            var routeKey = HttpRouteKey.httpRouteKey("GET", "/api/gone");
+
+            fireValueRemove(routeKey, null);
+
+            assertThat(provider.routeChanges).hasSize(1);
+            var change = provider.routeChanges.getFirst();
+            assertThat(change.httpMethod()).isEqualTo("GET");
+            assertThat(change.pathPrefix()).isEqualTo("/api/gone/");
+            assertThat(change.nodeIps()).isEmpty();
+        }
+
         // Non-HTTP-route keys are now prevented by the type system — onRoutePut only accepts HttpRouteKey
     }
 
@@ -168,6 +208,12 @@ class LoadBalancerManagerTest {
         var command = new KVCommand.Put<HttpRouteKey, HttpRouteValue>(key, value);
         var notification = new ValuePut<>(command, Option.none());
         manager.onRoutePut(notification);
+    }
+
+    private void fireValueRemove(HttpRouteKey key, HttpRouteValue previousValue) {
+        var command = new KVCommand.Remove<HttpRouteKey>(key);
+        var notification = new ValueRemove<>(command, Option.option(previousValue));
+        manager.onRouteRemove(notification);
     }
 
     // === Recording Stubs ===
