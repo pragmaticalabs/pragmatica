@@ -35,6 +35,7 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
 - **DeploymentMap** - Event-driven slice-to-node index with cluster-wide deployment visibility
 - **EMA Latency Smoothing** - 5-second effective window for stable dashboard metrics
 - **Zero-Loss Forwarding** - Fresh re-routing on retry, proactive disconnection detection, and backoff retry with delayed re-query for route table healing during node transitions
+- **Fast-Path Route Eviction** - Immediate local cache eviction from `HttpRouteRegistry` on node departure, eliminating ~5s window of failed forwards during rolling restarts
 - **Dynamic Aspects** - Runtime-togglable per-method LOG/METRICS/LOG_AND_METRICS modes via `DynamicAspectRegistry`, REST API (`/api/aspects`), KV-store consensus sync, and `DynamicAspectInterceptor` wired into both local and remote invocation paths
 - **Dynamic Configuration** - Runtime config updates via consensus KV store with REST API. Config overlay pattern: base config from TOML/env/system properties, overrides from KV store. Cluster-wide and per-node scoped keys. No restart required.
 - **Logging Overhaul (tinylog → Log4j2)** - Production-grade structured logging: request ID auto-injected via SLF4J MDC (`[rid=%X{requestId}]`), optional JSON output via `-Dlog4j2.appender=JsonConsole`, runtime log level management via Management API (`/api/logging/levels`) with cluster-wide KV-store consensus sync, noise reduction (Fury→error, Netty→warn, H2→error), shared `test-logging` module replacing 47 per-module tinylog configs. Unblocks RFC-0009 Tier 2.
@@ -86,6 +87,23 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
 - **Developer Guides** - Slice development, migration
 - **Slice Lifecycle** - Hook semantics, materialization, execution order
 
+### Resource Provisioning & Infra Modules Overhaul
+- **Unified `@ResourceQualifier(type, config)` pattern** — injected dependencies (database, HTTP client) AND behavioral wrappers (cache, rate limit, retry, circuit breaker, log, metrics). No separate "aspect" category.
+- **Annotation processor** — `ResourceQualifierModel` detection + `FactoryClassGenerator` code generation. Parameter annotation = inject resource, method annotation = wrap method.
+- **Core SPI** — `ResourceFactory`, `ResourceProvider`, `SpiResourceProvider` with ServiceLoader discovery, priority-based factory selection, instance caching
+- **SliceCreationContext** — unified invoker + resource facades with `ProvisioningContext` (type tokens, key extractors)
+- **Pre-made qualifiers** — `@Sql` (database), `@Http` (HTTP client)
+- **Interceptors** — cache (in-memory + DHT + tiered), circuit breaker, retry, rate-limit, logging, metrics
+- **HttpClient JSON API** — typed request/response with `JsonConfig`, `HttpClientError`, default headers, zero Jackson leakage
+
+### DB Connector Infrastructure
+- **JDBC** — HikariCP-based pooling, full SQL API (`queryOne`, `queryOptional`, `queryList`, `update`, `batch`, `transactional`)
+- **R2DBC** — Reactive/async SQL with connection pooling
+- **jOOQ sync** — Type-safe queries via JDBC-backed jOOQ
+- **jOOQ async** — Type-safe queries via R2DBC-backed jOOQ
+- **`DatabaseConnectorConfig`** — Rich config with JDBC/R2DBC URL overrides, pool settings, properties
+- **`DatabaseConnectorError`** — Sealed error types, `@Sql` qualifier annotation
+
 ---
 
 ## Next Up
@@ -99,7 +117,7 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
    - Foundation exists: request ID propagation, InvocationTimingContext, DynamicAspectInterceptor
    - OpenTelemetry rejected: heavyweight dependency, gRPC mismatch, microservices-oriented
    - Logging Overhaul complete — Tier 2 structured logging unblocked
-   - Dashboard UI tracked separately in Dashboard & UI section (#7)
+   - Dashboard UI tracked separately in Dashboard & UI section (#6)
 
 2. **Dependency Lifecycle Management**
    - Block manual unload while dependents are ACTIVE
@@ -124,31 +142,12 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
      - Drain connections before node removal (graceful deregistration delay)
      - TLS termination configuration (certificate ARN/ID passthrough)
    - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
-   - **Enables:** Spot Instance Support (#16), Expense Tracking (#17)
+   - **Enables:** Spot Instance Support (#15), Expense Tracking (#16)
 
-4. **Resource Provisioning & Infra Modules Overhaul**
-   - **One unified pattern:** `@ResourceQualifier(type, config)` governs everything — injected dependencies (database, scheduler, lock, pubsub) AND behavioral wrappers (cache, rate limit, retry, log, metrics). No separate "aspect" category.
-   - Annotation processor distinguishes by position: **parameter annotation** = inject resource, **method annotation** = wrap method with resource behavior. Same meta-annotation, different wiring.
-   - **No configuration data in annotations** — user defines custom annotation per use case, meta-annotated with `@ResourceQualifier(type, config)`. Config lives in TOML, not Java source.
-   - Each annotation usage creates a new resource instance (same annotation on multiple methods = multiple resources, same config)
-   - **Compile-time validation:** Annotation processor must fail if two different annotation types resolve to the same `(resource type, config section)` pair
-   - Aether manages resource lifecycle — provisions backing implementation based on config (in-memory for Forge, external for production)
-   - **Eliminates from RFC-0008:** `AspectKind` enum, `AspectFactory` (same provisioning as `@Database`), convention-based config hierarchy (`[slice.method.cache]`). Fn1 composition (`Aspects.withCaching()`, etc.) and `@Key` for cache key extraction remain. RFC-0008 needs revision.
-   - **Infra modules disposition:**
-     | Module | Replacement | Example |
-     |--------|-------------|---------|
-     | `infra-database` | `@ResourceQualifier(type=DatabaseConnector.class)` on parameter | **Done** — `@Database` reference impl |
-     | `infra-cache` | `@ResourceQualifier(type=Cache.class)` on method | `@OrderCache` wraps method with caching |
-     | `infra-ratelimit` | `@ResourceQualifier(type=RateLimiter.class)` on method | `@PublicApiLimit` wraps method with rate limiting |
-     | `infra-scheduler` | `@ResourceQualifier(type=Scheduler.class)` on method | `@CleanupSchedule` triggers method on schedule |
-     | `infra-lock` | `@ResourceQualifier(type=Lock.class)` on parameter | `@InventoryLock` injects distributed lock |
-     | `infra-pubsub` | `@ResourceQualifier(type=Publisher/Subscriber.class)` | `@OrderEvents` on parameter or method |
-     | `infra-statemachine` | Lightweight builder DSL in core | Business logic, not a provisioned resource |
-     | `infra-config` | **Remove** — Dynamic Configuration via KV store | — |
-     | `infra-http` | **Remove** — fold into core as utility | — |
-     | `infra-aspect` | **Keep** — Fn1 composition utilities (`Aspects.withCaching()`, etc.) | — |
-   - LOG/METRICS (currently `DynamicAspectMode`) — same pattern: `@ResourceQualifier(type=InvocationLogger.class)` on method. Runtime reconfigurability (KV store + REST API toggle) is a property of the `InvocationLogger` resource implementation, not a special mechanism.
-   - **Why important:** Eliminates 7+ modules and the aspect/resource distinction. One pattern to learn.
+4. **New Resources**
+   - **Pub/Sub Resource** — `@ResourceQualifier(type=Publisher/Subscriber.class)` for topic-based messaging. Parameter annotation injects Publisher/Subscriber handle. Config: topic name, serialization format. In-memory impl for Forge, pluggable backend for production (Kafka, Redis Streams, etc.).
+   - **Scheduled Invocation Resource** — `@ResourceQualifier(type=Scheduler.class)` on method triggers periodic/cron-based invocation. Config: cron expression, timezone, initial delay. In-memory timer for Forge, cluster-aware scheduling for production (leader-only or distributed).
+   - **Why important:** Completes the resource provisioning story — most slice applications need messaging and scheduled tasks.
 
 ### HIGH PRIORITY - Dashboard & UI
 
@@ -172,19 +171,13 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
 
 ### MEDIUM PRIORITY
 
-8. **DB Connector Infrastructure**
-    - Database connectivity layer for slices
-    - Connection pooling and transaction management
-    - Support for common databases (PostgreSQL, MySQL, etc.)
-    - Modules exist: `infra-db-connector/jdbc`, `r2dbc`, `jooq`, `jooq-r2dbc`
-
-9. **Disruption Budget**
+8. **Disruption Budget**
     - Minimum healthy instances during rolling updates and node failures
     - Configurable per slice or blueprint
     - Controller respects budget before scaling down or migrating
     - Prevents cascading failures during maintenance
 
-10. **Placement Hints**
+9. **Placement Hints**
     - Affinity/anti-affinity rules for slice placement
     - Spread: distribute instances across nodes/zones
     - Co-locate: place related slices on same node
@@ -192,29 +185,29 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
 
 ### LOWER PRIORITY - Security & Operations
 
-11. **TLS Certificate Management**
+10. **TLS Certificate Management**
     - Certificate provisioning and rotation
     - Mutual TLS between nodes
     - Integration with external CA or self-signed
 
-12. **Canary & Blue-Green Deployment Strategies**
+11. **Canary & Blue-Green Deployment Strategies**
     - Current: Rolling updates with weighted routing exist
     - Add explicit canary deployment with automatic rollback on error threshold
     - Add blue-green deployment with instant switchover
     - A/B testing support with traffic splitting by criteria
 
-13. **Topology in KV Store**
+12. **Topology in KV Store**
     - Leader maintains cluster topology in consensus KV store
     - Best-effort updates on membership changes
     - Enables external observability without direct node queries
 
-14. **RBAC for Management API**
+13. **RBAC for Management API**
     - Role-based access control for operations
     - Predefined roles: admin, operator, viewer
     - Per-endpoint authorization rules
     - Audit logging for sensitive operations
 
-15. **Configurable Rate Limiting per HTTP Route**
+14. **Configurable Rate Limiting per HTTP Route**
     - Per-route rate limiting configuration in blueprint or management API
     - Token bucket or sliding window algorithm
     - Configurable limits: requests/second, burst size
@@ -240,7 +233,7 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
 
 ### FUTURE
 
-16. **Spot Instance Support for Elastic Scaling**
+15. **Spot Instance Support for Elastic Scaling**
     - Cost-optimized scaling using cloud spot/preemptible instances
     - 60-90% cost savings for traffic spike handling
 
@@ -293,7 +286,8 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
     **Complexity:** Low - just configuration and cloud API flag
     **Prerequisite:** Cloud Integration (#3)
 
-17. **Cluster Expense Tracking**
+16. **Cluster Expense Tracking**
+
     - Real-time cost visibility for cluster operations
     - Enables cost-aware scaling decisions
 
@@ -325,18 +319,18 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
     **Complexity:** Medium - cloud billing APIs have quirks, data aggregation needed
     **Prerequisite:** Cloud Integration (#3)
 
-18. **LLM Integration (Layer 3)**
+17. **LLM Integration (Layer 3)**
     - Claude/GPT API integration
     - Complex reasoning workflows
     - Multi-cloud decision support
 
-19. **Mini-Kafka (Message Streaming)**
+18. **Mini-Kafka (Message Streaming)**
     - Ordered message streaming with partitions (differs from pub/sub)
     - In-memory storage (initial implementation)
     - Consumer group coordination
     - Retention policies
 
-20. **Cross-Slice Transaction Support (2PC)**
+19. **Cross-Slice Transaction Support (2PC)**
     - Distributed transactions via Transaction aspect
     - Scope: DB transactions + internal services (pub-sub, queues, streaming)
     - NOT Saga pattern (user-unfriendly compensation design)
@@ -363,14 +357,14 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
     - Aether's "each call eventually succeeds, if cluster is alive" applies
     - DB failure = transaction failure (expected behavior)
 
-21. **Distributed Saga Orchestration**
+20. **Distributed Saga Orchestration**
     - Long-running transaction orchestration (saga pattern)
     - Durable state transitions with compensation on failure
     - Differs from local state machine — coordinates across multiple slices
     - Automatic retry, timeout, and dead-letter handling
     - Visualization of in-flight sagas and their states
 
-22. **Forge Script - Scenario Language**
+21. **Forge Script - Scenario Language**
     - DSL for defining load/chaos test scenarios
     - Reusable scenario libraries
     - CI/CD integration for automated testing
@@ -380,19 +374,18 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
 
 ## Infra Development
 
-All infrastructure modules transition to unified `@ResourceQualifier(type, config)` pattern. See #5.
+All infrastructure modules transition to unified `@ResourceQualifier(type, config)` pattern. See #4 for remaining items.
 
-| Module | Target | Annotation position | Notes |
-|--------|--------|---------------------|-------|
-| infra-database | `@ResourceQualifier(type=DatabaseConnector.class)` | Parameter | **Done** — `@Database` reference impl |
-| infra-cache | `@ResourceQualifier(type=Cache.class)` | Method (wraps) | `Aspects.withCaching()` Fn1 composition |
-| infra-ratelimit | `@ResourceQualifier(type=RateLimiter.class)` | Method (wraps) | `Aspects.withRateLimit()` Fn1 composition |
-| infra-scheduler | `@ResourceQualifier(type=Scheduler.class)` | Method (triggers) | Config: cron, timezone, etc. |
-| infra-lock | `@ResourceQualifier(type=Lock.class)` | Parameter (injects) | Consensus-backed distributed lock |
-| infra-pubsub | `@ResourceQualifier(type=Publisher/Subscriber.class)` | Parameter / Method | Pub: inject, Sub: trigger on message |
+| Module | Target | Annotation position | Status |
+|--------|--------|---------------------|--------|
+| infra-database | `@ResourceQualifier(type=DatabaseConnector.class)` | Parameter | **Done** — `@Sql` qualifier, JDBC/R2DBC/jOOQ |
+| infra-cache | `@ResourceQualifier(type=Cache.class)` | Method (wraps) | **Done** — in-memory + DHT + tiered cache interceptors |
+| infra-ratelimit | `@ResourceQualifier(type=RateLimiter.class)` | Method (wraps) | **Done** — rate-limit interceptor |
+| infra-http | `@ResourceQualifier(type=HttpClient.class)` | Parameter | **Done** — `@Http` qualifier, JSON API |
+| infra-scheduler | `@ResourceQualifier(type=Scheduler.class)` | Method (triggers) | **Next** — see #4 |
+| infra-pubsub | `@ResourceQualifier(type=Publisher/Subscriber.class)` | Parameter / Method | **Next** — see #4 |
 | infra-statemachine | Lightweight builder DSL in core | — | Business logic, not a provisioned resource |
 | infra-config | **Remove** | — | Dynamic Configuration via KV store covers this |
-| infra-http | **Remove** | — | Fold into core as utility |
 | infra-aspect | **Keep** — Fn1 composition utilities | — | `Aspects.withCaching()`, `@Key`, etc. |
 
 **Dropped:** infra-server, infra-streaming, infra-outbox, infra-blob, infra-feature
