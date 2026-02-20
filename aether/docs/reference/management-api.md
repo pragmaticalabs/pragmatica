@@ -90,6 +90,10 @@ Chaos panel placeholder (returns empty string).
 
 ## Slice Management
 
+> **Blueprint-only deployment model:** Slices are deployed and undeployed exclusively through blueprints.
+> Individual deploy/undeploy endpoints have been removed to enforce dependency validation.
+> Use `POST /api/blueprint` to deploy slices and `DELETE /api/blueprint/{id}` to undeploy them.
+
 ### GET /api/slices
 
 List all deployed slice artifact identifiers.
@@ -141,32 +145,9 @@ List all registered HTTP routes from deployed slices.
 }
 ```
 
-### POST /api/deploy
-
-Deploy a slice to the cluster.
-
-**Request:**
-```json
-{
-  "artifact": "org.example:my-slice:1.0.0",
-  "instances": 3
-}
-```
-
-`instances` is optional (defaults to 1).
-
-**Response:**
-```json
-{
-  "status": "deployed",
-  "artifact": "org.example:my-slice:1.0.0",
-  "instances": 3
-}
-```
-
 ### POST /api/scale
 
-Scale a deployed slice to a new instance count.
+Scale a blueprint-deployed slice to a new instance count. The slice must be part of an active blueprint.
 
 **Request:**
 ```json
@@ -185,22 +166,10 @@ Scale a deployed slice to a new instance count.
 }
 ```
 
-### POST /api/undeploy
-
-Remove a slice from the cluster.
-
-**Request:**
+**Error (slice not in any blueprint):**
 ```json
 {
-  "artifact": "org.example:my-slice:1.0.0"
-}
-```
-
-**Response:**
-```json
-{
-  "status": "undeployed",
-  "artifact": "org.example:my-slice:1.0.0"
+  "error": "Slice is not part of any active blueprint. Deploy via blueprint."
 }
 ```
 
@@ -1246,9 +1215,7 @@ Real-time cluster status streaming via WebSocket. Pushes periodic JSON snapshots
 | GET | `/api/slices` | Slice Management |
 | GET | `/api/slices/status` | Slice Management |
 | GET | `/api/routes` | Slice Management |
-| POST | `/api/deploy` | Slice Management |
 | POST | `/api/scale` | Slice Management |
-| POST | `/api/undeploy` | Slice Management |
 | POST | `/api/blueprint` | Blueprint Management |
 | GET | `/api/blueprints` | Blueprint Management |
 | GET | `/api/blueprint/{id}` | Blueprint Management |

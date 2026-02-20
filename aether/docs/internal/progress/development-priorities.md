@@ -53,6 +53,7 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
 - **Weighted Routing** - Traffic distribution during updates
 - **Blueprint Parser** - Standard TOML format
 - **Docker Infrastructure** - Separate images for node and forge
+- **Blueprint-Only Deployment** - Removed individual slice deploy/undeploy to enforce dependency validation. Scale guarded by blueprint membership. Eliminates the correctness gap where undeploying a dependency could orphan active slices.
 
 ### Slice Lifecycle (v0.8.0)
 - **start()/stop() Timeouts** - Configurable via `SliceActionConfig.startStopTimeout`
@@ -121,14 +122,7 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
    - Supersedes RFC-0009 (Request Tracing)
    - **Separate design decisions:** redaction strategy, dashboard UI, serialization limits, sampling
 
-2. **Dependency Lifecycle Management**
-   - Block manual unload while dependents are ACTIVE
-   - Graceful degradation on dependency failure (calls fail, slice handles it)
-   - Dependency graph tracking in KV store
-   - Clear error reporting with dependency chain visualization
-   - **Why important:** Correctness gap — currently possible to break running slices by unloading dependencies.
-
-3. **Cloud Integration**
+2. **Cloud Integration**
    - Implement `NodeLifecycleManager.executeAction(NodeAction)`
    - Cloud provider adapters: Hetzner (primary), AWS, GCP, Azure
    - Execute `StartNode`, `StopNode`, `MigrateSlices` decisions from controller
@@ -144,21 +138,22 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
      - Drain connections before node removal (graceful deregistration delay)
      - TLS termination configuration (certificate ARN/ID passthrough)
    - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
-   - **Enables:** Spot Instance Support (#15), Expense Tracking (#16)
+   - **Enables:** Spot Instance Support (#14), Expense Tracking (#15)
 
-4. **New Resources**
+3. **New Resources**
    - **Pub/Sub Resource** — `@ResourceQualifier(type=Publisher/Subscriber.class)` for topic-based messaging. Parameter annotation injects Publisher/Subscriber handle. Config: topic name, serialization format. In-memory impl for Forge, pluggable backend for production (Kafka, Redis Streams, etc.).
    - **Scheduled Invocation Resource** — `@ResourceQualifier(type=Scheduler.class)` on method triggers periodic/cron-based invocation. Config: cron expression, timezone, initial delay. In-memory timer for Forge, cluster-aware scheduling for production (leader-only or distributed).
    - **Why important:** Completes the resource provisioning story — most slice applications need messaging and scheduled tasks.
 
 ### HIGH PRIORITY - Dashboard & UI
 
-5. **Dynamic Aspect Dashboard UI**
+
+4. **Dynamic Aspect Dashboard UI**
    - Wire `DynamicAspectRegistry` data to dashboard with convenient UI for toggling per-method aspect modes
    - Backend REST API (`/api/aspects`) and KV-store sync already implemented
    - Smallest UI task — good starting point for establishing dashboard patterns
 
-6. **Invocation Observability Dashboard Tab**
+5. **Invocation Observability Dashboard Tab**
    - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
    - Click-to-expand tree view showing invocation depth with input/output at each level
    - Waterfall view for multi-hop request visualization
@@ -167,20 +162,21 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
    - See [RFC-0010](../../../../docs/rfc/RFC-0010-unified-invocation-observability.md) for data model and API
    - Depends on: Unified Invocation Observability (#1) backend
 
-7. **Log Level Management UI**
+
+6. **Log Level Management UI**
    - Per-package log level controls in dashboard
    - Current effective levels display
    - Backend ready: `/api/logging/levels` endpoints implemented
 
 ### MEDIUM PRIORITY
 
-8. **Disruption Budget**
+7. **Disruption Budget**
     - Minimum healthy instances during rolling updates and node failures
     - Configurable per slice or blueprint
     - Controller respects budget before scaling down or migrating
     - Prevents cascading failures during maintenance
 
-9. **Placement Hints**
+8. **Placement Hints**
     - Affinity/anti-affinity rules for slice placement
     - Spread: distribute instances across nodes/zones
     - Co-locate: place related slices on same node
@@ -188,29 +184,29 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
 
 ### LOWER PRIORITY - Security & Operations
 
-10. **TLS Certificate Management**
+9. **TLS Certificate Management**
     - Certificate provisioning and rotation
     - Mutual TLS between nodes
     - Integration with external CA or self-signed
 
-11. **Canary & Blue-Green Deployment Strategies**
+10. **Canary & Blue-Green Deployment Strategies**
     - Current: Rolling updates with weighted routing exist
     - Add explicit canary deployment with automatic rollback on error threshold
     - Add blue-green deployment with instant switchover
     - A/B testing support with traffic splitting by criteria
 
-12. **Topology in KV Store**
+11. **Topology in KV Store**
     - Leader maintains cluster topology in consensus KV store
     - Best-effort updates on membership changes
     - Enables external observability without direct node queries
 
-13. **RBAC for Management API**
+12. **RBAC for Management API**
     - Role-based access control for operations
     - Predefined roles: admin, operator, viewer
     - Per-endpoint authorization rules
     - Audit logging for sensitive operations
 
-14. **Configurable Rate Limiting per HTTP Route**
+13. **Configurable Rate Limiting per HTTP Route**
     - Per-route rate limiting configuration in blueprint or management API
     - Token bucket or sliding window algorithm
     - Configurable limits: requests/second, burst size
@@ -236,7 +232,7 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
 
 ### FUTURE
 
-15. **Spot Instance Support for Elastic Scaling**
+14. **Spot Instance Support for Elastic Scaling**
     - Cost-optimized scaling using cloud spot/preemptible instances
     - 60-90% cost savings for traffic spike handling
 
@@ -287,9 +283,9 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
     - Upcoming known events (prefer on-demand for releases/campaigns)
 
     **Complexity:** Low - just configuration and cloud API flag
-    **Prerequisite:** Cloud Integration (#3)
+    **Prerequisite:** Cloud Integration (#2)
 
-16. **Cluster Expense Tracking**
+15. **Cluster Expense Tracking**
 
     - Real-time cost visibility for cluster operations
     - Enables cost-aware scaling decisions
@@ -320,20 +316,20 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
     - TTM/LLM: cost optimization recommendations
 
     **Complexity:** Medium - cloud billing APIs have quirks, data aggregation needed
-    **Prerequisite:** Cloud Integration (#3)
+    **Prerequisite:** Cloud Integration (#2)
 
-17. **LLM Integration (Layer 3)**
+16. **LLM Integration (Layer 3)**
     - Claude/GPT API integration
     - Complex reasoning workflows
     - Multi-cloud decision support
 
-18. **Mini-Kafka (Message Streaming)**
+17. **Mini-Kafka (Message Streaming)**
     - Ordered message streaming with partitions (differs from pub/sub)
     - In-memory storage (initial implementation)
     - Consumer group coordination
     - Retention policies
 
-19. **Cross-Slice Transaction Support (2PC)**
+18. **Cross-Slice Transaction Support (2PC)**
     - Distributed transactions via Transaction aspect
     - Scope: DB transactions + internal services (pub-sub, queues, streaming)
     - NOT Saga pattern (user-unfriendly compensation design)
@@ -360,14 +356,14 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
     - Aether's "each call eventually succeeds, if cluster is alive" applies
     - DB failure = transaction failure (expected behavior)
 
-20. **Distributed Saga Orchestration**
+19. **Distributed Saga Orchestration**
     - Long-running transaction orchestration (saga pattern)
     - Durable state transitions with compensation on failure
     - Differs from local state machine — coordinates across multiple slices
     - Automatic retry, timeout, and dead-letter handling
     - Visualization of in-flight sagas and their states
 
-21. **Forge Script - Scenario Language**
+20. **Forge Script - Scenario Language**
     - DSL for defining load/chaos test scenarios
     - Reusable scenario libraries
     - CI/CD integration for automated testing
@@ -377,7 +373,7 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
 
 ## Infra Development
 
-All infrastructure modules transition to unified `@ResourceQualifier(type, config)` pattern. See #4 for remaining items.
+All infrastructure modules transition to unified `@ResourceQualifier(type, config)` pattern. See #3 for remaining items.
 
 | Module | Target | Annotation position | Status |
 |--------|--------|---------------------|--------|
@@ -385,8 +381,8 @@ All infrastructure modules transition to unified `@ResourceQualifier(type, confi
 | infra-cache | `@ResourceQualifier(type=Cache.class)` | Method (wraps) | **Done** — in-memory + DHT + tiered cache interceptors |
 | infra-ratelimit | `@ResourceQualifier(type=RateLimiter.class)` | Method (wraps) | **Done** — rate-limit interceptor |
 | infra-http | `@ResourceQualifier(type=HttpClient.class)` | Parameter | **Done** — `@Http` qualifier, JSON API |
-| infra-scheduler | `@ResourceQualifier(type=Scheduler.class)` | Method (triggers) | **Next** — see #4 |
-| infra-pubsub | `@ResourceQualifier(type=Publisher/Subscriber.class)` | Parameter / Method | **Next** — see #4 |
+| infra-scheduler | `@ResourceQualifier(type=Scheduler.class)` | Method (triggers) | **Next** — see #3 |
+| infra-pubsub | `@ResourceQualifier(type=Publisher/Subscriber.class)` | Parameter / Method | **Next** — see #3 |
 | infra-statemachine | Lightweight builder DSL in core | — | Business logic, not a provisioned resource |
 | infra-config | **Remove** | — | Dynamic Configuration via KV store covers this |
 | infra-aspect | **Keep** — Fn1 composition utilities | — | `Aspects.withCaching()`, `@Key`, etc. |

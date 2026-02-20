@@ -116,32 +116,6 @@ class ClusterDeploymentManagerTest {
         assertThat(clusterNode.appliedCommands).isEmpty();
     }
 
-    @Test
-    void sliceTarget_removal_triggers_deallocation() {
-        becomeLeader();
-        addTopology(self, node2, node3);
-
-        var artifact = createTestArtifact();
-
-        // First allocate 2 instances
-        sendSliceTargetPut(artifact, 2);
-        assertThat(clusterNode.appliedCommands).hasSize(2);
-
-        // Mark the actually allocated nodes as ACTIVE
-        for (var command : clusterNode.appliedCommands) {
-            var key = extractSliceNodeKey(command);
-            trackSliceState(artifact, key.nodeId(), SliceState.ACTIVE);
-        }
-
-        clusterNode.appliedCommands.clear();
-
-        // Then remove slice target - should unload both allocated instances
-        sendSliceTargetRemove(artifact);
-
-        assertThat(clusterNode.appliedCommands).hasSize(2);
-        assertAllCommandsAreUnloadFor(artifact);
-    }
-
     // === Allocation Strategy Tests ===
 
     @Test
@@ -467,13 +441,6 @@ class ClusterDeploymentManagerTest {
         var value = SliceTargetValue.sliceTargetValue(artifact.version(), instanceCount);
         var command = new KVCommand.Put<>(key, value);
         return new ValuePut<>(command, Option.none());
-    }
-
-    private void sendSliceTargetRemove(Artifact artifact) {
-        var key = SliceTargetKey.sliceTargetKey(artifact.base());
-        var command = new KVCommand.Remove<SliceTargetKey>(key);
-        var notification = new ValueRemove<SliceTargetKey, SliceTargetValue>(command, Option.none());
-        manager.onSliceTargetRemove(notification);
     }
 
     private void trackSliceState(Artifact artifact, NodeId nodeId, SliceState state) {

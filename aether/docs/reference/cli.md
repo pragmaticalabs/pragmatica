@@ -133,21 +133,9 @@ Health check:
 aether health
 ```
 
-#### deploy
-
-Deploy a slice:
-
-```bash
-aether deploy <artifact> [-n <instances>]
-
-# Examples
-aether deploy org.example:order:1.0.0
-aether deploy org.example:order:1.0.0 -n 3
-```
-
 #### scale
 
-Scale a slice:
+Scale a blueprint-deployed slice. The slice must be part of an active blueprint.
 
 ```bash
 aether scale <artifact> -n <instances>
@@ -156,16 +144,7 @@ aether scale <artifact> -n <instances>
 aether scale org.example:order:1.0.0 -n 5
 ```
 
-#### undeploy
-
-Remove a slice:
-
-```bash
-aether undeploy <artifact>
-
-# Example
-aether undeploy org.example:order:1.0.0
-```
+> **Note:** Individual deploy/undeploy commands have been removed. Use `blueprint apply` and `blueprint delete` instead.
 
 #### artifact
 
@@ -491,8 +470,11 @@ aether> exit
 # Connect to specific node
 ./script/aether.sh --connect node1.example.com:8080 status
 
-# Deploy a slice with 3 instances
-./script/aether.sh deploy org.example:my-slice:1.0.0 -n 3
+# Scale a slice to 5 instances
+./script/aether.sh scale org.example:my-slice:1.0.0 -n 5
+
+# Apply a blueprint
+./script/aether.sh blueprint apply order-system.toml
 
 # Interactive mode
 ./script/aether.sh --connect localhost:8080

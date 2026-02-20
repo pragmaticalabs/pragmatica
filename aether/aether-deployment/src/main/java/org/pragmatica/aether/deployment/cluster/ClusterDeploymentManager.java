@@ -306,12 +306,6 @@ public interface ClusterDeploymentManager {
             }
 
             @Override
-            public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
-                handleSliceTargetRemoval(valueRemove.cause()
-                                                    .key());
-            }
-
-            @Override
             public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
                 handleSliceNodeRemoval(valueRemove.cause()
                                                   .key());
@@ -509,20 +503,6 @@ public interface ClusterDeploymentManager {
                               artifact,
                               dependencies.size(),
                               dependencies);
-                }
-            }
-
-            private void handleSliceTargetRemoval(SliceTargetKey key) {
-                // Find and remove blueprints matching this artifact base
-                var artifactBase = key.artifactBase();
-                var matching = blueprints.keySet()
-                                         .stream()
-                                         .filter(artifactBase::matches)
-                                         .toList();
-                for (var artifact : matching) {
-                    log.info("Slice target removed for {}", artifact);
-                    blueprints.remove(artifact);
-                    deallocateAllInstances(artifact);
                 }
             }
 
