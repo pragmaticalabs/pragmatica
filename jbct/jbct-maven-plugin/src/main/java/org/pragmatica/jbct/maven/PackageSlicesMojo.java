@@ -287,11 +287,28 @@ public class PackageSlicesMojo extends AbstractMojo {
             addDependencyFile(archiver, manifest, depsContent);
             // Add filtered service file for SliceRouterFactory
             addServiceFile(archiver, manifest);
+            // Include Properties manifest in per-slice JAR for runtime access
+            var manifestFile = new File(classesDirectory, "META-INF/slice/" + manifest.sliceName() + ".manifest");
+            if (manifestFile.exists()) {
+                archiver.addFile(manifestFile, "META-INF/slice/" + manifest.sliceName() + ".manifest");
+            }
             var mavenArchiver = new MavenArchiver();
             mavenArchiver.setArchiver(archiver);
             mavenArchiver.setOutputFile(jarFile);
+            // Read envelope version from Properties manifest
+            var envelopeVersion = "1";
+            if (manifestFile.exists()) {
+                var props = new java.util.Properties();
+                try (var input = new java.io.FileInputStream(manifestFile)) {
+                    props.load(input);
+                    envelopeVersion = props.getProperty("envelope.version", "1");
+                } catch (IOException e) {
+                    getLog().debug("Could not read envelope version: " + e.getMessage());
+                }
+            }
             // Configure manifest entries
             var config = new MavenArchiveConfiguration();
+            config.addManifestEntry("Envelope-Version", envelopeVersion);
             config.addManifestEntry("Slice-Artifact",
                                     project.getGroupId() + ":" + manifest.implArtifactId() + ":" + project.getVersion());
             config.addManifestEntry("Slice-Class",

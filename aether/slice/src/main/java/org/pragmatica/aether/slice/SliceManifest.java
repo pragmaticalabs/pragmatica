@@ -5,10 +5,12 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
 import java.net.URL;
+import java.util.Set;
 import java.util.jar.JarFile;
 import java.util.jar.Manifest;
 
@@ -31,6 +33,8 @@ import static org.pragmatica.lang.Option.option;
 public interface SliceManifest {
     String SLICE_ARTIFACT_ATTR = "Slice-Artifact";
     String SLICE_CLASS_ATTR = "Slice-Class";
+    String ENVELOPE_VERSION_ATTR = "Envelope-Version";
+    Set<Integer> SUPPORTED_ENVELOPE_VERSIONS = Set.of(1);
 
     /// Read slice manifest from a JAR URL.
     ///
@@ -97,20 +101,48 @@ public interface SliceManifest {
 
     private static Result<SliceManifestInfo> parseManifest(Manifest manifest) {
         var mainAttrs = manifest.getMainAttributes();
+        var envelopeVersion = option(mainAttrs.getValue(ENVELOPE_VERSION_ATTR)).filter(s -> !s.isBlank());
         return option(mainAttrs.getValue(SLICE_ARTIFACT_ATTR)).filter(s -> !s.isBlank())
                      .toResult(MISSING_ARTIFACT_ATTR)
                      .flatMap(artifactStr -> option(mainAttrs.getValue(SLICE_CLASS_ATTR)).filter(s -> !s.isBlank())
                                                    .toResult(MISSING_CLASS_ATTR)
                                                    .flatMap(sliceClass -> Artifact.artifact(artifactStr)
                                                                                   .map(artifact -> new SliceManifestInfo(artifact,
-                                                                                                                         sliceClass))));
+                                                                                                                         sliceClass,
+                                                                                                                         envelopeVersion))));
     }
 
     /// Information extracted from a slice JAR manifest.
-    record SliceManifestInfo(Artifact artifact, String sliceClassName) {}
+    record SliceManifestInfo(Artifact artifact, String sliceClassName, Option<String> envelopeVersion) {}
+
+    /// Check whether the envelope version is compatible with this runtime.
+    ///
+    /// Missing version is treated as backward-compatible (pre-envelope JARs).
+    /// The special value "dev" is always accepted (development builds).
+    ///
+    /// @param envelopeVersion envelope version from manifest, if present
+    ///
+    /// @return success if compatible, failure with descriptive cause otherwise
+    static Result<Unit> checkEnvelopeCompatibility(Option<String> envelopeVersion) {
+        return envelopeVersion.map(SliceManifest::validateEnvelopeVersion)
+                              .or(Result::unitResult);
+    }
+
+    private static Result<Unit> validateEnvelopeVersion(String version) {
+        if ("dev".equals(version)) {
+            return Result.unitResult();
+        }
+        return Result.lift1(Integer::parseInt, version)
+                     .flatMap(v -> SUPPORTED_ENVELOPE_VERSIONS.contains(v)
+                                   ? Result.unitResult()
+                                   : UNSUPPORTED_ENVELOPE_VERSION.apply(version)
+                                                                 .result());
+    }
 
     // Error causes
     Fn1<Cause, String> MANIFEST_NOT_FOUND_FN = Causes.forOneValue("Manifest not found in JAR: %s");
+    Fn1<Cause, String> UNSUPPORTED_ENVELOPE_VERSION = Causes.forOneValue("Envelope format version %s not supported by this runtime (supported: " + SUPPORTED_ENVELOPE_VERSIONS
+                                                                         + ")");
     Cause MANIFEST_NOT_FOUND = Causes.cause("Manifest not found in ClassLoader resources");
     Cause MISSING_ARTIFACT_ATTR = Causes.cause("Missing required manifest attribute: " + SLICE_ARTIFACT_ATTR
                                                + ". Slice JARs must declare artifact coordinates in manifest.");

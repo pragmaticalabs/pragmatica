@@ -198,6 +198,8 @@ public interface DependencyResolver {
                                                                                SliceLoadingContext loadingContext,
                                                                                Set<String> resolutionPath) {
         return SliceManifest.read(location.url())
+                            .flatMap(manifest -> SliceManifest.checkEnvelopeCompatibility(manifest.envelopeVersion())
+                                                              .map(_ -> manifest))
                             .onFailure(cause -> log.error("Invalid slice JAR {}: {}",
                                                           artifact,
                                                           cause.message()))
@@ -421,6 +423,8 @@ public interface DependencyResolver {
                                                              SliceInvokerFacade invokerFacade,
                                                              Set<String> resolutionPath) {
         return SliceManifest.read(location.url())
+                            .flatMap(manifest -> SliceManifest.checkEnvelopeCompatibility(manifest.envelopeVersion())
+                                                              .map(_ -> manifest))
                             .onFailure(cause -> log.error("Invalid slice JAR {}: {}",
                                                           artifact,
                                                           cause.message()))

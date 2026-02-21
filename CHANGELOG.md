@@ -7,12 +7,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [0.17.0] - Unreleased
 
 ### Added
+- Blueprint membership guard on `POST /api/scale` — rejects scaling slices not deployed via blueprint
+- RFC-0010 Unified Invocation Observability (supersedes RFC-0009)
+- Envelope format versioning for slice JARs — `ENVELOPE_FORMAT_VERSION = 1` in ManifestGenerator, runtime compatibility check in SliceManifest
+- Properties manifest (`META-INF/slice/*.manifest`) now included in per-slice JARs for full metadata at runtime
 
 ### Fixed
+- JBCT compliance fixes for HttpClient JSON API
+- Fast-path route eviction on node departure
+- 20K/50K/100K rate buttons on Forge dashboard
 
 ### Changed
+- **BREAKING:** Removed individual slice `POST /api/deploy` and `POST /api/undeploy` endpoints — use blueprint commands instead
+- **BREAKING:** Removed `deploy` and `undeploy` CLI commands — use `blueprint apply` and `blueprint delete`
 
 ### Removed
+- Individual slice deploy/undeploy from REST API, CLI, and Forge proxy
+- `handleSliceTargetRemoval` from ClusterDeploymentManager (unreachable after deploy/undeploy removal)
 
 ## [0.16.0] - 2026-02-18
 

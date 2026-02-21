@@ -21,6 +21,8 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 public class ManifestGenerator {
+    static final int ENVELOPE_FORMAT_VERSION = 1;
+
     private final Filer filer;
     private final DependencyVersionResolver versionResolver;
     private final Map<String, String> options;
@@ -41,14 +43,6 @@ public class ManifestGenerator {
         var groupId = options.getOrDefault("slice.groupId", "unknown");
         var artifactId = options.getOrDefault("slice.artifactId", "unknown");
         return groupId + ":" + artifactId + "-" + toKebabCase(sliceName);
-    }
-
-    private String getProcessorVersion() {
-        var version = getClass().getPackage()
-                              .getImplementationVersion();
-        return version != null
-               ? version
-               : "dev";
     }
 
     /// Generate per-slice manifest with class listings for multi-artifact packaging.
@@ -109,7 +103,7 @@ public class ManifestGenerator {
             props.setProperty("generated.timestamp",
                               Instant.now()
                                      .toString());
-            props.setProperty("processor.version", getProcessorVersion());
+            props.setProperty("envelope.version", String.valueOf(ENVELOPE_FORMAT_VERSION));
             // Write to META-INF/slice/{SliceName}.manifest
             var resourcePath = "META-INF/slice/" + sliceName + ".manifest";
             var resource = filer.createResource(StandardLocation.CLASS_OUTPUT, "", resourcePath);
