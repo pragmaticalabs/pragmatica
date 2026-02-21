@@ -10,7 +10,6 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -28,6 +27,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -348,13 +348,19 @@ public interface ControlLoop {
                 var scalingConfig = configRef.get()
                                              .scalingConfig();
                 var errorRateHigh = compositeLoadFactor.isErrorRateHigh();
+                var commands = new ArrayList<KVCommand<AetherKey>>();
                 for (var change : decisions.changes()) {
                     var shouldApply = shouldApplyScalingDecision(change, loadFactorResult, scalingConfig, errorRateHigh);
                     if (shouldApply) {
-                        applyChange(change);
+                        prepareChange(change).onPresent(commands::add);
                     } else {
                         logBlockedDecision(change, loadFactorResult, scalingConfig);
                     }
+                }
+                if (!commands.isEmpty()) {
+                    cluster.apply(commands)
+                           .onFailure(cause -> log.error("Failed to apply blueprint changes: {}",
+                                                         cause.message()));
                 }
             }
 
@@ -440,16 +446,19 @@ public interface ControlLoop {
                                                             .sliceCooldownMs();
             }
 
-            private void applyChange(BlueprintChange change) {
+            private Option<KVCommand<AetherKey>> prepareChange(BlueprintChange change) {
                 var artifact = change.artifact();
-                Option.option(blueprints.get(artifact))
-                      .onEmpty(() -> log.warn("Blueprint not found for {}, skipping change", artifact))
-                      .onPresent(currentBlueprint -> applyChangeToBlueprint(change, artifact, currentBlueprint));
+                var blueprint = blueprints.get(artifact);
+                if (blueprint == null) {
+                    log.warn("Blueprint not found for {}, skipping change", artifact);
+                    return Option.none();
+                }
+                return prepareChangeToBlueprint(change, artifact, blueprint);
             }
 
-            private void applyChangeToBlueprint(BlueprintChange change,
-                                                Artifact artifact,
-                                                ClusterController.Blueprint currentBlueprint) {
+            private Option<KVCommand<AetherKey>> prepareChangeToBlueprint(BlueprintChange change,
+                                                                          Artifact artifact,
+                                                                          ClusterController.Blueprint currentBlueprint) {
                 var requestedInstances = switch (change) {
                     case BlueprintChange.ScaleUp(_, int additional) -> currentBlueprint.instances() + additional;
                     case BlueprintChange.ScaleDown(_, int reduceBy) -> Math.max(1,
@@ -470,7 +479,7 @@ public interface ControlLoop {
                     newInstances = clusterSize;
                 }
                 if (newInstances == currentBlueprint.instances()) {
-                    return;
+                    return Option.none();
                 }
                 log.info("Applying scaling decision: {} from {} to {} instances",
                          artifact,
@@ -479,10 +488,7 @@ public interface ControlLoop {
                 blueprints.put(artifact, new ClusterController.Blueprint(artifact, newInstances));
                 var key = SliceTargetKey.sliceTargetKey(artifact.base());
                 var value = SliceTargetValue.sliceTargetValue(artifact.version(), newInstances);
-                var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-                cluster.apply(List.of(command))
-                       .onFailure(cause -> log.error("Failed to apply blueprint change: {}",
-                                                     cause.message()));
+                return Option.some(new KVCommand.Put<>(key, value));
             }
 
             private void resetProtectionState() {
