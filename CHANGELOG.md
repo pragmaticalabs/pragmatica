@@ -8,14 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 - Blueprint membership guard on `POST /api/scale` — rejects scaling slices not deployed via blueprint
+- Blueprint `minInstances` as hard floor for scale-down — enforced in auto-scaler, manual `/api/scale`, and rolling updates
+- Pub-sub messaging infrastructure and resource lifecycle management (RFC-0011) — `Publisher<T>`, `Subscriber<T>`, `TopicSubscriptionRegistry`, `TopicPublisher`, `PublisherFactory`
+- Pub-sub code generation in slice-processor — subscription metadata in manifest, `stop()` resource cleanup, envelope v2
 - RFC-0010 Unified Invocation Observability (supersedes RFC-0009)
-- Envelope format versioning for slice JARs — `ENVELOPE_FORMAT_VERSION = 1` in ManifestGenerator, runtime compatibility check in SliceManifest
+- Envelope format versioning for slice JARs — `ENVELOPE_FORMAT_VERSION` in ManifestGenerator, runtime compatibility check in SliceManifest
 - Properties manifest (`META-INF/slice/*.manifest`) now included in per-slice JARs for full metadata at runtime
+- JaCoCo coverage infrastructure across 6 aether modules (427 tests)
 
 ### Fixed
+- UNLOADING stuck state — CDM `reconcile()` now calls `cleanupOrphanedSliceEntries()`, NDM `handleUnloadFailure()` properly chains Promise
+- Rolling update UNLOADING stuck state and missing SliceTargetKey creation
+- Monotonic sequencing on `QuorumStateNotification` to prevent race condition during leader failover
+- Slice JAR manifest repackaging for rolling update version mismatch
 - JBCT compliance fixes for HttpClient JSON API
 - Fast-path route eviction on node departure
 - 20K/50K/100K rate buttons on Forge dashboard
+
+### Enabled
+- 5 previously disabled E2E tests: partition healing, quorum transitions, artifact failover survival, rolling update completion, rolling update rollback
 
 ### Changed
 - **BREAKING:** Removed individual slice `POST /api/deploy` and `POST /api/undeploy` endpoints — use blueprint commands instead
