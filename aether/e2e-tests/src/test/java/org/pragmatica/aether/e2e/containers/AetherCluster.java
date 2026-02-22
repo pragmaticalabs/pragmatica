@@ -5,11 +5,16 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.Network;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.jar.JarEntry;
+import java.util.jar.JarInputStream;
+import java.util.jar.JarOutputStream;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -54,8 +59,9 @@ public class AetherCluster implements AutoCloseable {
     private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
     // Note: Uses slice artifact IDs (echo-slice-echo-service), not module artifact IDs (echo-slice)
     private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.17.0");
-    /// Synthetic old version for rolling update tests — same JAR uploaded under a different version string.
-    public static final String ROLLING_UPDATE_OLD_VERSION = "0.16.0";
+    /// Synthetic new version for rolling update tests — same JAR repackaged with bumped patch version.
+    /// Only patch version differs from current, matching real rolling update scenarios.
+    public static final String ROLLING_UPDATE_NEW_VERSION = bumpPatchVersion(TEST_ARTIFACT_VERSION);
     private static final String TEST_ARTIFACT_ID = "echo-slice-echo-service";
     private static final String[][] TEST_ARTIFACTS = {
         {TEST_ARTIFACT_ID, TEST_ARTIFACT_VERSION}
@@ -169,9 +175,9 @@ public class AetherCluster implements AutoCloseable {
                 if (!success) {
                     System.err.println("[WARN] Failed to upload artifact: " + jarPath);
                 }
-                // Also upload under synthetic old version for rolling update tests
+                // Also upload repackaged JAR under synthetic new version for rolling update tests
                 if (version.equals(TEST_ARTIFACT_VERSION)) {
-                    leaderNode.uploadArtifact(TEST_GROUP_PATH, artifactId, ROLLING_UPDATE_OLD_VERSION, jarPath);
+                    uploadRepackagedArtifact(leaderNode, artifactId, jarPath);
                 }
             } else {
                 System.err.println("[WARN] Test artifact not found: " + jarPath);
@@ -572,6 +578,62 @@ public class AetherCluster implements AutoCloseable {
     /// Returns the cluster size (total nodes, running or not).
     public int size() {
         return nodes.size();
+    }
+
+    /// Bumps the patch version of a semver string (e.g., "0.17.0" → "0.17.1").
+    private static String bumpPatchVersion(String version) {
+        var parts = version.split("\\.");
+        var patch = Integer.parseInt(parts[2]) + 1;
+        return parts[0] + "." + parts[1] + "." + patch;
+    }
+
+    /// Uploads a repackaged JAR with the synthetic new version for rolling update tests.
+    /// The JAR manifest's Slice-Artifact attribute is rewritten to match the target version.
+    private static void uploadRepackagedArtifact(AetherNodeContainer leader, String artifactId, Path originalJar) {
+        try {
+            var repackaged = repackageJarWithVersion(originalJar, ROLLING_UPDATE_NEW_VERSION);
+            var success = leader.uploadArtifactBytes(TEST_GROUP_PATH, artifactId, ROLLING_UPDATE_NEW_VERSION, repackaged);
+            if (!success) {
+                System.err.println("[WARN] Failed to upload repackaged artifact for rolling update");
+            }
+        } catch (Exception e) {
+            System.err.println("[WARN] Failed to repackage artifact for rolling update: " + e.getMessage());
+        }
+    }
+
+    /// Repackages a slice JAR with a different version in its manifest.
+    /// Rewrites the Slice-Artifact manifest attribute to use the target version,
+    /// preserving all other JAR contents unchanged.
+    private static byte[] repackageJarWithVersion(Path originalJar, String targetVersion) throws Exception {
+        var jarBytes = Files.readAllBytes(originalJar);
+        try (var jis = new JarInputStream(new ByteArrayInputStream(jarBytes))) {
+            var manifest = jis.getManifest();
+            var attrs = manifest.getMainAttributes();
+            var artifactStr = attrs.getValue("Slice-Artifact");
+            if (artifactStr != null) {
+                var lastColon = artifactStr.lastIndexOf(':');
+                if (lastColon >= 0) {
+                    var newArtifact = artifactStr.substring(0, lastColon + 1) + targetVersion;
+                    attrs.putValue("Slice-Artifact", newArtifact);
+                    System.out.println("[DEBUG] Repackaging JAR: " + artifactStr + " → " + newArtifact);
+                }
+            }
+
+            var baos = new ByteArrayOutputStream();
+            try (var jos = new JarOutputStream(baos, manifest)) {
+                var buffer = new byte[8192];
+                JarEntry entry;
+                while ((entry = jis.getNextJarEntry()) != null) {
+                    jos.putNextEntry(new JarEntry(entry.getName()));
+                    int len;
+                    while ((len = jis.read(buffer)) > 0) {
+                        jos.write(buffer, 0, len);
+                    }
+                    jos.closeEntry();
+                }
+            }
+            return baos.toByteArray();
+        }
     }
 
     @Override

@@ -30,7 +30,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 ///
 /// Note: These tests require Docker and the echo-slice test artifact.
-/// Uses echo-slice v1 (current version) and v2 (0.17.0) for version transition testing.
+/// Uses echo-slice at current version (OLD) and patch-bumped version (NEW) for version transition testing.
 /// Run with: mvn test -pl e2e-tests -Dtest=RollingUpdateE2ETest
 ///
 ///
@@ -42,8 +42,8 @@ class RollingUpdateE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
     private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.17.0");
     private static final String ARTIFACT_BASE = "org.pragmatica-lite.aether.test:echo-slice-echo-service";
-    private static final String OLD_VERSION = ARTIFACT_BASE + ":" + AetherCluster.ROLLING_UPDATE_OLD_VERSION;
-    private static final String NEW_VERSION = ARTIFACT_BASE + ":" + TEST_ARTIFACT_VERSION;
+    private static final String OLD_VERSION = ARTIFACT_BASE + ":" + TEST_ARTIFACT_VERSION;
+    private static final String NEW_VERSION = ARTIFACT_BASE + ":" + AetherCluster.ROLLING_UPDATE_NEW_VERSION;
     private static final Duration UPDATE_TIMEOUT = adapt(Duration.ofSeconds(120));
 
     // Common timeouts (CI gets 2x via adapt())
