@@ -339,7 +339,7 @@ public interface TcpTopologyManager extends TopologyManager {
                          newQuorum);
                 if (wasBelow && nowAbove) {
                     log.info("Quorum re-established after cluster size change");
-                    router.route(QuorumStateNotification.ESTABLISHED);
+                    router.route(QuorumStateNotification.established());
                 }
             }
 

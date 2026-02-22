@@ -125,7 +125,7 @@ public class LocalNetwork implements ClusterNetwork {
         nodes.remove(nodeId);
         if (nodes.size() == topologyManager.quorumSize() - 1) {
             routers.values()
-                   .forEach(router -> router.route(QuorumStateNotification.DISAPPEARED));
+                   .forEach(router -> router.route(QuorumStateNotification.disappeared()));
         }
     }
 
@@ -150,12 +150,12 @@ public class LocalNetwork implements ClusterNetwork {
         if (nodes.size() == topologyManager.quorumSize()) {
             // First quorum reached - notify all nodes
             routers.values()
-                   .forEach(router -> router.route(QuorumStateNotification.ESTABLISHED));
+                   .forEach(router -> router.route(QuorumStateNotification.established()));
         } else if (nodes.size() > topologyManager.quorumSize()) {
             // Quorum already established - notify the newly added node
             var router = routers.get(nodeId);
             if (router != null) {
-                router.route(QuorumStateNotification.ESTABLISHED);
+                router.route(QuorumStateNotification.established());
             }
         }
     }

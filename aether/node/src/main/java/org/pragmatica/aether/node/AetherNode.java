@@ -21,6 +21,7 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
+import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.HttpRouteRegistry;
@@ -357,7 +358,7 @@ public interface AetherNode {
             public Promise<Unit> stop() {
                 log.info("Stopping Aether node {}", self());
                 // 1. Notify components that quorum is gone (stops scheduled tasks via SharedScheduler)
-                router.route(QuorumStateNotification.DISAPPEARED);
+                router.route(QuorumStateNotification.disappeared());
                 // 2. Stop message delivery (no new messages will be routed)
                 router.quiesce();
                 // 3. Stop components (they've already stopped their activities via quorum notification)
@@ -570,6 +571,8 @@ public interface AetherNode {
                                                                                                        .port()));
         // Create endpoint registry
         var endpointRegistry = EndpointRegistry.endpointRegistry();
+        // Create topic subscription registry for pub/sub messaging
+        var topicSubscriptionRegistry = TopicSubscriptionRegistry.topicSubscriptionRegistry();
         // Create HTTP route registry for application HTTP routing
         var httpRouteRegistry = HttpRouteRegistry.httpRouteRegistry();
         // Create metrics components
@@ -648,6 +651,9 @@ public interface AetherNode {
                                                      aspectInterceptor);
         // Wire the deferred invoker facade to the actual SliceInvoker
         deferredInvoker.setDelegate(sliceInvoker);
+        // Register runtime extensions for Publisher provisioning via SPI
+        resourceProviderSetup.spiProvider()
+                             .onPresent(spi -> registerRuntimeExtensions(spi, topicSubscriptionRegistry, sliceInvoker));
         // Create node deployment manager (now created after sliceInvoker for HTTP route publishing)
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManager(config.self(),
                                                                                 delegateRouter,
@@ -672,6 +678,7 @@ public interface AetherNode {
                                                 nodeDeploymentManager,
                                                 clusterDeploymentManager,
                                                 endpointRegistry,
+                                                topicSubscriptionRegistry,
                                                 httpRouteRegistry,
                                                 metricsCollector,
                                                 metricsScheduler,
@@ -833,6 +840,7 @@ public interface AetherNode {
                                                                     NodeDeploymentManager nodeDeploymentManager,
                                                                     ClusterDeploymentManager clusterDeploymentManager,
                                                                     EndpointRegistry endpointRegistry,
+                                                                    TopicSubscriptionRegistry topicSubscriptionRegistry,
                                                                     HttpRouteRegistry httpRouteRegistry,
                                                                     MetricsCollector metricsCollector,
                                                                     MetricsScheduler metricsScheduler,
@@ -913,7 +921,11 @@ public interface AetherNode {
                                                   .onPut(AetherKey.PreviousVersionKey.class,
                                                          rollbackManager::onPreviousVersionPut)
                                                   .onPut(AetherKey.HttpRouteKey.class, appHttpServer::onRoutePut)
-                                                  .onRemove(AetherKey.HttpRouteKey.class, appHttpServer::onRouteRemove);
+                                                  .onRemove(AetherKey.HttpRouteKey.class, appHttpServer::onRouteRemove)
+                                                  .onPut(AetherKey.TopicSubscriptionKey.class,
+                                                         topicSubscriptionRegistry::onSubscriptionPut)
+                                                  .onRemove(AetherKey.TopicSubscriptionKey.class,
+                                                            topicSubscriptionRegistry::onSubscriptionRemove);
         // Dynamic config manager (optional)
         dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
                                                              .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
@@ -1090,7 +1102,8 @@ public interface AetherNode {
     }
 
     record ResourceProviderSetup(ResourceProviderFacade facade,
-                                 Option<DynamicConfigurationProvider> dynamicProvider) {}
+                                 Option<DynamicConfigurationProvider> dynamicProvider,
+                                 Option<SpiResourceProvider> spiProvider) {}
 
     /// Create ResourceProviderFacade from config.
     /// If ConfigurationProvider is configured, creates ConfigService and ResourceProvider
@@ -1102,6 +1115,7 @@ public interface AetherNode {
                      .fold(() -> {
                                log.debug("No configuration provider configured, resource provisioning disabled");
                                return new ResourceProviderSetup(noOpResourceProviderFacade(),
+                                                                Option.empty(),
                                                                 Option.empty());
                            },
                            configProvider -> {
@@ -1115,6 +1129,7 @@ public interface AetherNode {
                                                                 log.error("Failed to resolve secrets in configuration: {}",
                                                                           cause.message());
                                                                 return new ResourceProviderSetup(noOpResourceProviderFacade(),
+                                                                                                 Option.empty(),
                                                                                                  Option.empty());
                                                             },
                                                             provider -> {
@@ -1138,7 +1153,8 @@ public interface AetherNode {
                                                                                                                                      context);
                                                                                                  }
         },
-                                                                                                 Option.some(dynamicProvider));
+                                                                                                 Option.some(dynamicProvider),
+                                                                                                 Option.some(resourceProvider));
                                                             });
                            });
     }
@@ -1170,5 +1186,13 @@ public interface AetherNode {
         }
         // Use first repository (most configurations use a single repository)
         return repositories.getFirst();
+    }
+
+    /// Register runtime extensions into SpiResourceProvider for Publisher provisioning.
+    private static void registerRuntimeExtensions(SpiResourceProvider spi,
+                                                  TopicSubscriptionRegistry topicSubscriptionRegistry,
+                                                  SliceInvoker sliceInvoker) {
+        spi.registerExtension(TopicSubscriptionRegistry.class, topicSubscriptionRegistry);
+        spi.registerExtension(SliceInvoker.class, sliceInvoker);
     }
 }

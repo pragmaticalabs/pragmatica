@@ -501,7 +501,7 @@ class RabiaConsensusIntegrationTest {
 
         void activateNode(NodeId nodeId) throws InterruptedException {
             var engine = engines.get(nodeId);
-            engine.quorumState(QuorumStateNotification.ESTABLISHED);
+            engine.quorumState(QuorumStateNotification.established());
             Thread.sleep(150); // Allow sync request to be sent
 
             // Send sync responses from other nodes to trigger activation
@@ -515,7 +515,7 @@ class RabiaConsensusIntegrationTest {
 
         void activateAll() throws InterruptedException {
             for (var engine : engines.values()) {
-                engine.quorumState(QuorumStateNotification.ESTABLISHED);
+                engine.quorumState(QuorumStateNotification.established());
             }
             Thread.sleep(150);
 

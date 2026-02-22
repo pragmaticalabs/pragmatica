@@ -64,7 +64,7 @@ class LeaderManagerTest {
 
             // When quorum disappears, we should see disappearance of the leader
             expected.add(leaderChange(Option.none(), false));
-            router.route(QuorumStateNotification.DISAPPEARED);
+            router.route(QuorumStateNotification.disappeared());
 
             assertThat(watcher.collected()).isEqualTo(expected);
         }
@@ -79,7 +79,7 @@ class LeaderManagerTest {
 
             // When quorum disappears, we should see disappearance of the leader
             expected.add(leaderChange(Option.none(), false));
-            router.route(QuorumStateNotification.DISAPPEARED);
+            router.route(QuorumStateNotification.disappeared());
 
             assertThat(watcher.collected()).isEqualTo(expected);
         }
@@ -95,7 +95,7 @@ class LeaderManagerTest {
 
             // When quorum disappears, we should see disappearance of the leader
             expected.add(leaderChange(Option.none(), false));
-            router.route(QuorumStateNotification.DISAPPEARED);
+            router.route(QuorumStateNotification.disappeared());
 
             assertThat(watcher.collected()).isEqualTo(expected);
         }
@@ -152,7 +152,7 @@ class LeaderManagerTest {
             }
 
             // Establish quorum - first election uses INITIAL_ELECTION_DELAY (10s) for Fury warmup
-            localRouter.route(QuorumStateNotification.ESTABLISHED);
+            localRouter.route(QuorumStateNotification.established());
 
             // Wait for scheduled proposal (10s initial delay + margin)
             Thread.sleep(10_500);
@@ -171,7 +171,7 @@ class LeaderManagerTest {
                 var topology = list.stream().sorted().toList();
                 router.route(nodeAdded(nodeId, topology));
             }
-            router.route(QuorumStateNotification.ESTABLISHED);
+            router.route(QuorumStateNotification.established());
 
             // No notification yet
             assertThat(watcher.collected()).isEmpty();
@@ -199,7 +199,7 @@ class LeaderManagerTest {
                 var topology = list.stream().sorted().toList();
                 router.route(nodeAdded(nodeId, topology));
             }
-            router.route(QuorumStateNotification.ESTABLISHED);
+            router.route(QuorumStateNotification.established());
 
             // First commit
             leaderManager.onLeaderCommitted(nodes.getFirst());
@@ -238,7 +238,7 @@ class LeaderManagerTest {
             }
 
             // Establish quorum (sets active=true)
-            localRouter.route(QuorumStateNotification.ESTABLISHED);
+            localRouter.route(QuorumStateNotification.established());
 
             // Directly call triggerElection enough times to exceed fallback threshold.
             // Each call increments electionRetryCount in scheduleElectionRetryIfNeeded().
@@ -274,15 +274,15 @@ class LeaderManagerTest {
             }
 
             // Simulate rapid quorum flapping: ESTABLISHED -> DISAPPEARED -> ESTABLISHED -> DISAPPEARED -> ESTABLISHED
-            localRouter.route(QuorumStateNotification.ESTABLISHED);
+            localRouter.route(QuorumStateNotification.established());
             Thread.sleep(100);
-            localRouter.route(QuorumStateNotification.DISAPPEARED);
+            localRouter.route(QuorumStateNotification.disappeared());
             Thread.sleep(100);
-            localRouter.route(QuorumStateNotification.ESTABLISHED);
+            localRouter.route(QuorumStateNotification.established());
             Thread.sleep(100);
-            localRouter.route(QuorumStateNotification.DISAPPEARED);
+            localRouter.route(QuorumStateNotification.disappeared());
             Thread.sleep(100);
-            localRouter.route(QuorumStateNotification.ESTABLISHED);
+            localRouter.route(QuorumStateNotification.established());
 
             // Wait for retry mechanism to kick in and eventually propose
             Thread.sleep(5_000);
@@ -314,7 +314,7 @@ class LeaderManagerTest {
             }
 
             // Establish quorum and wait for initial election proposal
-            localRouter.route(QuorumStateNotification.ESTABLISHED);
+            localRouter.route(QuorumStateNotification.established());
             Thread.sleep(4_000);
 
             // Commit leader — resets retry count and sets hasEverHadLeader=true
@@ -324,9 +324,9 @@ class LeaderManagerTest {
             var proposalsAfterInitial = localProposals.size();
 
             // Simulate leader loss and re-election
-            localRouter.route(QuorumStateNotification.DISAPPEARED);
+            localRouter.route(QuorumStateNotification.disappeared());
             Thread.sleep(50);
-            localRouter.route(QuorumStateNotification.ESTABLISHED);
+            localRouter.route(QuorumStateNotification.established());
 
             // Wait for re-election proposal (uses PROPOSAL_RETRY_DELAY since hasEverHadLeader=true)
             Thread.sleep(1_000);
@@ -345,7 +345,7 @@ class LeaderManagerTest {
                 var topology = list.stream().sorted().toList();
                 router.route(nodeAdded(nodeId, topology));
             }
-            router.route(QuorumStateNotification.ESTABLISHED);
+            router.route(QuorumStateNotification.established());
 
             // Commit leader and wait for async notification to complete
             leaderManager.onLeaderCommitted(nodes.getFirst());
@@ -355,7 +355,7 @@ class LeaderManagerTest {
             watcher.collected().clear();
 
             // Quorum disappears - should send immediate sync notification
-            router.route(QuorumStateNotification.DISAPPEARED);
+            router.route(QuorumStateNotification.disappeared());
 
             // Immediate notification (not async)
             assertThat(watcher.collected()).hasSize(1);
@@ -399,7 +399,7 @@ class LeaderManagerTest {
                 expected.add(leaderChange(Option.option(topology.getFirst()),
                                           self.equals(topology.getFirst())));
 
-                router.route(QuorumStateNotification.ESTABLISHED);
+                router.route(QuorumStateNotification.established());
             }
 
             router.route(nodeAdded(nodeId, topology));

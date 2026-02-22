@@ -384,20 +384,20 @@ public class NettyClusterNetwork implements ClusterNetwork {
             case ADD -> {
                 // Only notify on transition from below to at/above quorum
                 if (currentlyHaveQuorum && quorumEstablished.compareAndSet(false, true)) {
-                    router.route(QuorumStateNotification.ESTABLISHED);
+                    router.route(QuorumStateNotification.established());
                 }
                 yield TopologyChangeNotification.nodeAdded(peerId, currentView());
             }
             case REMOVE -> {
                 // Only notify on transition from at/above quorum to below
                 if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
-                    router.route(QuorumStateNotification.DISAPPEARED);
+                    router.route(QuorumStateNotification.disappeared());
                 }
                 yield TopologyChangeNotification.nodeRemoved(peerId, currentView());
             }
             case SHUTDOWN -> {
                 quorumEstablished.set(false);
-                router.route(QuorumStateNotification.DISAPPEARED);
+                router.route(QuorumStateNotification.disappeared());
                 yield TopologyChangeNotification.nodeDown(peerId);
             }
         };

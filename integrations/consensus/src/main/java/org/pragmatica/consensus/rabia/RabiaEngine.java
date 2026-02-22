@@ -44,6 +44,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -101,6 +102,7 @@ public class RabiaEngine<C extends Command> {
     // Per Rabia spec: after a decision, the next phase inherits this value for round 1 vote
     private final AtomicReference<Option<StateValue>> lockedValue = new AtomicReference<>(Option.none());
     private final Option<ScheduledFuture<?>> cleanupTask;
+    private final AtomicLong quorumSequence = new AtomicLong();
 
     //--------------------------------- Node State End
     /// Creates a new Rabia consensus engine without metrics.
@@ -142,8 +144,12 @@ public class RabiaEngine<C extends Command> {
 
     @MessageReceiver
     public void quorumState(QuorumStateNotification quorumStateNotification) {
+        if (!quorumStateNotification.advanceSequence(quorumSequence)) {
+            log.debug("Ignoring stale QuorumStateNotification: {}", quorumStateNotification);
+            return;
+        }
         log.trace("Node {} received quorum state {}", self, quorumStateNotification);
-        switch (quorumStateNotification) {
+        switch (quorumStateNotification.state()) {
             case ESTABLISHED -> clusterConnected();
             case DISAPPEARED -> clusterDisconnected();
         }

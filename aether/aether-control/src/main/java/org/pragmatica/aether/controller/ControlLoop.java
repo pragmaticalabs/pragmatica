@@ -34,6 +34,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
@@ -111,7 +112,8 @@ public interface ControlLoop {
                            ConcurrentHashMap<Artifact, ClusterController.Blueprint> blueprints,
                            ConcurrentHashMap<SliceNodeKey, SliceState> sliceStates,
                            AtomicReference<Long> activationTime,
-                           ConcurrentHashMap<Artifact, Long> sliceActivationTimes) implements ControlLoop {
+                           ConcurrentHashMap<Artifact, Long> sliceActivationTimes,
+                           AtomicLong quorumSequence) implements ControlLoop {
             private static final Logger log = LoggerFactory.getLogger(ControlLoop.class);
 
             @Override
@@ -138,7 +140,11 @@ public interface ControlLoop {
 
             @Override
             public void onQuorumStateChange(QuorumStateNotification notification) {
-                if (notification == QuorumStateNotification.DISAPPEARED) {
+                if (!notification.advanceSequence(quorumSequence)) {
+                    log.debug("Ignoring stale QuorumStateNotification: {}", notification);
+                    return;
+                }
+                if (notification.state() == QuorumStateNotification.State.DISAPPEARED) {
                     log.info("Quorum disappeared, stopping control loop evaluation");
                     stopEvaluation();
                 }
@@ -528,6 +534,7 @@ public interface ControlLoop {
                                new ConcurrentHashMap<>(),
                                new ConcurrentHashMap<>(),
                                new AtomicReference<>(null),
-                               new ConcurrentHashMap<>());
+                               new ConcurrentHashMap<>(),
+                               new AtomicLong(0));
     }
 }

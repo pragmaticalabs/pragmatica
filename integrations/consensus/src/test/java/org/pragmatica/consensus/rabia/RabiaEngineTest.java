@@ -79,7 +79,7 @@ class RabiaEngineTest {
     }
 
     private void activateEngine() throws InterruptedException {
-        engine.quorumState(QuorumStateNotification.ESTABLISHED);
+        engine.quorumState(QuorumStateNotification.established());
         // Wait for sync to occur and send quorum sync responses
         Thread.sleep(150); // Allow sync request to be sent
         // Send sync responses from other nodes
@@ -121,7 +121,7 @@ class RabiaEngineTest {
         void disconnection_resets_engine_state() throws InterruptedException {
             activateEngine();
 
-            engine.quorumState(QuorumStateNotification.DISAPPEARED);
+            engine.quorumState(QuorumStateNotification.disappeared());
             Thread.sleep(50);
 
             var result = engine.apply(List.of(new TestCommand("test"))).await();
@@ -134,7 +134,7 @@ class RabiaEngineTest {
 
         @Test
         void sync_request_broadcast_on_quorum_established() throws InterruptedException {
-            engine.quorumState(QuorumStateNotification.ESTABLISHED);
+            engine.quorumState(QuorumStateNotification.established());
             Thread.sleep(150);
 
             var hasSyncRequest = network.getMessages().stream()

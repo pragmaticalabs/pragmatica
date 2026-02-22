@@ -18,8 +18,32 @@ package org.pragmatica.consensus.topology;
 
 import org.pragmatica.messaging.Message;
 
-/// Quorum state notifications.
-public enum QuorumStateNotification implements Message.Local {
-    ESTABLISHED,
-    DISAPPEARED
+import java.util.concurrent.atomic.AtomicLong;
+
+/// Quorum state notifications with monotonic sequencing for stale-delivery rejection.
+public record QuorumStateNotification(State state, long sequence) implements Message.Local {
+    private static final AtomicLong SEQUENCE = new AtomicLong();
+
+    public enum State { ESTABLISHED, DISAPPEARED }
+
+    public static QuorumStateNotification established() {
+        return new QuorumStateNotification(State.ESTABLISHED, SEQUENCE.incrementAndGet());
+    }
+
+    public static QuorumStateNotification disappeared() {
+        return new QuorumStateNotification(State.DISAPPEARED, SEQUENCE.incrementAndGet());
+    }
+
+    /// Atomically advance the tracker if this notification is newer.
+    /// Returns false if stale (should be ignored).
+    public boolean advanceSequence(AtomicLong tracker) {
+        long prev;
+        do {
+            prev = tracker.get();
+            if (sequence <= prev) {
+                return false;
+            }
+        } while (!tracker.compareAndSet(prev, sequence));
+        return true;
+    }
 }

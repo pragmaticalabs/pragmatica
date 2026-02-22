@@ -14,6 +14,7 @@ import org.pragmatica.consensus.topology.QuorumStateNotification;
 
 import java.util.List;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
@@ -72,6 +73,7 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
 
     private final AtomicReference<ScheduledFuture<?>> pingTask = new AtomicReference<>();
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
+    private final AtomicLong quorumSequence = new AtomicLong();
 
     DeploymentMetricsSchedulerImpl(NodeId self,
                                    ClusterNetwork network,
@@ -108,7 +110,11 @@ class DeploymentMetricsSchedulerImpl implements DeploymentMetricsScheduler {
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onQuorumStateChange(QuorumStateNotification notification) {
-        if (notification == QuorumStateNotification.DISAPPEARED) {
+        if (!notification.advanceSequence(quorumSequence)) {
+            log.debug("Ignoring stale QuorumStateNotification: {}", notification);
+            return;
+        }
+        if (notification.state() == QuorumStateNotification.State.DISAPPEARED) {
             log.info("Quorum disappeared, stopping deployment metrics scheduler");
             stopPinging();
         }
