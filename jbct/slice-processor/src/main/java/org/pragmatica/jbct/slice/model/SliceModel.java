@@ -180,6 +180,19 @@ public record SliceModel(String packageName,
                       .anyMatch(MethodModel::hasInterceptors);
     }
 
+    /// Check if any method has topic subscriptions.
+    public boolean hasSubscriptions() {
+        return methods.stream()
+                      .anyMatch(MethodModel::hasSubscriptions);
+    }
+
+    /// Get all methods that have topic subscriptions.
+    public List<MethodModel> subscriptionMethods() {
+        return methods.stream()
+                      .filter(MethodModel::hasSubscriptions)
+                      .toList();
+    }
+
     public String factoryMethodName() {
         return factoryMethod.getSimpleName()
                             .toString();

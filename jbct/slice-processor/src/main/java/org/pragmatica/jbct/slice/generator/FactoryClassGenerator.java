@@ -107,6 +107,7 @@ public class FactoryClassGenerator {
         importTracker.use("org.pragmatica.lang.Promise");
         importTracker.use("org.pragmatica.lang.Unit");
         importTracker.use("org.pragmatica.lang.type.TypeToken");
+        importTracker.use("org.pragmatica.aether.slice.ResourceProviderFacade");
         if (model.hasMethodInterceptors()) {
             importTracker.use("org.pragmatica.aether.slice.ProvisioningContext");
             importTracker.use("org.pragmatica.lang.Functions.Fn1");
@@ -846,10 +847,11 @@ public class FactoryClassGenerator {
         var sliceName = model.simpleName();
         var methodName = lowercaseFirst(sliceName);
         var sliceRecordName = methodName + "Slice";
+        var sliceArtifactCoordinate = computeSliceArtifactCoordinate(sliceName);
         out.println("    public static Promise<Slice> " + methodName + "Slice(Aspect<" + sliceName + "> aspect,");
         out.println("                                              SliceCreationContext ctx) {");
         // Generate local adapter record
-        out.println("        record " + sliceRecordName + "(" + sliceName + " delegate) implements Slice, " + sliceName
+        out.println("        record " + sliceRecordName + "(" + sliceName + " delegate, ResourceProviderFacade resources) implements Slice, " + sliceName
                     + " {");
         out.println("            @Override");
         out.println("            public List<SliceMethod<?, ?>> methods() {");
@@ -887,6 +889,12 @@ public class FactoryClassGenerator {
         }
         out.println("                );");
         out.println("            }");
+        // Generate stop() override for resource cleanup
+        out.println();
+        out.println("            @Override");
+        out.println("            public Promise<Unit> stop() {");
+        out.println("                return resources.releaseAll(\"" + escapeJavaString(sliceArtifactCoordinate) + "\");");
+        out.println("            }");
         // Generate delegate methods for the slice interface
         for (var method : methods) {
             out.println();
@@ -916,8 +924,9 @@ public class FactoryClassGenerator {
         }
         out.println("        }");
         out.println();
+        out.println("        var resources = ctx.resources();");
         out.println("        return " + methodName + "(aspect, ctx)");
-        out.println("                   .map(" + sliceRecordName + "::new);");
+        out.println("                   .map(impl -> new " + sliceRecordName + "(impl, resources));");
         out.println("    }");
     }
 
@@ -991,6 +1000,36 @@ public class FactoryClassGenerator {
             return "";
         }
         return Character.toUpperCase(name.charAt(0)) + name.substring(1);
+    }
+
+    /// Convert PascalCase to kebab-case.
+    /// Examples: OrderService -> order-service, PlaceOrder -> place-order
+    private String toKebabCase(String pascalCase) {
+        if (pascalCase == null || pascalCase.isEmpty()) {
+            return pascalCase;
+        }
+        var result = new StringBuilder();
+        for (int i = 0; i < pascalCase.length(); i++) {
+            char c = pascalCase.charAt(i);
+            if (Character.isUpperCase(c)) {
+                if (i > 0) {
+                    result.append('-');
+                }
+                result.append(Character.toLowerCase(c));
+            } else {
+                result.append(c);
+            }
+        }
+        return result.toString();
+    }
+
+    /// Compute the slice artifact coordinate string for resource cleanup.
+    /// Format: "groupId:artifactId-kebab-case-slice-name"
+    private String computeSliceArtifactCoordinate(String sliceName) {
+        var options = processingEnv.getOptions();
+        var groupId = options.getOrDefault("slice.groupId", "unknown");
+        var artifactId = options.getOrDefault("slice.artifactId", "unknown");
+        return groupId + ":" + artifactId + "-" + toKebabCase(sliceName);
     }
 
     /// Generate resource provisioning call: ctx.resources().provide(Type.class, "config.section")

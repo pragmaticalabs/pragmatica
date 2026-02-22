@@ -41,14 +41,29 @@ class SliceProcessorTest {
             }
             """);
 
+    private static final JavaFileObject UNIT = JavaFileObjects.forSourceString(
+            "org.pragmatica.lang.Unit",
+            """
+            package org.pragmatica.lang;
+
+            public enum Unit {
+                ;
+                public static Unit unit() { return null; }
+            }
+            """);
+
     private static final JavaFileObject SLICE = JavaFileObjects.forSourceString(
             "org.pragmatica.aether.slice.Slice",
             """
             package org.pragmatica.aether.slice;
 
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
             import java.util.List;
 
             public interface Slice {
+                default Promise<Unit> start() { return null; }
+                default Promise<Unit> stop() { return null; }
                 List<SliceMethod<?, ?>> methods();
             }
             """);
@@ -162,10 +177,12 @@ class SliceProcessorTest {
             package org.pragmatica.aether.slice;
 
             import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
 
             public interface ResourceProviderFacade {
                 <T> Promise<T> provide(Class<T> resourceType, String configSection);
                 <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context);
+                default Promise<Unit> releaseAll(String sliceId) { return null; }
             }
             """);
 
@@ -213,7 +230,7 @@ class SliceProcessorTest {
                 ASPECT, SLICE, SLICE_METHOD, METHOD_NAME, METHOD_HANDLE, INVOKER_FACADE,
                 METHOD_INTERCEPTOR, PROVISIONING_CONTEXT,
                 RESOURCE_PROVIDER_FACADE, SLICE_CREATION_CONTEXT, RESOURCE_QUALIFIER,
-                KEY_ANNOTATION
+                KEY_ANNOTATION, UNIT
         ));
     }
 
@@ -449,7 +466,7 @@ class SliceProcessorTest {
         assertThat(factoryContent).contains("delegate::getUser");
         assertThat(factoryContent).contains("delegate::updateUser");
         assertThat(factoryContent).contains("delegate::deleteUser");
-        assertThat(factoryContent).contains("record userServiceSlice(UserService delegate) implements Slice, UserService");
+        assertThat(factoryContent).contains("record userServiceSlice(UserService delegate, ResourceProviderFacade resources) implements Slice, UserService");
     }
 
     @Test

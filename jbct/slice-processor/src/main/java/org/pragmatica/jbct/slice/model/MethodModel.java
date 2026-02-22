@@ -24,6 +24,7 @@ public record MethodModel(String name,
                            List<MethodParameterInfo> parameters,
                            boolean deprecated,
                            List<ResourceQualifierModel> interceptors,
+                           List<ResourceQualifierModel> subscriptions,
                            Option<KeyExtractorInfo> keyExtractor,
                            Option<MethodParameterInfo> multiParamKeyParam) {
 
@@ -33,9 +34,11 @@ public record MethodModel(String name,
     private static final String KEY_ANNOTATION = "org.pragmatica.aether.resource.aspect.Key";
     private static final String PROMISE_TYPE = "org.pragmatica.lang.Promise";
     private static final String RESOURCE_QUALIFIER_ANNOTATION = "org.pragmatica.aether.slice.annotation.ResourceQualifier";
+    private static final String SUBSCRIBER_TYPE = "org.pragmatica.aether.slice.Subscriber";
 
     public MethodModel {
         interceptors = List.copyOf(interceptors);
+        subscriptions = List.copyOf(subscriptions);
         parameters = List.copyOf(parameters);
     }
 
@@ -56,6 +59,11 @@ public record MethodModel(String name,
     /// Check if this method has any interceptors.
     public boolean hasInterceptors() {
         return !interceptors.isEmpty();
+    }
+
+    /// Check if this method has any topic subscriptions.
+    public boolean hasSubscriptions() {
+        return !subscriptions.isEmpty();
     }
 
     /// Returns true if this method has zero parameters.
@@ -111,8 +119,17 @@ public record MethodModel(String name,
         var responseType = extractPromiseTypeArg(returnType);
         var params = method.getParameters();
         var deprecated = method.getAnnotation(Deprecated.class) != null;
-        var methodInterceptors = extractMethodInterceptors(method, env);
+        var methodAnnotations = extractMethodAnnotations(method, env);
+        var methodInterceptors = methodAnnotations.interceptors();
+        var methodSubscriptions = methodAnnotations.subscriptions();
         var paramInfos = buildParameterInfos(params, env);
+
+        // Validate subscription methods
+        var subscriptionValidation = validateSubscriptions(methodSubscriptions, paramInfos, name, returnType);
+        if (subscriptionValidation.isFailure()) {
+            return subscriptionValidation.flatMap(_ -> Result.success(null)); // propagate error
+        }
+
         return validateKeyAnnotations(paramInfos, name)
         .flatMap(_ -> resolveKeyInfo(paramInfos, env, methodInterceptors, name))
         .map(keyResult -> new MethodModel(name,
@@ -121,6 +138,7 @@ public record MethodModel(String name,
                                            paramInfos,
                                            deprecated,
                                            methodInterceptors,
+                                           methodSubscriptions,
                                            keyResult.keyExtractor(),
                                            keyResult.multiParamKeyParam()));
     }
@@ -209,17 +227,51 @@ public record MethodModel(String name,
         return Result.success(Unit.unit());
     }
 
-    /// Extract method-level interceptors from annotations with @ResourceQualifier meta-annotation.
-    /// Annotations are processed in declaration order; the generated interceptor composition
-    /// wraps inside-out (last annotation = innermost).
-    private static List<ResourceQualifierModel> extractMethodInterceptors(ExecutableElement method,
-                                                                           ProcessingEnvironment env) {
+    private record MethodAnnotations(List<ResourceQualifierModel> interceptors,
+                                      List<ResourceQualifierModel> subscriptions) {}
+
+    /// Extract method-level annotations with @ResourceQualifier meta-annotation.
+    /// Splits them into interceptors and subscriptions based on resource type.
+    private static MethodAnnotations extractMethodAnnotations(ExecutableElement method,
+                                                               ProcessingEnvironment env) {
         var interceptors = new ArrayList<ResourceQualifierModel>();
+        var subscriptions = new ArrayList<ResourceQualifierModel>();
         for (var annotation : method.getAnnotationMirrors()) {
-            var rq = ResourceQualifierModel.fromAnnotationMirror(annotation, env);
-            rq.onPresent(interceptors::add);
+            ResourceQualifierModel.fromAnnotationMirror(annotation, env)
+                                  .onPresent(model -> {
+                                      if (SUBSCRIBER_TYPE.equals(model.resourceType().toString())) {
+                                          subscriptions.add(model);
+                                      } else {
+                                          interceptors.add(model);
+                                      }
+                                  });
         }
-        return interceptors;
+        return new MethodAnnotations(interceptors, subscriptions);
+    }
+
+    private static Result<Unit> validateSubscriptions(List<ResourceQualifierModel> subscriptions,
+                                                       List<MethodParameterInfo> params,
+                                                       String methodName,
+                                                       TypeMirror returnType) {
+        if (subscriptions.isEmpty()) {
+            return Result.success(Unit.unit());
+        }
+        // Subscription methods must have exactly one parameter
+        if (params.size() != 1) {
+            return Causes.cause("Subscription method '" + methodName
+                                + "' must have exactly one parameter (the message type), found: " + params.size())
+                         .result();
+        }
+        // Return type must be Promise<Unit>
+        if (returnType instanceof DeclaredType dt && !dt.getTypeArguments().isEmpty()) {
+            var typeArg = dt.getTypeArguments().getFirst().toString();
+            if (!"org.pragmatica.lang.Unit".equals(typeArg)) {
+                return Causes.cause("Subscription method '" + methodName
+                                    + "' must return Promise<Unit>, found: Promise<" + typeArg + ">")
+                             .result();
+            }
+        }
+        return Result.success(Unit.unit());
     }
 
     /// Extract @Key info from the method parameter record, but only if interceptors are present.

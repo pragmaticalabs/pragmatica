@@ -42,6 +42,7 @@ public record DependencyModel(String parameterName,
     }
 
     private static final String SLICE_ANNOTATION = "org.pragmatica.aether.slice.annotation.Slice";
+    private static final String PUBLISHER_TYPE = "org.pragmatica.aether.slice.Publisher";
 
     public static Result<DependencyModel> dependencyModel(VariableElement param, ProcessingEnvironment env) {
         var paramName = param.getSimpleName()
@@ -96,6 +97,22 @@ public record DependencyModel(String parameterName,
     /// Check if this dependency is a plain interface: not resource, not slice, has factory method.
     public boolean isPlainInterface() {
         return !isResource() && !sliceAnnotated && hasFactoryMethod;
+    }
+
+    /// Check if this dependency is a Publisher resource.
+    public boolean isPublisher() {
+        return resourceQualifier.map(q -> PUBLISHER_TYPE.equals(q.resourceType().toString()))
+                                .or(false);
+    }
+
+    /// Extract message type from Publisher<T> generic parameter.
+    /// Returns the qualified type name of T, or empty if not a Publisher or no type arg.
+    public Option<String> publisherMessageType() {
+        if (!isPublisher() || !(interfaceType instanceof DeclaredType dt)) {
+            return Option.none();
+        }
+        var typeArgs = dt.getTypeArguments();
+        return typeArgs.isEmpty() ? Option.none() : Option.some(typeArgs.getFirst().toString());
     }
 
     /// Returns usable name for nested types: "EnclosingType.SimpleName" for nested, just "SimpleName" for top-level.

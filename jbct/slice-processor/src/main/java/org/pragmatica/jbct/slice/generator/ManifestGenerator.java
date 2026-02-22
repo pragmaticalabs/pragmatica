@@ -21,7 +21,7 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 public class ManifestGenerator {
-    static final int ENVELOPE_FORMAT_VERSION = 1;
+    static final int ENVELOPE_FORMAT_VERSION = 2;
 
     private final Filer filer;
     private final DependencyVersionResolver versionResolver;
@@ -99,6 +99,36 @@ public class ManifestGenerator {
             }
             // Slice config file path (for blueprint generator to read)
             props.setProperty("config.file", "slices/" + sliceName + ".toml");
+            // Topic subscription metadata
+            var subscriptionMethods = model.subscriptionMethods();
+            props.setProperty("topic.subscriptions.count", String.valueOf(subscriptionMethods.size()));
+            int subIndex = 0;
+            for (var method : subscriptionMethods) {
+                for (var subscription : method.subscriptions()) {
+                    var subPrefix = "topic.subscription." + subIndex + ".";
+                    props.setProperty(subPrefix + "config", subscription.configSection());
+                    props.setProperty(subPrefix + "method", method.name());
+                    // Message type from the single parameter
+                    if (method.hasSingleParam()) {
+                        props.setProperty(subPrefix + "messageType",
+                                          getQualifiedTypeName(method.parameters().getFirst().type()));
+                    }
+                    subIndex++;
+                }
+            }
+            // Update count to actual number of subscription entries
+            props.setProperty("topic.subscriptions.count", String.valueOf(subIndex));
+            // Publisher message types (for serializer registration)
+            var publishMessageTypes = model.dependencies()
+                                           .stream()
+                                           .filter(dep -> dep.isPublisher())
+                                           .flatMap(dep -> dep.publisherMessageType().stream())
+                                           .filter(name -> !isStandardType(name))
+                                           .distinct()
+                                           .collect(Collectors.toList());
+            if (!publishMessageTypes.isEmpty()) {
+                props.setProperty("publish.message.classes", String.join(",", publishMessageTypes));
+            }
             // Metadata
             props.setProperty("generated.timestamp",
                               Instant.now()
