@@ -138,7 +138,7 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
      - Drain connections before node removal (graceful deregistration delay)
      - TLS termination configuration (certificate ARN/ID passthrough)
    - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
-   - **Enables:** Spot Instance Support (#14), Expense Tracking (#15)
+   - **Enables:** Spot Instance Support (#15), Expense Tracking (#16)
 
 3. **New Resources**
    - **Pub/Sub Resource** — `@ResourceQualifier(type=Publisher/Subscriber.class)` for topic-based messaging. Parameter annotation injects Publisher/Subscriber handle. Config: topic name, serialization format. In-memory impl for Forge, pluggable backend for production (Kafka, Redis Streams, etc.).
@@ -170,13 +170,19 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
 
 ### MEDIUM PRIORITY
 
-7. **Disruption Budget**
+7. **Per-Data-Source DB Schema Management**
+    - Automatic schema creation and migration per `@Sql`-qualified data source
+    - Each data source declares its schema requirements (DDL or migration scripts)
+    - Schema applied on first connection, migrations tracked per data source
+    - Supports multiple independent databases within the same slice
+
+8. **Disruption Budget**
     - Minimum healthy instances during rolling updates and node failures
     - Configurable per slice or blueprint
     - Controller respects budget before scaling down or migrating
     - Prevents cascading failures during maintenance
 
-8. **Placement Hints**
+9. **Placement Hints**
     - Affinity/anti-affinity rules for slice placement
     - Spread: distribute instances across nodes/zones
     - Co-locate: place related slices on same node
@@ -184,29 +190,29 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
 
 ### LOWER PRIORITY - Security & Operations
 
-9. **TLS Certificate Management**
+10. **TLS Certificate Management**
     - Certificate provisioning and rotation
     - Mutual TLS between nodes
     - Integration with external CA or self-signed
 
-10. **Canary & Blue-Green Deployment Strategies**
+11. **Canary & Blue-Green Deployment Strategies**
     - Current: Rolling updates with weighted routing exist
     - Add explicit canary deployment with automatic rollback on error threshold
     - Add blue-green deployment with instant switchover
     - A/B testing support with traffic splitting by criteria
 
-11. **Topology in KV Store**
+12. **Topology in KV Store**
     - Leader maintains cluster topology in consensus KV store
     - Best-effort updates on membership changes
     - Enables external observability without direct node queries
 
-12. **RBAC for Management API**
+13. **RBAC for Management API**
     - Role-based access control for operations
     - Predefined roles: admin, operator, viewer
     - Per-endpoint authorization rules
     - Audit logging for sensitive operations
 
-13. **Configurable Rate Limiting per HTTP Route**
+14. **Configurable Rate Limiting per HTTP Route**
     - Per-route rate limiting configuration in blueprint or management API
     - Token bucket or sliding window algorithm
     - Configurable limits: requests/second, burst size
@@ -232,7 +238,7 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
 
 ### FUTURE
 
-14. **Spot Instance Support for Elastic Scaling**
+15. **Spot Instance Support for Elastic Scaling**
     - Cost-optimized scaling using cloud spot/preemptible instances
     - 60-90% cost savings for traffic spike handling
 
@@ -285,7 +291,7 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
     **Complexity:** Low - just configuration and cloud API flag
     **Prerequisite:** Cloud Integration (#2)
 
-15. **Cluster Expense Tracking**
+16. **Cluster Expense Tracking**
 
     - Real-time cost visibility for cluster operations
     - Enables cost-aware scaling decisions
@@ -318,18 +324,18 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
     **Complexity:** Medium - cloud billing APIs have quirks, data aggregation needed
     **Prerequisite:** Cloud Integration (#2)
 
-16. **LLM Integration (Layer 3)**
+17. **LLM Integration (Layer 3)**
     - Claude/GPT API integration
     - Complex reasoning workflows
     - Multi-cloud decision support
 
-17. **Mini-Kafka (Message Streaming)**
+18. **Mini-Kafka (Message Streaming)**
     - Ordered message streaming with partitions (differs from pub/sub)
     - In-memory storage (initial implementation)
     - Consumer group coordination
     - Retention policies
 
-18. **Cross-Slice Transaction Support (2PC)**
+19. **Cross-Slice Transaction Support (2PC)**
     - Distributed transactions via Transaction aspect
     - Scope: DB transactions + internal services (pub-sub, queues, streaming)
     - NOT Saga pattern (user-unfriendly compensation design)
@@ -356,14 +362,14 @@ Release 0.17.0 continues production hardening with bug fixes and documentation u
     - Aether's "each call eventually succeeds, if cluster is alive" applies
     - DB failure = transaction failure (expected behavior)
 
-19. **Distributed Saga Orchestration**
+20. **Distributed Saga Orchestration**
     - Long-running transaction orchestration (saga pattern)
     - Durable state transitions with compensation on failure
     - Differs from local state machine — coordinates across multiple slices
     - Automatic retry, timeout, and dead-letter handling
     - Visualization of in-flight sagas and their states
 
-20. **Forge Script - Scenario Language**
+21. **Forge Script - Scenario Language**
     - DSL for defining load/chaos test scenarios
     - Reusable scenario libraries
     - CI/CD integration for automated testing
