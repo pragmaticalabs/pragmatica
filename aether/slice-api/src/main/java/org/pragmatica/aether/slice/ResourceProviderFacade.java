@@ -1,6 +1,7 @@
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 /// Facade interface for resource provisioning within slice context.
 ///
@@ -32,4 +33,16 @@ public interface ResourceProviderFacade {
     /// @param <T>           Resource type
     /// @return Promise containing the resource instance or error
     <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context);
+
+    /// Release all resources associated with a given slice.
+    ///
+    /// Called during slice shutdown to clean up provisioned resources.
+    /// Uses artifact coordinate string as slice identifier to avoid
+    /// dependency on the artifact module.
+    ///
+    /// @param sliceId Artifact coordinate string identifying the slice
+    /// @return Promise completing when all resources are released
+    default Promise<Unit> releaseAll(String sliceId) {
+        return Promise.unitPromise();
+    }
 }

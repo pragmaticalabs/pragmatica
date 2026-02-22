@@ -53,6 +53,12 @@ public interface ResourceProvider {
     /// @return true if a factory is registered
     boolean hasFactory(Class<?> resourceType);
 
+    /// Release all resources consumed by the given slice.
+    ///
+    /// @param sliceId Artifact coordinate string identifying the slice
+    /// @return Promise completing when resources are released
+    Promise<Unit> releaseAll(String sliceId);
+
     // Static accessor pattern
     /// Get the global ResourceProvider instance.
     ///

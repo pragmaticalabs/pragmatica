@@ -5,12 +5,14 @@ import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
@@ -30,12 +32,16 @@ import static org.pragmatica.lang.Option.option;
 public final class SpiResourceProvider implements ResourceProvider {
     private final Map<Class<?>, List<ResourceFactory<?, ?>>> factories;
     private final Map<CacheKey, Promise<?>> promiseCache;
+    private final Map<CacheKey, Set<String>> consumers;
+    private final Map<Class<?>, Object> runtimeExtensions;
     private final Fn2<Result<?>, String, Class<?>> configLoader;
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private SpiResourceProvider(Fn2<Result<?>, String, Class<?>> configLoader) {
         this.configLoader = configLoader;
         this.promiseCache = new ConcurrentHashMap<>();
+        this.consumers = new ConcurrentHashMap<>();
+        this.runtimeExtensions = new ConcurrentHashMap<>();
         Map<Class<?>, List<ResourceFactory<?, ?>>> factoryMap = new ConcurrentHashMap<>();
         ServiceLoader.load(ResourceFactory.class)
                      .stream()
@@ -87,6 +93,18 @@ public final class SpiResourceProvider implements ResourceProvider {
         return new SpiResourceProvider((section, configClass) -> configLoader.apply(section));
     }
 
+    /// Register a runtime extension that will be automatically added to ProvisioningContext.
+    ///
+    /// Used by AetherNode to inject runtime components (e.g., TopicSubscriptionRegistry,
+    /// SliceInvoker) that resource factories need but can't discover via ServiceLoader.
+    ///
+    /// @param type     Extension class key
+    /// @param instance Extension value
+    @SuppressWarnings("JBCT-RET-01")
+    public <T> void registerExtension(Class<T> type, T instance) {
+        runtimeExtensions.put(type, instance);
+    }
+
     @Override
     @SuppressWarnings("unchecked")
     public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
@@ -96,12 +114,47 @@ public final class SpiResourceProvider implements ResourceProvider {
 
     @Override
     public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+        var key = new CacheKey(resourceType, configSection);
+        context.extension(String.class)
+               .onSuccess(sliceId -> consumers.computeIfAbsent(key,
+                                                               _ -> ConcurrentHashMap.newKeySet())
+                                              .add(sliceId));
         return createResourceWithContext(resourceType, configSection, context);
     }
 
     @Override
     public boolean hasFactory(Class<?> resourceType) {
         return factories.containsKey(resourceType);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public Promise<Unit> releaseAll(String sliceId) {
+        var closeFutures = new ArrayList<Promise<Unit>>();
+        var iterator = consumers.entrySet()
+                                .iterator();
+        while (iterator.hasNext()) {
+            var entry = iterator.next();
+            var key = entry.getKey();
+            var consumerSet = entry.getValue();
+            consumerSet.remove(sliceId);
+            if (consumerSet.isEmpty()) {
+                iterator.remove();
+                var cached = promiseCache.remove(key);
+                if (cached != null) {
+                    var factoryList = factories.get(key.resourceType());
+                    if (factoryList != null && !factoryList.isEmpty()) {
+                        var factory = (ResourceFactory<Object, ?>) factoryList.getFirst();
+                        closeFutures.add(cached.flatMap(resource -> factory.close(resource)));
+                    }
+                }
+            }
+        }
+        if (closeFutures.isEmpty()) {
+            return Promise.unitPromise();
+        }
+        return Promise.allOf(closeFutures)
+                      .map(_ -> Unit.unit());
     }
 
     @SuppressWarnings("unchecked")
@@ -118,13 +171,24 @@ public final class SpiResourceProvider implements ResourceProvider {
     private <T> Promise<T> createResourceWithContext(Class<T> resourceType,
                                                      String configSection,
                                                      ProvisioningContext context) {
+        var enrichedContext = enrichWithRuntimeExtensions(context);
         return option(factories.get(resourceType)).filter(list -> !list.isEmpty())
                      .map(factoryList -> loadConfigAndInvokeWithContext((List<ResourceFactory<T, ?>>)(List<?>) factoryList,
                                                                         resourceType,
                                                                         configSection,
-                                                                        context))
+                                                                        enrichedContext))
                      .or(() -> ResourceProvisioningError.factoryNotFound(resourceType)
                                                         .promise());
+    }
+
+    private ProvisioningContext enrichWithRuntimeExtensions(ProvisioningContext context) {
+        var enriched = context;
+        for (var entry : runtimeExtensions.entrySet()) {
+            @SuppressWarnings("unchecked")
+            var type = (Class<Object>) entry.getKey();
+            enriched = enriched.withExtension(type, entry.getValue());
+        }
+        return enriched;
     }
 
     private <T> Promise<T> loadConfigAndInvoke(List<ResourceFactory<T, ?>> factoryList,

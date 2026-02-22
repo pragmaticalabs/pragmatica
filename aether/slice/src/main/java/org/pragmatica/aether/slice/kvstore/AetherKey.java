@@ -441,6 +441,61 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Topic subscription key format:
+    /// ```
+    /// topic-sub/{topicName}/{groupId}:{artifactId}:{version}/{methodName}
+    /// ```
+    /// Maps topic subscriptions to slice method handlers for pub/sub messaging.
+    record TopicSubscriptionKey(String topicName, Artifact artifact, MethodName methodName) implements AetherKey {
+        private static final String PREFIX = "topic-sub/";
+
+        @Override
+        public String asString() {
+            return PREFIX + topicName + "/" + artifact.asString() + "/" + methodName.name();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static TopicSubscriptionKey topicSubscriptionKey(String topicName,
+                                                                Artifact artifact,
+                                                                MethodName methodName) {
+            return new TopicSubscriptionKey(topicName, artifact, methodName);
+        }
+
+        public static Result<TopicSubscriptionKey> topicSubscriptionKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key)
+                                                          .result();
+            }
+            var content = key.substring(PREFIX.length());
+            var firstSlash = content.indexOf('/');
+            if (firstSlash == - 1) {
+                return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key)
+                                                          .result();
+            }
+            var topicName = content.substring(0, firstSlash);
+            var rest = content.substring(firstSlash + 1);
+            var lastSlash = rest.lastIndexOf('/');
+            if (lastSlash == - 1) {
+                return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key)
+                                                          .result();
+            }
+            var artifactPart = rest.substring(0, lastSlash);
+            var methodPart = rest.substring(lastSlash + 1);
+            if (topicName.isEmpty() || methodPart.isEmpty()) {
+                return TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR.apply(key)
+                                                          .result();
+            }
+            return Result.all(Artifact.artifact(artifactPart),
+                              MethodName.methodName(methodPart))
+                         .map((artifact, method) -> new TopicSubscriptionKey(topicName, artifact, method));
+        }
+    }
+
     /// Config key format:
     /// ```
     /// config/{key}                    — cluster-wide
@@ -502,6 +557,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    Fn1<Cause, String> TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid topic-sub key format: %s");
     Fn1<Cause, String> SLICE_TARGET_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-target key format: %s");
     Fn1<Cause, String> APP_BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid app-blueprint key format: %s");
     Fn1<Cause, String> SLICE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice key format: %s");

@@ -2,6 +2,7 @@ package org.pragmatica.aether.resource;
 
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 /// SPI interface for creating infrastructure resources from configuration.
 ///
@@ -89,5 +90,27 @@ public interface ResourceFactory<T, C> {
     /// @return true if this factory can handle the configuration
     default boolean supports(C config) {
         return true;
+    }
+
+    /// Close/release a resource instance.
+    ///
+    /// Default implementation handles AutoCloseable resources automatically.
+    /// For non-AutoCloseable resources, this is a no-op.
+    /// Override for custom cleanup logic.
+    ///
+    /// @param resource The resource instance to close
+    /// @return Promise completing when the resource is closed
+    default Promise<Unit> close(T resource) {
+        if (resource instanceof AutoCloseable closeable) {
+            return Promise.promise(promise -> {
+                                       try{
+                                           closeable.close();
+                                           promise.succeed(Unit.unit());
+                                       } catch (Exception e) {
+                                           promise.succeed(Unit.unit());
+                                       }
+                                   });
+        }
+        return Promise.unitPromise();
     }
 }
