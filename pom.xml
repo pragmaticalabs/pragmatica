@@ -84,6 +84,7 @@
         <maven-plugin-api.version>3.9.9</maven-plugin-api.version>
         <maven-plugin-annotations.version>3.15.1</maven-plugin-annotations.version>
         <maven-plugin-plugin.version>4.0.0-beta-2</maven-plugin-plugin.version>
+        <jacoco.version>0.8.13</jacoco.version>
 
         <!-- Default true to avoid reactor cycle; override with -Djbct.skip=false -pl !jbct -->
         <jbct.skip>true</jbct.skip>
@@ -565,6 +566,32 @@
                     </executions>
                 </plugin>
                 <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>${jacoco.version}</version>
+                    <executions>
+                        <execution>
+                            <id>prepare-agent</id>
+                            <goals>
+                                <goal>prepare-agent</goal>
+                            </goals>
+                        </execution>
+                        <execution>
+                            <id>prepare-agent-integration</id>
+                            <goals>
+                                <goal>prepare-agent-integration</goal>
+                            </goals>
+                        </execution>
+                        <execution>
+                            <id>report</id>
+                            <phase>verify</phase>
+                            <goals>
+                                <goal>report</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+                <plugin>
                     <groupId>org.pragmatica-lite</groupId>
                     <artifactId>jbct-maven-plugin</artifactId>
                     <version>${project.version}</version>
@@ -629,6 +656,17 @@
                     <plugin>
                         <groupId>org.sonatype.central</groupId>
                         <artifactId>central-publishing-maven-plugin</artifactId>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>coverage</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.jacoco</groupId>
+                        <artifactId>jacoco-maven-plugin</artifactId>
                     </plugin>
                 </plugins>
             </build>

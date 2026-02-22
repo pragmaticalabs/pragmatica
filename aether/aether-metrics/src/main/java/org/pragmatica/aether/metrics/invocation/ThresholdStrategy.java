@@ -174,7 +174,7 @@ public sealed interface ThresholdStrategy {
             }
 
             private void updateEma(long durationNs) {
-                double currentEma;
+                Double currentEma;
                 double newEma;
                 do{
                     currentEma = ema.get();
