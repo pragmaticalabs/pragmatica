@@ -4,6 +4,7 @@ import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.e2e.containers.AetherCluster;
+import org.pragmatica.aether.e2e.containers.AetherNodeContainer;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
@@ -40,8 +41,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class RollingUpdateE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
     private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.17.0");
-    private static final String OLD_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
-    private static final String NEW_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.17.0";
+    private static final String ARTIFACT_BASE = "org.pragmatica-lite.aether.test:echo-slice-echo-service";
+    private static final String OLD_VERSION = ARTIFACT_BASE + ":" + AetherCluster.ROLLING_UPDATE_OLD_VERSION;
+    private static final String NEW_VERSION = ARTIFACT_BASE + ":" + TEST_ARTIFACT_VERSION;
     private static final Duration UPDATE_TIMEOUT = adapt(Duration.ofSeconds(120));
 
     // Common timeouts (CI gets 2x via adapt())

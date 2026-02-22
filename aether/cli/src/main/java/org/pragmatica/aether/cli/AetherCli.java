@@ -769,8 +769,7 @@ public class AetherCli implements Runnable {
             @Override
             @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
-                var encodedId = blueprintId.replace(":", "%3A");
-                var response = blueprintParent.parent.fetchFromNode("/api/blueprint/" + encodedId);
+                var response = blueprintParent.parent.fetchFromNode("/api/blueprint/" + blueprintId);
                 if (response.contains("\"error\":")) {
                     System.out.println("Failed to get blueprint: " + response);
                     return 1;
@@ -839,8 +838,7 @@ public class AetherCli implements Runnable {
                         return 0;
                     }
                 }
-                var encodedId = blueprintId.replace(":", "%3A");
-                var response = blueprintParent.parent.deleteFromNode("/api/blueprint/" + encodedId);
+                var response = blueprintParent.parent.deleteFromNode("/api/blueprint/" + blueprintId);
                 if (response.contains("\"error\":")) {
                     System.out.println("Failed to delete blueprint: " + response);
                     return 1;
@@ -877,8 +875,7 @@ public class AetherCli implements Runnable {
             @Override
             @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
-                var encodedId = blueprintId.replace(":", "%3A");
-                var response = blueprintParent.parent.fetchFromNode("/api/blueprint/" + encodedId + "/status");
+                var response = blueprintParent.parent.fetchFromNode("/api/blueprint/" + blueprintId + "/status");
                 if (response.contains("\"error\":")) {
                     System.out.println("Failed to get blueprint status: " + response);
                     return 1;

@@ -4,6 +4,7 @@ import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.e2e.containers.AetherCluster;
+import org.pragmatica.aether.e2e.containers.AetherNodeContainer;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
@@ -185,12 +186,12 @@ class SliceDeploymentE2ETest {
     @Order(6)
     void blueprintApply_deploysSlice() {
         var blueprint = """
-            id = "org.test:e2e-blueprint:1.0.0"
+            id = "%s"
 
             [[slices]]
             artifact = "%s"
             instances = 1
-            """.formatted(TEST_ARTIFACT);
+            """.formatted(AetherNodeContainer.E2E_BLUEPRINT_ID, TEST_ARTIFACT);
 
         var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
         var response = leader.applyBlueprint(blueprint);

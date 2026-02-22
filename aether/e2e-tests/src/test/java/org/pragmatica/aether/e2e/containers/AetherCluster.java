@@ -54,9 +54,11 @@ public class AetherCluster implements AutoCloseable {
     private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
     // Note: Uses slice artifact IDs (echo-slice-echo-service), not module artifact IDs (echo-slice)
     private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.17.0");
+    /// Synthetic old version for rolling update tests — same JAR uploaded under a different version string.
+    public static final String ROLLING_UPDATE_OLD_VERSION = "0.16.0";
+    private static final String TEST_ARTIFACT_ID = "echo-slice-echo-service";
     private static final String[][] TEST_ARTIFACTS = {
-        {"echo-slice-echo-service", TEST_ARTIFACT_VERSION},
-        {"echo-slice-echo-service", "0.17.0"}
+        {TEST_ARTIFACT_ID, TEST_ARTIFACT_VERSION}
     };
 
     private final List<AetherNodeContainer> nodes;
@@ -166,6 +168,10 @@ public class AetherCluster implements AutoCloseable {
                 var success = leaderNode.uploadArtifact(TEST_GROUP_PATH, artifactId, version, jarPath);
                 if (!success) {
                     System.err.println("[WARN] Failed to upload artifact: " + jarPath);
+                }
+                // Also upload under synthetic old version for rolling update tests
+                if (version.equals(TEST_ARTIFACT_VERSION)) {
+                    leaderNode.uploadArtifact(TEST_GROUP_PATH, artifactId, ROLLING_UPDATE_OLD_VERSION, jarPath);
                 }
             } else {
                 System.err.println("[WARN] Test artifact not found: " + jarPath);

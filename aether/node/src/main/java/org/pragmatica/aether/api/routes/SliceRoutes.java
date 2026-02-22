@@ -31,6 +31,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import static org.pragmatica.http.routing.PathParameter.aString;
+import static org.pragmatica.http.routing.PathParameter.spacer;
 import static org.pragmatica.aether.api.ManagementApiResponses.*;
 
 /// Routes for slice management: scale, blueprint, status.
@@ -69,20 +71,18 @@ public final class SliceRoutes implements RouteSource {
                          // Blueprint management routes
         Route.<BlueprintListResponse> get("/api/blueprints")
              .toJson(this::buildBlueprintListResponse),
-                         Route.<BlueprintDetailResponse> get("/api/blueprint/{id}")
-                              .to(ctx -> ctx.pathParam(0)
-                                            .async()
-                                            .flatMap(this::handleGetBlueprint))
+                         Route.<BlueprintDetailResponse> get("/api/blueprint")
+                              .withPath(aString())
+                              .to(this::handleGetBlueprint)
                               .asJson(),
-                         Route.<BlueprintStatusResponse> get("/api/blueprint/{id}/status")
-                              .to(ctx -> ctx.pathParam(0)
-                                            .async()
-                                            .flatMap(this::handleGetBlueprintStatus))
+                         Route.<BlueprintStatusResponse> get("/api/blueprint")
+                              .withPath(aString(),
+                                        spacer("status"))
+                              .to((id, _) -> handleGetBlueprintStatus(id))
                               .asJson(),
-                         Route.<BlueprintDeleteResponse> delete("/api/blueprint/{id}")
-                              .to(ctx -> ctx.pathParam(0)
-                                            .async()
-                                            .flatMap(this::handleDeleteBlueprint))
+                         Route.<BlueprintDeleteResponse> delete("/api/blueprint")
+                              .withPath(aString())
+                              .to(this::handleDeleteBlueprint)
                               .asJson(),
                          Route.<BlueprintValidationResponse> post("/api/blueprint/validate")
                               .to(ctx -> handleValidateBlueprint(ctx.bodyAsString()))

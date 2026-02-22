@@ -336,8 +336,12 @@ public interface ClusterDeploymentManager {
                 for (var artifact : artifactsToRemove) {
                     blueprints.remove(artifact);
                     allCommands.addAll(collectDeallocationCommands(artifact));
+                    // Remove SliceTargetKey to clean up desired-state tracking
+                    allCommands.add(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(artifact.base())));
                 }
                 submitBatch(allCommands);
+                // Schedule reconciliation to clean up any stuck UNLOADING entries
+                SharedScheduler.schedule(this::reconcile, timeSpan(5).seconds());
             }
 
             @Override
@@ -493,6 +497,10 @@ public interface ClusterDeploymentManager {
                              desiredInstances,
                              slice.instances());
                     blueprints.put(artifact, Blueprint.blueprint(artifact, desiredInstances));
+                    // Create SliceTargetKey so rolling updates can find the current version
+                    allCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
+                                                        SliceTargetValue.sliceTargetValue(artifact.version(),
+                                                                                          desiredInstances)));
                     allCommands.addAll(collectAllocationCommands(artifact, desiredInstances));
                 }
                 submitBatch(allCommands);
