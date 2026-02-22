@@ -509,7 +509,11 @@ public interface RollingUpdateManager {
                 var routingCmd = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(routingKey, routingValue);
                 // Build target command
                 var targetKey = AetherKey.SliceTargetKey.sliceTargetKey(artifactBase);
-                var targetValue = AetherValue.SliceTargetValue.sliceTargetValue(update.newVersion(), instances);
+                var existingMinInstances = kvStore.get(targetKey)
+                                                   .filter(v -> v instanceof SliceTargetValue)
+                                                   .map(v -> ((SliceTargetValue) v).effectiveMinInstances())
+                                                   .or(instances);
+                var targetValue = new SliceTargetValue(update.newVersion(), instances, existingMinInstances, Option.none(), System.currentTimeMillis());
                 var targetCmd = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(targetKey, targetValue);
                 log.info("Deploying {} instances of {} (version {})", instances, artifactBase, update.newVersion());
                 // Send routing AND target in single batch to ensure atomic processing
@@ -551,10 +555,14 @@ public interface RollingUpdateManager {
             @SuppressWarnings("unchecked")
             private Promise<Unit> updateSliceTargetVersion(ArtifactBase artifactBase, Version version) {
                 var key = SliceTargetKey.sliceTargetKey(artifactBase);
-                var instances = kvStore.get(key)
-                                       .map(value -> ((SliceTargetValue) value).targetInstances())
-                                       .or(1);
-                var value = SliceTargetValue.sliceTargetValue(version, instances);
+                var existing = kvStore.get(key)
+                                      .filter(v -> v instanceof SliceTargetValue)
+                                      .map(v -> (SliceTargetValue) v);
+                var instances = existing.map(SliceTargetValue::targetInstances)
+                                        .or(1);
+                var minInstances = existing.map(SliceTargetValue::effectiveMinInstances)
+                                           .or(instances);
+                var value = new SliceTargetValue(version, instances, minInstances, Option.none(), System.currentTimeMillis());
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
                 return clusterNode.<Unit> apply(List.of(command))
                                   .timeout(KV_OPERATION_TIMEOUT)

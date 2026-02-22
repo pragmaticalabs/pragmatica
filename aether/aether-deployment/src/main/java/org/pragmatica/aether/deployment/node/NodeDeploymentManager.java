@@ -653,8 +653,10 @@ public interface NodeDeploymentManager {
             private void handleUnloadFailure(SliceNodeKey sliceKey, Cause cause) {
                 log.error("Failed to unload {}: {}", sliceKey.artifact(), cause.message());
                 // Delete KV key even on failure to prevent stuck UNLOADING state
-                deleteSliceNodeKey(sliceKey);
-                removeFromDeployments(sliceKey);
+                deleteSliceNodeKey(sliceKey).onSuccess(_ -> removeFromDeployments(sliceKey))
+                                  .onFailure(deleteCause -> log.error("Failed to delete slice-node-key {} after unload failure: {}",
+                                                                      sliceKey,
+                                                                      deleteCause.message()));
             }
 
             private Promise<Unit> deleteSliceNodeKey(SliceNodeKey sliceKey) {

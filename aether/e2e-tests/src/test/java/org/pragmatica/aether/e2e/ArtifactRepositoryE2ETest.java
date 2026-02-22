@@ -176,7 +176,6 @@ class ArtifactRepositoryE2ETest {
 
     @Test
     @Order(5)
-    @Disabled("Flaky - timeout in leader failover/partition recovery scenarios")
     void artifactSurvives_leaderFailover() {
         var originalLeader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
         var originalLeaderId = originalLeader.nodeId();

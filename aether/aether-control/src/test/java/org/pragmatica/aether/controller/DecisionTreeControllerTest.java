@@ -65,6 +65,25 @@ class DecisionTreeControllerTest {
 
             assertThat(decisions.changes()).isEmpty();
         }
+
+        @Test
+        void evaluate_lowCpuAtMinInstances_returnsNoChanges() {
+            var context = contextWithCpuAndMinInstances(0.1, 3, 3);
+
+            var decisions = controller.evaluate(context).await().unwrap();
+
+            assertThat(decisions.changes()).isEmpty();
+        }
+
+        @Test
+        void evaluate_lowCpuAboveMinInstances_returnsScaleDown() {
+            var context = contextWithCpuAndMinInstances(0.1, 5, 3);
+
+            var decisions = controller.evaluate(context).await().unwrap();
+
+            assertThat(decisions.changes()).hasSize(1);
+            assertThat(decisions.changes().getFirst()).isInstanceOf(BlueprintChange.ScaleDown.class);
+        }
     }
 
     @Nested
@@ -117,7 +136,14 @@ class DecisionTreeControllerTest {
     private static ControlContext contextWithCpu(double cpuValue, int instances) {
         var nodeId = NodeId.randomNodeId();
         var metrics = Map.of(nodeId, Map.of(MetricsCollector.CPU_USAGE, cpuValue));
-        var blueprints = Map.of(TEST_ARTIFACT, new Blueprint(TEST_ARTIFACT, instances));
+        var blueprints = Map.of(TEST_ARTIFACT, new Blueprint(TEST_ARTIFACT, instances, 1));
+        return new ControlContext(metrics, blueprints, List.of(nodeId));
+    }
+
+    private static ControlContext contextWithCpuAndMinInstances(double cpuValue, int instances, int minInstances) {
+        var nodeId = NodeId.randomNodeId();
+        var metrics = Map.of(nodeId, Map.of(MetricsCollector.CPU_USAGE, cpuValue));
+        var blueprints = Map.of(TEST_ARTIFACT, new Blueprint(TEST_ARTIFACT, instances, minInstances));
         return new ControlContext(metrics, blueprints, List.of(nodeId));
     }
 }

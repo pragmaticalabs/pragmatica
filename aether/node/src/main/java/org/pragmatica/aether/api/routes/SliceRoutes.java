@@ -103,11 +103,32 @@ public final class SliceRoutes implements RouteSource {
         return validateScaleRequest(request).async()
                                    .flatMap(params -> Artifact.artifact(params.artifact())
                                                               .async()
-                                                              .flatMap(artifact -> guardBlueprintMembership(artifact).flatMap(_ -> applyDeployCommand(artifact,
-                                                                                                                                                      params.instances()))
+                                                              .flatMap(artifact -> guardBlueprintMembership(artifact).flatMap(_ -> guardMinInstances(artifact,
+                                                                                                                                                    params.instances()))
+                                                                                                           .flatMap(_ -> applyDeployCommand(artifact,
+                                                                                                                                            params.instances()))
                                                                                                            .map(_ -> new ScaleResponse("scaled",
                                                                                                                                        artifact.asString(),
                                                                                                                                        params.instances()))));
+    }
+
+    private static final Cause BELOW_MIN_INSTANCES = Causes.cause("Requested instances is below blueprint minimum");
+
+    private Promise<Unit> guardMinInstances(Artifact artifact, int requestedInstances) {
+        if (requestedInstances < 1) {
+            return BELOW_MIN_INSTANCES.promise();
+        }
+        var node = nodeSupplier.get();
+        var key = SliceTargetKey.sliceTargetKey(artifact.base());
+        return node.kvStore()
+                   .get(key)
+                   .filter(v -> v instanceof SliceTargetValue)
+                   .map(v -> ((SliceTargetValue) v).effectiveMinInstances())
+                   .map(min -> requestedInstances >= min
+                               ? Promise.unitPromise()
+                               : Causes.cause("Requested " + requestedInstances + " instances but blueprint minimum is " + min)
+                                       .<Unit> promise())
+                   .or(Promise.unitPromise());
     }
 
     private Promise<Unit> guardBlueprintMembership(Artifact artifact) {

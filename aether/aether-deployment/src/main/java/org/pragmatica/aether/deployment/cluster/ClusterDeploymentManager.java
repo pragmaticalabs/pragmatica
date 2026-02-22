@@ -1121,6 +1121,7 @@ public interface ClusterDeploymentManager {
                           reconciled,
                           blueprints.size());
                 submitBatch(allCommands);
+                cleanupOrphanedSliceEntries();
             }
         }
     }

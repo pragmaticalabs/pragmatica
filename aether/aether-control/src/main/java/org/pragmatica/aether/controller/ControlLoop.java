@@ -78,7 +78,7 @@ public interface ControlLoop {
     void onQuorumStateChange(QuorumStateNotification notification);
 
     /// Register a blueprint for controller management.
-    void registerBlueprint(Artifact artifact, int instances);
+    void registerBlueprint(Artifact artifact, int instances, int minInstances);
 
     /// Unregister a blueprint from controller management.
     void unregisterBlueprint(Artifact artifact);
@@ -158,7 +158,8 @@ public interface ControlLoop {
                 var sliceTargetValue = valuePut.cause()
                                                .value();
                 registerBlueprint(artifactBase.withVersion(sliceTargetValue.currentVersion()),
-                                  sliceTargetValue.targetInstances());
+                                  sliceTargetValue.targetInstances(),
+                                  sliceTargetValue.effectiveMinInstances());
             }
 
             @Override
@@ -191,9 +192,9 @@ public interface ControlLoop {
             }
 
             @Override
-            public void registerBlueprint(Artifact artifact, int instances) {
-                blueprints.put(artifact, new ClusterController.Blueprint(artifact, instances));
-                log.info("Registered blueprint: {} with {} instances", artifact, instances);
+            public void registerBlueprint(Artifact artifact, int instances, int minInstances) {
+                blueprints.put(artifact, new ClusterController.Blueprint(artifact, instances, minInstances));
+                log.info("Registered blueprint: {} with {} instances (min: {})", artifact, instances, minInstances);
             }
 
             @Override
@@ -467,7 +468,7 @@ public interface ControlLoop {
                                                                           ClusterController.Blueprint currentBlueprint) {
                 var requestedInstances = switch (change) {
                     case BlueprintChange.ScaleUp(_, int additional) -> currentBlueprint.instances() + additional;
-                    case BlueprintChange.ScaleDown(_, int reduceBy) -> Math.max(1,
+                    case BlueprintChange.ScaleDown(_, int reduceBy) -> Math.max(currentBlueprint.minInstances(),
                                                                                 currentBlueprint.instances() - reduceBy);
                 };
                 var clusterSize = topology.get()
@@ -491,7 +492,7 @@ public interface ControlLoop {
                          artifact,
                          currentBlueprint.instances(),
                          newInstances);
-                blueprints.put(artifact, new ClusterController.Blueprint(artifact, newInstances));
+                blueprints.put(artifact, new ClusterController.Blueprint(artifact, newInstances, currentBlueprint.minInstances()));
                 var key = SliceTargetKey.sliceTargetKey(artifact.base());
                 var value = SliceTargetValue.sliceTargetValue(artifact.version(), newInstances);
                 return Option.some(new KVCommand.Put<>(key, value));

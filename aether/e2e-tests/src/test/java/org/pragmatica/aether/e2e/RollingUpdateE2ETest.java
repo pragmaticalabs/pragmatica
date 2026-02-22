@@ -151,7 +151,6 @@ class RollingUpdateE2ETest {
 
     @Test
     @Order(3)
-    @Disabled("Flaky - timeout in leader failover/partition recovery scenarios")
     void rollingUpdate_completion_removesOldVersion() {
         startRollingUpdate(NEW_VERSION, 3);
         await().atMost(UPDATE_TIMEOUT)
@@ -180,7 +179,6 @@ class RollingUpdateE2ETest {
 
     @Test
     @Order(4)
-    @Disabled("Flaky - timeout in leader failover/partition recovery scenarios")
     void rollingUpdate_rollback_restoresOldVersion() {
         startRollingUpdate(NEW_VERSION, 3);
         await().atMost(UPDATE_TIMEOUT)
