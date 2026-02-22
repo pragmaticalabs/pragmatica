@@ -54,17 +54,17 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 22 | Publisher/Subscriber API | Partial | `Publisher<T>` functional interface, `Subscriber` marker, `@Subscription` annotation. **Gap:** No tests |
-| 23 | Topic subscription registry | Partial | KV-Store backed subscriber discovery with competing consumers (round-robin). **Gap:** No tests |
-| 24 | Message delivery | Partial | TopicPublisher fans out via SliceInvoker. PublisherFactory registered as SPI. **Gap:** No tests, message type serialization not verified |
-| 25 | Resource lifecycle | Partial | Reference-counted `releaseAll()`, generated `stop()` cleanup, consumer tracking. **Gap:** SliceId propagation in ProvisioningContext unverified |
+| 22 | Publisher/Subscriber API | Complete | `Publisher<T>` functional interface, `Subscriber` marker, `@Subscription` annotation. 18 unit tests |
+| 23 | Topic subscription registry | Complete | KV-Store backed subscriber discovery with competing consumers (round-robin). Tested |
+| 24 | Message delivery | Complete | TopicPublisher fans out via SliceInvoker. PublisherFactory registered as SPI. Tested |
+| 25 | Resource lifecycle | Complete | Reference-counted `releaseAll()`, generated `stop()` cleanup, consumer tracking. SliceId auto-injected into ProvisioningContext |
 
 ## Storage & Data
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
 | 26 | Artifact repository | Complete | Maven-compatible, chunked storage, checksum verification (MD5/SHA1), 64MB upload limit, metadata XML generation |
-| 27 | Distributed hash table | Partial | Consistent hash ring (150 vnodes, 1024 partitions), quorum R/W (R=2, W=2), topology listener. **Gap:** No re-replication on node departure, digest handlers are no-ops, no data migration |
+| 27 | Distributed hash table | Complete | Consistent hash ring (150 vnodes, 1024 partitions), quorum R/W, anti-entropy repair (CRC32 digest exchange, migration on mismatch), re-replication on node departure (DHTRebalancer), per-use-case config via `scoped()` |
 | 28 | Configuration service | Complete | TOML-based config with runtime overrides via KV-Store, environment variable interpolation, system property fallback |
 
 ## Observability & Metrics
@@ -124,8 +124,8 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | Status | Count |
 |--------|-------|
-| Complete | 46 |
-| Partial | 8 |
+| Complete | 53 |
+| Partial | 1 |
 | Total | 54 |
 
 **Partial features and their gaps:**
@@ -133,11 +133,6 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Feature | Key Gap |
 |---------|---------|
 | TTM predictive scaling | Disabled by default, no live model training |
-| Publisher/Subscriber API | No tests |
-| Topic subscription registry | No tests |
-| Message delivery | No tests, serialization registration unverified |
-| Resource lifecycle | SliceId propagation unverified |
-| DHT replication | No re-replication on node departure, digest/migration handlers are no-ops |
 
 ---
 

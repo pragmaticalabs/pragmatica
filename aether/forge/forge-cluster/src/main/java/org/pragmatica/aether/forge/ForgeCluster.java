@@ -536,6 +536,7 @@ public final class ForgeCluster {
                                           org.pragmatica.aether.config.SliceConfig.sliceConfig(),
                                           mgmtPort,
                                           DHTConfig.FULL,
+                                          DHTConfig.CACHE_DEFAULT,
                                           Option.empty(),
                                           org.pragmatica.aether.config.TtmConfig.ttmConfig(),
                                           RollbackConfig.rollbackConfig(),

@@ -22,7 +22,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+import java.util.Arrays;
 import java.util.function.Consumer;
+import java.util.zip.CRC32;
 
 /// Local DHT node that handles storage operations.
 /// Provides local data access and can be integrated with MessageRouter
@@ -174,5 +176,57 @@ public final class DHTNode {
                .onFailure(_ -> responseHandler.accept(new DHTMessage.ExistsResponse(request.requestId(),
                                                                                     nodeId,
                                                                                     false)));
+    }
+
+    /// Handle a digest request: compute digest for the requested partition range and respond.
+    public void handleDigestRequest(DHTMessage.DigestRequest request,
+                                    Consumer<DHTMessage.DigestResponse> responseHandler) {
+        var partition = Partition.at(request.partitionStart());
+        storage.entriesForPartition(ring, partition)
+               .onSuccess(entries -> responseHandler.accept(new DHTMessage.DigestResponse(request.requestId(),
+                                                                                          nodeId,
+                                                                                          computeDigest(entries))))
+               .onFailure(_ -> responseHandler.accept(new DHTMessage.DigestResponse(request.requestId(),
+                                                                                    nodeId,
+                                                                                    new byte[0])));
+    }
+
+    /// Handle a migration data request: return all entries for the requested partition range.
+    public void handleMigrationDataRequest(DHTMessage.MigrationDataRequest request,
+                                           Consumer<DHTMessage.MigrationDataResponse> responseHandler) {
+        var partition = Partition.at(request.partitionStart());
+        storage.entriesForPartition(ring, partition)
+               .onSuccess(entries -> responseHandler.accept(new DHTMessage.MigrationDataResponse(request.requestId(),
+                                                                                                  nodeId,
+                                                                                                  entries)))
+               .onFailure(_ -> responseHandler.accept(new DHTMessage.MigrationDataResponse(request.requestId(),
+                                                                                            nodeId,
+                                                                                            java.util.List.of())));
+    }
+
+    /// Apply migration data by merging received entries into local storage.
+    public void applyMigrationData(java.util.List<DHTMessage.KeyValue> entries) {
+        entries.forEach(kv -> storage.put(kv.key(), kv.value()));
+    }
+
+    /// Compute a CRC32 digest over sorted key-value entries.
+    static byte[] computeDigest(java.util.List<DHTMessage.KeyValue> entries) {
+        var crc = new CRC32();
+        entries.stream()
+               .sorted((a, b) -> Arrays.compare(a.key(), b.key()))
+               .forEach(kv -> updateCrc(crc, kv));
+        return longToBytes(crc.getValue());
+    }
+
+    private static void updateCrc(CRC32 crc, DHTMessage.KeyValue kv) {
+        crc.update(kv.key());
+        crc.update(kv.value());
+    }
+
+    private static byte[] longToBytes(long value) {
+        return new byte[]{(byte) (value >>> 56), (byte) (value >>> 48),
+                          (byte) (value >>> 40), (byte) (value >>> 32),
+                          (byte) (value >>> 24), (byte) (value >>> 16),
+                          (byte) (value >>> 8), (byte) value};
     }
 }

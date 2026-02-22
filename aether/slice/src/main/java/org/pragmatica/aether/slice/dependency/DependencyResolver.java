@@ -100,7 +100,7 @@ public interface DependencyResolver {
                                                      SharedLibraryClassLoader sharedLibraryLoader,
                                                      SliceInvokerFacade invokerFacade,
                                                      ResourceProviderFacade resourceFacade) {
-        var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade, resourceFacade);
+        var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade, resourceFacade, artifact.asString());
         return registry.lookup(artifact)
                        .map(slice -> Promise.success(new ResolvedSlice(slice, loadingContext)))
                        .or(() -> resolveWithSharedLoaderAndContext(artifact,

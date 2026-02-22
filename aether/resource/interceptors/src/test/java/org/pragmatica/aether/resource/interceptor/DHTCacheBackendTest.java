@@ -80,6 +80,33 @@ class DHTCacheBackendTest {
         assertThat(result2.unwrap()).isEqualTo("ns2-value");
     }
 
+    @Test
+    void put_thenGet_returnsValue() {
+        backend.put("round-trip", "serialized-value").await();
+
+        var result = backend.get("round-trip").await().fold(_ -> Option.none(), v -> v);
+
+        assertThat(result.isPresent()).isTrue();
+        assertThat(result.unwrap()).isEqualTo("serialized-value");
+    }
+
+    @Test
+    void put_nullishKey_handlesGracefully() {
+        backend.put("null", "value-for-null-key").await();
+
+        var result = backend.get("null").await().fold(_ -> Option.none(), v -> v);
+
+        assertThat(result.isPresent()).isTrue();
+        assertThat(result.unwrap()).isEqualTo("value-for-null-key");
+    }
+
+    @Test
+    void remove_nonExistentKey_succeeds() {
+        var result = backend.remove("never-existed").await();
+
+        assertThat(result.isSuccess()).isTrue();
+    }
+
     private static final class FakeDHTClient implements DHTClient {
         private final ConcurrentHashMap<String, byte[]> storage;
 

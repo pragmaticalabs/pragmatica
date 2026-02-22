@@ -492,7 +492,8 @@ public interface ControlLoop {
                          artifact,
                          currentBlueprint.instances(),
                          newInstances);
-                blueprints.put(artifact, new ClusterController.Blueprint(artifact, newInstances, currentBlueprint.minInstances()));
+                blueprints.put(artifact,
+                               new ClusterController.Blueprint(artifact, newInstances, currentBlueprint.minInstances()));
                 var key = SliceTargetKey.sliceTargetKey(artifact.base());
                 var value = SliceTargetValue.sliceTargetValue(artifact.version(), newInstances);
                 return Option.some(new KVCommand.Put<>(key, value));

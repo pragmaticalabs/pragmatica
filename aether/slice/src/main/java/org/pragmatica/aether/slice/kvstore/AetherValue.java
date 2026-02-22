@@ -46,12 +46,20 @@ public sealed interface AetherValue {
 
         /// Returns a new value with updated instance count, preserving minInstances.
         public SliceTargetValue withInstances(int newCount) {
-            return new SliceTargetValue(currentVersion, newCount, minInstances, owningBlueprint, System.currentTimeMillis());
+            return new SliceTargetValue(currentVersion,
+                                        newCount,
+                                        minInstances,
+                                        owningBlueprint,
+                                        System.currentTimeMillis());
         }
 
         /// Returns a new value with updated version, preserving minInstances.
         public SliceTargetValue withVersion(Version newVersion) {
-            return new SliceTargetValue(newVersion, targetInstances, minInstances, owningBlueprint, System.currentTimeMillis());
+            return new SliceTargetValue(newVersion,
+                                        targetInstances,
+                                        minInstances,
+                                        owningBlueprint,
+                                        System.currentTimeMillis());
         }
     }
 

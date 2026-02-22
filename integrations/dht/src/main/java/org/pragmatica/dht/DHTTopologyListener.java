@@ -17,6 +17,7 @@
 package org.pragmatica.dht;
 
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.lang.Option;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,16 +28,26 @@ public final class DHTTopologyListener {
     private static final Logger log = LoggerFactory.getLogger(DHTTopologyListener.class);
 
     private final DHTNode node;
+    private final Option<DHTRebalancer> rebalancer;
 
-    private DHTTopologyListener(DHTNode node) {
+    private DHTTopologyListener(DHTNode node, Option<DHTRebalancer> rebalancer) {
         this.node = node;
+        this.rebalancer = rebalancer;
     }
 
-    /// Create a topology listener for the given DHT node.
+    /// Create a topology listener for the given DHT node without rebalancer.
     ///
     /// @param node the local DHT node whose ring will be updated
     public static DHTTopologyListener dhtTopologyListener(DHTNode node) {
-        return new DHTTopologyListener(node);
+        return new DHTTopologyListener(node, Option.none());
+    }
+
+    /// Create a topology listener for the given DHT node with rebalancer.
+    ///
+    /// @param node       the local DHT node whose ring will be updated
+    /// @param rebalancer rebalancer to trigger re-replication on node departure
+    public static DHTTopologyListener dhtTopologyListener(DHTNode node, DHTRebalancer rebalancer) {
+        return new DHTTopologyListener(node, Option.some(rebalancer));
     }
 
     /// Handle a node-added event by adding the node to the consistent hash ring.
@@ -47,11 +58,13 @@ public final class DHTTopologyListener {
             .addNode(addedNodeId);
     }
 
-    /// Handle a node-removed event by removing the node from the consistent hash ring.
+    /// Handle a node-removed event by removing the node from the consistent hash ring
+    /// and triggering rebalance to restore replication factor.
     public void onNodeRemoved(TopologyChangeNotification.NodeRemoved event) {
         var removedNodeId = event.nodeId();
         log.info("DHT: Node removed {}, updating ring", removedNodeId.id());
         node.ring()
             .removeNode(removedNodeId);
+        rebalancer.onPresent(r -> r.onNodeRemoved(removedNodeId));
     }
 }

@@ -104,7 +104,7 @@ public final class SliceRoutes implements RouteSource {
                                    .flatMap(params -> Artifact.artifact(params.artifact())
                                                               .async()
                                                               .flatMap(artifact -> guardBlueprintMembership(artifact).flatMap(_ -> guardMinInstances(artifact,
-                                                                                                                                                    params.instances()))
+                                                                                                                                                     params.instances()))
                                                                                                            .flatMap(_ -> applyDeployCommand(artifact,
                                                                                                                                             params.instances()))
                                                                                                            .map(_ -> new ScaleResponse("scaled",
@@ -126,7 +126,8 @@ public final class SliceRoutes implements RouteSource {
                    .map(v -> ((SliceTargetValue) v).effectiveMinInstances())
                    .map(min -> requestedInstances >= min
                                ? Promise.unitPromise()
-                               : Causes.cause("Requested " + requestedInstances + " instances but blueprint minimum is " + min)
+                               : Causes.cause("Requested " + requestedInstances
+                                              + " instances but blueprint minimum is " + min)
                                        .<Unit> promise())
                    .or(Promise.unitPromise());
     }

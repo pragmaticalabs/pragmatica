@@ -23,11 +23,11 @@ import org.pragmatica.utility.KSUID;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.zip.CRC32;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,11 +39,17 @@ public final class DHTAntiEntropy {
     private static final Logger log = LoggerFactory.getLogger(DHTAntiEntropy.class);
     private static final long INTERVAL_SECONDS = 30;
 
+    /// Tracks a pending digest comparison: local digest + partition for a remote peer.
+    record PendingDigest(NodeId peer, int partitionIndex, byte[] localDigest) {}
+
     private final DHTNode node;
     private final ClusterNetwork network;
     private final DHTConfig config;
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean running = new AtomicBoolean(false);
+
+    /// Pending digest comparisons indexed by correlation ID.
+    private final ConcurrentHashMap<String, PendingDigest> pendingDigests = new ConcurrentHashMap<>();
 
     private DHTAntiEntropy(DHTNode node, ClusterNetwork network, DHTConfig config) {
         this.node = node;
@@ -120,33 +126,63 @@ public final class DHTAntiEntropy {
     }
 
     private byte[] computeDigest(List<DHTMessage.KeyValue> entries) {
-        var crc = new CRC32();
-        entries.stream()
-               .sorted((a, b) -> Arrays.compare(a.key(),
-                                                b.key()))
-               .forEach(kv -> {
-                   crc.update(kv.key());
-                   crc.update(kv.value());
-               });
-        return longToBytes(crc.getValue());
+        return DHTNode.computeDigest(entries);
     }
 
-    private void sendDigestToPeers(int partitionIndex, List<NodeId> nodes, byte[] digest) {
+    private void sendDigestToPeers(int partitionIndex, List<NodeId> nodes, byte[] localDigest) {
         for (var peer : nodes) {
             if (peer.equals(node.nodeId())) {
                 continue;
             }
             var correlationId = KSUID.ksuid()
                                      .toString();
+            pendingDigests.put(correlationId, new PendingDigest(peer, partitionIndex, localDigest));
             network.send(peer,
                          new DHTMessage.DigestRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex));
         }
     }
 
+    /// Handle a digest response from a remote peer.
+    /// Compares local vs remote digest; if they differ, requests migration data.
+    public void onDigestResponse(DHTMessage.DigestResponse response) {
+        var pending = pendingDigests.remove(response.requestId());
+        if (pending == null) {
+            return;
+        }
+        if (Arrays.equals(pending.localDigest(), response.digest())) {
+            log.debug("Partition {} in sync with {}", pending.partitionIndex(), pending.peer().id());
+            return;
+        }
+        log.info("Partition {} diverged from {}, requesting migration data",
+                 pending.partitionIndex(), pending.peer().id());
+        requestMigrationData(pending.peer(), pending.partitionIndex());
+    }
+
+    /// Handle migration data response: merge received entries into local storage.
+    public void onMigrationDataResponse(DHTMessage.MigrationDataResponse response) {
+        if (response.entries().isEmpty()) {
+            return;
+        }
+        log.info("Received {} entries from {} for repair", response.entries().size(), response.sender().id());
+        node.applyMigrationData(response.entries());
+    }
+
+    private void requestMigrationData(NodeId peer, int partitionIndex) {
+        var correlationId = KSUID.ksuid()
+                                 .toString();
+        network.send(peer,
+                     new DHTMessage.MigrationDataRequest(correlationId, node.nodeId(), partitionIndex, partitionIndex));
+    }
+
+    /// Get the count of pending digest comparisons (for testing).
+    int pendingDigestCount() {
+        return pendingDigests.size();
+    }
+
     private static byte[] longToBytes(long value) {
-        return new byte[]{(byte)(value>>> 56), (byte)(value>>> 48),
-        (byte)(value>>> 40), (byte)(value>>> 32),
-        (byte)(value>>> 24), (byte)(value>>> 16),
-        (byte)(value>>> 8), (byte) value};
+        return new byte[]{(byte) (value >>> 56), (byte) (value >>> 48),
+                          (byte) (value >>> 40), (byte) (value >>> 32),
+                          (byte) (value >>> 24), (byte) (value >>> 16),
+                          (byte) (value >>> 8), (byte) value};
     }
 }

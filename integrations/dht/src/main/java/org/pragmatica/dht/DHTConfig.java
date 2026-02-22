@@ -47,6 +47,9 @@ public record DHTConfig(int replicationFactor, int writeQuorum, int readQuorum, 
     /// Single-node configuration for testing.
     public static final DHTConfig SINGLE_NODE = new DHTConfig(1, 1, 1, DEFAULT_TIMEOUT);
 
+    /// Cache configuration: single replica for ephemeral cache data.
+    public static final DHTConfig CACHE_DEFAULT = new DHTConfig(1, 1, 1, DEFAULT_TIMEOUT);
+
     /// Full replication configuration - all nodes store all data.
     /// Read/write quorum of 1 since any node has all data.
     public static final DHTConfig FULL = new DHTConfig(FULL_REPLICATION, 1, 1, DEFAULT_TIMEOUT);

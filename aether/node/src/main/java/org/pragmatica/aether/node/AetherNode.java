@@ -69,8 +69,11 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.dht.ConsistentHashRing;
+import org.pragmatica.dht.DHTAntiEntropy;
+import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.DHTNode;
+import org.pragmatica.dht.DHTRebalancer;
 import org.pragmatica.dht.DHTTopologyListener;
 import org.pragmatica.dht.DistributedDHTClient;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
@@ -281,6 +284,8 @@ public interface AetherNode {
                                                    DHTNode dhtNode) {
         // Create distributed DHT client with quorum-based reads/writes via ClusterNetwork
         var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode, clusterNode.network(), config.artifactRepo());
+        // Create scoped DHT client for cache operations (lower replication, single-replica default)
+        var cacheDhtClient = dhtClient.scoped(config.cache());
         var artifactStore = ArtifactStore.artifactStore(dhtClient);
         // Create repositories from SliceConfig using RepositoryFactory
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
@@ -294,8 +299,12 @@ public interface AetherNode {
                                                deferredInvoker,
                                                resourceProviderSetup.facade(),
                                                config.sliceAction());
+        // Create DHTRebalancer for re-replication on node departure
+        var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, clusterNode.network(), config.artifactRepo());
         // Create DHTTopologyListener for ring updates on topology changes
-        var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode);
+        var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer);
+        // Create DHT anti-entropy for replica synchronization
+        var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode, clusterNode.network(), config.artifactRepo());
         record aetherNode(AetherNodeConfig config,
                           MessageRouter.DelegateRouter router,
                           KVStore<AetherKey, AetherValue> kvStore,
@@ -653,7 +662,7 @@ public interface AetherNode {
         deferredInvoker.setDelegate(sliceInvoker);
         // Register runtime extensions for Publisher provisioning via SPI
         resourceProviderSetup.spiProvider()
-                             .onPresent(spi -> registerRuntimeExtensions(spi, topicSubscriptionRegistry, sliceInvoker));
+                             .onPresent(spi -> registerRuntimeExtensions(spi, topicSubscriptionRegistry, sliceInvoker, cacheDhtClient));
         // Create node deployment manager (now created after sliceInvoker for HTTP route publishing)
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManager(config.self(),
                                                                                 delegateRouter,
@@ -727,15 +736,21 @@ public interface AetherNode {
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.PutResponse.class, dhtClient::onPutResponse));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.RemoveResponse.class, dhtClient::onRemoveResponse));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.ExistsResponse.class, dhtClient::onExistsResponse));
-        // DHT migration/digest routes (no-op — migration not yet implemented)
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataRequest.class,
-                                                    _ -> {}));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class,
-                                                    _ -> {}));
+        // DHT digest routes — anti-entropy replica synchronization
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.DigestRequest.class,
-                                                    _ -> {}));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.DigestResponse.class,
-                                                    _ -> {}));
+                                                    request -> dhtNode.handleDigestRequest(request,
+                                                                                           response -> clusterNode.network()
+                                                                                                                  .send(request.sender(),
+                                                                                                                        response))));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.DigestResponse.class, dhtAntiEntropy::onDigestResponse));
+        // DHT migration routes — data transfer for partition repair
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataRequest.class,
+                                                    request -> dhtNode.handleMigrationDataRequest(request,
+                                                                                                   response -> clusterNode.network()
+                                                                                                                          .send(request.sender(),
+                                                                                                                                response))));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class,
+                                                    dhtAntiEntropy::onMigrationDataResponse));
         // DHT topology listener — update consistent hash ring on node add/remove
         aetherEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
                                                     dhtTopologyListener::onNodeAdded));
@@ -1191,8 +1206,10 @@ public interface AetherNode {
     /// Register runtime extensions into SpiResourceProvider for Publisher provisioning.
     private static void registerRuntimeExtensions(SpiResourceProvider spi,
                                                   TopicSubscriptionRegistry topicSubscriptionRegistry,
-                                                  SliceInvoker sliceInvoker) {
+                                                  SliceInvoker sliceInvoker,
+                                                  DHTClient cacheDhtClient) {
         spi.registerExtension(TopicSubscriptionRegistry.class, topicSubscriptionRegistry);
         spi.registerExtension(SliceInvoker.class, sliceInvoker);
+        spi.registerExtension(DHTClient.class, cacheDhtClient);
     }
 }
