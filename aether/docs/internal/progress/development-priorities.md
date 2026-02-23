@@ -1,25 +1,25 @@
 # Development Priorities
 
-## Current Status (v0.17.0)
+## Current Status (v0.18.0)
 
-Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy repair, re-replication, per-use-case config), pub-sub messaging infrastructure (RFC-0011), and blueprint-only deployment model. 85 new tests added, 5 E2E tests re-enabled.
+Release 0.18.0 delivers three major themes: production-grade DHT (anti-entropy repair, re-replication, per-use-case config), pub-sub messaging infrastructure (RFC-0011), and blueprint-only deployment model. 85 new tests added, 5 E2E tests re-enabled.
 
 ## Completed ✅
 
-### DHT & Data (v0.17.0)
+### DHT & Data (v0.18.0)
 - **DHT Anti-Entropy Repair** - CRC32 digest exchange between replicas, automatic data migration on mismatch
 - **DHT Re-Replication** - DHTRebalancer pushes partition data to new replicas when a node departs
 - **Per-Use-Case DHT Config** - `DHTClient.scoped(DHTConfig)` — artifact storage (RF=3) and cache (RF=1) use independent configs
 - **Distributed Hash Table** - Consistent hash ring (150 vnodes, 1024 partitions), quorum R/W, topology-aware
 
-### Pub-Sub Messaging (v0.17.0, RFC-0011)
+### Pub-Sub Messaging (v0.18.0, RFC-0011)
 - **Publisher/Subscriber API** - `Publisher<T>` functional interface, `Subscriber` marker, `@Subscription` annotation
 - **Topic Subscription Registry** - KV-Store backed subscriber discovery with competing consumers (round-robin)
 - **Message Delivery** - TopicPublisher fans out via SliceInvoker, PublisherFactory registered as SPI
 - **Resource Lifecycle** - Reference-counted `releaseAll()`, generated `stop()` cleanup, SliceId auto-injected into ProvisioningContext
 - **Pub-Sub Code Generation** - Subscription metadata in manifest, envelope v2
 
-### Scheduled Invocation (v0.17.0)
+### Scheduled Invocation (v0.18.0)
 - **Scheduled.java marker interface** - `@ResourceQualifier(type=Scheduled.class)` on zero-arg `Promise<Unit>` methods
 - **Interval and cron scheduling** - Fixed-rate (`"5m"`, `"30s"`) and 5-field cron (`"0 0 * * *"`) modes
 - **Leader-only and all-node execution** - Quorum-gated timer lifecycle
@@ -198,7 +198,7 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
     - Base image: Eclipse Temurin JRE (Alpine or distroless for minimal attack surface)
     - Non-root user, health check endpoint, signal handling for graceful shutdown
     - Published to GitHub Container Registry (ghcr.io) and/or Docker Hub
-    - Versioned tags: `latest`, `0.17.0`, `0.17.0-alpine`
+    - Versioned tags: `latest`, `0.18.0`, `0.18.0-alpine`
     - Currently: Dockerfile exists but images are built locally for E2E tests only
 
 8. **Official Installation Binaries**
@@ -212,7 +212,7 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
     - `install.sh` / `install.ps1` — download correct binary for platform, place in PATH, verify checksum
     - `upgrade.sh` — detect current version, download new version, swap binaries, restart services if running
     - Covers all three artifacts: Ember (local dev), Forge (testing), Aether node (production)
-    - Version pinning support: `install.sh --version 0.17.0`
+    - Version pinning support: `install.sh --version 0.18.0`
     - Idempotent: safe to run multiple times
 
 10. **Forge Modular Rework**
@@ -483,7 +483,7 @@ Part of Cloud Integration (#2). Per-provider status:
 
 ## Infra Development
 
-All infrastructure modules transition to unified `@ResourceQualifier(type, config)` pattern. All resource types complete as of v0.17.0.
+All infrastructure modules transition to unified `@ResourceQualifier(type, config)` pattern. All resource types complete as of v0.18.0.
 
 | Module | Target | Annotation position | Status |
 |--------|--------|---------------------|--------|
@@ -491,8 +491,8 @@ All infrastructure modules transition to unified `@ResourceQualifier(type, confi
 | infra-cache | `@ResourceQualifier(type=Cache.class)` | Method (wraps) | **Done** — in-memory + DHT + tiered cache interceptors |
 | infra-ratelimit | `@ResourceQualifier(type=RateLimiter.class)` | Method (wraps) | **Done** — rate-limit interceptor |
 | infra-http | `@ResourceQualifier(type=HttpClient.class)` | Parameter | **Done** — `@Http` qualifier, JSON API |
-| infra-pubsub | `Publisher<T>`, `Subscriber`, `@Subscription` | Parameter / Method | **Done** — RFC-0011, code generation, 18 tests (v0.17.0) |
-| infra-scheduler | `@ResourceQualifier(type=Scheduled.class)` | Method (triggers) | **Done** — interval/cron, leader-only, 29 tests (v0.17.0) |
+| infra-pubsub | `Publisher<T>`, `Subscriber`, `@Subscription` | Parameter / Method | **Done** — RFC-0011, code generation, 18 tests (v0.18.0) |
+| infra-scheduler | `@ResourceQualifier(type=Scheduled.class)` | Method (triggers) | **Done** — interval/cron, leader-only, 29 tests (v0.18.0) |
 | infra-email | `@ResourceQualifier(type=EmailSender.class)` / `EmailReceiver` | Parameter | **Planned** — facade with SMTP/SES/SendGrid backends (#23) |
 | infra-statemachine | Lightweight builder DSL in core | — | Business logic, not a provisioned resource |
 | infra-config | **Remove** | — | Dynamic Configuration via KV store covers this |

@@ -35,7 +35,7 @@ class GracefulShutdownTest {
     private static final int BASE_MGMT_PORT = 12100;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.17.0";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.18.0";
     private static final String BLUEPRINT_ID = "forge.test:graceful-shutdown:1.0.0";
 
     // Per-method port offsets to avoid TIME_WAIT conflicts between test methods
