@@ -424,7 +424,6 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
     - DSL for defining load/chaos test scenarios
     - Reusable scenario libraries
     - CI/CD integration for automated testing
-    - Note: Paid tier feature
 
 ---
 
