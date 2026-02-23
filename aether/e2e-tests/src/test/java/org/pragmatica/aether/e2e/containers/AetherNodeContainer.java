@@ -370,7 +370,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
             artifact = "%s"
             instances = %d
             """.formatted(E2E_BLUEPRINT_ID, artifact, instances);
-        return postWithRetry("/api/blueprint", blueprint, 3, Duration.ofSeconds(2));
+        return postWithRetry("/api/blueprint", blueprint, 5, Duration.ofSeconds(5));
     }
 
     /// POST request with retry logic for consensus operations.

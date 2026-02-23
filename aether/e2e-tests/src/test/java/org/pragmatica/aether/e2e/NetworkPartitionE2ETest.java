@@ -69,9 +69,8 @@ class NetworkPartitionE2ETest {
         // Restore all stopped nodes
         restoreAllNodes();
 
-        // Wait for cluster stability
-        cluster.awaitLeader();
-        cluster.awaitAllHealthy();
+        // Wait for full cluster convergence (all nodes agree on leader + peers)
+        cluster.awaitClusterConverged();
 
         // Undeploy all slices
         undeployAllSlices();

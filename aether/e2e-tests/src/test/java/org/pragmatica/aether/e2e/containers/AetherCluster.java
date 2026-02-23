@@ -202,6 +202,16 @@ public class AetherCluster implements AutoCloseable {
                .until(this::allNodesHealthy);
     }
 
+    /// Waits for the cluster to fully converge: all nodes agree on the same leader
+    /// and see the expected number of connected peers. This is stronger than
+    /// awaitLeader() + awaitAllHealthy() which check individual node state.
+    public void awaitClusterConverged() {
+        System.out.println("[DEBUG] Waiting for cluster convergence...");
+        await().atMost(QUORUM_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(this::clusterConverged);
+    }
+
     /// Waits for a slice to be fully undeployed (removed from cluster-wide status).
     /// Handles UNLOADING stuck state by accepting it after a threshold and proceeding.
     ///
@@ -697,6 +707,58 @@ public class AetherCluster implements AutoCloseable {
             System.out.println("[DEBUG] hasQuorum error: " + e.getMessage());
             return false;
         }
+    }
+
+    private boolean clusterConverged() {
+        var runningNodes = nodes.stream()
+            .filter(AetherNodeContainer::isRunning)
+            .toList();
+
+        if (runningNodes.isEmpty()) {
+            return false;
+        }
+
+        var expectedPeers = runningNodes.size() - 1;
+        var leaderPattern = java.util.regex.Pattern.compile("\"leader\":\"([^\"]+)\"");
+        var peersPattern = java.util.regex.Pattern.compile("\"connectedPeers\":(\\d+)");
+
+        String consensusLeader = null;
+        for (var node : runningNodes) {
+            try {
+                var status = node.getStatus();
+                var health = node.getHealth();
+
+                var leaderMatcher = leaderPattern.matcher(status);
+                if (!leaderMatcher.find()) {
+                    System.out.println("[DEBUG] Convergence: " + node.nodeId() + " has no leader in status");
+                    return false;
+                }
+                var nodeLeader = leaderMatcher.group(1);
+                if (consensusLeader == null) {
+                    consensusLeader = nodeLeader;
+                } else if (!consensusLeader.equals(nodeLeader)) {
+                    System.out.println("[DEBUG] Convergence: leader disagreement - " +
+                        consensusLeader + " vs " + nodeLeader + " (from " + node.nodeId() + ")");
+                    return false;
+                }
+
+                var peersMatcher = peersPattern.matcher(health);
+                if (peersMatcher.find()) {
+                    var peers = Integer.parseInt(peersMatcher.group(1));
+                    if (peers < expectedPeers) {
+                        System.out.println("[DEBUG] Convergence: " + node.nodeId() +
+                            " sees " + peers + " peers, expected " + expectedPeers);
+                        return false;
+                    }
+                }
+            } catch (Exception e) {
+                System.out.println("[DEBUG] Convergence check error for " + node.nodeId() + ": " + e.getMessage());
+                return false;
+            }
+        }
+        System.out.println("[DEBUG] Cluster converged: leader=" + consensusLeader +
+            ", all " + runningNodes.size() + " nodes agree, " + expectedPeers + " peers each");
+        return true;
     }
 
     private boolean allNodesHealthy() {
