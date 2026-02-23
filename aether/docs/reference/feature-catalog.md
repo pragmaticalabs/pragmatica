@@ -86,6 +86,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 70 | Dead letter handling | Planned | KV-Store backed DLQ for failed pub-sub messages and scheduled task invocations. Retry, inspect, replay via API and CLI |
 | 71 | KV-Store state backup | Planned | Periodic KV-Store snapshots to durable storage (filesystem, S3). Disaster recovery when quorum permanently lost |
 | 72 | Aether runtime rolling upgrade | Planned | Upgrade Aether node software across running cluster without downtime. Node-by-node with health verification |
+| 74 | Email messaging resource | Planned | Facade with pluggable backends (SMTP, AWS SES, SendGrid). Sending (plain text + HTML, attachments) and receiving (automated conversations). SPI-based |
 
 ## Storage & Data
 
@@ -155,8 +156,8 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 |--------|-------|
 | Complete | 59 |
 | Partial | 1 |
-| Planned | 13 |
-| Total | 73 |
+| Planned | 14 |
+| Total | 74 |
 
 **Partial features and their gaps:**
 
@@ -181,6 +182,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Dead letter handling | Pub-sub + scheduler complete |
 | KV-Store state backup | — |
 | Aether runtime rolling upgrade | Official container or binaries |
+| Email messaging resource | Cloud Integration (for SES backend) |
 
 ---
 

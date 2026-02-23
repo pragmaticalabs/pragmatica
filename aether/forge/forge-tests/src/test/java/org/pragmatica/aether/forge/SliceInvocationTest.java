@@ -41,6 +41,7 @@ class SliceInvocationTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.17.0";
+    private static final String BLUEPRINT_ID = "forge.test:slice-invocation:1.0.0";
 
     private ForgeCluster cluster;
     private HttpClient httpClient;
@@ -262,16 +263,56 @@ class SliceInvocationTest {
     }
 
     private String deploy(String artifact, int instances) {
-        var body = "{\"artifact\":\"" + artifact + "\",\"instances\":" + instances + "}";
+        var blueprint = """
+            id = "%s"
+
+            [[slices]]
+            artifact = "%s"
+            instances = %d
+            """.formatted(BLUEPRINT_ID, artifact, instances);
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-        return httpRequest("POST", leaderPort, "/api/deploy", body);
+        return postBlueprintWithRetry(leaderPort, blueprint);
+    }
+
+    private String postBlueprintWithRetry(int port, String body) {
+        String lastResponse = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            lastResponse = httpRequestBlueprint(port, body);
+            if (!lastResponse.contains("\"error\"")) {
+                return lastResponse;
+            }
+            if (attempt < 3) {
+                try {
+                    Thread.sleep(2000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        return lastResponse;
+    }
+
+    private String httpRequestBlueprint(int port, String body) {
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + "/api/blueprint"))
+                                 .header("Content-Type", "application/toml")
+                                 .POST(HttpRequest.BodyPublishers.ofString(body))
+                                 .timeout(Duration.ofSeconds(10))
+                                 .build();
+        try {
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            return response.body();
+        } catch (IOException | InterruptedException e) {
+            return "{\"error\":\"" + e.getMessage() + "\"}";
+        }
     }
 
     private void assertDeploymentSucceeded(String response) {
         assertThat(response)
             .describedAs("Deployment response")
             .doesNotContain("\"error\"")
-            .contains("\"status\":\"deployed\"");
+            .contains("\"status\":\"applied\"");
     }
 
     private boolean sliceHasFailed(String artifact) {
@@ -286,9 +327,22 @@ class SliceInvocationTest {
     }
 
     private void undeploy(String artifact) {
-        var body = "{\"artifact\":\"" + artifact + "\"}";
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
-        httpRequest("POST", leaderPort, "/api/undeploy", body);
+        httpRequestDelete(leaderPort, "/api/blueprint/" + BLUEPRINT_ID);
+    }
+
+    private String httpRequestDelete(int port, String path) {
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + path))
+                                 .DELETE()
+                                 .timeout(Duration.ofSeconds(10))
+                                 .build();
+        try {
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            return response.body();
+        } catch (IOException | InterruptedException e) {
+            return "{\"error\":\"" + e.getMessage() + "\"}";
+        }
     }
 
     private String httpRequest(String method, int port, String path, String body) {

@@ -1980,7 +1980,7 @@ public class AetherCli implements Runnable {
 
         private String buildEventsPath() {
             return option(since).map(s -> "/api/events?since=" + s)
-                          .or("/api/events");
+                         .or("/api/events");
         }
     }
 

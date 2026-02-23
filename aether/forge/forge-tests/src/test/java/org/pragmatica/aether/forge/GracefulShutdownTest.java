@@ -36,6 +36,7 @@ class GracefulShutdownTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.17.0";
+    private static final String BLUEPRINT_ID = "forge.test:graceful-shutdown:1.0.0";
 
     // Per-method port offsets to avoid TIME_WAIT conflicts between test methods
     private static final Map<String, Integer> METHOD_PORT_OFFSETS = Map.of(
@@ -265,15 +266,40 @@ class GracefulShutdownTest {
                                            .nodes()
                                            .get(0)
                                            .mgmtPort());
-        var body = "{\"artifact\":\"" + artifact + "\",\"instances\":" + instances + "}";
-        return httpPost(leaderPort, "/api/deploy", body);
+        var blueprint = """
+            id = "%s"
+
+            [[slices]]
+            artifact = "%s"
+            instances = %d
+            """.formatted(BLUEPRINT_ID, artifact, instances);
+        return postBlueprintWithRetry(leaderPort, blueprint);
+    }
+
+    private String postBlueprintWithRetry(int port, String body) {
+        String lastResponse = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            lastResponse = httpPostBlueprint(port, body);
+            if (!lastResponse.contains("\"error\"")) {
+                return lastResponse;
+            }
+            if (attempt < 3) {
+                try {
+                    Thread.sleep(2000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        return lastResponse;
     }
 
     private void assertDeploymentSucceeded(String response) {
         assertThat(response)
             .describedAs("Deployment response")
             .doesNotContain("\"error\"")
-            .contains("\"status\":\"deployed\"");
+            .contains("\"status\":\"applied\"");
     }
 
     private String httpGet(int port, String path) {
@@ -290,10 +316,10 @@ class GracefulShutdownTest {
         }
     }
 
-    private String httpPost(int port, String path, String body) {
+    private String httpPostBlueprint(int port, String body) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .header("Content-Type", "application/json")
+                                 .uri(URI.create("http://localhost:" + port + "/api/blueprint"))
+                                 .header("Content-Type", "application/toml")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();

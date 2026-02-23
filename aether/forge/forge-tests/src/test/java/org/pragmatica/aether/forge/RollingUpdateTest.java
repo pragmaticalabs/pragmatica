@@ -40,7 +40,8 @@ class RollingUpdateTest {
     private static final String OLD_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.16.0";
     private static final String NEW_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.17.0";
     private static final String ARTIFACT_BASE = "org.pragmatica-lite.aether.test:echo-slice-echo-service";
-    private static final String NEW_VERSION_NUMBER = "0.16.0";
+    private static final String NEW_VERSION_NUMBER = "0.17.0";
+    private static final String BLUEPRINT_ID = "forge.test:rolling-update:1.0.0";
 
     private ForgeCluster cluster;
     private HttpClient httpClient;
@@ -358,15 +359,51 @@ class RollingUpdateTest {
     // ===== API Helpers =====
 
     private String deploy(String artifact, int instances) {
-        var body = "{\"artifact\":\"" + artifact + "\",\"instances\":" + instances + "}";
-        return post("/deploy", body);
+        var blueprint = """
+            id = "%s"
+
+            [[slices]]
+            artifact = "%s"
+            instances = %d
+            """.formatted(BLUEPRINT_ID, artifact, instances);
+        return postBlueprintWithRetry(blueprint);
+    }
+
+    private String postBlueprintWithRetry(String body) {
+        String lastResponse = null;
+        var port = getLeaderPort();
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            lastResponse = postBlueprint(port, body);
+            if (!lastResponse.contains("\"error\"")) {
+                return lastResponse;
+            }
+            if (attempt < 3) {
+                sleep(Duration.ofSeconds(2));
+            }
+        }
+        return lastResponse;
+    }
+
+    private String postBlueprint(int port, String body) {
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + "/api/blueprint"))
+                                 .header("Content-Type", "application/toml")
+                                 .POST(HttpRequest.BodyPublishers.ofString(body))
+                                 .timeout(Duration.ofSeconds(10))
+                                 .build();
+        try {
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            return response.body();
+        } catch (IOException | InterruptedException e) {
+            return "{\"error\":\"" + e.getMessage() + "\"}";
+        }
     }
 
     private void assertDeploymentSucceeded(String response) {
         assertThat(response)
             .describedAs("Deployment response")
             .doesNotContain("\"error\"")
-            .contains("\"status\":\"deployed\"");
+            .contains("\"status\":\"applied\"");
     }
 
     private String startRollingUpdate(String newVersion, int instances) {

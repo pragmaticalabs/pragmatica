@@ -38,15 +38,15 @@ public class EventWebSocketPublisher {
     }
 
     public static EventWebSocketPublisher eventWebSocketPublisher(EventWebSocketHandler handler,
-                                                                   Function<Instant, List<ClusterEvent>> eventsSinceProvider,
-                                                                   Function<List<ClusterEvent>, String> jsonSerializer,
-                                                                   long intervalMs) {
+                                                                  Function<Instant, List<ClusterEvent>> eventsSinceProvider,
+                                                                  Function<List<ClusterEvent>, String> jsonSerializer,
+                                                                  long intervalMs) {
         return new EventWebSocketPublisher(handler, eventsSinceProvider, jsonSerializer, intervalMs);
     }
 
     public static EventWebSocketPublisher eventWebSocketPublisher(EventWebSocketHandler handler,
-                                                                   Function<Instant, List<ClusterEvent>> eventsSinceProvider,
-                                                                   Function<List<ClusterEvent>, String> jsonSerializer) {
+                                                                  Function<Instant, List<ClusterEvent>> eventsSinceProvider,
+                                                                  Function<List<ClusterEvent>, String> jsonSerializer) {
         return new EventWebSocketPublisher(handler, eventsSinceProvider, jsonSerializer, 1000);
     }
 

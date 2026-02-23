@@ -40,6 +40,7 @@ class SliceDeploymentTest {
     private static final Duration DEPLOY_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.17.0";
+    private static final String BLUEPRINT_ID = "forge.test:slice-deploy:1.0.0";
 
     private ForgeCluster cluster;
     private HttpClient httpClient;
@@ -224,8 +225,33 @@ class SliceDeploymentTest {
     // ===== HTTP Helper Methods =====
 
     private String deploy(int port, String artifact, int instances) {
-        var body = String.format("{\"artifact\": \"%s\", \"instances\": %d}", artifact, instances);
-        return post(port, "/api/deploy", body, "application/json");
+        var blueprint = """
+            id = "%s"
+
+            [[slices]]
+            artifact = "%s"
+            instances = %d
+            """.formatted(BLUEPRINT_ID, artifact, instances);
+        return postBlueprintWithRetry(port, blueprint);
+    }
+
+    private String postBlueprintWithRetry(int port, String body) {
+        String lastResponse = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            lastResponse = post(port, "/api/blueprint", body, "application/toml");
+            if (!lastResponse.contains("\"error\"")) {
+                return lastResponse;
+            }
+            if (attempt < 3) {
+                try {
+                    Thread.sleep(2000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        return lastResponse;
     }
 
     private String scale(int port, String artifact, int instances) {
@@ -234,8 +260,7 @@ class SliceDeploymentTest {
     }
 
     private String undeploy(int port, String artifact) {
-        var body = String.format("{\"artifact\": \"%s\"}", artifact);
-        return post(port, "/api/undeploy", body, "application/json");
+        return delete(port, "/api/blueprint/" + BLUEPRINT_ID);
     }
 
     private String applyBlueprint(int port, String blueprintContent) {
@@ -253,6 +278,20 @@ class SliceDeploymentTest {
             return response.body();
         } catch (IOException | InterruptedException e) {
             return "{\"error\":\"" + e.getMessage() + "\"}";
+        }
+    }
+
+    private String delete(int port, String path) {
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + path))
+                                 .DELETE()
+                                 .timeout(Duration.ofSeconds(10))
+                                 .build();
+        try {
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            return response.body();
+        } catch (IOException | InterruptedException e) {
+            return "{\"error\": \"" + e.getMessage() + "\"}";
         }
     }
 

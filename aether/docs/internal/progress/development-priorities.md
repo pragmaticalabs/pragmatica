@@ -158,7 +158,7 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
      - Drain connections before node removal (graceful deregistration delay)
      - TLS termination configuration (certificate ARN/ID passthrough)
    - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
-   - **Enables:** Spot Instance Support (#23), Expense Tracking (#24) in FUTURE section
+   - **Enables:** Spot Instance Support (#24), Expense Tracking (#25) in FUTURE section
 
 3. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
     - Cluster-level schema migration managed by Aether runtime, not individual nodes
@@ -308,6 +308,20 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
     - Configurable snapshot interval and retention policy
     - Complements re-replication (handles single-node failures) with full disaster recovery
 
+23. **Email Messaging Resource**
+    - Facade with pluggable backends via SPI (same `@ResourceQualifier` pattern as other resources)
+    - **Sending:** plain text + HTML body, To/CC/BCC, attachments, configurable sender identity
+    - **Receiving:** inbound email processing for automated conversations (webhook-based or polling)
+    - **Backends (SPI implementations):**
+      - SMTP — direct conversation for testing and simple trusted setups
+      - AWS SES — production sending + receiving (SNS/SQS inbound)
+      - SendGrid — transactional email with delivery tracking
+      - Mailgun — alternative transactional provider
+    - **API shape:** `EmailSender` (send) + `EmailReceiver` (inbound callback) resource types
+    - **Config:** per-backend TOML section (`[email.smtp]`, `[email.ses]`, etc.)
+    - **Scope exclusions:** no template engine (slices own their content), no mailing list management
+    - **Depends on:** Cloud Integration (#2) for SES/cloud-based backends; SMTP backend standalone
+
 ### Cloud Provider Support
 
 Part of Cloud Integration (#2). Per-provider status:
@@ -334,7 +348,7 @@ Part of Cloud Integration (#2). Per-provider status:
 
 ### FUTURE
 
-23. **Spot Instance Support for Elastic Scaling**
+24. **Spot Instance Support for Elastic Scaling**
     - Cost-optimized scaling using cloud spot/preemptible instances
     - 60-90% cost savings for traffic spike handling
 
@@ -387,7 +401,7 @@ Part of Cloud Integration (#2). Per-provider status:
     **Complexity:** Low - just configuration and cloud API flag
     **Prerequisite:** Cloud Integration (#2)
 
-24. **Cluster Expense Tracking**
+25. **Cluster Expense Tracking**
 
     - Real-time cost visibility for cluster operations
     - Enables cost-aware scaling decisions
@@ -420,18 +434,18 @@ Part of Cloud Integration (#2). Per-provider status:
     **Complexity:** Medium - cloud billing APIs have quirks, data aggregation needed
     **Prerequisite:** Cloud Integration (#2)
 
-25. **LLM Integration (Layer 3)**
+26. **LLM Integration (Layer 3)**
     - Claude/GPT API integration
     - Complex reasoning workflows
     - Multi-cloud decision support
 
-26. **Mini-Kafka (Message Streaming)**
+27. **Mini-Kafka (Message Streaming)**
     - Ordered message streaming with partitions (differs from pub/sub)
     - In-memory storage (initial implementation)
     - Consumer group coordination
     - Retention policies
 
-27. **Cross-Slice Transaction Support (2PC)**
+28. **Cross-Slice Transaction Support (2PC)**
     - Distributed transactions via Transaction aspect
     - Scope: DB transactions + internal services (pub-sub, queues, streaming)
     - NOT Saga pattern (user-unfriendly compensation design)
@@ -458,7 +472,7 @@ Part of Cloud Integration (#2). Per-provider status:
     - Aether's "each call eventually succeeds, if cluster is alive" applies
     - DB failure = transaction failure (expected behavior)
 
-28. **Distributed Saga Orchestration**
+29. **Distributed Saga Orchestration**
     - Long-running transaction orchestration (saga pattern)
     - Durable state transitions with compensation on failure
     - Differs from local state machine — coordinates across multiple slices
@@ -479,6 +493,7 @@ All infrastructure modules transition to unified `@ResourceQualifier(type, confi
 | infra-http | `@ResourceQualifier(type=HttpClient.class)` | Parameter | **Done** — `@Http` qualifier, JSON API |
 | infra-pubsub | `Publisher<T>`, `Subscriber`, `@Subscription` | Parameter / Method | **Done** — RFC-0011, code generation, 18 tests (v0.17.0) |
 | infra-scheduler | `@ResourceQualifier(type=Scheduled.class)` | Method (triggers) | **Done** — interval/cron, leader-only, 29 tests (v0.17.0) |
+| infra-email | `@ResourceQualifier(type=EmailSender.class)` / `EmailReceiver` | Parameter | **Planned** — facade with SMTP/SES/SendGrid backends (#23) |
 | infra-statemachine | Lightweight builder DSL in core | — | Business logic, not a provisioned resource |
 | infra-config | **Remove** | — | Dynamic Configuration via KV store covers this |
 | infra-aspect | **Keep** — Fn1 composition utilities | — | `Aspects.withCaching()`, `@Key`, etc. |

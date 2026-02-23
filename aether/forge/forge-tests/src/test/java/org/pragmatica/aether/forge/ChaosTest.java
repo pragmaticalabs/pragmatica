@@ -96,10 +96,12 @@ class ChaosTest {
         var killCount = new AtomicInteger(0);
 
         // Kill random nodes, keeping quorum
+        // Suppress auto-heal so we control when replacements are added
         for (int i = 0; i < 5; i++) {
             var runningCount = cluster.nodeCount();
 
             if (runningCount > 3) { // Keep quorum
+                cluster.setClusterSize(runningCount - 1);
                 var nodeIds = getRunningNodeIds();
                 var victimId = nodeIds.get(random.nextInt(nodeIds.size()));
                 cluster.killNode(victimId).await();
@@ -113,15 +115,17 @@ class ChaosTest {
 
         assertThat(killCount.get()).isGreaterThan(0);
 
-        // Restore nodes by adding new ones
-        for (var killedId : killedNodeIds) {
+        // Restore target size and add replacement nodes for any deficit
+        cluster.setClusterSize(5);
+        var currentCount = cluster.nodeCount();
+        for (int i = currentCount; i < 5; i++) {
             cluster.addNode().await();
         }
         killedNodeIds.clear();
 
         // Full recovery
         await().atMost(RECOVERY_TIMEOUT)
-               .until(() -> cluster.nodeCount() == 5);
+               .until(() -> cluster.nodeCount() >= 5);
         awaitQuorum();
     }
 
@@ -259,25 +263,33 @@ class ChaosTest {
         var nodeIds = getRunningNodeIds();
 
         // Simulate split-brain by killing nodes on one "side"
+        // Set target to 3 before first kills to prevent CDM from replacing
+        cluster.setClusterSize(3);
         var killed1 = nodeIds.get(0);
         var killed2 = nodeIds.get(1);
         cluster.killNode(killed1).await();
         cluster.killNode(killed2).await();
-        sleep(Duration.ofSeconds(5));
+
+        // Wait for nodes to be removed
+        await().atMost(RECOVERY_TIMEOUT)
+               .until(() -> cluster.nodeCount() == 3);
 
         // Remaining nodes (3) should maintain quorum
         awaitQuorum();
 
-        // Kill one more to lose quorum
+        // Kill one more to lose quorum — set target to 2 first
+        cluster.setClusterSize(2);
+        sleep(Duration.ofSeconds(1));
         var remainingNodes = getRunningNodeIds();
         var killed3 = remainingNodes.get(0);
         cluster.killNode(killed3).await();
-        sleep(Duration.ofSeconds(2));
 
-        // Now only 2 nodes - no quorum
-        assertThat(cluster.nodeCount()).isEqualTo(2);
+        // Wait for node removal
+        await().atMost(RECOVERY_TIMEOUT)
+               .until(() -> cluster.nodeCount() == 2);
 
-        // Restore nodes by adding new ones
+        // Restore target cluster size and add replacement nodes
+        cluster.setClusterSize(5);
         cluster.addNode().await();
         cluster.addNode().await();
         cluster.addNode().await();

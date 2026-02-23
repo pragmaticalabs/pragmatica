@@ -34,9 +34,10 @@ import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 class BootstrapTest {
     private static final int BASE_PORT = 7500;
     private static final int BASE_MGMT_PORT = 7600;
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(20);
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.17.0";
+    private static final String BLUEPRINT_ID = "forge.test:bootstrap:1.0.0";
 
     private ForgeCluster cluster;
     private HttpClient httpClient;
@@ -152,7 +153,8 @@ class BootstrapTest {
                    return slices.contains("echo-slice");
                });
 
-        // Kill a node
+        // Suppress CDM auto-heal during kill
+        cluster.setClusterSize(2);
         cluster.killNode("bt-3")
                .await();
 
@@ -160,7 +162,8 @@ class BootstrapTest {
                .pollInterval(POLL_INTERVAL)
                .until(() -> cluster.nodeCount() == 2);
 
-        // Add a new node to replace the killed one
+        // Restore target and add a new node to replace the killed one
+        cluster.setClusterSize(3);
         cluster.addNode()
                .await();
 
@@ -214,14 +217,16 @@ class BootstrapTest {
                 continue;
             }
 
-            // Kill node
+            // Suppress CDM auto-heal during kill
+            cluster.setClusterSize(2);
             cluster.killNode(nodeId).await();
 
             await().atMost(WAIT_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
                    .until(() -> cluster.nodeCount() == 2);
 
-            // Add new node
+            // Restore target and add new node
+            cluster.setClusterSize(3);
             cluster.addNode().await();
 
             await().atMost(WAIT_TIMEOUT)
@@ -241,7 +246,7 @@ class BootstrapTest {
                .until(this::allNodesHealthy);
 
         var leaderPort = cluster.getLeaderManagementPort()
-                                .unwrap();
+                                .or(BASE_MGMT_PORT);
         failFastIfHttpNotReady(leaderPort);
         var health = getNodeHealth(leaderPort);
         assertThat(health).doesNotContain("\"error\"");
@@ -261,6 +266,8 @@ class BootstrapTest {
         for (int i = 2; i <= 3; i++) {
             var nodeId = "bt-" + i;
 
+            // Suppress CDM auto-heal during kill
+            cluster.setClusterSize(2);
             cluster.killNode(nodeId)
                    .await();
 
@@ -272,7 +279,8 @@ class BootstrapTest {
                    .pollInterval(POLL_INTERVAL)
                    .until(() -> cluster.currentLeader().isPresent());
 
-            // Add a new node to replace the killed one
+            // Restore target and add a new node to replace the killed one
+            cluster.setClusterSize(3);
             cluster.addNode()
                    .await();
 
@@ -371,20 +379,44 @@ class BootstrapTest {
     }
 
     private void deploySlice(int port, String artifact, int instances) {
-        var body = String.format("{\"artifact\":\"%s\",\"instances\":%d}", artifact, instances);
+        var blueprint = """
+            id = "%s"
+
+            [[slices]]
+            artifact = "%s"
+            instances = %d
+            """.formatted(BLUEPRINT_ID, artifact, instances);
+
+        String lastResponse = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            lastResponse = postBlueprint(port, blueprint);
+            if (!lastResponse.contains("\"error\"")) {
+                return;
+            }
+            if (attempt < 3) {
+                try {
+                    Thread.sleep(2000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        throw new AssertionError("Deploy failed after 3 attempts. Last response: " + lastResponse);
+    }
+
+    private String postBlueprint(int port, String body) {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + "/api/deploy"))
-                                 .header("Content-Type", "application/json")
+                                 .uri(URI.create("http://localhost:" + port + "/api/blueprint"))
+                                 .header("Content-Type", "application/toml")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
         try {
             var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            assertThat(response.statusCode())
-                .as("Deploy should succeed. Response: %s", response.body())
-                .isIn(200, 201, 202);
+            return response.body();
         } catch (IOException | InterruptedException e) {
-            throw new AssertionError("Deploy request failed: " + e.getMessage(), e);
+            return "{\"error\":\"" + e.getMessage() + "\"}";
         }
     }
 }

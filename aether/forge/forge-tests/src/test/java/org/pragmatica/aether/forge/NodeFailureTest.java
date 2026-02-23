@@ -176,12 +176,16 @@ class NodeFailureTest {
                              .toList();
 
         for (var nodeId : nodeIds) {
+            // Suppress CDM auto-heal during kill
+            cluster.setClusterSize(4);
             cluster.killNode(nodeId).await();
 
             await().atMost(WAIT_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
                    .until(() -> cluster.nodeCount() == 4);
 
+            // Restore target and add replacement
+            cluster.setClusterSize(5);
             cluster.addNode().await();
 
             await().atMost(WAIT_TIMEOUT)
@@ -203,6 +207,9 @@ class NodeFailureTest {
 
     @Test
     void minorityPartition_quorumLost_thenRecovered() {
+        // Suppress CDM auto-heal during kills
+        cluster.setClusterSize(2);
+
         // Kill majority (3 of 5)
         cluster.killNode("nf-1")
                .await();
@@ -214,7 +221,8 @@ class NodeFailureTest {
         assertThat(cluster.nodeCount()).isEqualTo(2);
 
         // Remaining nodes may not have quorum (no leader or degraded)
-        // Add a new node to restore quorum (3 nodes needed)
+        // Restore target size and add a node to restore quorum (3 nodes needed)
+        cluster.setClusterSize(3);
         cluster.addNode()
                .await();
 

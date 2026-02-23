@@ -37,6 +37,7 @@ class ManagementApiTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.17.0";
+    private static final String BLUEPRINT_ID = "forge.test:management-api:1.0.0";
 
     private ForgeCluster cluster;
     private HttpClient httpClient;
@@ -502,8 +503,48 @@ class ManagementApiTest {
     // ===== HTTP Operations: Deployment =====
 
     private String deploy(int port, String artifact, int instances) {
-        var body = String.format("{\"artifact\":\"%s\",\"instances\":%d}", artifact, instances);
-        return post(port, "/api/deploy", body);
+        var blueprint = """
+            id = "%s"
+
+            [[slices]]
+            artifact = "%s"
+            instances = %d
+            """.formatted(BLUEPRINT_ID, artifact, instances);
+        return postBlueprintWithRetry(port, blueprint);
+    }
+
+    private String postBlueprintWithRetry(int port, String body) {
+        String lastResponse = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            lastResponse = postBlueprint(port, body);
+            if (!lastResponse.contains("\"error\"")) {
+                return lastResponse;
+            }
+            if (attempt < 3) {
+                try {
+                    Thread.sleep(2000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        return lastResponse;
+    }
+
+    private String postBlueprint(int port, String body) {
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + "/api/blueprint"))
+                                 .header("Content-Type", "application/toml")
+                                 .POST(HttpRequest.BodyPublishers.ofString(body))
+                                 .timeout(Duration.ofSeconds(10))
+                                 .build();
+        try {
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            return response.body();
+        } catch (IOException | InterruptedException e) {
+            return "{\"error\":\"" + e.getMessage() + "\"}";
+        }
     }
 
     // ===== Core HTTP Methods =====
