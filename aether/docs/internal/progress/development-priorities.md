@@ -36,7 +36,7 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
 - **EndpointRegistry** - Service discovery with weighted routing
 - **NodeDeploymentManager** - Node-level slice management
 - **HTTP Router** - External request routing with route self-registration
-- **Management API** - Complete cluster control endpoints (30+ endpoints)
+- **Management API** - Complete cluster control endpoints (60+ endpoints across 12 route classes)
 - **CLI** - REPL and batch modes with full command coverage
 - **Automatic Route Cleanup** - Routes removed on last slice instance deactivation
 - **HTTP Keep-Alive** - Connection reuse in Netty server; load generators pinned to HTTP/1.1
@@ -158,7 +158,7 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
      - Drain connections before node removal (graceful deregistration delay)
      - TLS termination configuration (certificate ARN/ID passthrough)
    - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
-   - **Enables:** Spot Instance Support (#14), Expense Tracking (#15) in FUTURE section
+   - **Enables:** Spot Instance Support (#18), Expense Tracking (#19) in FUTURE section
 
 3. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
     - Cluster-level schema migration managed by Aether runtime, not individual nodes
@@ -190,15 +190,50 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
    - Current effective levels display
    - Backend ready: `/api/logging/levels` endpoints implemented
 
-### MEDIUM PRIORITY
+### MEDIUM PRIORITY - Packaging & Distribution
 
-7. **Disruption Budget**
+7. **Official Aether Container Image**
+    - Production-ready OCI container for `aether-node`
+    - Multi-stage build: build layer (Maven + JDK) → runtime layer (JRE-only)
+    - Base image: Eclipse Temurin JRE (Alpine or distroless for minimal attack surface)
+    - Non-root user, health check endpoint, signal handling for graceful shutdown
+    - Published to GitHub Container Registry (ghcr.io) and/or Docker Hub
+    - Versioned tags: `latest`, `0.17.0`, `0.17.0-alpine`
+    - Currently: Dockerfile exists but images are built locally for E2E tests only
+
+8. **Official Installation Binaries**
+    - Pre-built distribution archives for all production artifacts: `aether-node`, `aether-cli`, `aether-forge`
+    - Formats: `.tar.gz` (Linux/macOS), `.zip` (Windows), platform-specific packages (`.deb`, `.rpm`, Homebrew formula)
+    - Self-contained: bundled JRE (jlink/jpackage) so users don't need pre-installed Java
+    - Published to GitHub Releases on each version tag
+    - Checksums (SHA-256) and optional GPG signatures
+
+9. **Installation and Upgrade Scripts**
+    - `install.sh` / `install.ps1` — download correct binary for platform, place in PATH, verify checksum
+    - `upgrade.sh` — detect current version, download new version, swap binaries, restart services if running
+    - Covers all three artifacts: Ember (local dev), Forge (testing), Aether node (production)
+    - Version pinning support: `install.sh --version 0.17.0`
+    - Idempotent: safe to run multiple times
+
+10. **Forge Modular Rework**
+    - Current state: Forge bundles load generator + chaos testing + local cluster into single `aether-forge.jar`
+    - Target: three independently deployable components:
+      - **Ember** — local development environment (embedded cluster + dashboard). Single-JVM, zero-config startup for slice development
+      - **Load Generator** — standalone `aether-loadgen` binary for traffic generation against any Aether cluster. TOML-configured patterns (constant/ramp/spike), usable in CI/CD and cloud environments
+      - **Chaos Tester** — standalone `aether-chaos` binary for fault injection against any Aether cluster. Configurable disruption scenarios (node kill, network partition, latency injection)
+    - Load generator and chaos tester must work against remote clusters (not just embedded) for production-like testing
+    - Ember composes all three for local dev convenience
+    - Partially complete: modules already separated (`forge-simulator`, `forge-load`, `forge-cluster`), but packaged as single JAR
+
+### MEDIUM PRIORITY - Reliability
+
+11. **Disruption Budget**
     - Minimum healthy instances during rolling updates and node failures
     - Configurable per slice or blueprint
     - Controller respects budget before scaling down or migrating
     - Prevents cascading failures during maintenance
 
-8. **Placement Hints**
+12. **Placement Hints**
     - Affinity/anti-affinity rules for slice placement
     - Spread: distribute instances across nodes/zones
     - Co-locate: place related slices on same node
@@ -206,29 +241,29 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
 
 ### LOWER PRIORITY - Security & Operations
 
-9. **TLS Certificate Management**
+13. **TLS Certificate Management**
      - Certificate provisioning and rotation
      - Mutual TLS between nodes
      - Integration with external CA or self-signed
 
-10. **Canary & Blue-Green Deployment Strategies**
+14. **Canary & Blue-Green Deployment Strategies**
      - Current: Rolling updates with weighted routing exist
      - Add explicit canary deployment with automatic rollback on error threshold
      - Add blue-green deployment with instant switchover
      - A/B testing support with traffic splitting by criteria
 
-11. **Topology in KV Store**
+15. **Topology in KV Store**
      - Leader maintains cluster topology in consensus KV store
      - Best-effort updates on membership changes
      - Enables external observability without direct node queries
 
-12. **RBAC for Management API**
+16. **RBAC for Management API**
      - Role-based access control for operations
      - Predefined roles: admin, operator, viewer
      - Per-endpoint authorization rules
      - Audit logging for sensitive operations
 
-13. **Configurable Rate Limiting per HTTP Route**
+17. **Configurable Rate Limiting per HTTP Route**
      - Per-route rate limiting configuration in blueprint or management API
      - Token bucket or sliding window algorithm
      - Configurable limits: requests/second, burst size
@@ -254,7 +289,7 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
 
 ### FUTURE
 
-14. **Spot Instance Support for Elastic Scaling**
+18. **Spot Instance Support for Elastic Scaling**
     - Cost-optimized scaling using cloud spot/preemptible instances
     - 60-90% cost savings for traffic spike handling
 
@@ -307,7 +342,7 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
     **Complexity:** Low - just configuration and cloud API flag
     **Prerequisite:** Cloud Integration (#2)
 
-15. **Cluster Expense Tracking**
+19. **Cluster Expense Tracking**
 
     - Real-time cost visibility for cluster operations
     - Enables cost-aware scaling decisions
@@ -340,18 +375,18 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
     **Complexity:** Medium - cloud billing APIs have quirks, data aggregation needed
     **Prerequisite:** Cloud Integration (#2)
 
-16. **LLM Integration (Layer 3)**
+20. **LLM Integration (Layer 3)**
     - Claude/GPT API integration
     - Complex reasoning workflows
     - Multi-cloud decision support
 
-17. **Mini-Kafka (Message Streaming)**
+21. **Mini-Kafka (Message Streaming)**
     - Ordered message streaming with partitions (differs from pub/sub)
     - In-memory storage (initial implementation)
     - Consumer group coordination
     - Retention policies
 
-18. **Cross-Slice Transaction Support (2PC)**
+22. **Cross-Slice Transaction Support (2PC)**
     - Distributed transactions via Transaction aspect
     - Scope: DB transactions + internal services (pub-sub, queues, streaming)
     - NOT Saga pattern (user-unfriendly compensation design)
@@ -378,14 +413,14 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
     - Aether's "each call eventually succeeds, if cluster is alive" applies
     - DB failure = transaction failure (expected behavior)
 
-19. **Distributed Saga Orchestration**
+23. **Distributed Saga Orchestration**
     - Long-running transaction orchestration (saga pattern)
     - Durable state transitions with compensation on failure
     - Differs from local state machine — coordinates across multiple slices
     - Automatic retry, timeout, and dead-letter handling
     - Visualization of in-flight sagas and their states
 
-20. **Forge Script - Scenario Language**
+24. **Forge Script - Scenario Language**
     - DSL for defining load/chaos test scenarios
     - Reusable scenario libraries
     - CI/CD integration for automated testing
