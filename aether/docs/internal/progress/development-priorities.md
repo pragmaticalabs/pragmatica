@@ -19,6 +19,13 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
 - **Resource Lifecycle** - Reference-counted `releaseAll()`, generated `stop()` cleanup, SliceId auto-injected into ProvisioningContext
 - **Pub-Sub Code Generation** - Subscription metadata in manifest, envelope v2
 
+### Scheduled Invocation (v0.17.0)
+- **Scheduled.java marker interface** - `@ResourceQualifier(type=Scheduled.class)` on zero-arg `Promise<Unit>` methods
+- **Interval and cron scheduling** - Fixed-rate (`"5m"`, `"30s"`) and 5-field cron (`"0 0 * * *"`) modes
+- **Leader-only and all-node execution** - Quorum-gated timer lifecycle
+- **KV-Store backed registry** - Runtime reconfiguration via Management API
+- **Full stack** - Annotation processor, manifest generation (envelope v3), deployment wiring, CronExpression parser, ScheduledTaskRegistry, ScheduledTaskManager, REST API, CLI, 29 unit tests
+
 ### Core Infrastructure
 - **Request ID Propagation** - ScopedValue-based context with ServiceLoader propagation hook in Promise
 - **SliceInvoker Immediate Retry** - Event-driven retry on node departure (matches AppHttpServer pattern)
@@ -151,17 +158,9 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
      - Drain connections before node removal (graceful deregistration delay)
      - TLS termination configuration (certificate ARN/ID passthrough)
    - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
-   - **Enables:** Spot Instance Support (#15), Expense Tracking (#16) in FUTURE section
+   - **Enables:** Spot Instance Support (#14), Expense Tracking (#15) in FUTURE section
 
-3. ~~**Scheduled Invocation Resource**~~ — **Done** in v0.17.0
-   - `@ResourceQualifier(type=Scheduled.class)` on zero-arg `Promise<Unit>` methods
-   - Interval (`"5m"`, `"30s"`) and cron (`"0 0 * * *"`) scheduling modes
-   - Leader-only and all-node execution modes, quorum-gated
-   - KV-Store backed registry with runtime reconfiguration via Management API
-   - Full stack: marker interface, annotation processor, manifest generation, deployment wiring, CronExpression parser, ScheduledTaskRegistry, ScheduledTaskManager, REST API, CLI, 29 unit tests
-   - ~~Pub/Sub Resource~~ — **Done** in v0.17.0 (RFC-0011)
-
-4. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
+3. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
     - Cluster-level schema migration managed by Aether runtime, not individual nodes
     - Per-datasource lifecycle with independent history tables (`aether_schema_history`)
     - Leader-driven execution via Rabia consensus; exactly one node runs migrations
@@ -172,12 +171,12 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
 
 ### HIGH PRIORITY - Dashboard & UI
 
-5. **Dynamic Aspect Dashboard UI**
+4. **Dynamic Aspect Dashboard UI**
    - Wire `DynamicAspectRegistry` data to dashboard with convenient UI for toggling per-method aspect modes
    - Backend REST API (`/api/aspects`) and KV-store sync already implemented
    - Smallest UI task — good starting point for establishing dashboard patterns
 
-6. **Invocation Observability Dashboard Tab**
+5. **Invocation Observability Dashboard Tab**
    - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
    - Click-to-expand tree view showing invocation depth with input/output at each level
    - Waterfall view for multi-hop request visualization
@@ -186,20 +185,20 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
    - See [RFC-0010](../../../../docs/rfc/RFC-0010-unified-invocation-observability.md) for data model and API
    - Depends on: Unified Invocation Observability (#1) backend
 
-7. **Log Level Management UI**
+6. **Log Level Management UI**
    - Per-package log level controls in dashboard
    - Current effective levels display
    - Backend ready: `/api/logging/levels` endpoints implemented
 
 ### MEDIUM PRIORITY
 
-8. **Disruption Budget**
+7. **Disruption Budget**
     - Minimum healthy instances during rolling updates and node failures
     - Configurable per slice or blueprint
     - Controller respects budget before scaling down or migrating
     - Prevents cascading failures during maintenance
 
-9. **Placement Hints**
+8. **Placement Hints**
     - Affinity/anti-affinity rules for slice placement
     - Spread: distribute instances across nodes/zones
     - Co-locate: place related slices on same node
@@ -207,29 +206,29 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
 
 ### LOWER PRIORITY - Security & Operations
 
-10. **TLS Certificate Management**
+9. **TLS Certificate Management**
      - Certificate provisioning and rotation
      - Mutual TLS between nodes
      - Integration with external CA or self-signed
 
-11. **Canary & Blue-Green Deployment Strategies**
+10. **Canary & Blue-Green Deployment Strategies**
      - Current: Rolling updates with weighted routing exist
      - Add explicit canary deployment with automatic rollback on error threshold
      - Add blue-green deployment with instant switchover
      - A/B testing support with traffic splitting by criteria
 
-12. **Topology in KV Store**
+11. **Topology in KV Store**
      - Leader maintains cluster topology in consensus KV store
      - Best-effort updates on membership changes
      - Enables external observability without direct node queries
 
-13. **RBAC for Management API**
+12. **RBAC for Management API**
      - Role-based access control for operations
      - Predefined roles: admin, operator, viewer
      - Per-endpoint authorization rules
      - Audit logging for sensitive operations
 
-14. **Configurable Rate Limiting per HTTP Route**
+13. **Configurable Rate Limiting per HTTP Route**
      - Per-route rate limiting configuration in blueprint or management API
      - Token bucket or sliding window algorithm
      - Configurable limits: requests/second, burst size
@@ -255,7 +254,7 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
 
 ### FUTURE
 
-15. **Spot Instance Support for Elastic Scaling**
+14. **Spot Instance Support for Elastic Scaling**
     - Cost-optimized scaling using cloud spot/preemptible instances
     - 60-90% cost savings for traffic spike handling
 
@@ -308,7 +307,7 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
     **Complexity:** Low - just configuration and cloud API flag
     **Prerequisite:** Cloud Integration (#2)
 
-16. **Cluster Expense Tracking**
+15. **Cluster Expense Tracking**
 
     - Real-time cost visibility for cluster operations
     - Enables cost-aware scaling decisions
@@ -341,18 +340,18 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
     **Complexity:** Medium - cloud billing APIs have quirks, data aggregation needed
     **Prerequisite:** Cloud Integration (#2)
 
-17. **LLM Integration (Layer 3)**
+16. **LLM Integration (Layer 3)**
     - Claude/GPT API integration
     - Complex reasoning workflows
     - Multi-cloud decision support
 
-18. **Mini-Kafka (Message Streaming)**
+17. **Mini-Kafka (Message Streaming)**
     - Ordered message streaming with partitions (differs from pub/sub)
     - In-memory storage (initial implementation)
     - Consumer group coordination
     - Retention policies
 
-19. **Cross-Slice Transaction Support (2PC)**
+18. **Cross-Slice Transaction Support (2PC)**
     - Distributed transactions via Transaction aspect
     - Scope: DB transactions + internal services (pub-sub, queues, streaming)
     - NOT Saga pattern (user-unfriendly compensation design)
@@ -379,14 +378,14 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
     - Aether's "each call eventually succeeds, if cluster is alive" applies
     - DB failure = transaction failure (expected behavior)
 
-20. **Distributed Saga Orchestration**
+19. **Distributed Saga Orchestration**
     - Long-running transaction orchestration (saga pattern)
     - Durable state transitions with compensation on failure
     - Differs from local state machine — coordinates across multiple slices
     - Automatic retry, timeout, and dead-letter handling
     - Visualization of in-flight sagas and their states
 
-21. **Forge Script - Scenario Language**
+20. **Forge Script - Scenario Language**
     - DSL for defining load/chaos test scenarios
     - Reusable scenario libraries
     - CI/CD integration for automated testing

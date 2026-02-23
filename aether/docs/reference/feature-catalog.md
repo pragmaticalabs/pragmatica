@@ -18,7 +18,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 3 | Rolling updates | Complete | Zero-downtime version deployments with traffic shifting (new:old ratio), health thresholds, auto-progression, rollback, and cleanup policies |
 | 4 | Auto-healing | Complete | Automatic reconciliation of desired vs. actual state on node departure. Leader-only with failover |
 | 5 | Classloader isolation | Complete | Per-slice classloader prevents dependency conflicts between slices |
-| 6 | Manifest versioning | Complete | Envelope format versioning (v1, v2) for backward-compatible manifest evolution |
+| 6 | Manifest versioning | Complete | Envelope format versioning (v1, v2, v3) for backward-compatible manifest evolution |
 
 ## Scaling & Control
 
@@ -70,6 +70,18 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 59 | Deployment lifecycle wiring | Complete | Publish/unpublish scheduled tasks during slice activation, deactivation, reactivation, and failure cleanup |
 | 60 | Scheduled tasks management API | Complete | `GET /api/scheduled-tasks` (list all with active timer count), `GET /api/scheduled-tasks/{configSection}` (filtered). CLI subcommand with list/get |
 
+## Planned Features
+
+| # | Feature | Status | Description |
+|---|---------|--------|-------------|
+| 61 | Unified invocation observability | Planned | Single invocation tree: tracing + depth-logging + metrics. Automatic instrumentation at dependency boundaries. SLF4J bridge. See RFC-0010 |
+| 62 | Per-data-source DB schema management | Planned | Cluster-level schema migration managed by Aether runtime. Leader-driven execution via consensus. Readiness gate blocks traffic until schema current |
+| 63 | Canary & blue-green deployment | Planned | Canary with automatic rollback on error threshold, blue-green with instant switchover, A/B testing with traffic splitting |
+| 64 | RBAC for management API | Planned | Role-based access control (admin, operator, viewer), per-endpoint authorization, audit logging for sensitive operations |
+| 65 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
+| 66 | Spot instance support | Planned | Elastic pool of spot/preemptible instances for cost-optimized scaling. Core (on-demand) + elastic (spot) pools. Prerequisite: Cloud Integration |
+| 67 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts. Prerequisite: Cloud Integration |
+
 ## Storage & Data
 
 | # | Feature | Status | Description |
@@ -106,7 +118,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 |---|---------|--------|-------------|
 | 41 | REST management API | Complete | 60+ endpoints across 12 route classes: status, health, blueprints, slices, scaling, rolling updates, config, thresholds, alerts, aspects, logging, TTM, invocation metrics, controller config |
 | 42 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, metrics, health, scale, artifact, blueprint, update, invocation-metrics, controller, alerts, thresholds, aspects, config, logging |
-| 43 | Web dashboard | Complete | Real-time cluster monitoring with WebSocket streaming, metrics visualization, topology view |
+| 43 | Web dashboard | Planned | Rework planned — current implementation needs modernization for production use |
 | 44 | WebSocket streams | Complete | `/ws/dashboard` (metrics) and `/ws/status` (cluster state with node/slice details) |
 | 45 | Dynamic log levels | Complete | Runtime log level adjustment per logger via KV-Store. CLI and API control |
 
@@ -135,15 +147,29 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | Status | Count |
 |--------|-------|
-| Complete | 59 |
+| Complete | 58 |
 | Partial | 1 |
-| Total | 60 |
+| Planned | 8 |
+| Total | 67 |
 
 **Partial features and their gaps:**
 
 | Feature | Key Gap |
 |---------|---------|
 | TTM predictive scaling | Disabled by default, no live model training |
+
+**Planned features:**
+
+| Feature | Key Dependency |
+|---------|---------------|
+| Web dashboard (rework) | — |
+| Unified invocation observability | RFC-0010 |
+| Per-data-source DB schema management | Design spec ready |
+| Canary & blue-green deployment | — |
+| RBAC for management API | — |
+| Per-route rate limiting | — |
+| Spot instance support | Cloud Integration |
+| Cluster expense tracking | Cloud Integration |
 
 ---
 
