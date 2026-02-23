@@ -56,7 +56,7 @@ Release 0.18.0 delivers three major themes: production-grade DHT (anti-entropy r
 - **EMA Latency Smoothing** - 5-second effective window for stable dashboard metrics
 - **Zero-Loss Forwarding** - Fresh re-routing on retry, proactive disconnection detection, and backoff retry with delayed re-query for route table healing during node transitions
 - **Fast-Path Route Eviction** - Immediate local cache eviction from `HttpRouteRegistry` on node departure, eliminating ~5s window of failed forwards during rolling restarts
-- **Dynamic Aspects** - Runtime-togglable per-method LOG/METRICS/LOG_AND_METRICS modes via `DynamicAspectRegistry`, REST API (`/api/aspects`), KV-store consensus sync, and `DynamicAspectInterceptor` wired into both local and remote invocation paths
+- **Unified Invocation Observability (RFC-0010)** - Sampling-based tracing with depth-to-SLF4J bridge, adaptive per-node sampling (`AdaptiveSampler`), `ObservabilityInterceptor` wired into local and remote invocation paths, `InvocationTraceStore` ring buffer (50K traces), `ObservabilityDepthRegistry` with KV-store consensus sync, REST API (`/api/traces`, `/api/observability/depth`), CLI commands (`traces`, `observability`). Supersedes DynamicAspect system.
 - **Dynamic Configuration** - Runtime config updates via consensus KV store with REST API. Config overlay pattern: base config from TOML/env/system properties, overrides from KV store. Cluster-wide and per-node scoped keys. No restart required.
 - **Logging Overhaul (tinylog → Log4j2)** - Production-grade structured logging: request ID auto-injected via SLF4J MDC (`[rid=%X{requestId}]`), optional JSON output via `-Dlog4j2.appender=JsonConsole`, runtime log level management via Management API (`/api/logging/levels`) with cluster-wide KV-store consensus sync, noise reduction (Fury→error, Netty→warn, H2→error), shared `test-logging` module replacing 47 per-module tinylog configs. Unblocks structured logging in RFC-0010 (SLF4J bridge).
 
@@ -138,7 +138,7 @@ Release 0.18.0 delivers three major themes: production-grade DHT (anti-entropy r
    - SLF4J bridge: projects depth → traditional severity levels for standard log consumers
    - Ring buffer for dashboard + structured logging for persistence
    - Management API: `/api/traces`, `/api/traces/{requestId}`, `/api/observability/depth`
-   - Foundation exists: request ID propagation, InvocationTimingContext, DynamicAspectInterceptor
+   - Foundation complete: request ID propagation, InvocationTimingContext, ObservabilityInterceptor, AdaptiveSampler, InvocationTraceStore
    - Supersedes RFC-0009 (Request Tracing)
    - **Separate design decisions:** redaction strategy, dashboard UI, serialization limits, sampling
 
@@ -171,9 +171,9 @@ Release 0.18.0 delivers three major themes: production-grade DHT (anti-entropy r
 
 ### HIGH PRIORITY - Dashboard & UI
 
-4. **Dynamic Aspect Dashboard UI**
-   - Wire `DynamicAspectRegistry` data to dashboard with convenient UI for toggling per-method aspect modes
-   - Backend REST API (`/api/aspects`) and KV-store sync already implemented
+4. **Observability Dashboard UI**
+   - Wire `ObservabilityDepthRegistry` data to dashboard with UI for configuring per-method depth thresholds
+   - Backend REST API (`/api/observability/depth`) and KV-store sync already implemented
    - Smallest UI task — good starting point for establishing dashboard patterns
 
 5. **Invocation Observability Dashboard Tab**

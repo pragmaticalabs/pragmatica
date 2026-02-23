@@ -29,7 +29,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 9 | Manual scale API | Complete | `POST /api/scale` with blueprint membership guard and minInstances validation |
 | 10 | Dynamic controller config | Complete | Runtime-adjustable CPU thresholds and evaluation interval |
 | 11 | TTM predictive scaling | Partial | ONNX model inference, forecast analysis, adaptive decision tree. **Gap:** Not connected to live model training, disabled by default |
-| 12 | Dynamic aspects | Complete | Runtime method-level instrumentation (LOG, METRICS, LOG_AND_METRICS) via KV-Store. CLI and API control |
+| 12 | Dynamic aspects | Complete (superseded by #61) | Runtime method-level instrumentation (LOG, METRICS, LOG_AND_METRICS) via KV-Store. CLI and API control |
 
 ## Cluster & Consensus
 
@@ -74,7 +74,6 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 61 | Unified invocation observability | Planned | Single invocation tree: tracing + depth-logging + metrics. Automatic instrumentation at dependency boundaries. SLF4J bridge. See RFC-0010 |
 | 62 | Per-data-source DB schema management | Planned | Cluster-level schema migration managed by Aether runtime. Leader-driven execution via consensus. Readiness gate blocks traffic until schema current |
 | 63 | Canary & blue-green deployment | Planned | Canary with automatic rollback on error threshold, blue-green with instant switchover, A/B testing with traffic splitting |
 | 64 | RBAC for management API | Planned | Role-based access control (admin, operator, viewer), per-endpoint authorization, audit logging for sensitive operations |
@@ -107,6 +106,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 33 | Alert management | Complete | Active/historical alerts, threshold-based triggering, KV-Store persistence, CLI control |
 | 34 | Dynamic thresholds | Complete | Runtime warning/critical threshold configuration per metric |
 | 35 | Prometheus export | Complete | Micrometer integration with Prometheus scrape endpoint |
+| 61 | Unified invocation observability | Complete | Sampling-based tracing + depth-to-SLF4J bridge + adaptive per-node sampling. Replaces DynamicAspect system. CLI and REST API |
 | 73 | Cluster event aggregator | Complete | Ring buffer (1000 events) collecting 11 event types (topology, leader, quorum, deployment, slice failure, network). REST API (`/api/events` with `since` filter), WebSocket feed (`/ws/events` delta broadcast), CLI command |
 
 ## Resource Provisioning
@@ -124,7 +124,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
 | 41 | REST management API | Complete | 60+ endpoints across 12 route classes: status, health, blueprints, slices, scaling, rolling updates, config, thresholds, alerts, aspects, logging, TTM, invocation metrics, controller config |
-| 42 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, metrics, health, scale, artifact, blueprint, update, invocation-metrics, controller, alerts, thresholds, aspects, config, logging, events |
+| 42 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, metrics, health, scale, artifact, blueprint, update, invocation-metrics, controller, alerts, thresholds, aspects, traces, observability, config, logging, events |
 | 43 | Web dashboard | Planned | Rework planned — current implementation needs modernization for production use |
 | 44 | WebSocket streams | Complete | `/ws/dashboard` (metrics), `/ws/status` (cluster state), `/ws/events` (real-time cluster events with delta broadcasting) |
 | 45 | Dynamic log levels | Complete | Runtime log level adjustment per logger via KV-Store. CLI and API control |
@@ -154,9 +154,9 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | Status | Count |
 |--------|-------|
-| Complete | 59 |
+| Complete | 60 |
 | Partial | 1 |
-| Planned | 14 |
+| Planned | 13 |
 | Total | 74 |
 
 **Partial features and their gaps:**
@@ -170,7 +170,6 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Feature | Key Dependency |
 |---------|---------------|
 | Web dashboard (rework) | — |
-| Unified invocation observability | RFC-0010 |
 | Per-data-source DB schema management | Design spec ready |
 | Canary & blue-green deployment | — |
 | RBAC for management API | — |

@@ -833,6 +833,152 @@ curl -X DELETE http://localhost:8080/api/aspects/org.example:my-slice:1.0.0/proc
 
 ---
 
+## Traces
+
+### GET /api/traces
+
+List recent invocation traces.
+
+**Query Parameters:**
+- `limit` (int, default 100) -- Maximum traces to return
+- `method` (string) -- Filter by callee method name
+- `status` (string) -- Filter by outcome: `SUCCESS` or `FAILURE`
+- `minDepth` (int) -- Minimum depth filter
+- `maxDepth` (int) -- Maximum depth filter
+
+**Example:**
+```bash
+curl "http://localhost:8080/api/traces?limit=50&method=processOrder"
+```
+
+**Response:**
+```json
+{
+  "traces": [
+    {
+      "requestId": "abc-123",
+      "method": "processOrder",
+      "depth": 2,
+      "durationNs": 15000000,
+      "status": "SUCCESS",
+      "timestamp": 1704067200000
+    }
+  ]
+}
+```
+
+### GET /api/traces/{requestId}
+
+Get all trace nodes for a specific request ID.
+
+**Example:**
+```bash
+curl http://localhost:8080/api/traces/abc-123
+```
+
+**Response:**
+```json
+{
+  "requestId": "abc-123",
+  "nodes": [
+    {
+      "method": "processOrder",
+      "depth": 0,
+      "durationNs": 15000000,
+      "status": "SUCCESS"
+    },
+    {
+      "method": "validateInventory",
+      "depth": 1,
+      "durationNs": 5000000,
+      "status": "SUCCESS"
+    }
+  ]
+}
+```
+
+### GET /api/traces/stats
+
+Get aggregated trace statistics.
+
+**Response:**
+```json
+{
+  "totalTraces": 10000,
+  "avgDepth": 2.3,
+  "avgDurationMs": 15.0,
+  "successRate": 0.995,
+  "methodCounts": {
+    "processOrder": 5000,
+    "validateInventory": 3000
+  }
+}
+```
+
+---
+
+## Observability Depth
+
+### GET /api/observability/depth
+
+List all configured per-method depth overrides.
+
+**Response:**
+```json
+{
+  "overrides": [
+    {
+      "artifact": "org.example:my-slice:1.0.0",
+      "method": "processOrder",
+      "depthThreshold": 3
+    }
+  ]
+}
+```
+
+### POST /api/observability/depth
+
+Set a per-method depth threshold.
+
+**Request:**
+```json
+{
+  "artifact": "org.example:my-slice:1.0.0",
+  "method": "processOrder",
+  "depthThreshold": 3
+}
+```
+
+**Response:**
+```json
+{
+  "status": "depth_set",
+  "artifact": "org.example:my-slice:1.0.0",
+  "method": "processOrder",
+  "depthThreshold": 3
+}
+```
+
+### DELETE /api/observability/depth/{artifact}/{method}
+
+Remove a per-method depth override.
+
+**Example:**
+```bash
+curl -X DELETE http://localhost:8080/api/observability/depth/org.example:my-slice:1.0.0/processOrder
+```
+
+**Response:**
+```json
+{
+  "status": "depth_removed",
+  "artifact": "org.example:my-slice:1.0.0",
+  "method": "processOrder"
+}
+```
+
+---
+
 ## Log Level Management
 
 Runtime log level control with cluster-wide persistence via KV-Store consensus.
@@ -1309,6 +1455,12 @@ Messages are only sent when new events have occurred since the previous broadcas
 | GET | `/api/aspects` | Dynamic Aspects |
 | POST | `/api/aspects` | Dynamic Aspects |
 | DELETE | `/api/aspects/{artifact}/{method}` | Dynamic Aspects |
+| GET | `/api/traces` | Traces |
+| GET | `/api/traces/{requestId}` | Traces |
+| GET | `/api/traces/stats` | Traces |
+| GET | `/api/observability/depth` | Observability Depth |
+| POST | `/api/observability/depth` | Observability Depth |
+| DELETE | `/api/observability/depth/{artifact}/{method}` | Observability Depth |
 | GET | `/api/logging/levels` | Log Level Management |
 | POST | `/api/logging/levels` | Log Level Management |
 | DELETE | `/api/logging/levels/{logger}` | Log Level Management |
