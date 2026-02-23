@@ -4,7 +4,7 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.17.0] - Unreleased
+## [0.17.0] - 2026-02-23
 
 ### Added
 - DHT anti-entropy repair pipeline — CRC32 digest exchange between replicas, automatic data migration on mismatch
