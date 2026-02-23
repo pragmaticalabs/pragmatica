@@ -81,6 +81,11 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 65 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
 | 66 | Spot instance support | Planned | Elastic pool of spot/preemptible instances for cost-optimized scaling. Core (on-demand) + elastic (spot) pools. Prerequisite: Cloud Integration |
 | 67 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts. Prerequisite: Cloud Integration |
+| 68 | Graceful node drain | Planned | `POST /api/nodes/{id}/drain` to migrate slices off a node before maintenance. Integrates with disruption budget |
+| 69 | Readiness vs liveness probes | Planned | Split `/api/health` into `/api/health/live` and `/api/health/ready` for container orchestrator compatibility |
+| 70 | Dead letter handling | Planned | KV-Store backed DLQ for failed pub-sub messages and scheduled task invocations. Retry, inspect, replay via API and CLI |
+| 71 | KV-Store state backup | Planned | Periodic KV-Store snapshots to durable storage (filesystem, S3). Disaster recovery when quorum permanently lost |
+| 72 | Aether runtime rolling upgrade | Planned | Upgrade Aether node software across running cluster without downtime. Node-by-node with health verification |
 
 ## Storage & Data
 
@@ -149,8 +154,8 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 |--------|-------|
 | Complete | 58 |
 | Partial | 1 |
-| Planned | 8 |
-| Total | 67 |
+| Planned | 13 |
+| Total | 72 |
 
 **Partial features and their gaps:**
 
@@ -170,6 +175,11 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Per-route rate limiting | — |
 | Spot instance support | Cloud Integration |
 | Cluster expense tracking | Cloud Integration |
+| Graceful node drain | — |
+| Readiness vs liveness probes | — |
+| Dead letter handling | Pub-sub + scheduler complete |
+| KV-Store state backup | — |
+| Aether runtime rolling upgrade | Official container or binaries |
 
 ---
 

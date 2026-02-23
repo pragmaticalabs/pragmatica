@@ -158,7 +158,7 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
      - Drain connections before node removal (graceful deregistration delay)
      - TLS termination configuration (certificate ARN/ID passthrough)
    - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
-   - **Enables:** Spot Instance Support (#18), Expense Tracking (#19) in FUTURE section
+   - **Enables:** Spot Instance Support (#23), Expense Tracking (#24) in FUTURE section
 
 3. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
     - Cluster-level schema migration managed by Aether runtime, not individual nodes
@@ -217,53 +217,83 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
 
 10. **Forge Modular Rework**
     - Current state: Forge bundles load generator + chaos testing + local cluster into single `aether-forge.jar`
-    - Target: three independently deployable components:
-      - **Ember** — local development environment (embedded cluster + dashboard). Single-JVM, zero-config startup for slice development
-      - **Load Generator** — standalone `aether-loadgen` binary for traffic generation against any Aether cluster. TOML-configured patterns (constant/ramp/spike), usable in CI/CD and cloud environments
-      - **Chaos Tester** — standalone `aether-chaos` binary for fault injection against any Aether cluster. Configurable disruption scenarios (node kill, network partition, latency injection)
-    - Load generator and chaos tester must work against remote clusters (not just embedded) for production-like testing
-    - Ember composes all three for local dev convenience
+    - Target: three independently usable components, each supporting embedded and standalone modes:
+      - **Ember** — single-process Aether runtime (the clustering engine already in Forge). Standalone mode for production migration scenarios (run Aether as a single process without clustering). Embedded mode for development (zero-config local runtime). Replaces the current `forge-cluster` module
+      - **Tester** — unified testing component: load generator (TOML-configured traffic patterns), chaos testing (fault injection scenarios), and Forge Script DSL for scenario definition. Standalone mode for production-like testing against remote clusters (CI/CD, cloud). Embedded mode for local development testing
+      - **Forge** — the composition: Ember + Tester + dashboard in one package for local development convenience
+    - Ember and Tester must work against remote clusters, not just embedded — this is the key enabler for cloud testing
+    - Forge Script DSL: declarative scenario language for load/chaos test definitions, reusable scenario libraries, CI/CD integration
     - Partially complete: modules already separated (`forge-simulator`, `forge-load`, `forge-cluster`), but packaged as single JAR
+
+11. **Aether Runtime Rolling Upgrade**
+    - Upgrade the Aether node software across a running cluster without downtime
+    - Sequence: upgrade one node at a time → verify health → proceed to next
+    - Interacts with envelope versioning: multi-version support ensures old-format slices still load on new runtime
+    - Upgrade orchestration: `upgrade-cluster.sh` script or Management API-driven (leader coordinates)
+    - Rollback: if upgraded node fails health check, revert to previous version before continuing
+    - Prerequisite: Official Container (#7) or Official Binaries (#8)
 
 ### MEDIUM PRIORITY - Reliability
 
-11. **Disruption Budget**
+12. **Disruption Budget**
     - Minimum healthy instances during rolling updates and node failures
     - Configurable per slice or blueprint
     - Controller respects budget before scaling down or migrating
     - Prevents cascading failures during maintenance
 
-12. **Placement Hints**
+13. **Placement Hints**
     - Affinity/anti-affinity rules for slice placement
     - Spread: distribute instances across nodes/zones
     - Co-locate: place related slices on same node
     - Zone-aware scheduling for high availability
 
+14. **Graceful Node Drain**
+    - `POST /api/nodes/{id}/drain` — move all slice instances off a node before maintenance
+    - Drain sequence: stop accepting new requests → migrate slices to other nodes → wait for in-flight requests → mark node drained
+    - Use cases: hardware maintenance, kernel upgrades, cloud instance replacement
+    - Integrates with Disruption Budget (#12) — drain respects minimum healthy instances
+    - CLI: `aether drain <nodeId>`, `aether undrain <nodeId>`
+
+15. **Readiness vs Liveness Probes**
+    - Split current `/api/health` into two distinct endpoints:
+      - `/api/health/live` — is the process alive? (liveness probe)
+      - `/api/health/ready` — should it receive traffic? (readiness probe)
+    - Node is live but not ready during: slice loading, drain in progress, quorum not yet established
+    - Required for container orchestrators (Kubernetes, Nomad) and cloud load balancer health checks
+    - Small scope — route existing health data to two endpoints with different criteria
+
+16. **Dead Letter Handling**
+    - Failed pub-sub messages and failed scheduled task invocations currently logged and lost
+    - DLQ storage: KV-Store backed dead letter queue per topic/task
+    - Retry policy: configurable max attempts with exponential backoff before dead-lettering
+    - Inspection: Management API endpoints to list, inspect, replay, or purge dead letters
+    - CLI: `aether dead-letters list`, `aether dead-letters replay <id>`
+
 ### LOWER PRIORITY - Security & Operations
 
-13. **TLS Certificate Management**
+17. **TLS Certificate Management**
      - Certificate provisioning and rotation
      - Mutual TLS between nodes
      - Integration with external CA or self-signed
 
-14. **Canary & Blue-Green Deployment Strategies**
+18. **Canary & Blue-Green Deployment Strategies**
      - Current: Rolling updates with weighted routing exist
      - Add explicit canary deployment with automatic rollback on error threshold
      - Add blue-green deployment with instant switchover
      - A/B testing support with traffic splitting by criteria
 
-15. **Topology in KV Store**
+19. **Topology in KV Store**
      - Leader maintains cluster topology in consensus KV store
      - Best-effort updates on membership changes
      - Enables external observability without direct node queries
 
-16. **RBAC for Management API**
+20. **RBAC for Management API**
      - Role-based access control for operations
      - Predefined roles: admin, operator, viewer
      - Per-endpoint authorization rules
      - Audit logging for sensitive operations
 
-17. **Configurable Rate Limiting per HTTP Route**
+21. **Configurable Rate Limiting per HTTP Route**
      - Per-route rate limiting configuration in blueprint or management API
      - Token bucket or sliding window algorithm
      - Configurable limits: requests/second, burst size
@@ -271,25 +301,40 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
      - Cluster-aware: distributed counters via consensus or per-node local limits
      - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
 
-### Hetzner Cloud
+22. **KV-Store State Backup/Snapshot**
+    - Periodic snapshot of consensus KV-Store state to durable external storage
+    - Recovery: bootstrap a new cluster from snapshot when quorum is permanently lost
+    - Storage targets: local filesystem, S3-compatible object storage
+    - Configurable snapshot interval and retention policy
+    - Complements re-replication (handles single-node failures) with full disaster recovery
 
-**Testing (near-term):**
-- Cloud cluster formation test — code committed (`545300ce`), **not yet executed against real infrastructure**
-- Load balancer test — create LB, add servers as targets, verify traffic distribution. LoadBalancerProvider SPI ready.
+### Cloud Provider Support
+
+Part of Cloud Integration (#2). Per-provider status:
+
+| Provider | Tier | Compute | Load Balancer | Discovery | Secrets | Status |
+|----------|------|---------|---------------|-----------|---------|--------|
+| Hetzner | 2 | ComputeProvider done | LoadBalancerProvider done | Label-based (planned) | — | **Partial** |
+| AWS | 1 | Planned | ALB/NLB | Tag-based | Secrets Manager | Planned |
+| GCP | 1 | Planned | Cloud LB | Label-based | Secret Manager | Planned |
+| Azure | 1 | Planned | Azure LB | Tag-based | Key Vault | Planned |
+| DigitalOcean | 2 | Planned | DO LB | Tag-based | — | Planned |
+| Vultr | 2 | Planned | Vultr LB | Tag-based | — | Planned |
+
+**Cloud Testing Milestones** (initial provider: Hetzner):
+- Cloud cluster formation — code committed (`545300ce`), **not yet executed against real infrastructure**
+- Load balancer integration — create LB, add servers as targets, verify traffic distribution
 - Node failure + re-election — kill servers, verify quorum maintained and new leader elected
-- Network partition — manipulate Hetzner firewall rules to block traffic between nodes
-- Slice deployment — deploy echo-slice via management API, verify ACTIVE on all nodes
-- Pre-baked snapshots — Hetzner image with Java + JAR for instant boot (~30s vs ~3min)
-
-**Production (longer-term):**
-- Multi-region cluster — nodes in fsn1 + nbg1 + hel1, test consensus over higher-latency links
-- Cloud-native discovery — Hetzner label-based peer discovery (eliminates static peer list)
+- Network partition — manipulate firewall rules to block traffic between nodes
+- Slice deployment — deploy via management API, verify ACTIVE on all nodes
+- Pre-baked images — provider snapshot with Java + JAR for instant boot (~30s vs ~3min)
+- Multi-region cluster — test consensus over higher-latency links
+- Cloud-native discovery — label/tag-based peer discovery (eliminates static peer list)
 - Disaster recovery — terminate majority, bring up replacements, verify state recovery via Rabia sync
-- Cost tracking — timestamps + actual cost per test run as test metric
 
 ### FUTURE
 
-18. **Spot Instance Support for Elastic Scaling**
+23. **Spot Instance Support for Elastic Scaling**
     - Cost-optimized scaling using cloud spot/preemptible instances
     - 60-90% cost savings for traffic spike handling
 
@@ -342,7 +387,7 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
     **Complexity:** Low - just configuration and cloud API flag
     **Prerequisite:** Cloud Integration (#2)
 
-19. **Cluster Expense Tracking**
+24. **Cluster Expense Tracking**
 
     - Real-time cost visibility for cluster operations
     - Enables cost-aware scaling decisions
@@ -375,18 +420,18 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
     **Complexity:** Medium - cloud billing APIs have quirks, data aggregation needed
     **Prerequisite:** Cloud Integration (#2)
 
-20. **LLM Integration (Layer 3)**
+25. **LLM Integration (Layer 3)**
     - Claude/GPT API integration
     - Complex reasoning workflows
     - Multi-cloud decision support
 
-21. **Mini-Kafka (Message Streaming)**
+26. **Mini-Kafka (Message Streaming)**
     - Ordered message streaming with partitions (differs from pub/sub)
     - In-memory storage (initial implementation)
     - Consumer group coordination
     - Retention policies
 
-22. **Cross-Slice Transaction Support (2PC)**
+27. **Cross-Slice Transaction Support (2PC)**
     - Distributed transactions via Transaction aspect
     - Scope: DB transactions + internal services (pub-sub, queues, streaming)
     - NOT Saga pattern (user-unfriendly compensation design)
@@ -413,17 +458,12 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
     - Aether's "each call eventually succeeds, if cluster is alive" applies
     - DB failure = transaction failure (expected behavior)
 
-23. **Distributed Saga Orchestration**
+28. **Distributed Saga Orchestration**
     - Long-running transaction orchestration (saga pattern)
     - Durable state transitions with compensation on failure
     - Differs from local state machine — coordinates across multiple slices
     - Automatic retry, timeout, and dead-letter handling
     - Visualization of in-flight sagas and their states
-
-24. **Forge Script - Scenario Language**
-    - DSL for defining load/chaos test scenarios
-    - Reusable scenario libraries
-    - CI/CD integration for automated testing
 
 ---
 
