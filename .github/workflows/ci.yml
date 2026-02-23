@@ -67,9 +67,19 @@ jobs:
       - name: Install all artifacts
         run: mvn install -B -DskipTests
 
+      - name: Pre-build E2E container image
+        run: |
+          docker build -t aether-node-e2e \
+            -f aether/docker/aether-node/Dockerfile \
+            --build-arg JAR_PATH=aether/node/target/aether-node.jar \
+            --build-arg CONFIG_PATH=aether/docker/aether-node/aether.toml \
+            .
+
       - name: Run E2E tests
         run: mvn verify -B -Pwith-e2e -pl aether/e2e-tests -DskipE2ETests=false
         timeout-minutes: 60
+        env:
+          AETHER_E2E_IMAGE: aether-node-e2e:latest
 
       - name: Run Forge tests
         run: mvn verify -B -Pwith-e2e -pl aether/forge/forge-tests

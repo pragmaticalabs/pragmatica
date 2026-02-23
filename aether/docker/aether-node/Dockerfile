@@ -5,7 +5,7 @@ FROM eclipse-temurin:25-alpine
 
 LABEL org.opencontainers.image.title="Aether Node"
 LABEL org.opencontainers.image.description="Aether distributed runtime node"
-LABEL org.opencontainers.image.version="0.16.0"
+LABEL org.opencontainers.image.version="0.17.0"
 LABEL org.opencontainers.image.source="https://github.com/siy/aether"
 
 # Create non-root user for security
@@ -42,7 +42,7 @@ ENV JAVA_OPTS="-Xmx512m -XX:+UseZGC -XX:+ZGenerational"
 EXPOSE 8090 8080
 
 # Health check using /api/health endpoint
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=10s --timeout=5s --start-period=45s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:${MANAGEMENT_PORT}/api/health || exit 1
 
 # Switch to non-root user

@@ -43,7 +43,7 @@ import java.util.concurrent.Future;
 public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     private static final int MANAGEMENT_PORT = 8080;
     private static final int CLUSTER_PORT = 8090;
-    private static final Duration STARTUP_TIMEOUT = Duration.ofSeconds(60);
+    private static final Duration STARTUP_TIMEOUT = Duration.ofSeconds(120);
     private static final String IMAGE_NAME = "aether-node-e2e";
     private static final String E2E_IMAGE_ENV = "AETHER_E2E_IMAGE";
 
