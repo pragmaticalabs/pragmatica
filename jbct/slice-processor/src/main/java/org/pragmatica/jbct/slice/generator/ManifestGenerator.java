@@ -21,7 +21,7 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 public class ManifestGenerator {
-    static final int ENVELOPE_FORMAT_VERSION = 2;
+    static final int ENVELOPE_FORMAT_VERSION = 3;
 
     private final Filer filer;
     private final DependencyVersionResolver versionResolver;
@@ -118,6 +118,18 @@ public class ManifestGenerator {
             }
             // Update count to actual number of subscription entries
             props.setProperty("topic.subscriptions.count", String.valueOf(subIndex));
+            // Scheduled task metadata
+            var scheduledMethods = model.scheduledMethods();
+            int schedIndex = 0;
+            for (var method : scheduledMethods) {
+                for (var schedule : method.scheduled()) {
+                    var schedPrefix = "scheduled.task." + schedIndex + ".";
+                    props.setProperty(schedPrefix + "config", schedule.configSection());
+                    props.setProperty(schedPrefix + "method", method.name());
+                    schedIndex++;
+                }
+            }
+            props.setProperty("scheduled.tasks.count", String.valueOf(schedIndex));
             // Publisher message types (for serializer registration)
             var publishMessageTypes = model.dependencies()
                                            .stream()

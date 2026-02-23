@@ -1272,6 +1272,47 @@ Real-time cluster status streaming via WebSocket. Pushes periodic JSON snapshots
 | WS | `/ws/dashboard` | WebSocket |
 | WS | `/ws/status` | WebSocket |
 
+| GET | `/api/scheduled-tasks` | Scheduled Tasks |
+| GET | `/api/scheduled-tasks/{configSection}` | Scheduled Tasks |
+
+---
+
+## Scheduled Tasks
+
+### GET /api/scheduled-tasks
+
+List all registered scheduled tasks and active timer count.
+
+**Response:**
+```json
+{
+  "tasks": [
+    {
+      "configSection": "scheduling.cleanup",
+      "artifact": "com.example:my-slice:1.0.0",
+      "method": "cleanup",
+      "interval": "5m",
+      "cron": "",
+      "leaderOnly": true,
+      "registeredBy": "node-1"
+    }
+  ],
+  "activeTimers": 1
+}
+```
+
+### GET /api/scheduled-tasks/{configSection}
+
+Get scheduled tasks filtered by config section.
+
+**Response:**
+```json
+{
+  "tasks": [...],
+  "configSection": "scheduling.cleanup"
+}
+```
+
 ---
 
 ## Error Responses

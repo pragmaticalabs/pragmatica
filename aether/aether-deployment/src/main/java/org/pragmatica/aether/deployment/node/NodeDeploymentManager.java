@@ -16,9 +16,11 @@ import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.consensus.NodeId;
@@ -28,6 +30,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.aether.resource.ScheduleConfig;
 import org.pragmatica.aether.resource.TopicConfig;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.lang.Cause;
@@ -244,6 +247,7 @@ public interface NodeDeploymentManager {
                             .flatMap(_ -> registerSliceForInvocation(sliceKey))
                             .flatMap(_ -> publishEndpointsAndRoutes(sliceKey))
                             .flatMap(_ -> publishTopicSubscriptions(sliceKey))
+                            .flatMap(_ -> publishScheduledTasks(sliceKey))
                             .flatMap(_ -> transitionTo(sliceKey, SliceState.ACTIVE))
                             .onFailure(cause -> handleActivationFailure(sliceKey, cause));
             }
@@ -269,6 +273,7 @@ public interface NodeDeploymentManager {
                 unpublishEndpoints(sliceKey);
                 unpublishHttpRoutes(sliceKey);
                 unpublishTopicSubscriptions(sliceKey);
+                unpublishScheduledTasks(sliceKey);
                 transitionTo(sliceKey, SliceState.FAILED);
             }
 
@@ -447,6 +452,7 @@ public interface NodeDeploymentManager {
                 // 1. Write DEACTIVATING first - wait for consensus before starting deactivation
                 transitionTo(sliceKey, SliceState.DEACTIVATING).flatMap(_ -> unpublishEndpoints(sliceKey))
                             .flatMap(_ -> unpublishTopicSubscriptions(sliceKey))
+                            .flatMap(_ -> unpublishScheduledTasks(sliceKey))
                             .flatMap(_ -> unpublishHttpRoutes(sliceKey))
                             .onSuccessRun(() -> unregisterSliceFromInvocation(sliceKey))
                             .flatMap(_ -> deactivateSliceWithTimeout(sliceKey))
@@ -576,6 +582,8 @@ public interface NodeDeploymentManager {
 
             private record SubscriptionManifestEntry(String topicName, MethodName methodName) {}
 
+            private record ScheduledTaskManifestEntry(String configSection, MethodName methodName) {}
+
             @SuppressWarnings("JBCT-EX-01")
             private List<SubscriptionManifestEntry> readSubscriptionsFromManifest(Slice slice) {
                 var result = new ArrayList<SubscriptionManifestEntry>();
@@ -628,6 +636,132 @@ public interface NodeDeploymentManager {
                                     .toResult(Causes.cause("ConfigService not available for topic resolution"))
                                     .flatMap(svc -> svc.config(configSection, TopicConfig.class))
                                     .map(TopicConfig::topicName);
+            }
+
+            // --- Scheduled task publish/unpublish ---
+            private Promise<Unit> publishScheduledTasks(SliceNodeKey sliceKey) {
+                var artifact = sliceKey.artifact();
+                return findLoadedSlice(artifact).map(ls -> doPublishScheduledTasks(artifact,
+                                                                                   ls.slice()))
+                                      .or(Promise.unitPromise());
+            }
+
+            private Promise<Unit> doPublishScheduledTasks(Artifact artifact, Slice slice) {
+                var entries = readScheduledTasksFromManifest(slice);
+                if (entries.isEmpty()) {
+                    return Promise.unitPromise();
+                }
+                var commands = new ArrayList<KVCommand<AetherKey>>();
+                for (var entry : entries) {
+                    resolveScheduleConfig(entry.configSection())
+                    .onPresent(config -> commands.add(createScheduledTaskPutCommand(artifact, entry, config)));
+                }
+                if (commands.isEmpty()) {
+                    return Promise.unitPromise();
+                }
+                return cluster.apply(commands)
+                              .mapToUnit()
+                              .onSuccess(_ -> log.debug("Published {} scheduled tasks for {}",
+                                                        commands.size(),
+                                                        artifact))
+                              .onFailure(cause -> log.error("Failed to publish scheduled tasks for {}: {}",
+                                                            artifact,
+                                                            cause.message()));
+            }
+
+            private KVCommand<AetherKey> createScheduledTaskPutCommand(Artifact artifact,
+                                                                       ScheduledTaskManifestEntry entry,
+                                                                       ScheduleConfig config) {
+                var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
+                var value = config.interval()
+                                  .isEmpty()
+                            ? ScheduledTaskValue.cronTask(self, config.cron(), config.leaderOnly())
+                            : ScheduledTaskValue.intervalTask(self, config.interval(), config.leaderOnly());
+                return new KVCommand.Put<>(key, value);
+            }
+
+            private Promise<Unit> unpublishScheduledTasks(SliceNodeKey sliceKey) {
+                var artifact = sliceKey.artifact();
+                return findLoadedSlice(artifact).map(ls -> doUnpublishScheduledTasks(artifact,
+                                                                                     ls.slice()))
+                                      .or(Promise.unitPromise());
+            }
+
+            private Promise<Unit> doUnpublishScheduledTasks(Artifact artifact, Slice slice) {
+                var entries = readScheduledTasksFromManifest(slice);
+                if (entries.isEmpty()) {
+                    return Promise.unitPromise();
+                }
+                var commands = entries.stream()
+                                      .<KVCommand<AetherKey>> map(entry -> createScheduledTaskRemoveCommand(artifact,
+                                                                                                            entry))
+                                      .toList();
+                return cluster.apply(commands)
+                              .mapToUnit()
+                              .onSuccess(_ -> log.debug("Unpublished {} scheduled tasks for {}",
+                                                        entries.size(),
+                                                        artifact))
+                              .onFailure(cause -> log.error("Failed to unpublish scheduled tasks for {}: {}",
+                                                            artifact,
+                                                            cause.message()));
+            }
+
+            private KVCommand<AetherKey> createScheduledTaskRemoveCommand(Artifact artifact,
+                                                                          ScheduledTaskManifestEntry entry) {
+                var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
+                return new KVCommand.Remove<>(key);
+            }
+
+            @SuppressWarnings("JBCT-EX-01")
+            private List<ScheduledTaskManifestEntry> readScheduledTasksFromManifest(Slice slice) {
+                var result = new ArrayList<ScheduledTaskManifestEntry>();
+                var classLoader = slice.getClass()
+                                       .getClassLoader();
+                for (var iface : slice.getClass()
+                                      .getInterfaces()) {
+                    if (iface == Slice.class) {
+                        continue;
+                    }
+                    var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
+                    readScheduledTaskEntriesFromManifest(classLoader, manifestPath, result);
+                }
+                return result;
+            }
+
+            @SuppressWarnings("JBCT-EX-01")
+            private void readScheduledTaskEntriesFromManifest(ClassLoader classLoader,
+                                                              String manifestPath,
+                                                              List<ScheduledTaskManifestEntry> result) {
+                try (var is = classLoader.getResourceAsStream(manifestPath)) {
+                    if (is == null) {
+                        return;
+                    }
+                    var props = new Properties();
+                    props.load(is);
+                    var count = Integer.parseInt(props.getProperty("scheduled.tasks.count", "0"));
+                    for (int i = 0; i < count; i++) {
+                        readScheduledTaskEntry(props, i).onPresent(result::add);
+                    }
+                } catch (Exception e) {
+                    log.debug("Could not read scheduled task manifest {}: {}", manifestPath, e.getMessage());
+                }
+            }
+
+            private Option<ScheduledTaskManifestEntry> readScheduledTaskEntry(Properties props, int index) {
+                var configSection = props.getProperty("scheduled.task." + index + ".config");
+                var methodNameStr = props.getProperty("scheduled.task." + index + ".method");
+                if (configSection == null || methodNameStr == null) {
+                    return Option.none();
+                }
+                return MethodName.methodName(methodNameStr)
+                                 .map(method -> new ScheduledTaskManifestEntry(configSection, method))
+                                 .option();
+            }
+
+            private Option<ScheduleConfig> resolveScheduleConfig(String configSection) {
+                return ConfigService.instance()
+                                    .flatMap(svc -> svc.config(configSection, ScheduleConfig.class)
+                                                       .option());
             }
 
             private void handleFailed(SliceNodeKey sliceKey) {
@@ -818,6 +952,7 @@ public interface NodeDeploymentManager {
                     // Re-register for invocation
                     registerSliceForInvocation(sliceKey).flatMap(_ -> publishEndpointsAndRoutes(sliceKey))
                                               .flatMap(_ -> publishTopicSubscriptions(sliceKey))
+                                              .flatMap(_ -> publishScheduledTasks(sliceKey))
                                               .onSuccess(_ -> log.debug("Reactivated slice {}",
                                                                         sliceKey.artifact()))
                                               .onFailure(cause -> handleReactivationFailure(sliceKey, cause));

@@ -91,6 +91,38 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Scheduled task configuration stored in consensus.
+    /// Stores scheduling parameters for periodic slice method invocation.
+    ///
+    /// @param registeredBy the node that registered this scheduled task
+    /// @param interval fixed-rate interval in TimeSpan format (e.g., "5m", "30s"); empty string if cron mode
+    /// @param cron standard 5-field cron expression; empty string if interval mode
+    /// @param leaderOnly whether only the leader node triggers this task
+    record ScheduledTaskValue(NodeId registeredBy,
+                              String interval,
+                              String cron,
+                              boolean leaderOnly) implements AetherValue {
+        /// Creates a scheduled task value with interval-based scheduling.
+        public static ScheduledTaskValue intervalTask(NodeId registeredBy, String interval, boolean leaderOnly) {
+            return new ScheduledTaskValue(registeredBy, interval, "", leaderOnly);
+        }
+
+        /// Creates a scheduled task value with cron-based scheduling.
+        public static ScheduledTaskValue cronTask(NodeId registeredBy, String cron, boolean leaderOnly) {
+            return new ScheduledTaskValue(registeredBy, "", cron, leaderOnly);
+        }
+
+        /// Returns true if this is an interval-based schedule.
+        public boolean isInterval() {
+            return ! interval.isEmpty();
+        }
+
+        /// Returns true if this is a cron-based schedule.
+        public boolean isCron() {
+            return ! cron.isEmpty();
+        }
+    }
+
     /// Version routing configuration for rolling updates.
     /// Stores traffic distribution between old and new versions.
     ///

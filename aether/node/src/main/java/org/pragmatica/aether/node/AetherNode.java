@@ -32,6 +32,8 @@ import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
 import org.pragmatica.aether.invoke.DynamicAspectInterceptor;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.InvocationMessage;
+import org.pragmatica.aether.invoke.ScheduledTaskManager;
+import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
@@ -335,6 +337,7 @@ public interface AetherNode {
                           AppHttpServer appHttpServer,
                           TTMManager ttmManager,
                           RollbackManager rollbackManager,
+                          ScheduledTaskManager scheduledTaskManager,
                           ComprehensiveSnapshotCollector snapshotCollector,
                           ArtifactMetricsCollector artifactMetricsCollector,
                           DeploymentMap deploymentMap,
@@ -375,6 +378,7 @@ public interface AetherNode {
                 metricsScheduler.stop();
                 deploymentMetricsScheduler.stop();
                 ttmManager.stop();
+                scheduledTaskManager.stop();
                 snapshotCollector.stop();
                 SliceRuntime.clear();
                 // 4. Stop servers and network
@@ -582,6 +586,8 @@ public interface AetherNode {
         var endpointRegistry = EndpointRegistry.endpointRegistry();
         // Create topic subscription registry for pub/sub messaging
         var topicSubscriptionRegistry = TopicSubscriptionRegistry.topicSubscriptionRegistry();
+        // Create scheduled task registry and manager for periodic slice method invocation
+        var scheduledTaskRegistry = ScheduledTaskRegistry.scheduledTaskRegistry();
         // Create HTTP route registry for application HTTP routing
         var httpRouteRegistry = HttpRouteRegistry.httpRouteRegistry();
         // Create metrics components
@@ -660,9 +666,16 @@ public interface AetherNode {
                                                      aspectInterceptor);
         // Wire the deferred invoker facade to the actual SliceInvoker
         deferredInvoker.setDelegate(sliceInvoker);
+        // Create scheduled task manager (needs sliceInvoker for method execution)
+        var scheduledTaskManager = ScheduledTaskManager.scheduledTaskManager(scheduledTaskRegistry,
+                                                                             sliceInvoker,
+                                                                             config.self());
         // Register runtime extensions for Publisher provisioning via SPI
         resourceProviderSetup.spiProvider()
-                             .onPresent(spi -> registerRuntimeExtensions(spi, topicSubscriptionRegistry, sliceInvoker, cacheDhtClient));
+                             .onPresent(spi -> registerRuntimeExtensions(spi,
+                                                                         topicSubscriptionRegistry,
+                                                                         sliceInvoker,
+                                                                         cacheDhtClient));
         // Create node deployment manager (now created after sliceInvoker for HTTP route publishing)
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManager(config.self(),
                                                                                 delegateRouter,
@@ -688,6 +701,8 @@ public interface AetherNode {
                                                 clusterDeploymentManager,
                                                 endpointRegistry,
                                                 topicSubscriptionRegistry,
+                                                scheduledTaskRegistry,
+                                                scheduledTaskManager,
                                                 httpRouteRegistry,
                                                 metricsCollector,
                                                 metricsScheduler,
@@ -746,9 +761,9 @@ public interface AetherNode {
         // DHT migration routes — data transfer for partition repair
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataRequest.class,
                                                     request -> dhtNode.handleMigrationDataRequest(request,
-                                                                                                   response -> clusterNode.network()
-                                                                                                                          .send(request.sender(),
-                                                                                                                                response))));
+                                                                                                  response -> clusterNode.network()
+                                                                                                                         .send(request.sender(),
+                                                                                                                               response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class,
                                                     dhtAntiEntropy::onMigrationDataResponse));
         // DHT topology listener — update consistent hash ring on node add/remove
@@ -790,6 +805,7 @@ public interface AetherNode {
                                   appHttpServer,
                                   ttmManager,
                                   rollbackManager,
+                                  scheduledTaskManager,
                                   snapshotCollector,
                                   artifactMetricsCollector,
                                   deploymentMap,
@@ -808,6 +824,8 @@ public interface AetherNode {
                                                                                               aspectRegistry,
                                                                                               logLevelRegistry,
                                                                                               dynamicConfigManager,
+                                                                                              scheduledTaskRegistry,
+                                                                                              scheduledTaskManager,
                                                                                               config.tls());
                                      return new aetherNode(config,
                                                            delegateRouter,
@@ -839,6 +857,7 @@ public interface AetherNode {
                                                            appHttpServer,
                                                            ttmManager,
                                                            rollbackManager,
+                                                           scheduledTaskManager,
                                                            snapshotCollector,
                                                            artifactMetricsCollector,
                                                            deploymentMap,
@@ -856,6 +875,8 @@ public interface AetherNode {
                                                                     ClusterDeploymentManager clusterDeploymentManager,
                                                                     EndpointRegistry endpointRegistry,
                                                                     TopicSubscriptionRegistry topicSubscriptionRegistry,
+                                                                    ScheduledTaskRegistry scheduledTaskRegistry,
+                                                                    ScheduledTaskManager scheduledTaskManager,
                                                                     HttpRouteRegistry httpRouteRegistry,
                                                                     MetricsCollector metricsCollector,
                                                                     MetricsScheduler metricsScheduler,
@@ -940,7 +961,11 @@ public interface AetherNode {
                                                   .onPut(AetherKey.TopicSubscriptionKey.class,
                                                          topicSubscriptionRegistry::onSubscriptionPut)
                                                   .onRemove(AetherKey.TopicSubscriptionKey.class,
-                                                            topicSubscriptionRegistry::onSubscriptionRemove);
+                                                            topicSubscriptionRegistry::onSubscriptionRemove)
+                                                  .onPut(AetherKey.ScheduledTaskKey.class,
+                                                         scheduledTaskRegistry::onScheduledTaskPut)
+                                                  .onRemove(AetherKey.ScheduledTaskKey.class,
+                                                            scheduledTaskRegistry::onScheduledTaskRemove);
         // Dynamic config manager (optional)
         dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
                                                              .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
@@ -956,6 +981,7 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, metricsScheduler::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
                                               deploymentMetricsScheduler::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, scheduledTaskManager::onQuorumStateChange));
         // Leader change notifications - handlers may call cluster.apply(), which is safe because
         // consensus engine is already active by the time LeaderChange is emitted (see RabiaNode handler order).
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
@@ -970,6 +996,8 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               rollingUpdateManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, rollbackManager::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              scheduledTaskManager::onLeaderChange));
         // RollbackManager slice failure events (KV-Store notifications handled by sub-router above)
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               rollbackManager::onAllInstancesFailed));

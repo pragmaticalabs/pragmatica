@@ -34,7 +34,7 @@ public interface SliceManifest {
     String SLICE_ARTIFACT_ATTR = "Slice-Artifact";
     String SLICE_CLASS_ATTR = "Slice-Class";
     String ENVELOPE_VERSION_ATTR = "Envelope-Version";
-    Set<Integer> SUPPORTED_ENVELOPE_VERSIONS = Set.of(1, 2);
+    Set<Integer> SUPPORTED_ENVELOPE_VERSIONS = Set.of(1, 2, 3);
 
     /// Read slice manifest from a JAR URL.
     ///

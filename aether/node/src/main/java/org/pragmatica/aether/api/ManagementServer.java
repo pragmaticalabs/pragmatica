@@ -12,8 +12,11 @@ import org.pragmatica.aether.api.routes.MetricsRoutes;
 import org.pragmatica.aether.api.routes.RepositoryRoutes;
 import org.pragmatica.aether.api.routes.RollingUpdateRoutes;
 import org.pragmatica.aether.api.routes.RouteHandler;
+import org.pragmatica.aether.api.routes.ScheduledTaskRoutes;
 import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.api.routes.StatusRoutes;
+import org.pragmatica.aether.invoke.ScheduledTaskManager;
+import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.http.routing.RouteSource;
@@ -63,6 +66,8 @@ public interface ManagementServer {
                                              DynamicAspectRegistry aspectManager,
                                              LogLevelRegistry logLevelRegistry,
                                              Option<DynamicConfigManager> dynamicConfigManager,
+                                             ScheduledTaskRegistry scheduledTaskRegistry,
+                                             ScheduledTaskManager scheduledTaskManager,
                                              Option<TlsConfig> tls) {
         return new ManagementServerImpl(port,
                                         nodeSupplier,
@@ -70,6 +75,8 @@ public interface ManagementServer {
                                         aspectManager,
                                         logLevelRegistry,
                                         dynamicConfigManager,
+                                        scheduledTaskRegistry,
+                                        scheduledTaskManager,
                                         tls);
     }
 }
@@ -103,6 +110,8 @@ class ManagementServerImpl implements ManagementServer {
                          DynamicAspectRegistry aspectManager,
                          LogLevelRegistry logLevelRegistry,
                          Option<DynamicConfigManager> dynamicConfigManager,
+                         ScheduledTaskRegistry scheduledTaskRegistry,
+                         ScheduledTaskManager scheduledTaskManager,
                          Option<TlsConfig> tls) {
         this.port = port;
         this.nodeSupplier = nodeSupplier;
@@ -127,6 +136,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(RollingUpdateRoutes.rollingUpdateRoutes(nodeSupplier));
         routeSources.add(RepositoryRoutes.repositoryRoutes(nodeSupplier));
         routeSources.add(DashboardRoutes.dashboardRoutes());
+        routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry, scheduledTaskManager));
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm)));
         this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
         // Legacy routes using RouteHandler for dynamic content types

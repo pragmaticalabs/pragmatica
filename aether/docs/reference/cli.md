@@ -631,6 +631,28 @@ curl -X POST http://localhost:8888/api/chaos/kill-node/node-3
 curl -X POST http://localhost:8888/api/load/rate/500
 ```
 
+#### scheduled-tasks
+
+Manage scheduled tasks:
+
+```bash
+# List all scheduled tasks with active timer count
+aether scheduled-tasks
+aether scheduled-tasks list
+
+# Get scheduled tasks filtered by config section
+aether scheduled-tasks get <configSection>
+```
+
+Example:
+```bash
+# Show all scheduled tasks
+aether scheduled-tasks list
+
+# Get tasks for a specific schedule
+aether scheduled-tasks get scheduling.cleanup
+```
+
 ---
 
 ## Exit Codes

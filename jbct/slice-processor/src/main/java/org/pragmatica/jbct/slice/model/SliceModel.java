@@ -193,6 +193,19 @@ public record SliceModel(String packageName,
                       .toList();
     }
 
+    /// Check if any method has scheduled invocations.
+    public boolean hasScheduled() {
+        return methods.stream()
+                      .anyMatch(MethodModel::hasScheduled);
+    }
+
+    /// Get all methods that have scheduled invocations.
+    public List<MethodModel> scheduledMethods() {
+        return methods.stream()
+                      .filter(MethodModel::hasScheduled)
+                      .toList();
+    }
+
     public String factoryMethodName() {
         return factoryMethod.getSimpleName()
                             .toString();

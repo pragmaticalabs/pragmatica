@@ -23,7 +23,15 @@ A simple integer that identifies the **format version** of the generated envelop
 
 ## Current Version
 
-`ENVELOPE_FORMAT_VERSION = 1` (defined in `ManifestGenerator.java`)
+`ENVELOPE_FORMAT_VERSION = 3` (defined in `ManifestGenerator.java`)
+
+### Version History
+
+| Version | Change |
+|---------|--------|
+| 1 | Initial envelope format |
+| 2 | Added topic subscription manifest entries (`topic.subscription.*`) for pub-sub messaging |
+| 3 | Added scheduled task manifest entries (`scheduled.task.*`) for periodic invocation |
 
 ## When to Bump
 

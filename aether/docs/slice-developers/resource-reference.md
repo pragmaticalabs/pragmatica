@@ -473,6 +473,141 @@ log_duration = true
 
 ---
 
+## Pub-Sub Messaging (Subscriber)
+
+**Marker type:** `Subscriber`
+**Config prefix:** user-defined (e.g., `messaging.orders`)
+
+Pub-sub subscriptions are declared on methods using `@ResourceQualifier(type = Subscriber.class, ...)`. The annotated method becomes a message handler that receives events published to the configured topic.
+
+### Declaration
+
+```java
+@ResourceQualifier(type = Subscriber.class, config = "messaging.orders")
+@Retention(RUNTIME) @Target(METHOD)
+public @interface OrderEvents {}
+```
+
+### Usage
+
+```java
+@Slice
+public interface OrderProcessor {
+    @OrderEvents
+    Promise<Unit> handleOrderEvent(OrderEvent event);
+}
+```
+
+### Configuration
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `topic` | `String` | required | Topic name for message routing |
+
+### TOML Example
+
+```toml
+[messaging.orders]
+topic = "order-events"
+```
+
+### Behavior
+
+- The runtime registers the handler in the cluster KV-Store when the slice activates
+- Messages published to the topic are routed to any node with a subscriber loaded
+- Multiple slices can subscribe to the same topic
+- Subscriptions are automatically removed when the slice deactivates
+
+---
+
+## Scheduled Invocation (Scheduled)
+
+**Marker type:** `Scheduled`
+**Config prefix:** user-defined (e.g., `scheduling.cleanup`)
+
+Scheduled invocations are declared on zero-parameter methods using `@ResourceQualifier(type = Scheduled.class, ...)`. The annotated method is invoked periodically by the runtime.
+
+### Declaration
+
+```java
+@ResourceQualifier(type = Scheduled.class, config = "scheduling.cleanup")
+@Retention(RUNTIME) @Target(METHOD)
+public @interface CleanupSchedule {}
+```
+
+### Usage
+
+```java
+@Slice
+public interface OrderService {
+    @CleanupSchedule
+    Promise<Unit> cleanupExpiredOrders();
+}
+```
+
+### Configuration
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `interval` | `String` | — | Fixed-rate interval: `"30s"`, `"5m"`, `"1h"`, `"1d"` |
+| `cron` | `String` | — | Standard 5-field cron: `minute hour dom month dow` |
+| `leaderOnly` | `boolean` | `true` | Whether only the leader node triggers the task |
+
+Exactly one of `interval` or `cron` must be specified.
+
+### TOML Examples
+
+**Interval-based (every 5 minutes):**
+```toml
+[scheduling.cleanup]
+interval = "5m"
+leaderOnly = true
+```
+
+**Cron-based (daily at midnight):**
+```toml
+[scheduling.report]
+cron = "0 0 * * *"
+leaderOnly = true
+```
+
+**Non-leader task (runs on every node):**
+```toml
+[scheduling.local-cache-refresh]
+interval = "30s"
+leaderOnly = false
+```
+
+### Cron Expression Format
+
+Standard 5-field format: `minute hour day-of-month month day-of-week`
+
+| Field | Allowed Values | Special Characters |
+|-------|---------------|-------------------|
+| Minute | 0-59 | `*`, `,`, `-`, `/` |
+| Hour | 0-23 | `*`, `,`, `-`, `/` |
+| Day of Month | 1-31 | `*`, `,`, `-`, `/` |
+| Month | 1-12 | `*`, `,`, `-`, `/` |
+| Day of Week | 0-6 (0=Sunday) | `*`, `,`, `-`, `/` |
+
+Examples: `*/5 * * * *` (every 5 min), `0 9 * * 1-5` (weekdays at 9am), `0 0 1 * *` (monthly)
+
+### Behavior
+
+- Scheduled tasks are registered in the cluster KV-Store on slice activation
+- `leaderOnly = true`: the leader starts a timer and invokes via `SliceInvoker`; any node with the slice may execute
+- `leaderOnly = false`: each node with the slice starts its own timer
+- Timers are quorum-gated: cancelled on quorum loss, restarted on quorum establishment
+- Schedule changes via Management API trigger automatic timer restart
+
+### Method Constraints
+
+Validated at compile time by the annotation processor:
+- Zero parameters
+- Return type `Promise<Unit>`
+
+---
+
 ## ResourceFactory SPI
 
 All resource types are discovered via Java `ServiceLoader`. Each factory implements `ResourceFactory<T, C>`:

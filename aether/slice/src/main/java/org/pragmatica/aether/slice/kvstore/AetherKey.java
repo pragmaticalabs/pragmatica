@@ -496,6 +496,61 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Scheduled task key format:
+    /// ```
+    /// scheduled-task/{configSection}/{groupId}:{artifactId}:{version}/{methodName}
+    /// ```
+    /// Maps scheduled task configuration to slice method handlers for periodic invocation.
+    record ScheduledTaskKey(String configSection, Artifact artifact, MethodName methodName) implements AetherKey {
+        private static final String PREFIX = "scheduled-task/";
+
+        @Override
+        public String asString() {
+            return PREFIX + configSection + "/" + artifact.asString() + "/" + methodName.name();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static ScheduledTaskKey scheduledTaskKey(String configSection,
+                                                        Artifact artifact,
+                                                        MethodName methodName) {
+            return new ScheduledTaskKey(configSection, artifact, methodName);
+        }
+
+        public static Result<ScheduledTaskKey> scheduledTaskKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return SCHEDULED_TASK_KEY_FORMAT_ERROR.apply(key)
+                                                      .result();
+            }
+            var content = key.substring(PREFIX.length());
+            var firstSlash = content.indexOf('/');
+            if (firstSlash == - 1) {
+                return SCHEDULED_TASK_KEY_FORMAT_ERROR.apply(key)
+                                                      .result();
+            }
+            var configSection = content.substring(0, firstSlash);
+            var rest = content.substring(firstSlash + 1);
+            var lastSlash = rest.lastIndexOf('/');
+            if (lastSlash == - 1) {
+                return SCHEDULED_TASK_KEY_FORMAT_ERROR.apply(key)
+                                                      .result();
+            }
+            var artifactPart = rest.substring(0, lastSlash);
+            var methodPart = rest.substring(lastSlash + 1);
+            if (configSection.isEmpty() || methodPart.isEmpty()) {
+                return SCHEDULED_TASK_KEY_FORMAT_ERROR.apply(key)
+                                                      .result();
+            }
+            return Result.all(Artifact.artifact(artifactPart),
+                              MethodName.methodName(methodPart))
+                         .map((artifact, method) -> new ScheduledTaskKey(configSection, artifact, method));
+        }
+    }
+
     /// Config key format:
     /// ```
     /// config/{key}                    — cluster-wide
@@ -557,6 +612,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    Fn1<Cause, String> SCHEDULED_TASK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid scheduled-task key format: %s");
     Fn1<Cause, String> TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid topic-sub key format: %s");
     Fn1<Cause, String> SLICE_TARGET_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-target key format: %s");
     Fn1<Cause, String> APP_BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid app-blueprint key format: %s");

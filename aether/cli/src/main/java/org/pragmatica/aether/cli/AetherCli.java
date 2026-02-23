@@ -69,7 +69,8 @@ AetherCli.AlertsCommand.class,
 AetherCli.ThresholdsCommand.class,
 AetherCli.AspectsCommand.class,
 AetherCli.LoggingCommand.class,
-AetherCli.ConfigCommand.class})
+AetherCli.ConfigCommand.class,
+AetherCli.ScheduledTasksCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -1909,6 +1910,52 @@ public class AetherCli implements Runnable {
                 var path = option(nodeId).map(id -> "/api/config/node/" + id + "/" + key)
                                  .or("/api/config/" + key);
                 return configParent.parent.deleteFromNode(path);
+            }
+        }
+    }
+
+    // ===== Scheduled Tasks Commands =====
+    @Command(name = "scheduled-tasks",
+    description = "Scheduled task management",
+    subcommands = {ScheduledTasksCommand.ListCommand.class,
+    ScheduledTasksCommand.GetCommand.class})
+    static class ScheduledTasksCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            // Default: list all scheduled tasks
+            var response = parent.fetchFromNode("/api/scheduled-tasks");
+            System.out.println(formatJson(response));
+        }
+
+        @Command(name = "list", description = "List all scheduled tasks")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ScheduledTasksCommand tasksParent;
+
+            @Override
+            public Integer call() {
+                var response = tasksParent.parent.fetchFromNode("/api/scheduled-tasks");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "get", description = "Get scheduled tasks by config section")
+        static class GetCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ScheduledTasksCommand tasksParent;
+
+            @Parameters(index = "0", description = "Config section name")
+            private String configSection;
+
+            @Override
+            public Integer call() {
+                var response = tasksParent.parent.fetchFromNode("/api/scheduled-tasks/" + configSection);
+                System.out.println(formatJson(response));
+                return 0;
             }
         }
     }

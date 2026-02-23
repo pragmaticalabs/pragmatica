@@ -59,6 +59,17 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 24 | Message delivery | Complete | TopicPublisher fans out via SliceInvoker. PublisherFactory registered as SPI. Tested |
 | 25 | Resource lifecycle | Complete | Reference-counted `releaseAll()`, generated `stop()` cleanup, consumer tracking. SliceId auto-injected into ProvisioningContext |
 
+## Scheduled Invocation
+
+| # | Feature | Status | Description |
+|---|---------|--------|-------------|
+| 55 | Scheduled task registry | Complete | KV-Store backed registry tracking periodic task registrations with change listener pattern. 8 unit tests |
+| 56 | Scheduled task manager | Complete | Timer lifecycle manager with leader-only semantics, quorum gating, interval parsing (s/m/h/d), automatic start/cancel on registry changes. 10 unit tests |
+| 57 | Cron expression parser | Complete | 5-field cron syntax (minute hour day-of-month month day-of-week) with ranges, steps, lists. 11 unit tests |
+| 58 | Scheduled task KV types | Complete | `ScheduledTaskKey` and `ScheduledTaskValue` in KV-Store with interval and cron task factories |
+| 59 | Deployment lifecycle wiring | Complete | Publish/unpublish scheduled tasks during slice activation, deactivation, reactivation, and failure cleanup |
+| 60 | Scheduled tasks management API | Complete | `GET /api/scheduled-tasks` (list all with active timer count), `GET /api/scheduled-tasks/{configSection}` (filtered). CLI subcommand with list/get |
+
 ## Storage & Data
 
 | # | Feature | Status | Description |
@@ -124,9 +135,9 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | Status | Count |
 |--------|-------|
-| Complete | 53 |
+| Complete | 59 |
 | Partial | 1 |
-| Total | 54 |
+| Total | 60 |
 
 **Partial features and their gaps:**
 
@@ -136,4 +147,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-02-22 (v0.17.0)*
+*Last updated: 2026-02-23 (v0.17.0)*
