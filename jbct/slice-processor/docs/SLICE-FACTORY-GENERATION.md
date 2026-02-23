@@ -482,7 +482,7 @@ public static Promise<OrderRepository> orderRepository(Aspect<OrderRepository> a
 }
 ```
 
-See [RFC-0006: Resource Provisioning](../../../docs/rfc/RFC-0006-resource-provisioning.md) for the full resource provisioning architecture.
+See [RFC-0012: Resource Provisioning](../../../docs/rfc/RFC-0012-resource-provisioning.md) for the full resource provisioning architecture.
 
 ### D10: Plain Interface Dependencies
 

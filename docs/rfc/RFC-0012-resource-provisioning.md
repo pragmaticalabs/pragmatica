@@ -1,5 +1,5 @@
 ---
-RFC: 0006
+RFC: 0012
 Title: Resource Provisioning Architecture
 Status: Draft
 Author: Sergiy Yevtushenko
