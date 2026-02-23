@@ -50,7 +50,11 @@ USER aether
 
 # Entrypoint builds command from environment variables
 ENTRYPOINT ["sh", "-c", "\
-    java $JAVA_OPTS -jar /app/aether-node.jar \
+    CORES=$(nproc 2>/dev/null || echo 2); \
+    VTHREAD_PARALLELISM=$(( CORES > 8 ? CORES : 8 )); \
+    java $JAVA_OPTS \
+    -Djdk.virtualThreadScheduler.parallelism=$VTHREAD_PARALLELISM \
+    -jar /app/aether-node.jar \
     --config=/app/aether.toml \
     ${NODE_ID:+--node-id=$NODE_ID} \
     --port=$CLUSTER_PORT \

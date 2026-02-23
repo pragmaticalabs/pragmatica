@@ -88,6 +88,9 @@
 
         <!-- Default true to avoid reactor cycle; override with -Djbct.skip=false -pl !jbct -->
         <jbct.skip>true</jbct.skip>
+
+        <!-- Virtual thread carrier pool: min 8 to prevent deadlocks on low-vCPU CI runners -->
+        <vthread.argLine>-Djdk.virtualThreadScheduler.parallelism=8</vthread.argLine>
     </properties>
 
     <dependencyManagement>
@@ -454,6 +457,7 @@
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>${maven-surefire-plugin.version}</version>
                     <configuration>
+                        <argLine>${vthread.argLine}</argLine>
                         <excludes>
                             <exclude>**/*IT.java</exclude>
                         </excludes>
@@ -464,6 +468,7 @@
                     <artifactId>maven-failsafe-plugin</artifactId>
                     <version>${maven-failsafe-plugin.version}</version>
                     <configuration>
+                        <argLine>${vthread.argLine}</argLine>
                         <includes>
                             <include>**/*IT.java</include>
                         </includes>

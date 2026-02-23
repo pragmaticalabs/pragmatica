@@ -454,6 +454,7 @@
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>3.5.1</version>
                     <configuration>
+                        <argLine>${vthread.argLine}</argLine>
                         <excludes>
                             <exclude>**/*IT.java</exclude>
                         </excludes>
@@ -464,6 +465,7 @@
                     <artifactId>maven-failsafe-plugin</artifactId>
                     <version>3.5.1</version>
                     <configuration>
+                        <argLine>${vthread.argLine}</argLine>
                         <includes>
                             <include>**/*IT.java</include>
                         </includes>

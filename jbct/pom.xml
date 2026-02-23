@@ -235,7 +235,7 @@
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>${maven-surefire-plugin.version}</version>
                     <configuration>
-                        <argLine>--enable-preview</argLine>
+                        <argLine>${vthread.argLine} --enable-preview</argLine>
                     </configuration>
                 </plugin>
                 <plugin>
