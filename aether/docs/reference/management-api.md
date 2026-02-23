@@ -73,18 +73,48 @@ List all known cluster node IDs.
 
 ### GET /api/events
 
-Get cluster events (placeholder -- currently returns empty list).
+Get cluster events from the event aggregator. Returns structured events including topology changes, leader elections, deployments, slice failures, and network events.
+
+**Query Parameters:**
+- `since` (optional) -- ISO-8601 timestamp to filter events after a given time (e.g. `2024-01-15T10:30:00Z`).
+
+**Examples:**
+```bash
+# All events
+curl http://localhost:8080/api/events
+
+# Events since a specific time
+curl "http://localhost:8080/api/events?since=2024-01-15T10:30:00Z"
+```
 
 **Response:**
 ```json
-[]
+[
+  {
+    "timestamp": "2024-01-15T10:30:00Z",
+    "type": "NODE_JOINED",
+    "severity": "INFO",
+    "summary": "Node node-2 joined cluster (now 3 nodes)",
+    "details": {
+      "nodeId": "node-2",
+      "clusterSize": "3"
+    }
+  },
+  {
+    "timestamp": "2024-01-15T10:30:01Z",
+    "type": "LEADER_ELECTED",
+    "severity": "INFO",
+    "summary": "Node node-1 elected as leader",
+    "details": {
+      "leaderId": "node-1"
+    }
+  }
+]
 ```
 
-### GET /api/panel/chaos
+**Event Types:** `NODE_JOINED`, `NODE_LEFT`, `NODE_FAILED`, `LEADER_ELECTED`, `LEADER_LOST`, `QUORUM_ESTABLISHED`, `QUORUM_LOST`, `DEPLOYMENT_STARTED`, `DEPLOYMENT_COMPLETED`, `DEPLOYMENT_FAILED`, `SLICE_FAILURE`, `CONNECTION_ESTABLISHED`, `CONNECTION_FAILED`
 
-Chaos panel placeholder (returns empty string).
-
-**Content-Type**: `text/plain`
+**Severity Levels:** `INFO`, `WARNING`, `CRITICAL`
 
 ---
 
@@ -1201,6 +1231,37 @@ Real-time cluster status streaming via WebSocket. Pushes periodic JSON snapshots
 }
 ```
 
+### WS /ws/events
+
+Real-time cluster event streaming via WebSocket. Pushes only new events since the last broadcast (1-second interval). No data is sent when there are no new events.
+
+**Connection:**
+```javascript
+const ws = new WebSocket('ws://localhost:8080/ws/events');
+ws.onmessage = (event) => {
+  const events = JSON.parse(event.data);
+  events.forEach(e => console.log(`[${e.severity}] ${e.type}: ${e.summary}`));
+};
+```
+
+**Message Format:**
+```json
+[
+  {
+    "timestamp": "2024-01-15T10:30:00Z",
+    "type": "NODE_JOINED",
+    "severity": "INFO",
+    "summary": "Node node-2 joined cluster (now 3 nodes)",
+    "details": {
+      "nodeId": "node-2",
+      "clusterSize": "3"
+    }
+  }
+]
+```
+
+Messages are only sent when new events have occurred since the previous broadcast. Each message is a JSON array of `ClusterEvent` objects.
+
 ---
 
 ## Endpoint Summary
@@ -1211,7 +1272,6 @@ Real-time cluster status streaming via WebSocket. Pushes periodic JSON snapshots
 | GET | `/api/health` | Cluster Status |
 | GET | `/api/nodes` | Cluster Status |
 | GET | `/api/events` | Cluster Status |
-| GET | `/api/panel/chaos` | Cluster Status |
 | GET | `/api/slices` | Slice Management |
 | GET | `/api/slices/status` | Slice Management |
 | GET | `/api/routes` | Slice Management |
@@ -1271,6 +1331,7 @@ Real-time cluster status streaming via WebSocket. Pushes periodic JSON snapshots
 | GET | `/dashboard` | Dashboard |
 | WS | `/ws/dashboard` | WebSocket |
 | WS | `/ws/status` | WebSocket |
+| WS | `/ws/events` | WebSocket |
 
 | GET | `/api/scheduled-tasks` | Scheduled Tasks |
 | GET | `/api/scheduled-tasks/{configSection}` | Scheduled Tasks |

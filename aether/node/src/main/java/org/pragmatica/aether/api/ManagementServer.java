@@ -94,6 +94,8 @@ class ManagementServerImpl implements ManagementServer {
     private final DashboardMetricsPublisher metricsPublisher;
     private final StatusWebSocketHandler statusWsHandler;
     private final StatusWebSocketPublisher statusWsPublisher;
+    private final EventWebSocketHandler eventWsHandler;
+    private final EventWebSocketPublisher eventWsPublisher;
     private final ObservabilityRegistry observability;
     private final Option<TlsConfig> tls;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
@@ -122,6 +124,12 @@ class ManagementServerImpl implements ManagementServer {
         this.statusWsHandler = new StatusWebSocketHandler();
         this.statusWsPublisher = StatusWebSocketPublisher.statusWebSocketPublisher(statusWsHandler,
                                                                                    () -> buildStatusJson(nodeSupplier));
+        this.eventWsHandler = new EventWebSocketHandler();
+        this.eventWsPublisher = EventWebSocketPublisher.eventWebSocketPublisher(eventWsHandler,
+                                                                                since -> nodeSupplier.get()
+                                                                                                     .eventAggregator()
+                                                                                                     .eventsSince(since),
+                                                                                ManagementServerImpl::buildEventsJson);
         this.observability = ObservabilityRegistry.prometheus();
         this.tls = tls;
         // Route-based router for migrated routes — build route sources dynamically
@@ -148,10 +156,12 @@ class ManagementServerImpl implements ManagementServer {
         var wsHandler = new DashboardWebSocketHandler(metricsPublisher);
         var wsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/dashboard", wsHandler);
         var statusWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/status", statusWsHandler);
+        var eventWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/events", eventWsHandler);
         var config = HttpServerConfig.httpServerConfig("management", port)
                                      .withMaxContentLength(MAX_CONTENT_LENGTH)
                                      .withWebSocket(wsEndpoint)
-                                     .withWebSocket(statusWsEndpoint);
+                                     .withWebSocket(statusWsEndpoint)
+                                     .withWebSocket(eventWsEndpoint);
         // Add TLS if configured
         var finalConfig = tls.map(config::withTls)
                              .or(config);
@@ -167,6 +177,7 @@ class ManagementServerImpl implements ManagementServer {
     public Promise<Unit> stop() {
         metricsPublisher.stop();
         statusWsPublisher.stop();
+        eventWsPublisher.stop();
         var server = serverRef.get();
         if (server != null) {
             return server.stop()
@@ -180,6 +191,7 @@ class ManagementServerImpl implements ManagementServer {
         serverRef.set(server);
         metricsPublisher.start();
         statusWsPublisher.start();
+        eventWsPublisher.start();
         var protocol = tls.isPresent()
                        ? "HTTPS"
                        : "HTTP";
@@ -282,6 +294,51 @@ class ManagementServerImpl implements ManagementServer {
         sb.append("}");
         sb.append("}");
         return sb.toString();
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    static String buildEventsJson(List<ClusterEvent> events) {
+        var sb = new StringBuilder(256);
+        sb.append("[");
+        var first = true;
+        for (var event : events) {
+            if (!first) sb.append(",");
+            appendEventJson(sb, event);
+            first = false;
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private static void appendEventJson(StringBuilder sb, ClusterEvent event) {
+        sb.append("{\"timestamp\":\"")
+          .append(event.timestamp())
+          .append("\"");
+        sb.append(",\"type\":\"")
+          .append(event.type()
+                       .name())
+          .append("\"");
+        sb.append(",\"severity\":\"")
+          .append(event.severity()
+                       .name())
+          .append("\"");
+        sb.append(",\"summary\":\"")
+          .append(escapeJson(event.summary()))
+          .append("\"");
+        sb.append(",\"details\":{");
+        var firstDetail = true;
+        for (var entry : event.details()
+                              .entrySet()) {
+            if (!firstDetail) sb.append(",");
+            sb.append("\"")
+              .append(escapeJson(entry.getKey()))
+              .append("\":\"")
+              .append(escapeJson(entry.getValue()))
+              .append("\"");
+            firstDetail = false;
+        }
+        sb.append("}}");
     }
 
     private void handleRequest(RequestContext ctx, ResponseWriter response) {

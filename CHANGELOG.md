@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Envelope format versioning for slice JARs — `ENVELOPE_FORMAT_VERSION` in ManifestGenerator, runtime compatibility check in SliceManifest
 - Properties manifest (`META-INF/slice/*.manifest`) now included in per-slice JARs for full metadata at runtime
 - JaCoCo coverage infrastructure across 6 aether modules (427 tests)
+- Cluster event aggregator — `/api/events` REST endpoint (with `since` filter), `/ws/events` WebSocket feed (delta broadcasting), CLI `events` command. 11 event types collected into ring buffer (1000 events)
 
 ### Fixed
 - ProvisioningContext sliceId propagation — resource lifecycle tracking now works correctly for consumer reference counting

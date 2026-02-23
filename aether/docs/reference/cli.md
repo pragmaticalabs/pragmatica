@@ -125,6 +125,34 @@ Metrics:
     org.example:order:1.0.0  node-2  1156ms  SUCCESS
 ```
 
+#### events
+
+Show cluster events:
+
+```bash
+# All events
+aether events
+
+# Events since a specific time
+aether events --since 2024-01-15T10:30:00Z
+```
+
+Output:
+```
+[
+  {
+    "timestamp": "2024-01-15T10:30:00Z",
+    "type": "NODE_JOINED",
+    "severity": "INFO",
+    "summary": "Node node-2 joined cluster (now 3 nodes)",
+    "details": {
+      "nodeId": "node-2",
+      "clusterSize": "3"
+    }
+  }
+]
+```
+
 #### health
 
 Health check:

@@ -70,7 +70,8 @@ AetherCli.ThresholdsCommand.class,
 AetherCli.AspectsCommand.class,
 AetherCli.LoggingCommand.class,
 AetherCli.ConfigCommand.class,
-AetherCli.ScheduledTasksCommand.class})
+AetherCli.ScheduledTasksCommand.class,
+AetherCli.EventsCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -1957,6 +1958,29 @@ public class AetherCli implements Runnable {
                 System.out.println(formatJson(response));
                 return 0;
             }
+        }
+    }
+
+    // ===== Events Command =====
+    @Command(name = "events", description = "Show cluster events")
+    static class EventsCommand implements Callable<Integer> {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @CommandLine.Option(names = {"--since"}, description = "Show events since ISO-8601 timestamp (e.g. 2024-01-15T10:30:00Z)")
+        private String since;
+
+        @Override
+        public Integer call() {
+            var path = buildEventsPath();
+            var response = parent.fetchFromNode(path);
+            System.out.println(formatJson(response));
+            return 0;
+        }
+
+        private String buildEventsPath() {
+            return option(since).map(s -> "/api/events?since=" + s)
+                          .or("/api/events");
         }
     }
 

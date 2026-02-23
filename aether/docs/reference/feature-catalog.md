@@ -106,6 +106,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 33 | Alert management | Complete | Active/historical alerts, threshold-based triggering, KV-Store persistence, CLI control |
 | 34 | Dynamic thresholds | Complete | Runtime warning/critical threshold configuration per metric |
 | 35 | Prometheus export | Complete | Micrometer integration with Prometheus scrape endpoint |
+| 73 | Cluster event aggregator | Complete | Ring buffer (1000 events) collecting 11 event types (topology, leader, quorum, deployment, slice failure, network). REST API (`/api/events` with `since` filter), WebSocket feed (`/ws/events` delta broadcast), CLI command |
 
 ## Resource Provisioning
 
@@ -122,9 +123,9 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
 | 41 | REST management API | Complete | 60+ endpoints across 12 route classes: status, health, blueprints, slices, scaling, rolling updates, config, thresholds, alerts, aspects, logging, TTM, invocation metrics, controller config |
-| 42 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, metrics, health, scale, artifact, blueprint, update, invocation-metrics, controller, alerts, thresholds, aspects, config, logging |
+| 42 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, metrics, health, scale, artifact, blueprint, update, invocation-metrics, controller, alerts, thresholds, aspects, config, logging, events |
 | 43 | Web dashboard | Planned | Rework planned — current implementation needs modernization for production use |
-| 44 | WebSocket streams | Complete | `/ws/dashboard` (metrics) and `/ws/status` (cluster state with node/slice details) |
+| 44 | WebSocket streams | Complete | `/ws/dashboard` (metrics), `/ws/status` (cluster state), `/ws/events` (real-time cluster events with delta broadcasting) |
 | 45 | Dynamic log levels | Complete | Runtime log level adjustment per logger via KV-Store. CLI and API control |
 
 ## Developer Tooling
@@ -152,10 +153,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | Status | Count |
 |--------|-------|
-| Complete | 58 |
+| Complete | 59 |
 | Partial | 1 |
 | Planned | 13 |
-| Total | 72 |
+| Total | 73 |
 
 **Partial features and their gaps:**
 
