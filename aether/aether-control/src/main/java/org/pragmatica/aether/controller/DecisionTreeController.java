@@ -158,8 +158,8 @@ public interface DecisionTreeController extends ClusterController {
                          artifact);
                 return Option.some(List.of(new BlueprintChange.ScaleUp(artifact, 1)));
             }
-            // Rule 2: Low CPU → scale down (if more than 1 instance)
-            if (avgCpu < currentConfig.cpuScaleDownThreshold() && blueprint.instances() > 1) {
+            // Rule 2: Low CPU → scale down (if above minimum instances)
+            if (avgCpu < currentConfig.cpuScaleDownThreshold() && blueprint.instances() > blueprint.minInstances()) {
                 log.info("Rule triggered: Low CPU ({} < {}), scaling down {}",
                          avgCpu,
                          currentConfig.cpuScaleDownThreshold(),

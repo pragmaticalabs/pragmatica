@@ -4,9 +4,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -209,50 +207,20 @@ class EndpointRegistryTest {
         assertThat(key.instanceNumber()).isEqualTo(5);
     }
 
-    // === Non-Endpoint Events Ignored ===
-
-    @Test
-    void ignores_non_endpoint_key_put() {
-        // Send a slice target key instead of endpoint key
-        var sliceTargetKey = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
-        var sliceTargetValue = AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(), 3);
-        var command = new KVCommand.Put<AetherKey, AetherValue>(sliceTargetKey, sliceTargetValue);
-        var notification = new ValuePut<>(command, Option.none());
-
-        registry.onValuePut(notification);
-
-        assertThat(registry.allEndpoints()).isEmpty();
-    }
-
-    @Test
-    void ignores_non_endpoint_key_remove() {
-        registerEndpoint(artifact, methodName, 1, node1);
-
-        // Try to remove using a slice target key
-        var sliceTargetKey = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
-        var command = new KVCommand.Remove<AetherKey>(sliceTargetKey);
-        var notification = new ValueRemove<AetherKey, AetherValue>(command, Option.none());
-
-        registry.onValueRemove(notification);
-
-        // Endpoint should still be there
-        assertThat(registry.allEndpoints()).hasSize(1);
-    }
-
     // === Helper Methods ===
 
     private void registerEndpoint(Artifact artifact, MethodName method, int instance, NodeId nodeId) {
         var key = new EndpointKey(artifact, method, instance);
         var value = new EndpointValue(nodeId);
-        var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+        var command = new KVCommand.Put<EndpointKey, EndpointValue>(key, value);
         var notification = new ValuePut<>(command, Option.none());
-        registry.onValuePut(notification);
+        registry.onEndpointPut(notification);
     }
 
     private void removeEndpoint(Artifact artifact, MethodName method, int instance) {
         var key = new EndpointKey(artifact, method, instance);
-        var command = new KVCommand.Remove<AetherKey>(key);
-        var notification = new ValueRemove<AetherKey, AetherValue>(command, Option.none());
-        registry.onValueRemove(notification);
+        var command = new KVCommand.Remove<EndpointKey>(key);
+        var notification = new ValueRemove<EndpointKey, EndpointValue>(command, Option.none());
+        registry.onEndpointRemove(notification);
     }
 }

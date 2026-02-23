@@ -52,16 +52,14 @@ import static org.pragmatica.lang.Option.some;
 /// ```
 @Command(name = "aether",
 mixinStandardHelpOptions = true,
-version = "Aether 0.16.0",
+version = "Aether 0.17.0",
 description = "Command-line interface for Aether cluster management",
 subcommands = {AetherCli.StatusCommand.class,
 AetherCli.NodesCommand.class,
 AetherCli.SlicesCommand.class,
 AetherCli.MetricsCommand.class,
 AetherCli.HealthCommand.class,
-AetherCli.DeployCommand.class,
 AetherCli.ScaleCommand.class,
-AetherCli.UndeployCommand.class,
 AetherCli.BlueprintCommand.class,
 AetherCli.ArtifactCommand.class,
 AetherCli.UpdateCommand.class,
@@ -71,7 +69,9 @@ AetherCli.AlertsCommand.class,
 AetherCli.ThresholdsCommand.class,
 AetherCli.AspectsCommand.class,
 AetherCli.LoggingCommand.class,
-AetherCli.ConfigCommand.class})
+AetherCli.ConfigCommand.class,
+AetherCli.ScheduledTasksCommand.class,
+AetherCli.EventsCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -183,7 +183,7 @@ public class AetherCli implements Runnable {
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-UTIL-02"})
     private void runRepl(CommandLine cmd) {
-        System.out.println("Aether v0.16.0 - Connected to " + nodeAddress);
+        System.out.println("Aether v0.17.0 - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
         System.out.println();
         try (var reader = new BufferedReader(new InputStreamReader(System.in))) {
@@ -404,26 +404,6 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "deploy", description = "Deploy a slice to the cluster")
-    static class DeployCommand implements Callable<Integer> {
-        @CommandLine.ParentCommand
-        private AetherCli parent;
-
-        @Parameters(index = "0", description = "Artifact coordinates (group:artifact:version)")
-        private String artifact;
-
-        @CommandLine.Option(names = {"-n", "--instances"}, description = "Number of instances", defaultValue = "1")
-        private int instances;
-
-        @Override
-        public Integer call() {
-            var body = "{\"artifact\":\"" + artifact + "\",\"instances\":" + instances + "}";
-            var response = parent.postToNode("/deploy", body);
-            System.out.println(formatJson(response));
-            return 0;
-        }
-    }
-
     @Command(name = "scale", description = "Scale a deployed slice")
     static class ScaleCommand implements Callable<Integer> {
         @CommandLine.ParentCommand
@@ -439,23 +419,6 @@ public class AetherCli implements Runnable {
         public Integer call() {
             var body = "{\"artifact\":\"" + artifact + "\",\"instances\":" + instances + "}";
             var response = parent.postToNode("/scale", body);
-            System.out.println(formatJson(response));
-            return 0;
-        }
-    }
-
-    @Command(name = "undeploy", description = "Remove a slice from the cluster")
-    static class UndeployCommand implements Callable<Integer> {
-        @CommandLine.ParentCommand
-        private AetherCli parent;
-
-        @Parameters(index = "0", description = "Artifact coordinates (group:artifact:version)")
-        private String artifact;
-
-        @Override
-        public Integer call() {
-            var body = "{\"artifact\":\"" + artifact + "\"}";
-            var response = parent.postToNode("/undeploy", body);
             System.out.println(formatJson(response));
             return 0;
         }
@@ -808,8 +771,7 @@ public class AetherCli implements Runnable {
             @Override
             @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
-                var encodedId = blueprintId.replace(":", "%3A");
-                var response = blueprintParent.parent.fetchFromNode("/api/blueprint/" + encodedId);
+                var response = blueprintParent.parent.fetchFromNode("/api/blueprint/" + blueprintId);
                 if (response.contains("\"error\":")) {
                     System.out.println("Failed to get blueprint: " + response);
                     return 1;
@@ -878,8 +840,7 @@ public class AetherCli implements Runnable {
                         return 0;
                     }
                 }
-                var encodedId = blueprintId.replace(":", "%3A");
-                var response = blueprintParent.parent.deleteFromNode("/api/blueprint/" + encodedId);
+                var response = blueprintParent.parent.deleteFromNode("/api/blueprint/" + blueprintId);
                 if (response.contains("\"error\":")) {
                     System.out.println("Failed to delete blueprint: " + response);
                     return 1;
@@ -916,8 +877,7 @@ public class AetherCli implements Runnable {
             @Override
             @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
-                var encodedId = blueprintId.replace(":", "%3A");
-                var response = blueprintParent.parent.fetchFromNode("/api/blueprint/" + encodedId + "/status");
+                var response = blueprintParent.parent.fetchFromNode("/api/blueprint/" + blueprintId + "/status");
                 if (response.contains("\"error\":")) {
                     System.out.println("Failed to get blueprint status: " + response);
                     return 1;
@@ -1952,6 +1912,75 @@ public class AetherCli implements Runnable {
                                  .or("/api/config/" + key);
                 return configParent.parent.deleteFromNode(path);
             }
+        }
+    }
+
+    // ===== Scheduled Tasks Commands =====
+    @Command(name = "scheduled-tasks",
+    description = "Scheduled task management",
+    subcommands = {ScheduledTasksCommand.ListCommand.class,
+    ScheduledTasksCommand.GetCommand.class})
+    static class ScheduledTasksCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            // Default: list all scheduled tasks
+            var response = parent.fetchFromNode("/api/scheduled-tasks");
+            System.out.println(formatJson(response));
+        }
+
+        @Command(name = "list", description = "List all scheduled tasks")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ScheduledTasksCommand tasksParent;
+
+            @Override
+            public Integer call() {
+                var response = tasksParent.parent.fetchFromNode("/api/scheduled-tasks");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "get", description = "Get scheduled tasks by config section")
+        static class GetCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ScheduledTasksCommand tasksParent;
+
+            @Parameters(index = "0", description = "Config section name")
+            private String configSection;
+
+            @Override
+            public Integer call() {
+                var response = tasksParent.parent.fetchFromNode("/api/scheduled-tasks/" + configSection);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+    }
+
+    // ===== Events Command =====
+    @Command(name = "events", description = "Show cluster events")
+    static class EventsCommand implements Callable<Integer> {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @CommandLine.Option(names = {"--since"}, description = "Show events since ISO-8601 timestamp (e.g. 2024-01-15T10:30:00Z)")
+        private String since;
+
+        @Override
+        public Integer call() {
+            var path = buildEventsPath();
+            var response = parent.fetchFromNode(path);
+            System.out.println(formatJson(response));
+            return 0;
+        }
+
+        private String buildEventsPath() {
+            return option(since).map(s -> "/api/events?since=" + s)
+                         .or("/api/events");
         }
     }
 

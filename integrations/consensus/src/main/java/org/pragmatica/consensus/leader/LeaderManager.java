@@ -180,7 +180,8 @@ public interface LeaderManager {
                              AtomicBoolean proposalInFlight,
                              AtomicBoolean needsReactivation,
                              AtomicBoolean hasEverHadLeader,
-                             AtomicInteger electionRetryCount) implements LeaderManager {
+                             AtomicInteger electionRetryCount,
+                             AtomicLong quorumSequence) implements LeaderManager {
             @Override
             public Option<NodeId> leader() {
                 return currentLeader.get();
@@ -469,7 +470,11 @@ public interface LeaderManager {
 
             @Override
             public void watchQuorumState(QuorumStateNotification quorumState) {
-                switch (quorumState) {
+                if (!quorumState.advanceSequence(quorumSequence)) {
+                    log.debug("Ignoring stale QuorumStateNotification: {}", quorumState);
+                    return;
+                }
+                switch (quorumState.state()) {
                     case ESTABLISHED -> start();
                     case DISAPPEARED -> stop();
                 }
@@ -524,7 +529,8 @@ public interface LeaderManager {
                                  new AtomicBoolean(false),
                                  new AtomicBoolean(false),
                                  new AtomicBoolean(false),
-                                 new AtomicInteger(0));
+                                 new AtomicInteger(0),
+                                 new AtomicLong(0));
     }
 
     @MessageReceiver

@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>0.16.0</version>
+        <version>0.17.0</version>
     </parent>
 
     <artifactId>resource</artifactId>
@@ -18,6 +18,7 @@
         <module>api</module>
         <module>db-jdbc</module>
         <module>db-r2dbc</module>
+        <module>db-jooq-api</module>
         <module>db-jooq</module>
         <module>db-jooq-r2dbc</module>
         <module>http</module>
@@ -37,6 +38,11 @@
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>resource-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>resource-db-jooq-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

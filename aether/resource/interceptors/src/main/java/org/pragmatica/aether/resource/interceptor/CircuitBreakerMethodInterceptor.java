@@ -6,7 +6,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.CircuitBreaker;
 
 /// Method interceptor that wraps invocations with a {@link CircuitBreaker}.
-record CircuitBreakerMethodInterceptor(CircuitBreaker breaker) implements MethodInterceptor {
+public record CircuitBreakerMethodInterceptor(CircuitBreaker breaker) implements MethodInterceptor {
     @Override
     public <R, T> Fn1<Promise<R>, T> intercept(Fn1<Promise<R>, T> method) {
         return request -> breaker.execute(() -> method.apply(request));

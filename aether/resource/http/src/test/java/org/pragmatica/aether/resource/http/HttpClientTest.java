@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.net.http.HttpClient.Redirect;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -77,5 +78,48 @@ class HttpClientTest {
 
         assertThat(client.config()).isEqualTo(config);
         assertThat(client.config().baseUrl().fold(() -> "", v -> v)).isEqualTo("https://api.example.com");
+    }
+
+    @Test
+    void httpClientConfig_withDefaults_hasJsonAndHeadersDefaults() {
+        HttpClientConfig.httpClientConfig()
+            .onFailureRun(Assertions::fail)
+            .onSuccess(config -> {
+                assertThat(config.json().isEmpty()).isTrue();
+                assertThat(config.defaultHeaders()).isEmpty();
+            });
+    }
+
+    @Test
+    void httpClientConfig_withJson_preservesJsonConfig() {
+        var json = JsonConfig.jsonConfig();
+        var config = HttpClientConfig.httpClientConfig().unwrap()
+            .withJson(json);
+
+        JsonConfig actual = config.json().fold(() -> null, v -> v);
+        assertThat(actual).isEqualTo(json);
+    }
+
+    @Test
+    void httpClientConfig_withDefaultHeaders_preservesHeaders() {
+        var config = HttpClientConfig.httpClientConfig().unwrap()
+            .withDefaultHeaders(Map.of("Authorization", "Bearer token"));
+
+        assertThat(config.defaultHeaders()).containsEntry("Authorization", "Bearer token");
+    }
+
+    @Test
+    void httpClientConfig_withMethods_preserveJsonAndHeaders() {
+        var json = JsonConfig.jsonConfig();
+        var config = HttpClientConfig.httpClientConfig().unwrap()
+            .withJson(json)
+            .withDefaultHeaders(Map.of("X-Key", "val"));
+
+        var updated = config.withBaseUrl("https://new.example.com");
+
+        JsonConfig actualJson = updated.json().fold(() -> null, v -> v);
+        assertThat(actualJson).isEqualTo(json);
+        assertThat(updated.defaultHeaders()).containsEntry("X-Key", "val");
+        assertThat(updated.baseUrl().fold(() -> "", v -> v)).isEqualTo("https://new.example.com");
     }
 }

@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>examples</artifactId>
-        <version>0.16.0</version>
+        <version>0.17.0</version>
     </parent>
 
     <artifactId>examples-pragmatica-lite</artifactId>

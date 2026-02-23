@@ -24,7 +24,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -98,9 +100,9 @@ public interface ReactiveOperations {
     static <T> Promise<Option<T>> firstFromPublisher(Publisher<? extends T> publisher,
                                                      Fn1<R2dbcError, Throwable> errorMapper) {
         return Promise.promise(promise -> {
+                                   var completed = new AtomicBoolean(false);
                                    ((Publisher<T>) publisher).subscribe(new Subscriber<T>() {
             private Subscription subscription;
-            private boolean completed = false;
 
             @Override
             public void onSubscribe(Subscription s) {
@@ -110,8 +112,7 @@ public interface ReactiveOperations {
 
             @Override
             public void onNext(T item) {
-                                                                            if (!completed) {
-                                                                                completed = true;
+                                                                            if (completed.compareAndSet(false, true)) {
                                                                                 subscription.cancel();
                                                                                 promise.resolve(Result.success(Option.option(item)));
                                                                             }
@@ -119,7 +120,7 @@ public interface ReactiveOperations {
 
             @Override
             public void onError(Throwable t) {
-                                                                            if (!completed) {
+                                                                            if (completed.compareAndSet(false, true)) {
                                                                                 promise.resolve(errorMapper.apply(t)
                                                                                                            .result());
                                                                             }
@@ -127,7 +128,7 @@ public interface ReactiveOperations {
 
             @Override
             public void onComplete() {
-                                                                            if (!completed) {
+                                                                            if (completed.compareAndSet(false, true)) {
                                                                                 promise.resolve(Result.success(Option.none()));
                                                                             }
                                                                         }
@@ -146,7 +147,7 @@ public interface ReactiveOperations {
     static <T> Promise<List<T>> collectFromPublisher(Publisher<? extends T> publisher,
                                                      Fn1<R2dbcError, Throwable> errorMapper) {
         return Promise.promise(promise -> {
-                                   var results = new ArrayList<T>();
+                                   var results = Collections.synchronizedList(new ArrayList<T>());
                                    ((Publisher<T>) publisher).subscribe(new Subscriber<T>() {
             @Override
             public void onSubscribe(Subscription s) {

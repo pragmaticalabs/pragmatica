@@ -4,9 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.AppHttpConfig;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -155,8 +153,8 @@ class AppHttpServerTest {
     private void registerRoute(String method, String path, Set<NodeId> nodes) {
         var key = HttpRouteKey.httpRouteKey(method, path);
         var value = HttpRouteValue.httpRouteValue(nodes);
-        var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+        var command = new KVCommand.Put<HttpRouteKey, HttpRouteValue>(key, value);
         var notification = new ValuePut<>(command, Option.none());
-        registry.onValuePut(notification);
+        registry.onRoutePut(notification);
     }
 }

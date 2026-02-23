@@ -43,9 +43,12 @@ import java.util.concurrent.Future;
 public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     private static final int MANAGEMENT_PORT = 8080;
     private static final int CLUSTER_PORT = 8090;
-    private static final Duration STARTUP_TIMEOUT = Duration.ofSeconds(60);
+    private static final Duration STARTUP_TIMEOUT = Duration.ofSeconds(120);
     private static final String IMAGE_NAME = "aether-node-e2e";
     private static final String E2E_IMAGE_ENV = "AETHER_E2E_IMAGE";
+
+    /// Blueprint ID used by the deploy() convenience method for E2E tests.
+    public static final String E2E_BLUEPRINT_ID = "e2e.test:deploy:1.0.0";
 
     /// Host networking is only supported on Linux. On macOS, podman/Docker Desktop
     /// runs containers in a VM, so `withNetworkMode("host")` shares the VM's network,
@@ -88,10 +91,9 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // Test artifact paths relative to Maven repository
     // Note: Uses slice artifact IDs (echo-slice-echo-service), not module artifact IDs (echo-slice)
     private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
-    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.16.0");
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.17.0");
     private static final String[] TEST_ARTIFACTS = {
-        "echo-slice-echo-service/" + TEST_ARTIFACT_VERSION + "/echo-slice-echo-service-" + TEST_ARTIFACT_VERSION + ".jar",
-        "echo-slice-echo-service/0.16.0/echo-slice-echo-service-0.16.0.jar"
+        "echo-slice-echo-service/" + TEST_ARTIFACT_VERSION + "/echo-slice-echo-service-" + TEST_ARTIFACT_VERSION + ".jar"
     };
 
     /// Creates a new Aether node container with default ports and bridge networking.
@@ -152,6 +154,11 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
             // which don't exist in host mode, causing a 5-second startup timeout.
             container.withNetworkMode("host");
         } else {
+            // addExposedPort registers ports in the exposedPorts list so that
+            // getMappedPort() (used by HttpWaitStrategy) can find them.
+            // addFixedExposedPort only adds to portBindings, not exposedPorts.
+            container.addExposedPort(managementPort);
+            container.addExposedPort(clusterPort);
             container.addFixedExposedPort(managementPort, managementPort);
             container.addFixedExposedPort(clusterPort, clusterPort);
             container.withNetworkAliases(nodeId);
@@ -349,15 +356,21 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         return get("/api/metrics");
     }
 
-    /// Deploys a slice to the cluster with retry logic.
+    /// Deploys a slice to the cluster via blueprint API with retry logic.
     /// Consensus operations may occasionally timeout during cluster formation.
     ///
     /// @param artifact artifact coordinates (group:artifact:version)
     /// @param instances number of instances
     /// @return deployment response JSON
     public String deploy(String artifact, int instances) {
-        var body = "{\"artifact\":\"" + artifact + "\",\"instances\":" + instances + "}";
-        return postWithRetry("/api/deploy", body, 3, Duration.ofSeconds(2));
+        var blueprint = """
+            id = "%s"
+
+            [[slices]]
+            artifact = "%s"
+            instances = %d
+            """.formatted(E2E_BLUEPRINT_ID, artifact, instances);
+        return postWithRetry("/api/blueprint", blueprint, 5, Duration.ofSeconds(5));
     }
 
     /// POST request with retry logic for consensus operations.
@@ -391,13 +404,12 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         return post("/api/scale", body);
     }
 
-    /// Undeploys a slice from the cluster.
+    /// Undeploys a slice from the cluster by deleting the E2E blueprint.
     ///
-    /// @param artifact artifact coordinates
+    /// @param artifact artifact coordinates (unused, kept for API compatibility)
     /// @return undeploy response JSON
     public String undeploy(String artifact) {
-        var body = "{\"artifact\":\"" + artifact + "\"}";
-        return post("/api/undeploy", body);
+        return delete("/api/blueprint/" + E2E_BLUEPRINT_ID);
     }
 
     /// Applies a blueprint to the cluster.
@@ -406,6 +418,21 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     /// @return apply response JSON
     public String applyBlueprint(String blueprint) {
         return post("/api/blueprint", blueprint);
+    }
+
+    /// Lists all applied blueprints.
+    ///
+    /// @return blueprints JSON
+    public String listBlueprints() {
+        return get("/api/blueprints");
+    }
+
+    /// Deletes a specific blueprint and undeploys its slices.
+    ///
+    /// @param blueprintId blueprint identifier
+    /// @return response JSON
+    public String deleteBlueprint(String blueprintId) {
+        return delete("/api/blueprint/" + blueprintId);
     }
 
     // ===== Artifact Upload (Maven Protocol) =====
@@ -421,6 +448,22 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     public boolean uploadArtifact(String groupPath, String artifactId, String version, Path jarPath) {
         try {
             var jarContent = Files.readAllBytes(jarPath);
+            return uploadArtifactBytes(groupPath, artifactId, version, jarContent);
+        } catch (Exception e) {
+            System.out.println("[DEBUG] Artifact upload error: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /// Uploads pre-built artifact bytes to the DHT via Maven protocol.
+    ///
+    /// @param groupPath group path with slashes
+    /// @param artifactId artifact ID
+    /// @param version version
+    /// @param jarContent JAR file bytes
+    /// @return true if upload succeeded
+    public boolean uploadArtifactBytes(String groupPath, String artifactId, String version, byte[] jarContent) {
+        try {
             var remotePath = "/repository/" + groupPath + "/" + artifactId + "/" + version +
                              "/" + artifactId + "-" + version + ".jar";
             System.out.println("[DEBUG] Uploading artifact to " + remotePath + " (" + jarContent.length + " bytes)");

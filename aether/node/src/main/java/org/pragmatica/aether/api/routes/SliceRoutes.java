@@ -20,6 +20,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import java.util.ArrayList;
@@ -30,13 +31,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import static org.pragmatica.http.routing.PathParameter.aString;
+import static org.pragmatica.http.routing.PathParameter.spacer;
 import static org.pragmatica.aether.api.ManagementApiResponses.*;
 
-/// Routes for slice management: deploy, undeploy, scale, blueprint.
+/// Routes for slice management: scale, blueprint, status.
 public final class SliceRoutes implements RouteSource {
-    private static final Cause MISSING_ARTIFACT = Causes.cause("Missing 'artifact' field");
     private static final Cause MISSING_ARTIFACT_OR_INSTANCES = Causes.cause("Missing 'artifact' or 'instances' field");
     private static final Cause BLUEPRINT_NOT_FOUND = Causes.cause("Blueprint not found");
+    private static final Cause NOT_IN_BLUEPRINT = Causes.cause("Slice is not part of any active blueprint. Deploy via blueprint.");
 
     private final Supplier<AetherNode> nodeSupplier;
 
@@ -49,11 +52,7 @@ public final class SliceRoutes implements RouteSource {
     }
 
     // Request DTOs - nullable types required for JSON deserialization
-    record DeployRequest(String artifact, Integer instances) {}
-
     record ScaleRequest(String artifact, Integer instances) {}
-
-    record UndeployRequest(String artifact) {}
 
     @Override
     public Stream<Route<?>> routes() {
@@ -63,54 +62,34 @@ public final class SliceRoutes implements RouteSource {
                               .toJson(this::buildSlicesStatusResponse),
                          Route.<RoutesResponse> get("/api/routes")
                               .toJson(this::buildRoutesResponse),
-                         Route.<DeployResponse> post("/api/deploy")
-                              .withBody(DeployRequest.class)
-                              .toJson(this::handleDeploy),
-                         Route.<DeployResponse> post("/api/scale")
+                         Route.<ScaleResponse> post("/api/scale")
                               .withBody(ScaleRequest.class)
                               .toJson(this::handleScale),
-                         Route.<UndeployResponse> post("/api/undeploy")
-                              .withBody(UndeployRequest.class)
-                              .toJson(this::handleUndeploy),
                          Route.<BlueprintResponse> post("/api/blueprint")
                               .to(ctx -> handleBlueprint(ctx.bodyAsString()))
                               .asJson(),
                          // Blueprint management routes
         Route.<BlueprintListResponse> get("/api/blueprints")
              .toJson(this::buildBlueprintListResponse),
-                         Route.<BlueprintDetailResponse> get("/api/blueprint/{id}")
-                              .to(ctx -> ctx.pathParam(0)
-                                            .async()
-                                            .flatMap(this::handleGetBlueprint))
+                         Route.<BlueprintDetailResponse> get("/api/blueprint")
+                              .withPath(aString())
+                              .to(this::handleGetBlueprint)
                               .asJson(),
-                         Route.<BlueprintStatusResponse> get("/api/blueprint/{id}/status")
-                              .to(ctx -> ctx.pathParam(0)
-                                            .async()
-                                            .flatMap(this::handleGetBlueprintStatus))
+                         Route.<BlueprintStatusResponse> get("/api/blueprint")
+                              .withPath(aString(),
+                                        spacer("status"))
+                              .to((id, _) -> handleGetBlueprintStatus(id))
                               .asJson(),
-                         Route.<BlueprintDeleteResponse> delete("/api/blueprint/{id}")
-                              .to(ctx -> ctx.pathParam(0)
-                                            .async()
-                                            .flatMap(this::handleDeleteBlueprint))
+                         Route.<BlueprintDeleteResponse> delete("/api/blueprint")
+                              .withPath(aString())
+                              .to(this::handleDeleteBlueprint)
                               .asJson(),
                          Route.<BlueprintValidationResponse> post("/api/blueprint/validate")
                               .to(ctx -> handleValidateBlueprint(ctx.bodyAsString()))
                               .asJson());
     }
 
-    private record DeployParams(String artifact, int instances) {}
-
     private record ScaleParams(String artifact, int instances) {}
-
-    private record UndeployParams(String artifact) {}
-
-    private Result<DeployParams> validateDeployRequest(DeployRequest request) {
-        return Option.option(request.artifact())
-                     .toResult(MISSING_ARTIFACT)
-                     .map(artifact -> new DeployParams(artifact,
-                                                       Option.option(request.instances())
-                                                             .or(1)));
-    }
 
     private Result<ScaleParams> validateScaleRequest(ScaleRequest request) {
         return Result.all(Option.option(request.artifact())
@@ -120,41 +99,55 @@ public final class SliceRoutes implements RouteSource {
                      .map(ScaleParams::new);
     }
 
-    private Result<UndeployParams> validateUndeployRequest(UndeployRequest request) {
-        return Option.option(request.artifact())
-                     .toResult(MISSING_ARTIFACT)
-                     .map(UndeployParams::new);
-    }
-
-    private Promise<DeployResponse> handleDeploy(DeployRequest request) {
-        return validateDeployRequest(request).async()
-                                    .flatMap(params -> Artifact.artifact(params.artifact())
-                                                               .async()
-                                                               .flatMap(artifact -> applyDeployCommand(artifact,
-                                                                                                       params.instances())
-        .map(_ -> new DeployResponse("deployed",
-                                     artifact.asString(),
-                                     params.instances()))));
-    }
-
-    private Promise<DeployResponse> handleScale(ScaleRequest request) {
+    private Promise<ScaleResponse> handleScale(ScaleRequest request) {
         return validateScaleRequest(request).async()
                                    .flatMap(params -> Artifact.artifact(params.artifact())
                                                               .async()
-                                                              .flatMap(artifact -> applyDeployCommand(artifact,
-                                                                                                      params.instances())
-        .map(_ -> new DeployResponse("scaled",
-                                     artifact.asString(),
-                                     params.instances()))));
+                                                              .flatMap(artifact -> guardBlueprintMembership(artifact).flatMap(_ -> guardMinInstances(artifact,
+                                                                                                                                                     params.instances()))
+                                                                                                           .flatMap(_ -> applyDeployCommand(artifact,
+                                                                                                                                            params.instances()))
+                                                                                                           .map(_ -> new ScaleResponse("scaled",
+                                                                                                                                       artifact.asString(),
+                                                                                                                                       params.instances()))));
     }
 
-    private Promise<UndeployResponse> handleUndeploy(UndeployRequest request) {
-        return validateUndeployRequest(request).async()
-                                      .flatMap(params -> Artifact.artifact(params.artifact())
-                                                                 .async()
-                                                                 .flatMap(artifact -> applyUndeployCommand(artifact)
-        .map(_ -> new UndeployResponse("undeployed",
-                                       artifact.asString()))));
+    private static final Cause BELOW_MIN_INSTANCES = Causes.cause("Requested instances is below blueprint minimum");
+
+    private Promise<Unit> guardMinInstances(Artifact artifact, int requestedInstances) {
+        if (requestedInstances < 1) {
+            return BELOW_MIN_INSTANCES.promise();
+        }
+        var node = nodeSupplier.get();
+        var key = SliceTargetKey.sliceTargetKey(artifact.base());
+        return node.kvStore()
+                   .get(key)
+                   .filter(v -> v instanceof SliceTargetValue)
+                   .map(v -> ((SliceTargetValue) v).effectiveMinInstances())
+                   .map(min -> requestedInstances >= min
+                               ? Promise.unitPromise()
+                               : Causes.cause("Requested " + requestedInstances
+                                              + " instances but blueprint minimum is " + min)
+                                       .<Unit> promise())
+                   .or(Promise.unitPromise());
+    }
+
+    private Promise<Unit> guardBlueprintMembership(Artifact artifact) {
+        return isPartOfActiveBlueprint(artifact)
+               ? Promise.unitPromise()
+               : NOT_IN_BLUEPRINT.promise();
+    }
+
+    private boolean isPartOfActiveBlueprint(Artifact artifact) {
+        return nodeSupplier.get()
+                           .blueprintService()
+                           .list()
+                           .stream()
+                           .flatMap(blueprint -> blueprint.loadOrder()
+                                                          .stream())
+                           .anyMatch(slice -> slice.artifact()
+                                                   .base()
+                                                   .equals(artifact.base()));
     }
 
     private Promise<BlueprintResponse> handleBlueprint(String body) {
@@ -334,13 +327,6 @@ public final class SliceRoutes implements RouteSource {
         AetherKey key = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
         AetherValue value = AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(), instances);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
-        return node.apply(List.of(command));
-    }
-
-    private Promise<List<Long>> applyUndeployCommand(Artifact artifact) {
-        var node = nodeSupplier.get();
-        AetherKey key = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
-        KVCommand<AetherKey> command = new KVCommand.Remove<>(key);
         return node.apply(List.of(command));
     }
 

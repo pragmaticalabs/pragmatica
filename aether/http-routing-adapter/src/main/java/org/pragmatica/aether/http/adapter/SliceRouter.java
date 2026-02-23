@@ -14,6 +14,7 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -90,13 +91,12 @@ public interface SliceRouter {
                                                       ContentType contentType,
                                                       HttpRequestContext request) {
                 return switch (result) {
-                    case org.pragmatica.lang.Result.Success<?> success -> successToResponse(success.value(), contentType);
-                    case org.pragmatica.lang.Result.Failure failure -> errorToResponse(failure.cause(), request);
+                    case Result.Success<?> success -> successToResponse(success.value(), contentType);
+                    case Result.Failure<?> failure -> errorToResponse(failure.cause(), request);
                     default -> successToResponse(result, contentType);
                 };
             }
 
-            @SuppressWarnings("unchecked")
             private <T> Promise<T> invokeHandler(Route<T> route, SliceRequestContext context) {
                 return route.handler()
                             .handle(context);
@@ -163,11 +163,7 @@ public interface SliceRouter {
             }
 
             private static Option<HttpMethod> parseMethod(String method) {
-                try{
-                    return Option.some(HttpMethod.valueOf(method.toUpperCase()));
-                } catch (IllegalArgumentException e) {
-                    return Option.none();
-                }
+                return HttpMethod.fromString(method);
             }
 
             private static Map<String, String> headersForContentType(ContentType contentType) {

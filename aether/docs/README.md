@@ -28,6 +28,7 @@ Build applications on Aether. Start with the [section index](slice-developers/RE
 
 API specifications, CLI commands, and configuration options.
 
+- [Feature Catalog](reference/feature-catalog.md) - Complete feature inventory with status tracking
 - [Slice API](reference/slice-api.md) - `@Slice` annotation, manifests, Maven plugin
 - [Management API](reference/management-api.md) - HTTP API for cluster management
 - [CLI](reference/cli.md) - Command-line tools

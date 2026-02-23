@@ -419,7 +419,7 @@ The library is published to Maven Central. Add the following dependency:
     <dependency>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>core</artifactId>
-        <version>0.16.0</version>
+        <version>0.17.0</version>
     </dependency>
 ```
 

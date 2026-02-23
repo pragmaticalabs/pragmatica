@@ -87,4 +87,11 @@ public interface DHTClient {
     default Partition partitionFor(String key) {
         return partitionFor(key.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
+
+    /// Create a scoped client that uses a different configuration.
+    /// The scoped client shares the same ring, storage, and network but uses the specified config
+    /// for quorum calculations and replication factor.
+    default DHTClient scoped(DHTConfig config) {
+        return this;
+    }
 }

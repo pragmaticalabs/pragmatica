@@ -25,8 +25,6 @@ import static org.pragmatica.http.routing.Route.put;
 ///
 /// Provides endpoints for:
 ///
-///   - Slice deployment (POST /api/deploy)
-///   - Slice undeployment (POST /api/undeploy)
 ///   - Blueprint application (POST /api/blueprint)
 ///   - Slice status (GET /api/slices/status)
 ///   - Cluster metrics (GET /api/cluster/metrics)
@@ -36,12 +34,6 @@ public sealed interface DeploymentRoutes {
     Duration HTTP_TIMEOUT = Duration.ofSeconds(30);
 
     // ========== Request Records ==========
-    /// Request body for deploy operation.
-    record DeployRequest(String artifact, int instances) {}
-
-    /// Request body for undeploy operation.
-    record UndeployRequest(String artifact) {}
-
     /// Request body for repository PUT operation.
     record RepositoryPutRequest(String groupId, String artifactId, String version, byte[] content) {}
 
@@ -66,31 +58,13 @@ public sealed interface DeploymentRoutes {
     static RouteSource deploymentRoutes(ForgeCluster cluster,
                                         Consumer<EventLogEntry> eventLogger) {
         var http = JdkHttpOperations.jdkHttpOperations();
-        return RouteSource.of(deployRoute(cluster, http, eventLogger),
-                              undeployRoute(cluster, http, eventLogger),
-                              blueprintRoute(cluster, http, eventLogger),
+        return RouteSource.of(blueprintRoute(cluster, http, eventLogger),
                               slicesStatusRoute(cluster, http),
                               clusterMetricsRoute(cluster, http),
                               repositoryPutRoute(cluster, eventLogger));
     }
 
     // ========== Route Definitions ==========
-    private static Route<ProxyResponse> deployRoute(ForgeCluster cluster,
-                                                    JdkHttpOperations http,
-                                                    Consumer<EventLogEntry> eventLogger) {
-        return Route.<ProxyResponse> post("/api/deploy")
-                    .withBody(DeployRequest.class)
-                    .toJson(req -> proxyDeploy(cluster, http, eventLogger, req));
-    }
-
-    private static Route<ProxyResponse> undeployRoute(ForgeCluster cluster,
-                                                      JdkHttpOperations http,
-                                                      Consumer<EventLogEntry> eventLogger) {
-        return Route.<ProxyResponse> post("/api/undeploy")
-                    .withBody(UndeployRequest.class)
-                    .toJson(req -> proxyUndeploy(cluster, http, eventLogger, req));
-    }
-
     private static Route<ProxyResponse> blueprintRoute(ForgeCluster cluster,
                                                        JdkHttpOperations http,
                                                        Consumer<EventLogEntry> eventLogger) {
@@ -120,49 +94,6 @@ public sealed interface DeploymentRoutes {
     }
 
     // ========== Handler Methods ==========
-    private static Promise<ProxyResponse> proxyDeploy(ForgeCluster cluster,
-                                                      JdkHttpOperations http,
-                                                      Consumer<EventLogEntry> eventLogger,
-                                                      DeployRequest request) {
-        return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
-                             .flatMap(port -> proxyPost(http,
-                                                        port,
-                                                        "/api/deploy",
-                                                        buildDeployJson(request)))
-                             .map(body -> logAndBuildDeployResponse(eventLogger, request, body));
-    }
-
-    private static ProxyResponse logAndBuildDeployResponse(Consumer<EventLogEntry> eventLogger,
-                                                           DeployRequest request,
-                                                           String body) {
-        eventLogger.accept(new EventLogEntry("DEPLOY",
-                                             "Deployed " + request.artifact() + " x" + request.instances()));
-        return new ProxyResponse(true, body);
-    }
-
-    private static String buildDeployJson(DeployRequest request) {
-        return "{\"artifact\":\"" + escapeJson(request.artifact()) + "\",\"instances\":" + request.instances() + "}";
-    }
-
-    private static Promise<ProxyResponse> proxyUndeploy(ForgeCluster cluster,
-                                                        JdkHttpOperations http,
-                                                        Consumer<EventLogEntry> eventLogger,
-                                                        UndeployRequest request) {
-        return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
-                             .flatMap(port -> proxyPost(http,
-                                                        port,
-                                                        "/api/undeploy",
-                                                        "{\"artifact\":\"" + escapeJson(request.artifact()) + "\"}"))
-                             .map(body -> logAndBuildUndeployResponse(eventLogger, request, body));
-    }
-
-    private static ProxyResponse logAndBuildUndeployResponse(Consumer<EventLogEntry> eventLogger,
-                                                             UndeployRequest request,
-                                                             String body) {
-        eventLogger.accept(new EventLogEntry("UNDEPLOY", "Undeployed " + request.artifact()));
-        return new ProxyResponse(true, body);
-    }
-
     private static Promise<ProxyResponse> proxyBlueprint(ForgeCluster cluster,
                                                          JdkHttpOperations http,
                                                          Consumer<EventLogEntry> eventLogger,

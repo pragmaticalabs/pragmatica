@@ -9,6 +9,7 @@ import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.type.DeclaredType;
 import java.util.HashMap;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -18,7 +19,10 @@ public record SliceModel(String packageName,
                           String qualifiedName,
                           List<MethodModel> methods,
                           List<DependencyModel> dependencies,
-                          ExecutableElement factoryMethod) {
+                          ExecutableElement factoryMethod,
+                          FactoryReturnKind factoryReturnKind) {
+    public enum FactoryReturnKind { DIRECT, RESULT, OPTION, PROMISE }
+
     public SliceModel {
         methods = List.copyOf(methods);
         dependencies = List.copyOf(dependencies);
@@ -36,9 +40,11 @@ public record SliceModel(String packageName,
         return extractMethods(element, env)
         .flatMap(methods -> validateNoOverloads(methods)
         .flatMap(_ -> findFactoryMethod(element, simpleName)
-        .flatMap(factoryMethod -> extractDependencies(factoryMethod, env)
+        .flatMap(factoryMethod -> validateReturnType(factoryMethod, qualifiedName)
+        .flatMap(_2 -> extractDependencies(factoryMethod, env)
         .flatMap(dependencies -> validateNoDuplicateResources(dependencies)
-        .map(_2 -> new SliceModel(packageName, simpleName, qualifiedName, methods, dependencies, factoryMethod))))));
+        .map(_3 -> new SliceModel(packageName, simpleName, qualifiedName, methods, dependencies, factoryMethod,
+                                  detectReturnKind(factoryMethod))))))));
     }
 
     private static Result<List<MethodModel>> extractMethods(TypeElement element, ProcessingEnvironment env) {
@@ -130,6 +136,40 @@ public record SliceModel(String packageName,
         return Result.success(Unit.unit());
     }
 
+    private static FactoryReturnKind detectReturnKind(ExecutableElement factoryMethod) {
+        var returnType = factoryMethod.getReturnType();
+        if (returnType instanceof DeclaredType dt) {
+            var element = dt.asElement();
+            if (element instanceof TypeElement te) {
+                var qualifiedName = te.getQualifiedName().toString();
+                return switch (qualifiedName) {
+                    case "org.pragmatica.lang.Result" -> FactoryReturnKind.RESULT;
+                    case "org.pragmatica.lang.Option" -> FactoryReturnKind.OPTION;
+                    case "org.pragmatica.lang.Promise" -> FactoryReturnKind.PROMISE;
+                    default -> FactoryReturnKind.DIRECT;
+                };
+            }
+        }
+        return FactoryReturnKind.DIRECT;
+    }
+
+    private static Result<Unit> validateReturnType(ExecutableElement factoryMethod, String sliceQualifiedName) {
+        var returnKind = detectReturnKind(factoryMethod);
+        if (returnKind == FactoryReturnKind.DIRECT) {
+            return Result.success(Unit.unit());
+        }
+        var returnType = factoryMethod.getReturnType();
+        if (returnType instanceof DeclaredType dt && !dt.getTypeArguments().isEmpty()) {
+            var typeArg = dt.getTypeArguments().getFirst().toString();
+            if (!typeArg.equals(sliceQualifiedName)) {
+                return Causes.cause("Factory method return type " + returnKind + "<" + typeArg
+                                    + "> does not match slice type " + sliceQualifiedName)
+                             .result();
+            }
+        }
+        return Result.success(Unit.unit());
+    }
+
     public boolean hasDependencies() {
         return !dependencies.isEmpty();
     }
@@ -138,6 +178,32 @@ public record SliceModel(String packageName,
     public boolean hasMethodInterceptors() {
         return methods.stream()
                       .anyMatch(MethodModel::hasInterceptors);
+    }
+
+    /// Check if any method has topic subscriptions.
+    public boolean hasSubscriptions() {
+        return methods.stream()
+                      .anyMatch(MethodModel::hasSubscriptions);
+    }
+
+    /// Get all methods that have topic subscriptions.
+    public List<MethodModel> subscriptionMethods() {
+        return methods.stream()
+                      .filter(MethodModel::hasSubscriptions)
+                      .toList();
+    }
+
+    /// Check if any method has scheduled invocations.
+    public boolean hasScheduled() {
+        return methods.stream()
+                      .anyMatch(MethodModel::hasScheduled);
+    }
+
+    /// Get all methods that have scheduled invocations.
+    public List<MethodModel> scheduledMethods() {
+        return methods.stream()
+                      .filter(MethodModel::hasScheduled)
+                      .toList();
     }
 
     public String factoryMethodName() {

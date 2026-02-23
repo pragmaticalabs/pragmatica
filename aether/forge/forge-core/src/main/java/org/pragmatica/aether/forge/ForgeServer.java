@@ -1,7 +1,7 @@
 package org.pragmatica.aether.forge;
 
-import org.pragmatica.aether.config.ConfigurationProvider;
-import org.pragmatica.aether.config.source.MapConfigSource;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
 import org.pragmatica.aether.forge.load.LoadConfigLoader;
 import org.pragmatica.aether.forge.simulator.EntryPointMetrics;

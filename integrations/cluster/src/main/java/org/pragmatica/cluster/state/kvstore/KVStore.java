@@ -19,6 +19,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
@@ -123,9 +124,6 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     @MessageReceiver
     public void find(Find find) {
-        router.routeAsync(() -> new FoundEntries<>(storage.entrySet()
-                                                          .stream()
-                                                          .filter(find::matches)
-                                                          .toList()));
+        router.routeAsync(() -> new FoundEntries<>(List.copyOf(storage.entrySet())));
     }
 }

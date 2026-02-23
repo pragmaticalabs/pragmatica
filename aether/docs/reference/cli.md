@@ -125,6 +125,34 @@ Metrics:
     org.example:order:1.0.0  node-2  1156ms  SUCCESS
 ```
 
+#### events
+
+Show cluster events:
+
+```bash
+# All events
+aether events
+
+# Events since a specific time
+aether events --since 2024-01-15T10:30:00Z
+```
+
+Output:
+```
+[
+  {
+    "timestamp": "2024-01-15T10:30:00Z",
+    "type": "NODE_JOINED",
+    "severity": "INFO",
+    "summary": "Node node-2 joined cluster (now 3 nodes)",
+    "details": {
+      "nodeId": "node-2",
+      "clusterSize": "3"
+    }
+  }
+]
+```
+
 #### health
 
 Health check:
@@ -133,21 +161,9 @@ Health check:
 aether health
 ```
 
-#### deploy
-
-Deploy a slice:
-
-```bash
-aether deploy <artifact> [-n <instances>]
-
-# Examples
-aether deploy org.example:order:1.0.0
-aether deploy org.example:order:1.0.0 -n 3
-```
-
 #### scale
 
-Scale a slice:
+Scale a blueprint-deployed slice. The slice must be part of an active blueprint.
 
 ```bash
 aether scale <artifact> -n <instances>
@@ -156,16 +172,7 @@ aether scale <artifact> -n <instances>
 aether scale org.example:order:1.0.0 -n 5
 ```
 
-#### undeploy
-
-Remove a slice:
-
-```bash
-aether undeploy <artifact>
-
-# Example
-aether undeploy org.example:order:1.0.0
-```
+> **Note:** Individual deploy/undeploy commands have been removed. Use `blueprint apply` and `blueprint delete` instead.
 
 #### artifact
 
@@ -467,7 +474,7 @@ Start interactive mode by omitting the command:
 ```bash
 ./script/aether.sh --connect localhost:8080
 
-Aether v0.16.0 - Connected to localhost:8080
+Aether v0.17.0 - Connected to localhost:8080
 Type 'help' for available commands, 'exit' to quit.
 
 aether> status
@@ -491,8 +498,11 @@ aether> exit
 # Connect to specific node
 ./script/aether.sh --connect node1.example.com:8080 status
 
-# Deploy a slice with 3 instances
-./script/aether.sh deploy org.example:my-slice:1.0.0 -n 3
+# Scale a slice to 5 instances
+./script/aether.sh scale org.example:my-slice:1.0.0 -n 5
+
+# Apply a blueprint
+./script/aether.sh blueprint apply order-system.toml
 
 # Interactive mode
 ./script/aether.sh --connect localhost:8080
@@ -647,6 +657,28 @@ curl -X POST http://localhost:8888/api/chaos/kill-node/node-3
 
 # Set load rate
 curl -X POST http://localhost:8888/api/load/rate/500
+```
+
+#### scheduled-tasks
+
+Manage scheduled tasks:
+
+```bash
+# List all scheduled tasks with active timer count
+aether scheduled-tasks
+aether scheduled-tasks list
+
+# Get scheduled tasks filtered by config section
+aether scheduled-tasks get <configSection>
+```
+
+Example:
+```bash
+# Show all scheduled tasks
+aether scheduled-tasks list
+
+# Get tasks for a specific schedule
+aether scheduled-tasks get scheduling.cleanup
 ```
 
 ---

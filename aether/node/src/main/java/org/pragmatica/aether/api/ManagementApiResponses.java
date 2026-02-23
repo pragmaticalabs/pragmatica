@@ -64,12 +64,9 @@ public sealed interface ManagementApiResponses {
                      String path,
                      List<String> nodes) {}
 
-    record DeployResponse(String status,
-                          String artifact,
-                          int instances) {}
-
-    record UndeployResponse(String status,
-                            String artifact) {}
+    record ScaleResponse(String status,
+                         String artifact,
+                         int instances) {}
 
     record BlueprintResponse(String status,
                              String blueprint,

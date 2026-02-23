@@ -4,6 +4,7 @@ import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.e2e.containers.AetherCluster;
+import org.pragmatica.aether.e2e.containers.AetherNodeContainer;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
@@ -34,7 +35,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class SliceDeploymentE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.16.0");
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.17.0");
     private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
 
     // Common timeouts (CI gets 2x via adapt())
@@ -185,12 +186,12 @@ class SliceDeploymentE2ETest {
     @Order(6)
     void blueprintApply_deploysSlice() {
         var blueprint = """
-            id = "org.test:e2e-blueprint:1.0.0"
+            id = "%s"
 
             [[slices]]
             artifact = "%s"
             instances = 1
-            """.formatted(TEST_ARTIFACT);
+            """.formatted(AetherNodeContainer.E2E_BLUEPRINT_ID, TEST_ARTIFACT);
 
         var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
         var response = leader.applyBlueprint(blueprint);

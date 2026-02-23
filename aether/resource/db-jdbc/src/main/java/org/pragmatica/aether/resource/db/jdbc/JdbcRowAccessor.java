@@ -7,6 +7,8 @@ import org.pragmatica.lang.Result;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
+import static org.pragmatica.lang.Option.option;
+
 /// JDBC ResultSet implementation of RowAccessor.
 final class JdbcRowAccessor implements RowAccessor {
     private final ResultSet rs;
@@ -18,7 +20,10 @@ final class JdbcRowAccessor implements RowAccessor {
     @Override
     public Result<String> getString(String column) {
         try{
-            return Result.success(rs.getString(column));
+            var value = rs.getString(column);
+            return rs.wasNull()
+                   ? Result.success("")
+                   : Result.success(option(value).or(""));
         } catch (SQLException e) {
             return DatabaseConnectorError.queryFailed("getString(" + column + ")",
                                                       e)
@@ -93,7 +98,10 @@ final class JdbcRowAccessor implements RowAccessor {
     @Override
     public Result<byte[]> getBytes(String column) {
         try{
-            return Result.success(rs.getBytes(column));
+            var value = rs.getBytes(column);
+            return rs.wasNull()
+                   ? Result.success(new byte[0])
+                   : Result.success(option(value).or(new byte[0]));
         } catch (SQLException e) {
             return DatabaseConnectorError.queryFailed("getBytes(" + column + ")",
                                                       e)
@@ -104,7 +112,14 @@ final class JdbcRowAccessor implements RowAccessor {
     @Override
     public <V> Result<V> getObject(String column, Class<V> type) {
         try{
-            return Result.success(rs.getObject(column, type));
+            var value = rs.getObject(column, type);
+            return rs.wasNull()
+                   ? DatabaseConnectorError.queryFailed("getObject(" + column + ", " + type.getSimpleName() + ")",
+                                                        "Column value was NULL")
+                                           .result()
+                   : option(value).toResult(DatabaseConnectorError.queryFailed("getObject(" + column + ", " + type.getSimpleName()
+                                                                               + ")",
+                                                                               "Column value was NULL"));
         } catch (SQLException e) {
             return DatabaseConnectorError.queryFailed("getObject(" + column + ", " + type.getSimpleName() + ")",
                                                       e)

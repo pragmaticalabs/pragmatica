@@ -22,7 +22,7 @@ Slice loading is triggered by KV-Store events and involves:
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  Step 1: NodeDeploymentManager.onValuePut()                                 │
+│  Step 1: NodeDeploymentManager.onSliceNodePut()                              │
 │  ─────────────────────────────────────────────────────────────────────────  │
 │  • Filters: only handles keys for THIS node                                 │
 │  • Records deployment state                                                  │

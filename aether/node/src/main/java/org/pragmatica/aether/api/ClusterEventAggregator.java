@@ -13,6 +13,7 @@ import org.pragmatica.utility.RingBuffer;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 /// Aggregates cluster events from MessageRouter fan-out into a bounded ring buffer.
 ///
@@ -22,6 +23,7 @@ import java.util.Map;
 @SuppressWarnings("JBCT-RET-01")
 public final class ClusterEventAggregator {
     private final RingBuffer<ClusterEvent> buffer;
+    private final AtomicLong quorumSequence = new AtomicLong();
 
     private ClusterEventAggregator(ClusterEventAggregatorConfig config) {
         this.buffer = RingBuffer.ringBuffer(config.maxEvents());
@@ -96,13 +98,16 @@ public final class ClusterEventAggregator {
     }
 
     public void onQuorumStateChange(QuorumStateNotification event) {
-        switch (event) {
-            case QuorumStateNotification.ESTABLISHED ->
+        if (!event.advanceSequence(quorumSequence)) {
+            return;
+        }
+        switch (event.state()) {
+            case ESTABLISHED ->
             buffer.add(ClusterEvent.clusterEvent(EventType.QUORUM_ESTABLISHED,
                                                  Severity.INFO,
                                                  "Quorum established",
                                                  Map.of()));
-            case QuorumStateNotification.DISAPPEARED ->
+            case DISAPPEARED ->
             buffer.add(ClusterEvent.clusterEvent(EventType.QUORUM_LOST, Severity.CRITICAL, "Quorum lost", Map.of()));
         }
     }

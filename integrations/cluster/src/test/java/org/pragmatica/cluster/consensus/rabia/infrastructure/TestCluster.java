@@ -37,11 +37,6 @@ public class TestCluster {
         private static final List<Class<?>> CLASSES = List.of(StringKey.class);
         private static final org.pragmatica.serialization.ClassRegistrator REGISTRATOR = () -> CLASSES;
 
-        @Override
-        public boolean matches(StructuredPattern pattern) {
-            return false;
-        }
-
         public static StringKey key(String key) {
             return new StringKey(key);
         }

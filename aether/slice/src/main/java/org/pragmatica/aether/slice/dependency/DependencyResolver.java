@@ -100,7 +100,7 @@ public interface DependencyResolver {
                                                      SharedLibraryClassLoader sharedLibraryLoader,
                                                      SliceInvokerFacade invokerFacade,
                                                      ResourceProviderFacade resourceFacade) {
-        var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade, resourceFacade);
+        var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade, resourceFacade, artifact.asString());
         return registry.lookup(artifact)
                        .map(slice -> Promise.success(new ResolvedSlice(slice, loadingContext)))
                        .or(() -> resolveWithSharedLoaderAndContext(artifact,
@@ -198,6 +198,8 @@ public interface DependencyResolver {
                                                                                SliceLoadingContext loadingContext,
                                                                                Set<String> resolutionPath) {
         return SliceManifest.read(location.url())
+                            .flatMap(manifest -> SliceManifest.checkEnvelopeCompatibility(manifest.envelopeVersion())
+                                                              .map(_ -> manifest))
                             .onFailure(cause -> log.error("Invalid slice JAR {}: {}",
                                                           artifact,
                                                           cause.message()))
@@ -421,6 +423,8 @@ public interface DependencyResolver {
                                                              SliceInvokerFacade invokerFacade,
                                                              Set<String> resolutionPath) {
         return SliceManifest.read(location.url())
+                            .flatMap(manifest -> SliceManifest.checkEnvelopeCompatibility(manifest.envelopeVersion())
+                                                              .map(_ -> manifest))
                             .onFailure(cause -> log.error("Invalid slice JAR {}: {}",
                                                           artifact,
                                                           cause.message()))

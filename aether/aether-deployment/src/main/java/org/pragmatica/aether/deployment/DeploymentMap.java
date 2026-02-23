@@ -2,9 +2,7 @@ package org.pragmatica.aether.deployment;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceState;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -26,10 +24,10 @@ import java.util.stream.Collectors;
 @SuppressWarnings("JBCT-RET-01") // MessageReceiver callbacks — void required by messaging framework
 public sealed interface DeploymentMap {
     @MessageReceiver
-    void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
+    void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut);
 
     @MessageReceiver
-    void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
+    void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove);
 
     Map<Artifact, SliceState> byNode(NodeId nodeId);
 
@@ -55,20 +53,19 @@ final class DeploymentMapImpl implements DeploymentMap {
     private final ConcurrentHashMap<SliceNodeKey, SliceState> index = new ConcurrentHashMap<>();
 
     @Override
-    public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-        if (valuePut.cause()
-                    .key() instanceof SliceNodeKey key && valuePut.cause()
-                                                                  .value() instanceof SliceNodeValue value) {
-            index.put(key, value.state());
-        }
+    public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
+        var key = valuePut.cause()
+                          .key();
+        var value = valuePut.cause()
+                            .value();
+        index.put(key, value.state());
     }
 
     @Override
-    public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-        if (valueRemove.cause()
-                       .key() instanceof SliceNodeKey key) {
-            index.remove(key);
-        }
+    public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
+        var key = valueRemove.cause()
+                             .key();
+        index.remove(key);
     }
 
     @Override

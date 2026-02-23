@@ -5,7 +5,7 @@
     <parent>
         <artifactId>integrations</artifactId>
         <groupId>org.pragmatica-lite</groupId>
-        <version>0.16.0</version>
+        <version>0.17.0</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -17,5 +17,6 @@
 
     <modules>
         <module>toml</module>
+        <module>config-service</module>
     </modules>
 </project>

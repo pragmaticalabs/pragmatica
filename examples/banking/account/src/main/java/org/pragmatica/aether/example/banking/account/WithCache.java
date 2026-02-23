@@ -1,6 +1,6 @@
 package org.pragmatica.aether.example.banking.account;
 
-import org.pragmatica.aether.slice.MethodInterceptor;
+import org.pragmatica.aether.resource.interceptor.CacheMethodInterceptor;
 import org.pragmatica.aether.slice.annotation.ResourceQualifier;
 
 import java.lang.annotation.ElementType;
@@ -20,7 +20,7 @@ import java.lang.annotation.Target;
 /// ttl_seconds = 300
 /// max_entries = 10000
 /// ```
-@ResourceQualifier(type = MethodInterceptor.class, config = "cache.account.getBalance")
+@ResourceQualifier(type = CacheMethodInterceptor.class, config = "cache.account.getBalance")
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.METHOD)
 public @interface WithCache {}

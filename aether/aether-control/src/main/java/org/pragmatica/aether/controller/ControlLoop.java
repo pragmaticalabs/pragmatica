@@ -10,7 +10,6 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -28,12 +27,14 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
@@ -56,20 +57,28 @@ public interface ControlLoop {
     @MessageReceiver
     void onTopologyChange(TopologyChangeNotification topologyChange);
 
-    /// Handle blueprint creation/update from KVStore.
+    /// Handle slice target creation/update from KVStore.
     @MessageReceiver
-    void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
+    void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
 
-    /// Handle blueprint removal from KVStore.
+    /// Handle slice node state change from KVStore.
     @MessageReceiver
-    void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
+    void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut);
+
+    /// Handle slice target removal from KVStore.
+    @MessageReceiver
+    void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
+
+    /// Handle slice node removal from KVStore.
+    @MessageReceiver
+    void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove);
 
     /// Handle quorum state changes (stop evaluation when quorum disappears).
     @MessageReceiver
     void onQuorumStateChange(QuorumStateNotification notification);
 
     /// Register a blueprint for controller management.
-    void registerBlueprint(Artifact artifact, int instances);
+    void registerBlueprint(Artifact artifact, int instances, int minInstances);
 
     /// Unregister a blueprint from controller management.
     void unregisterBlueprint(Artifact artifact);
@@ -103,7 +112,8 @@ public interface ControlLoop {
                            ConcurrentHashMap<Artifact, ClusterController.Blueprint> blueprints,
                            ConcurrentHashMap<SliceNodeKey, SliceState> sliceStates,
                            AtomicReference<Long> activationTime,
-                           ConcurrentHashMap<Artifact, Long> sliceActivationTimes) implements ControlLoop {
+                           ConcurrentHashMap<Artifact, Long> sliceActivationTimes,
+                           AtomicLong quorumSequence) implements ControlLoop {
             private static final Logger log = LoggerFactory.getLogger(ControlLoop.class);
 
             @Override
@@ -130,49 +140,61 @@ public interface ControlLoop {
 
             @Override
             public void onQuorumStateChange(QuorumStateNotification notification) {
-                if (notification == QuorumStateNotification.DISAPPEARED) {
+                if (!notification.advanceSequence(quorumSequence)) {
+                    log.debug("Ignoring stale QuorumStateNotification: {}", notification);
+                    return;
+                }
+                if (notification.state() == QuorumStateNotification.State.DISAPPEARED) {
                     log.info("Quorum disappeared, stopping control loop evaluation");
                     stopEvaluation();
                 }
             }
 
             @Override
-            public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                var key = valuePut.cause()
-                                  .key();
-                var value = valuePut.cause()
-                                    .value();
-                switch (key) {
-                    case SliceTargetKey(var artifactBase) when value instanceof SliceTargetValue sliceTargetValue -> registerBlueprint(artifactBase.withVersion(sliceTargetValue.currentVersion()),
-                                                                                                                                       sliceTargetValue.targetInstances());
-                    case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue(SliceState state) -> handleSliceStateChange(sliceNodeKey,
-                                                                                                                                    state);
-                    case null, default -> {}
-                }
+            public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
+                var artifactBase = valuePut.cause()
+                                           .key()
+                                           .artifactBase();
+                var sliceTargetValue = valuePut.cause()
+                                               .value();
+                registerBlueprint(artifactBase.withVersion(sliceTargetValue.currentVersion()),
+                                  sliceTargetValue.targetInstances(),
+                                  sliceTargetValue.effectiveMinInstances());
             }
 
             @Override
-            public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-                var key = valueRemove.cause()
-                                     .key();
-                switch (key) {
-                    case SliceTargetKey(var artifactBase) -> blueprints.keySet()
-                                                                       .stream()
-                                                                       .filter(artifactBase::matches)
-                                                                       .findFirst()
-                                                                       .ifPresent(this::unregisterBlueprint);
-                    case SliceNodeKey sliceNodeKey -> {
-                        sliceStates.remove(sliceNodeKey);
-                        log.debug("Removed slice state tracking for {}", sliceNodeKey);
-                    }
-                    case null, default -> {}
-                }
+            public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
+                handleSliceStateChange(valuePut.cause()
+                                               .key(),
+                                       valuePut.cause()
+                                               .value()
+                                               .state());
             }
 
             @Override
-            public void registerBlueprint(Artifact artifact, int instances) {
-                blueprints.put(artifact, new ClusterController.Blueprint(artifact, instances));
-                log.info("Registered blueprint: {} with {} instances", artifact, instances);
+            public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
+                var artifactBase = valueRemove.cause()
+                                              .key()
+                                              .artifactBase();
+                blueprints.keySet()
+                          .stream()
+                          .filter(artifactBase::matches)
+                          .findFirst()
+                          .ifPresent(this::unregisterBlueprint);
+            }
+
+            @Override
+            public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
+                var sliceNodeKey = valueRemove.cause()
+                                              .key();
+                sliceStates.remove(sliceNodeKey);
+                log.debug("Removed slice state tracking for {}", sliceNodeKey);
+            }
+
+            @Override
+            public void registerBlueprint(Artifact artifact, int instances, int minInstances) {
+                blueprints.put(artifact, new ClusterController.Blueprint(artifact, instances, minInstances));
+                log.info("Registered blueprint: {} with {} instances (min: {})", artifact, instances, minInstances);
             }
 
             @Override
@@ -333,13 +355,19 @@ public interface ControlLoop {
                 var scalingConfig = configRef.get()
                                              .scalingConfig();
                 var errorRateHigh = compositeLoadFactor.isErrorRateHigh();
+                var commands = new ArrayList<KVCommand<AetherKey>>();
                 for (var change : decisions.changes()) {
                     var shouldApply = shouldApplyScalingDecision(change, loadFactorResult, scalingConfig, errorRateHigh);
                     if (shouldApply) {
-                        applyChange(change);
+                        prepareChange(change).onPresent(commands::add);
                     } else {
                         logBlockedDecision(change, loadFactorResult, scalingConfig);
                     }
+                }
+                if (!commands.isEmpty()) {
+                    cluster.apply(commands)
+                           .onFailure(cause -> log.error("Failed to apply blueprint changes: {}",
+                                                         cause.message()));
                 }
             }
 
@@ -425,19 +453,22 @@ public interface ControlLoop {
                                                             .sliceCooldownMs();
             }
 
-            private void applyChange(BlueprintChange change) {
+            private Option<KVCommand<AetherKey>> prepareChange(BlueprintChange change) {
                 var artifact = change.artifact();
-                Option.option(blueprints.get(artifact))
-                      .onEmpty(() -> log.warn("Blueprint not found for {}, skipping change", artifact))
-                      .onPresent(currentBlueprint -> applyChangeToBlueprint(change, artifact, currentBlueprint));
+                var blueprint = blueprints.get(artifact);
+                if (blueprint == null) {
+                    log.warn("Blueprint not found for {}, skipping change", artifact);
+                    return Option.none();
+                }
+                return prepareChangeToBlueprint(change, artifact, blueprint);
             }
 
-            private void applyChangeToBlueprint(BlueprintChange change,
-                                                Artifact artifact,
-                                                ClusterController.Blueprint currentBlueprint) {
+            private Option<KVCommand<AetherKey>> prepareChangeToBlueprint(BlueprintChange change,
+                                                                          Artifact artifact,
+                                                                          ClusterController.Blueprint currentBlueprint) {
                 var requestedInstances = switch (change) {
                     case BlueprintChange.ScaleUp(_, int additional) -> currentBlueprint.instances() + additional;
-                    case BlueprintChange.ScaleDown(_, int reduceBy) -> Math.max(1,
+                    case BlueprintChange.ScaleDown(_, int reduceBy) -> Math.max(currentBlueprint.minInstances(),
                                                                                 currentBlueprint.instances() - reduceBy);
                 };
                 var clusterSize = topology.get()
@@ -455,19 +486,17 @@ public interface ControlLoop {
                     newInstances = clusterSize;
                 }
                 if (newInstances == currentBlueprint.instances()) {
-                    return;
+                    return Option.none();
                 }
                 log.info("Applying scaling decision: {} from {} to {} instances",
                          artifact,
                          currentBlueprint.instances(),
                          newInstances);
-                blueprints.put(artifact, new ClusterController.Blueprint(artifact, newInstances));
+                blueprints.put(artifact,
+                               new ClusterController.Blueprint(artifact, newInstances, currentBlueprint.minInstances()));
                 var key = SliceTargetKey.sliceTargetKey(artifact.base());
                 var value = SliceTargetValue.sliceTargetValue(artifact.version(), newInstances);
-                var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-                cluster.apply(List.of(command))
-                       .onFailure(cause -> log.error("Failed to apply blueprint change: {}",
-                                                     cause.message()));
+                return Option.some(new KVCommand.Put<>(key, value));
             }
 
             private void resetProtectionState() {
@@ -507,6 +536,7 @@ public interface ControlLoop {
                                new ConcurrentHashMap<>(),
                                new ConcurrentHashMap<>(),
                                new AtomicReference<>(null),
-                               new ConcurrentHashMap<>());
+                               new ConcurrentHashMap<>(),
+                               new AtomicLong(0));
     }
 }

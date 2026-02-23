@@ -5,7 +5,7 @@
     <parent>
         <artifactId>db</artifactId>
         <groupId>org.pragmatica-lite</groupId>
-        <version>0.16.0</version>
+        <version>0.17.0</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -22,6 +22,7 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
                     <argLine>
+                        ${vthread.argLine}
                         --add-opens java.base/java.lang=ALL-UNNAMED
                         --add-opens java.base/java.util=ALL-UNNAMED
                     </argLine>

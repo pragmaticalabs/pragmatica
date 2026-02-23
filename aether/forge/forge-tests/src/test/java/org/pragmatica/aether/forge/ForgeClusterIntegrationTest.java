@@ -21,7 +21,7 @@ import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 class ForgeClusterIntegrationTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(180);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.16.0";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.17.0";
 
     private ForgeCluster cluster;
     private HttpClient httpClient;
@@ -105,7 +105,7 @@ class ForgeClusterIntegrationTest {
             id = "org.test:blueprint:1.0.0"
 
             [[slices]]
-            artifact = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.16.0"
+            artifact = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.17.0"
             instances = 1
             """;
         deployBlueprint(leaderPort, blueprintContent);

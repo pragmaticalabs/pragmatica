@@ -6,13 +6,13 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>0.16.0</version>
+        <version>0.17.0</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <groupId>org.pragmatica-lite.aether.test</groupId>
     <artifactId>echo-slice-v2</artifactId>
-    <version>0.16.0</version>
+    <version>0.17.0</version>
     <name>E2E Test Slice - Echo Service v2</name>
     <description>Version 2 of echo slice for rolling update testing - includes version field in responses</description>
 

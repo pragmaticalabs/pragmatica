@@ -21,30 +21,45 @@ public sealed interface AetherValue {
     ///
     /// @param currentVersion the version currently deployed/being deployed
     /// @param targetInstances desired number of instances to run
+    /// @param minInstances minimum number of instances (from original blueprint); 0 means use default of 1
     /// @param owningBlueprint if this slice is part of an app blueprint, the blueprint ID; None for standalone
     /// @param updatedAt timestamp of last update
     record SliceTargetValue(Version currentVersion,
                             int targetInstances,
+                            int minInstances,
                             Option<BlueprintId> owningBlueprint,
                             long updatedAt) implements AetherValue {
         /// Creates a new slice target value with current timestamp.
         public static SliceTargetValue sliceTargetValue(Version version, int instances, Option<BlueprintId> owner) {
-            return new SliceTargetValue(version, instances, owner, System.currentTimeMillis());
+            return new SliceTargetValue(version, instances, instances, owner, System.currentTimeMillis());
         }
 
         /// Creates a standalone slice target (not part of any app blueprint).
         public static SliceTargetValue sliceTargetValue(Version version, int instances) {
-            return new SliceTargetValue(version, instances, none(), System.currentTimeMillis());
+            return new SliceTargetValue(version, instances, instances, none(), System.currentTimeMillis());
         }
 
-        /// Returns a new value with updated instance count.
+        /// Returns the effective minimum instances (handles backward-compat where minInstances == 0).
+        public int effectiveMinInstances() {
+            return Math.max(1, minInstances);
+        }
+
+        /// Returns a new value with updated instance count, preserving minInstances.
         public SliceTargetValue withInstances(int newCount) {
-            return new SliceTargetValue(currentVersion, newCount, owningBlueprint, System.currentTimeMillis());
+            return new SliceTargetValue(currentVersion,
+                                        newCount,
+                                        minInstances,
+                                        owningBlueprint,
+                                        System.currentTimeMillis());
         }
 
-        /// Returns a new value with updated version.
+        /// Returns a new value with updated version, preserving minInstances.
         public SliceTargetValue withVersion(Version newVersion) {
-            return new SliceTargetValue(newVersion, targetInstances, owningBlueprint, System.currentTimeMillis());
+            return new SliceTargetValue(newVersion,
+                                        targetInstances,
+                                        minInstances,
+                                        owningBlueprint,
+                                        System.currentTimeMillis());
         }
     }
 
@@ -66,6 +81,45 @@ public sealed interface AetherValue {
     record EndpointValue(NodeId nodeId) implements AetherValue {
         public static EndpointValue endpointValue(NodeId nodeId) {
             return new EndpointValue(nodeId);
+        }
+    }
+
+    /// Topic subscription locator points to node where a subscriber handler is available.
+    record TopicSubscriptionValue(NodeId nodeId) implements AetherValue {
+        public static TopicSubscriptionValue topicSubscriptionValue(NodeId nodeId) {
+            return new TopicSubscriptionValue(nodeId);
+        }
+    }
+
+    /// Scheduled task configuration stored in consensus.
+    /// Stores scheduling parameters for periodic slice method invocation.
+    ///
+    /// @param registeredBy the node that registered this scheduled task
+    /// @param interval fixed-rate interval in TimeSpan format (e.g., "5m", "30s"); empty string if cron mode
+    /// @param cron standard 5-field cron expression; empty string if interval mode
+    /// @param leaderOnly whether only the leader node triggers this task
+    record ScheduledTaskValue(NodeId registeredBy,
+                              String interval,
+                              String cron,
+                              boolean leaderOnly) implements AetherValue {
+        /// Creates a scheduled task value with interval-based scheduling.
+        public static ScheduledTaskValue intervalTask(NodeId registeredBy, String interval, boolean leaderOnly) {
+            return new ScheduledTaskValue(registeredBy, interval, "", leaderOnly);
+        }
+
+        /// Creates a scheduled task value with cron-based scheduling.
+        public static ScheduledTaskValue cronTask(NodeId registeredBy, String cron, boolean leaderOnly) {
+            return new ScheduledTaskValue(registeredBy, "", cron, leaderOnly);
+        }
+
+        /// Returns true if this is an interval-based schedule.
+        public boolean isInterval() {
+            return ! interval.isEmpty();
+        }
+
+        /// Returns true if this is a cron-based schedule.
+        public boolean isCron() {
+            return ! cron.isEmpty();
         }
     }
 

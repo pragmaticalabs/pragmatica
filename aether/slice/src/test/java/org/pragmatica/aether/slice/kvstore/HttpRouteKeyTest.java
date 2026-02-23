@@ -101,20 +101,6 @@ class HttpRouteKeyTest {
     }
 
     @Test
-    void httpRouteKey_matches_httpRoutePattern() {
-        var key = HttpRouteKey.httpRouteKey("GET", "/users/");
-        var pattern = new AetherKey.AetherKeyPattern.HttpRoutePattern();
-        assertThat(key.matches(pattern)).isTrue();
-    }
-
-    @Test
-    void httpRouteKey_does_not_match_other_patterns() {
-        var key = HttpRouteKey.httpRouteKey("GET", "/users/");
-        var endpointPattern = new AetherKey.AetherKeyPattern.EndpointPattern();
-        assertThat(key.matches(endpointPattern)).isFalse();
-    }
-
-    @Test
     void httpRouteKey_equality_works() {
         var key1 = HttpRouteKey.httpRouteKey("GET", "/users/");
         var key2 = HttpRouteKey.httpRouteKey("GET", "/users/");

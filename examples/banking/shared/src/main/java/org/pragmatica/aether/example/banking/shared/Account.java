@@ -23,6 +23,10 @@ public record Account(AccountId id,
         return new Account(id, holderName, email, currency, AccountStatus.ACTIVE, Instant.now());
     }
 
+    public Account withStatus(AccountStatus newStatus) {
+        return new Account(id, holderName, email, currency, newStatus, createdAt);
+    }
+
     public boolean isActive() {
         return status == AccountStatus.ACTIVE;
     }

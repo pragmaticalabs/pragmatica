@@ -16,9 +16,13 @@ import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -26,21 +30,26 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.aether.resource.ScheduleConfig;
+import org.pragmatica.aether.resource.TopicConfig;
+import org.pragmatica.config.ConfigService;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
 
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -52,10 +61,10 @@ public interface NodeDeploymentManager {
     record SliceDeployment(SliceNodeKey key, SliceState state, long timestamp) {}
 
     @MessageReceiver
-    void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
+    void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut);
 
     @MessageReceiver
-    void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
+    void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove);
 
     @MessageReceiver
     void onQuorumStateChange(QuorumStateNotification quorumStateNotification);
@@ -67,9 +76,9 @@ public interface NodeDeploymentManager {
     record SuspendedSlice(SliceNodeKey key, SliceDeployment deployment) {}
 
     sealed interface NodeDeploymentState {
-        default void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {}
+        default void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {}
 
-        default void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {}
+        default void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {}
 
         /// Dormant state with optional suspended slices for reactivation.
         record DormantNodeDeploymentState(List<SuspendedSlice> suspendedSlices) implements NodeDeploymentState {
@@ -90,8 +99,6 @@ public interface NodeDeploymentManager {
                                          Option<SliceInvokerFacade> sliceInvokerFacade) implements NodeDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(ActiveNodeDeploymentState.class);
 
-            private static final Fn1<Cause, Class<?>> UNEXPECTED_VALUE_TYPE = Causes.forOneValue("Unexpected value type for slice-node key: {}");
-
             private static final Fn1<Cause, SliceNodeKey> CLEANUP_FAILED = Causes.forOneValue("Failed to cleanup slice {} during abrupt removal");
 
             private static final Fn1<Cause, SliceNodeKey> STATE_UPDATE_FAILED = Causes.forOneValue("Failed to update slice state for {}");
@@ -106,39 +113,27 @@ public interface NodeDeploymentManager {
                                              .findFirst());
             }
 
-            public void whenOurKeyMatches(AetherKey key, Consumer<SliceNodeKey> action) {
-                switch (key) {
-                    case SliceNodeKey sliceKey when sliceKey.isForNode(self) -> action.accept(sliceKey);
-                    default -> {}
+            @Override
+            public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
+                var sliceKey = valuePut.cause()
+                                       .key();
+                if (sliceKey.isForNode(self)) {
+                    var state = valuePut.cause()
+                                        .value()
+                                        .state();
+                    log.debug("ValuePut received for key: {}, state: {}", sliceKey, state);
+                    recordDeployment(sliceKey, state);
+                    processStateTransition(sliceKey, state);
                 }
             }
 
             @Override
-            public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                whenOurKeyMatches(valuePut.cause()
-                                          .key(),
-                                  sliceKey -> handleSliceValuePut(sliceKey,
-                                                                  valuePut.cause()
-                                                                          .value()));
-            }
-
-            private void handleSliceValuePut(SliceNodeKey sliceKey, AetherValue value) {
-                switch (value) {
-                    case SliceNodeValue(SliceState state) -> {
-                        log.debug("ValuePut received for key: {}, state: {}", sliceKey, state);
-                        recordDeployment(sliceKey, state);
-                        processStateTransition(sliceKey, state);
-                    }
-                    default -> log.warn(UNEXPECTED_VALUE_TYPE.apply(value.getClass())
-                                                             .message());
+            public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
+                var sliceKey = valueRemove.cause()
+                                          .key();
+                if (sliceKey.isForNode(self)) {
+                    handleSliceValueRemove(sliceKey);
                 }
-            }
-
-            @Override
-            public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-                whenOurKeyMatches(valueRemove.cause()
-                                             .key(),
-                                  this::handleSliceValueRemove);
             }
 
             private void handleSliceValueRemove(SliceNodeKey sliceKey) {
@@ -251,6 +246,8 @@ public interface NodeDeploymentManager {
                 transitionTo(sliceKey, SliceState.ACTIVATING).flatMap(_ -> activateSliceWithTimeout(sliceKey))
                             .flatMap(_ -> registerSliceForInvocation(sliceKey))
                             .flatMap(_ -> publishEndpointsAndRoutes(sliceKey))
+                            .flatMap(_ -> publishTopicSubscriptions(sliceKey))
+                            .flatMap(_ -> publishScheduledTasks(sliceKey))
                             .flatMap(_ -> transitionTo(sliceKey, SliceState.ACTIVE))
                             .onFailure(cause -> handleActivationFailure(sliceKey, cause));
             }
@@ -275,6 +272,8 @@ public interface NodeDeploymentManager {
                 unregisterSliceFromInvocation(sliceKey);
                 unpublishEndpoints(sliceKey);
                 unpublishHttpRoutes(sliceKey);
+                unpublishTopicSubscriptions(sliceKey);
+                unpublishScheduledTasks(sliceKey);
                 transitionTo(sliceKey, SliceState.FAILED);
             }
 
@@ -334,6 +333,7 @@ public interface NodeDeploymentManager {
                                       .flatMap(m -> Stream.of(m.parameterType(),
                                                               m.returnType()))
                                       .collect(Collectors.toList());
+                typeTokens.addAll(readPublishMessageTypes(slice));
                 var serializerFactory = serializerProvider.createFactory(typeTokens);
                 var sliceBridge = DefaultSliceBridge.defaultSliceBridge(artifact, slice, serializerFactory);
                 invocationHandler.registerSlice(artifact, sliceBridge);
@@ -344,6 +344,54 @@ public interface NodeDeploymentManager {
             private SerializerFactoryProvider resolveSerializerProvider() {
                 return Option.option(configuration.serializerProvider())
                              .or(() -> FurySerializerFactoryProvider.furySerializerFactoryProvider());
+            }
+
+            @SuppressWarnings("JBCT-EX-01")
+            private List<TypeToken<?>> readPublishMessageTypes(Slice slice) {
+                var result = new ArrayList<TypeToken<?>>();
+                var classLoader = slice.getClass()
+                                       .getClassLoader();
+                for (var iface : slice.getClass()
+                                      .getInterfaces()) {
+                    if (iface == Slice.class) {
+                        continue;
+                    }
+                    var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
+                    readPublishClassesFromManifest(classLoader, manifestPath, result);
+                }
+                return result;
+            }
+
+            @SuppressWarnings("JBCT-EX-01")
+            private void readPublishClassesFromManifest(ClassLoader classLoader,
+                                                        String manifestPath,
+                                                        List<TypeToken<?>> result) {
+                try (var is = classLoader.getResourceAsStream(manifestPath)) {
+                    if (is == null) {
+                        return;
+                    }
+                    var props = new Properties();
+                    props.load(is);
+                    var publishClasses = props.getProperty("publish.message.classes", "");
+                    if (publishClasses.isEmpty()) {
+                        return;
+                    }
+                    for (var className : publishClasses.split(",")) {
+                        loadPublishMessageType(classLoader, className.trim(), result);
+                    }
+                } catch (Exception e) {
+                    log.debug("Could not read manifest {}: {}", manifestPath, e.getMessage());
+                }
+            }
+
+            @SuppressWarnings("JBCT-EX-01")
+            private void loadPublishMessageType(ClassLoader classLoader, String className, List<TypeToken<?>> result) {
+                try{
+                    var clazz = classLoader.loadClass(className);
+                    result.add(TypeToken.typeToken(clazz));
+                } catch (ClassNotFoundException e) {
+                    log.warn("Could not load publish message class: {}", className);
+                }
             }
 
             private void unregisterSliceFromInvocation(SliceNodeKey sliceKey) {
@@ -403,6 +451,8 @@ public interface NodeDeploymentManager {
             private void performDeactivation(SliceNodeKey sliceKey) {
                 // 1. Write DEACTIVATING first - wait for consensus before starting deactivation
                 transitionTo(sliceKey, SliceState.DEACTIVATING).flatMap(_ -> unpublishEndpoints(sliceKey))
+                            .flatMap(_ -> unpublishTopicSubscriptions(sliceKey))
+                            .flatMap(_ -> unpublishScheduledTasks(sliceKey))
                             .flatMap(_ -> unpublishHttpRoutes(sliceKey))
                             .onSuccessRun(() -> unregisterSliceFromInvocation(sliceKey))
                             .flatMap(_ -> deactivateSliceWithTimeout(sliceKey))
@@ -464,6 +514,256 @@ public interface NodeDeploymentManager {
                 return new KVCommand.Remove<>(key);
             }
 
+            // --- Topic subscription publish/unpublish ---
+            private Promise<Unit> publishTopicSubscriptions(SliceNodeKey sliceKey) {
+                var artifact = sliceKey.artifact();
+                return findLoadedSlice(artifact).map(ls -> doPublishTopicSubscriptions(artifact,
+                                                                                       ls.slice()))
+                                      .or(Promise.unitPromise());
+            }
+
+            private Promise<Unit> doPublishTopicSubscriptions(Artifact artifact, Slice slice) {
+                var entries = readSubscriptionsFromManifest(slice);
+                if (entries.isEmpty()) {
+                    return Promise.unitPromise();
+                }
+                var commands = entries.stream()
+                                      .<KVCommand<AetherKey>> map(entry -> createTopicSubscriptionPutCommand(artifact,
+                                                                                                             entry))
+                                      .toList();
+                return cluster.apply(commands)
+                              .mapToUnit()
+                              .onSuccess(_ -> log.debug("Published {} topic subscriptions for {}",
+                                                        entries.size(),
+                                                        artifact))
+                              .onFailure(cause -> log.error("Failed to publish topic subscriptions for {}: {}",
+                                                            artifact,
+                                                            cause.message()));
+            }
+
+            private KVCommand<AetherKey> createTopicSubscriptionPutCommand(Artifact artifact,
+                                                                           SubscriptionManifestEntry entry) {
+                var key = TopicSubscriptionKey.topicSubscriptionKey(entry.topicName(), artifact, entry.methodName());
+                var value = TopicSubscriptionValue.topicSubscriptionValue(self);
+                return new KVCommand.Put<>(key, value);
+            }
+
+            private Promise<Unit> unpublishTopicSubscriptions(SliceNodeKey sliceKey) {
+                var artifact = sliceKey.artifact();
+                return findLoadedSlice(artifact).map(ls -> doUnpublishTopicSubscriptions(artifact,
+                                                                                         ls.slice()))
+                                      .or(Promise.unitPromise());
+            }
+
+            private Promise<Unit> doUnpublishTopicSubscriptions(Artifact artifact, Slice slice) {
+                var entries = readSubscriptionsFromManifest(slice);
+                if (entries.isEmpty()) {
+                    return Promise.unitPromise();
+                }
+                var commands = entries.stream()
+                                      .<KVCommand<AetherKey>> map(entry -> createTopicSubscriptionRemoveCommand(artifact,
+                                                                                                                entry))
+                                      .toList();
+                return cluster.apply(commands)
+                              .mapToUnit()
+                              .onSuccess(_ -> log.debug("Unpublished {} topic subscriptions for {}",
+                                                        entries.size(),
+                                                        artifact))
+                              .onFailure(cause -> log.error("Failed to unpublish topic subscriptions for {}: {}",
+                                                            artifact,
+                                                            cause.message()));
+            }
+
+            private KVCommand<AetherKey> createTopicSubscriptionRemoveCommand(Artifact artifact,
+                                                                              SubscriptionManifestEntry entry) {
+                var key = TopicSubscriptionKey.topicSubscriptionKey(entry.topicName(), artifact, entry.methodName());
+                return new KVCommand.Remove<>(key);
+            }
+
+            private record SubscriptionManifestEntry(String topicName, MethodName methodName) {}
+
+            private record ScheduledTaskManifestEntry(String configSection, MethodName methodName) {}
+
+            @SuppressWarnings("JBCT-EX-01")
+            private List<SubscriptionManifestEntry> readSubscriptionsFromManifest(Slice slice) {
+                var result = new ArrayList<SubscriptionManifestEntry>();
+                var classLoader = slice.getClass()
+                                       .getClassLoader();
+                for (var iface : slice.getClass()
+                                      .getInterfaces()) {
+                    if (iface == Slice.class) {
+                        continue;
+                    }
+                    var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
+                    readSubscriptionEntriesFromManifest(classLoader, manifestPath, result);
+                }
+                return result;
+            }
+
+            @SuppressWarnings("JBCT-EX-01")
+            private void readSubscriptionEntriesFromManifest(ClassLoader classLoader,
+                                                             String manifestPath,
+                                                             List<SubscriptionManifestEntry> result) {
+                try (var is = classLoader.getResourceAsStream(manifestPath)) {
+                    if (is == null) {
+                        return;
+                    }
+                    var props = new Properties();
+                    props.load(is);
+                    var count = Integer.parseInt(props.getProperty("topic.subscriptions.count", "0"));
+                    for (int i = 0; i < count; i++) {
+                        readSubscriptionEntry(props, i).onPresent(result::add);
+                    }
+                } catch (Exception e) {
+                    log.debug("Could not read subscription manifest {}: {}", manifestPath, e.getMessage());
+                }
+            }
+
+            private Option<SubscriptionManifestEntry> readSubscriptionEntry(Properties props, int index) {
+                var configSection = props.getProperty("topic.subscription." + index + ".config");
+                var methodNameStr = props.getProperty("topic.subscription." + index + ".method");
+                if (configSection == null || methodNameStr == null) {
+                    return Option.none();
+                }
+                return resolveTopicName(configSection).flatMap(topicName -> MethodName.methodName(methodNameStr)
+                                                                                      .map(method -> new SubscriptionManifestEntry(topicName,
+                                                                                                                                   method)))
+                                       .option();
+            }
+
+            private Result<String> resolveTopicName(String configSection) {
+                return ConfigService.instance()
+                                    .toResult(Causes.cause("ConfigService not available for topic resolution"))
+                                    .flatMap(svc -> svc.config(configSection, TopicConfig.class))
+                                    .map(TopicConfig::topicName);
+            }
+
+            // --- Scheduled task publish/unpublish ---
+            private Promise<Unit> publishScheduledTasks(SliceNodeKey sliceKey) {
+                var artifact = sliceKey.artifact();
+                return findLoadedSlice(artifact).map(ls -> doPublishScheduledTasks(artifact,
+                                                                                   ls.slice()))
+                                      .or(Promise.unitPromise());
+            }
+
+            private Promise<Unit> doPublishScheduledTasks(Artifact artifact, Slice slice) {
+                var entries = readScheduledTasksFromManifest(slice);
+                if (entries.isEmpty()) {
+                    return Promise.unitPromise();
+                }
+                var commands = new ArrayList<KVCommand<AetherKey>>();
+                for (var entry : entries) {
+                    resolveScheduleConfig(entry.configSection())
+                    .onPresent(config -> commands.add(createScheduledTaskPutCommand(artifact, entry, config)));
+                }
+                if (commands.isEmpty()) {
+                    return Promise.unitPromise();
+                }
+                return cluster.apply(commands)
+                              .mapToUnit()
+                              .onSuccess(_ -> log.debug("Published {} scheduled tasks for {}",
+                                                        commands.size(),
+                                                        artifact))
+                              .onFailure(cause -> log.error("Failed to publish scheduled tasks for {}: {}",
+                                                            artifact,
+                                                            cause.message()));
+            }
+
+            private KVCommand<AetherKey> createScheduledTaskPutCommand(Artifact artifact,
+                                                                       ScheduledTaskManifestEntry entry,
+                                                                       ScheduleConfig config) {
+                var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
+                var value = config.interval()
+                                  .isEmpty()
+                            ? ScheduledTaskValue.cronTask(self, config.cron(), config.leaderOnly())
+                            : ScheduledTaskValue.intervalTask(self, config.interval(), config.leaderOnly());
+                return new KVCommand.Put<>(key, value);
+            }
+
+            private Promise<Unit> unpublishScheduledTasks(SliceNodeKey sliceKey) {
+                var artifact = sliceKey.artifact();
+                return findLoadedSlice(artifact).map(ls -> doUnpublishScheduledTasks(artifact,
+                                                                                     ls.slice()))
+                                      .or(Promise.unitPromise());
+            }
+
+            private Promise<Unit> doUnpublishScheduledTasks(Artifact artifact, Slice slice) {
+                var entries = readScheduledTasksFromManifest(slice);
+                if (entries.isEmpty()) {
+                    return Promise.unitPromise();
+                }
+                var commands = entries.stream()
+                                      .<KVCommand<AetherKey>> map(entry -> createScheduledTaskRemoveCommand(artifact,
+                                                                                                            entry))
+                                      .toList();
+                return cluster.apply(commands)
+                              .mapToUnit()
+                              .onSuccess(_ -> log.debug("Unpublished {} scheduled tasks for {}",
+                                                        entries.size(),
+                                                        artifact))
+                              .onFailure(cause -> log.error("Failed to unpublish scheduled tasks for {}: {}",
+                                                            artifact,
+                                                            cause.message()));
+            }
+
+            private KVCommand<AetherKey> createScheduledTaskRemoveCommand(Artifact artifact,
+                                                                          ScheduledTaskManifestEntry entry) {
+                var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
+                return new KVCommand.Remove<>(key);
+            }
+
+            @SuppressWarnings("JBCT-EX-01")
+            private List<ScheduledTaskManifestEntry> readScheduledTasksFromManifest(Slice slice) {
+                var result = new ArrayList<ScheduledTaskManifestEntry>();
+                var classLoader = slice.getClass()
+                                       .getClassLoader();
+                for (var iface : slice.getClass()
+                                      .getInterfaces()) {
+                    if (iface == Slice.class) {
+                        continue;
+                    }
+                    var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
+                    readScheduledTaskEntriesFromManifest(classLoader, manifestPath, result);
+                }
+                return result;
+            }
+
+            @SuppressWarnings("JBCT-EX-01")
+            private void readScheduledTaskEntriesFromManifest(ClassLoader classLoader,
+                                                              String manifestPath,
+                                                              List<ScheduledTaskManifestEntry> result) {
+                try (var is = classLoader.getResourceAsStream(manifestPath)) {
+                    if (is == null) {
+                        return;
+                    }
+                    var props = new Properties();
+                    props.load(is);
+                    var count = Integer.parseInt(props.getProperty("scheduled.tasks.count", "0"));
+                    for (int i = 0; i < count; i++) {
+                        readScheduledTaskEntry(props, i).onPresent(result::add);
+                    }
+                } catch (Exception e) {
+                    log.debug("Could not read scheduled task manifest {}: {}", manifestPath, e.getMessage());
+                }
+            }
+
+            private Option<ScheduledTaskManifestEntry> readScheduledTaskEntry(Properties props, int index) {
+                var configSection = props.getProperty("scheduled.task." + index + ".config");
+                var methodNameStr = props.getProperty("scheduled.task." + index + ".method");
+                if (configSection == null || methodNameStr == null) {
+                    return Option.none();
+                }
+                return MethodName.methodName(methodNameStr)
+                                 .map(method -> new ScheduledTaskManifestEntry(configSection, method))
+                                 .option();
+            }
+
+            private Option<ScheduleConfig> resolveScheduleConfig(String configSection) {
+                return ConfigService.instance()
+                                    .flatMap(svc -> svc.config(configSection, ScheduleConfig.class)
+                                                       .option());
+            }
+
             private void handleFailed(SliceNodeKey sliceKey) {
                 // Log the failure for observability
                 log.warn("Slice {} entered FAILED state", sliceKey.artifact());
@@ -487,8 +787,10 @@ public interface NodeDeploymentManager {
             private void handleUnloadFailure(SliceNodeKey sliceKey, Cause cause) {
                 log.error("Failed to unload {}: {}", sliceKey.artifact(), cause.message());
                 // Delete KV key even on failure to prevent stuck UNLOADING state
-                deleteSliceNodeKey(sliceKey);
-                removeFromDeployments(sliceKey);
+                deleteSliceNodeKey(sliceKey).onSuccess(_ -> removeFromDeployments(sliceKey))
+                                  .onFailure(deleteCause -> log.error("Failed to delete slice-node-key {} after unload failure: {}",
+                                                                      sliceKey,
+                                                                      deleteCause.message()));
             }
 
             private Promise<Unit> deleteSliceNodeKey(SliceNodeKey sliceKey) {
@@ -649,6 +951,8 @@ public interface NodeDeploymentManager {
                     log.debug("Reactivating suspended slice {}", sliceKey.artifact());
                     // Re-register for invocation
                     registerSliceForInvocation(sliceKey).flatMap(_ -> publishEndpointsAndRoutes(sliceKey))
+                                              .flatMap(_ -> publishTopicSubscriptions(sliceKey))
+                                              .flatMap(_ -> publishScheduledTasks(sliceKey))
                                               .onSuccess(_ -> log.debug("Reactivated slice {}",
                                                                         sliceKey.artifact()))
                                               .onFailure(cause -> handleReactivationFailure(sliceKey, cause));
@@ -733,31 +1037,32 @@ public interface NodeDeploymentManager {
                                  SliceActionConfig configuration,
                                  MessageRouter router,
                                  AtomicReference<NodeDeploymentState> state,
-                                 AtomicLong activationEpoch,
+                                 AtomicLong quorumSequence,
                                  Option<HttpRoutePublisher> httpRoutePublisher,
                                  Option<SliceInvokerFacade> sliceInvokerFacade) implements NodeDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(NodeDeploymentManager.class);
 
             @Override
-            public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
+            public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
                 state.get()
-                     .onValuePut(valuePut);
+                     .onSliceNodePut(valuePut);
             }
 
             @Override
-            public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
+            public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
                 state.get()
-                     .onValueRemove(valueRemove);
+                     .onSliceNodeRemove(valueRemove);
             }
 
             @Override
             public void onQuorumStateChange(QuorumStateNotification quorumStateNotification) {
+                if (!quorumStateNotification.advanceSequence(quorumSequence)) {
+                    log.info("Node {} ignoring stale QuorumStateNotification: {}", self().id(), quorumStateNotification);
+                    return;
+                }
                 log.info("Node {} received QuorumStateNotification: {}", self().id(), quorumStateNotification);
-                switch (quorumStateNotification) {
+                switch (quorumStateNotification.state()) {
                     case ESTABLISHED -> {
-                        // Increment epoch FIRST to invalidate any in-flight DISAPPEARED handlers
-                        var epoch = activationEpoch().incrementAndGet();
-                        log.debug("Node {} activation epoch incremented to {}", self().id(), epoch);
                         // Check if we have suspended slices to reactivate
                         if (state().get() instanceof NodeDeploymentState.DormantNodeDeploymentState dormant) {
                             var suspended = dormant.suspendedSlices();
@@ -782,24 +1087,20 @@ public interface NodeDeploymentManager {
                         }
                     }
                     case DISAPPEARED -> {
-                        // Capture epoch BEFORE any cleanup
-                        var epochBeforeCleanup = activationEpoch().get();
                         // Suspend slices (keep in memory) before going dormant
                         var suspended = List.<SuspendedSlice>of();
                         if (state().get() instanceof NodeDeploymentState.ActiveNodeDeploymentState activeState) {
                             suspended = activeState.suspendSlices();
                         }
-                        // Only go dormant if no ESTABLISHED arrived during cleanup (epoch unchanged)
-                        if (activationEpoch().get() == epochBeforeCleanup) {
+                        // Only go dormant if no newer notification arrived during cleanup
+                        if (quorumSequence.get() == quorumStateNotification.sequence()) {
                             state().set(new NodeDeploymentState.DormantNodeDeploymentState(suspended));
                             log.info("Node {} NodeDeploymentManager deactivated with {} suspended slices",
                                      self().id(),
                                      suspended.size());
                         } else {
-                            log.info("Node {} ignoring stale DISAPPEARED (epoch changed from {} to {})",
-                                     self().id(),
-                                     epochBeforeCleanup,
-                                     activationEpoch().get());
+                            log.info("Node {} ignoring stale DISAPPEARED (newer notification arrived during cleanup)",
+                                     self().id());
                         }
                     }
                 }

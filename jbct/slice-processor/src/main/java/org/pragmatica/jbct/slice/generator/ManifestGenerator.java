@@ -21,6 +21,8 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 public class ManifestGenerator {
+    static final int ENVELOPE_FORMAT_VERSION = 3;
+
     private final Filer filer;
     private final DependencyVersionResolver versionResolver;
     private final Map<String, String> options;
@@ -41,14 +43,6 @@ public class ManifestGenerator {
         var groupId = options.getOrDefault("slice.groupId", "unknown");
         var artifactId = options.getOrDefault("slice.artifactId", "unknown");
         return groupId + ":" + artifactId + "-" + toKebabCase(sliceName);
-    }
-
-    private String getProcessorVersion() {
-        var version = getClass().getPackage()
-                              .getImplementationVersion();
-        return version != null
-               ? version
-               : "dev";
     }
 
     /// Generate per-slice manifest with class listings for multi-artifact packaging.
@@ -105,11 +99,53 @@ public class ManifestGenerator {
             }
             // Slice config file path (for blueprint generator to read)
             props.setProperty("config.file", "slices/" + sliceName + ".toml");
+            // Topic subscription metadata
+            var subscriptionMethods = model.subscriptionMethods();
+            props.setProperty("topic.subscriptions.count", String.valueOf(subscriptionMethods.size()));
+            int subIndex = 0;
+            for (var method : subscriptionMethods) {
+                for (var subscription : method.subscriptions()) {
+                    var subPrefix = "topic.subscription." + subIndex + ".";
+                    props.setProperty(subPrefix + "config", subscription.configSection());
+                    props.setProperty(subPrefix + "method", method.name());
+                    // Message type from the single parameter
+                    if (method.hasSingleParam()) {
+                        props.setProperty(subPrefix + "messageType",
+                                          getQualifiedTypeName(method.parameters().getFirst().type()));
+                    }
+                    subIndex++;
+                }
+            }
+            // Update count to actual number of subscription entries
+            props.setProperty("topic.subscriptions.count", String.valueOf(subIndex));
+            // Scheduled task metadata
+            var scheduledMethods = model.scheduledMethods();
+            int schedIndex = 0;
+            for (var method : scheduledMethods) {
+                for (var schedule : method.scheduled()) {
+                    var schedPrefix = "scheduled.task." + schedIndex + ".";
+                    props.setProperty(schedPrefix + "config", schedule.configSection());
+                    props.setProperty(schedPrefix + "method", method.name());
+                    schedIndex++;
+                }
+            }
+            props.setProperty("scheduled.tasks.count", String.valueOf(schedIndex));
+            // Publisher message types (for serializer registration)
+            var publishMessageTypes = model.dependencies()
+                                           .stream()
+                                           .filter(dep -> dep.isPublisher())
+                                           .flatMap(dep -> dep.publisherMessageType().stream())
+                                           .filter(name -> !isStandardType(name))
+                                           .distinct()
+                                           .collect(Collectors.toList());
+            if (!publishMessageTypes.isEmpty()) {
+                props.setProperty("publish.message.classes", String.join(",", publishMessageTypes));
+            }
             // Metadata
             props.setProperty("generated.timestamp",
                               Instant.now()
                                      .toString());
-            props.setProperty("processor.version", getProcessorVersion());
+            props.setProperty("envelope.version", String.valueOf(ENVELOPE_FORMAT_VERSION));
             // Write to META-INF/slice/{SliceName}.manifest
             var resourcePath = "META-INF/slice/" + sliceName + ".manifest";
             var resource = filer.createResource(StandardLocation.CLASS_OUTPUT, "", resourcePath);

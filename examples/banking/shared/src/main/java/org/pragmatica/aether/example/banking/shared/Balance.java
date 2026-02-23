@@ -9,7 +9,7 @@ public record Balance(Money available, Money pending) {
     }
 
     public static Balance zero(Currency currency) {
-        var zero = new Money(BigDecimal.ZERO, currency);
+        var zero = Money.money(BigDecimal.ZERO, currency).unwrap();
         return new Balance(zero, zero);
     }
 }

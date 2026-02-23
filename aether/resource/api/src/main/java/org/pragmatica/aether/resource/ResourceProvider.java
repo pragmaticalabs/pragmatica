@@ -15,7 +15,7 @@ import org.pragmatica.lang.Unit;
 /// Example usage in generated slice factory:
 /// ```{@code
 /// return Promise.all(
-///         ctx.resources().provide(DatabaseConnector.class, "database.primary"),
+///         ctx.resources().provide(SqlConnector.class, "database.primary"),
 ///         ctx.invoker().methodHandle("inventory:artifact", "check", ...))
 ///     .map((db, checkHandle) -> {
 ///         var inventory = new inventoryService(checkHandle);
@@ -29,7 +29,7 @@ public interface ResourceProvider {
     /// the cached instance is returned. Otherwise, the configuration is loaded
     /// and a new instance is created via the appropriate {@link ResourceFactory}.
     ///
-    /// @param resourceType  The resource interface class (e.g., DatabaseConnector.class)
+    /// @param resourceType  The resource interface class (e.g., SqlConnector.class)
     /// @param configSection Dot-separated config section path (e.g., "database.primary")
     /// @param <T>           Resource type
     /// @return Promise containing the resource instance or error
@@ -52,6 +52,12 @@ public interface ResourceProvider {
     /// @param resourceType The resource interface class
     /// @return true if a factory is registered
     boolean hasFactory(Class<?> resourceType);
+
+    /// Release all resources consumed by the given slice.
+    ///
+    /// @param sliceId Artifact coordinate string identifying the slice
+    /// @return Promise completing when resources are released
+    Promise<Unit> releaseAll(String sliceId);
 
     // Static accessor pattern
     /// Get the global ResourceProvider instance.

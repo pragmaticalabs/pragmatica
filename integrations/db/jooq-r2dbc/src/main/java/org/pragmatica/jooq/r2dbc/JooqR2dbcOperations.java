@@ -35,6 +35,8 @@ import org.jooq.ResultQuery;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
 
+import static org.pragmatica.lang.Result.success;
+
 /// Promise-based JOOQ R2DBC operations interface.
 /// Provides a thin wrapper over JOOQ with R2DBC connection management.
 public interface JooqR2dbcOperations {
@@ -110,53 +112,27 @@ final class ConnectionFactoryJooqR2dbcOperations implements JooqR2dbcOperations 
 
     @Override
     public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
-        return withConnection(conn -> {
-                                  var dslWithConn = DSL.using(conn, dialect);
-                                  return Promise.lift(e -> mapException(e, query.getSQL()),
-                                                      () -> {
-                                                          var result = dslWithConn.fetch(query);
-                                                          if (result.isEmpty()) {
-                                                              throw new R2dbcNoResultException("Query returned no results");
-                                                          }
-                                                          if (result.size() > 1) {
-                                                              throw new R2dbcMultipleResultsException("Query returned " + result.size()
-                                                                                                      + " results");
-                                                          }
-                                                          return result.get(0);
-                                                      });
-                              });
+        return withConnection(conn -> Promise.lift(e -> R2dbcError.fromException(e, query.getSQL()),
+                                                   () -> DSL.using(conn, dialect).fetch(query))
+                                             .flatMap(result -> extractSingleRecord(result).async()));
     }
 
     @Override
     public <R extends Record> Promise<Option<R>> fetchOptional(ResultQuery<R> query) {
-        return withConnection(conn -> {
-                                  var dslWithConn = DSL.using(conn, dialect);
-                                  return Promise.lift(e -> mapException(e, query.getSQL()),
-                                                      () -> {
-                                                          var result = dslWithConn.fetch(query);
-                                                          return result.isEmpty()
-                                                                 ? Option.none()
-                                                                 : Option.option(result.get(0));
-                                                      });
-                              });
+        return withConnection(conn -> Promise.lift(e -> R2dbcError.fromException(e, query.getSQL()),
+                                                   () -> fetchOptionalRecord(conn, query)));
     }
 
     @Override
     public <R extends Record> Promise<List<R>> fetch(ResultQuery<R> query) {
-        return withConnection(conn -> {
-                                  var dslWithConn = DSL.using(conn, dialect);
-                                  return Promise.lift(e -> mapException(e, query.getSQL()),
-                                                      () -> dslWithConn.fetch(query));
-                              });
+        return withConnection(conn -> Promise.lift(e -> R2dbcError.fromException(e, query.getSQL()),
+                                                   () -> DSL.using(conn, dialect).fetch(query)));
     }
 
     @Override
     public Promise<Integer> execute(Query query) {
-        return withConnection(conn -> {
-                                  var dslWithConn = DSL.using(conn, dialect);
-                                  return Promise.lift(e -> mapException(e, query.getSQL()),
-                                                      () -> dslWithConn.execute(query));
-                              });
+        return withConnection(conn -> Promise.lift(e -> R2dbcError.fromException(e, query.getSQL()),
+                                                   () -> DSL.using(conn, dialect).execute(query)));
     }
 
     @Override
@@ -164,51 +140,35 @@ final class ConnectionFactoryJooqR2dbcOperations implements JooqR2dbcOperations 
         return dsl;
     }
 
+    private static <R extends Record> Result<R> extractSingleRecord(org.jooq.Result<R> result) {
+        if (result.isEmpty()) {
+            return R2dbcError.NoResult.INSTANCE.result();
+        }
+
+        if (result.size() > 1) {
+            return new R2dbcError.MultipleResults(result.size()).result();
+        }
+
+        return success(result.getFirst());
+    }
+
+    private <R extends Record> Option<R> fetchOptionalRecord(Connection conn, ResultQuery<R> query) {
+        var result = DSL.using(conn, dialect).fetch(query);
+        return result.isEmpty() ? Option.none() : Option.some(result.getFirst());
+    }
+
     private <T> Promise<T> withConnection(Fn1<Promise<T>, Connection> operation) {
-        return ReactiveOperations.<Connection> fromPublisher(connectionFactory.create())
-                                 .flatMap(conn -> operation.apply(conn)
-                                                           .onResult(_ -> ReactiveOperations.fromPublisher(conn.close())));
+        return ReactiveOperations.<Connection>fromPublisher(connectionFactory.create())
+                                 .flatMap(conn -> executeAndClose(conn, operation));
     }
 
-    /// Maps exceptions to R2dbcError, with special handling for JOOQ-R2DBC specific exceptions.
-    @SuppressWarnings("unused")
-    private static R2dbcError mapException(Throwable e, String ignored) {
-        return switch (e) {
-            case R2dbcNoResultException _ -> R2dbcError.NoResult.INSTANCE;
-            case R2dbcMultipleResultsException ex -> new R2dbcError.MultipleResults(parseCount(ex.getMessage()));
-            default -> R2dbcError.fromException(e, ignored);
-        };
+    private <T> Promise<T> executeAndClose(Connection conn, Fn1<Promise<T>, Connection> operation) {
+        return operation.apply(conn)
+                        .fold(result -> closeAndResolve(conn, result));
     }
 
-    private static int parseCount(String message) {
-        // Extract count from "Query returned N results"
-        if (message == null || message.isEmpty()) {
-            return - 1;
-        }
-        try{
-            var parts = message.split("\\s+");
-            for (int i = 0; i < parts.length - 1; i++) {
-                if ("returned".equals(parts[i])) {
-                    return Integer.parseInt(parts[i + 1]);
-                }
-            }
-            return - 1;
-        } catch (NumberFormatException _) {
-            return - 1;
-        }
-    }
-
-    /// Exception for no results case (used internally for error mapping).
-    static final class R2dbcNoResultException extends RuntimeException {
-        R2dbcNoResultException(String message) {
-            super(message);
-        }
-    }
-
-    /// Exception for multiple results case (used internally for error mapping).
-    static final class R2dbcMultipleResultsException extends RuntimeException {
-        R2dbcMultipleResultsException(String message) {
-            super(message);
-        }
+    private static <T> Promise<T> closeAndResolve(Connection conn, Result<T> result) {
+        return ReactiveOperations.fromVoidPublisher(conn.close())
+                                 .fold(_ -> Promise.resolved(result));
     }
 }

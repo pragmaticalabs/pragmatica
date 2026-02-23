@@ -66,7 +66,10 @@ public interface ClusterController {
     }
 
     /// Desired state for a slice (from blueprint).
-    record Blueprint(Artifact artifact, int instances) {}
+    /// @param artifact the artifact to deploy
+    /// @param instances current desired instance count (may be adjusted by auto-scaler)
+    /// @param minInstances minimum instance count from original blueprint (hard floor for scale-down)
+    record Blueprint(Artifact artifact, int instances, int minInstances) {}
 
     /// Decisions produced by the controller.
     record ControlDecisions(List<BlueprintChange> changes) {

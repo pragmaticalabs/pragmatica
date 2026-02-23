@@ -1,7 +1,9 @@
 package org.pragmatica.aether.slice;
 
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.Option;
 
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -35,13 +37,14 @@ class SliceManifestTest {
                          // Then: manifest info is extracted correctly
                          assertThat(info.artifact().asString()).isEqualTo("org.example:test-slice:1.0.0");
                          assertThat(info.sliceClassName()).isEqualTo("org.example.TestSlice");
+                         assertThat(info.envelopeVersion()).isEqualTo(Option.none());
                      });
     }
 
     @Test
     void read_missingSliceArtifact_returnsError() throws IOException {
         // Given: a JAR without Slice-Artifact attribute
-        var jarFile = createJarWithPartialManifest(null, "org.example.TestSlice");
+        var jarFile = createJarWithPartialManifest(null, "org.example.TestSlice", null);
 
         // When: reading the manifest
         SliceManifest.read(jarFile.toUri().toURL())
@@ -55,7 +58,7 @@ class SliceManifestTest {
     @Test
     void read_missingSliceClass_returnsError() throws IOException {
         // Given: a JAR without Slice-Class attribute
-        var jarFile = createJarWithPartialManifest("org.example:test-slice:1.0.0", null);
+        var jarFile = createJarWithPartialManifest("org.example:test-slice:1.0.0", null, null);
 
         // When: reading the manifest
         SliceManifest.read(jarFile.toUri().toURL())
@@ -134,11 +137,77 @@ class SliceManifestTest {
         }
     }
 
-    private Path createJarWithManifest(String artifact, String sliceClass) throws IOException {
-        return createJarWithPartialManifest(artifact, sliceClass);
+    @Test
+    void read_envelopeVersionPresent_extractsVersion() throws IOException {
+        // Given: a JAR with Envelope-Version in manifest
+        var jarFile = createJarWithPartialManifest(
+                "org.example:test-slice:1.0.0",
+                "org.example.TestSlice",
+                "1"
+                                                  );
+
+        // When: reading the manifest
+        SliceManifest.read(jarFile.toUri().toURL())
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                     .onSuccess(info -> {
+                         // Then: envelope version is extracted
+                         assertThat(info.envelopeVersion()).isEqualTo(Option.some("1"));
+                     });
     }
 
-    private Path createJarWithPartialManifest(String artifact, String sliceClass) throws IOException {
+    @Test
+    void read_envelopeVersionMissing_returnsNone() throws IOException {
+        // Given: a JAR without Envelope-Version attribute
+        var jarFile = createJarWithPartialManifest(
+                "org.example:test-slice:1.0.0",
+                "org.example.TestSlice",
+                null
+                                                  );
+
+        // When: reading the manifest
+        SliceManifest.read(jarFile.toUri().toURL())
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                     .onSuccess(info -> {
+                         // Then: envelope version is none
+                         assertThat(info.envelopeVersion()).isEqualTo(Option.none());
+                     });
+    }
+
+    @Nested
+    class EnvelopeCompatibilityTests {
+
+        @Test
+        void checkEnvelopeCompatibility_supportedVersion_succeeds() {
+            SliceManifest.checkEnvelopeCompatibility(Option.some("1"))
+                         .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+        }
+
+        @Test
+        void checkEnvelopeCompatibility_missingVersion_succeeds() {
+            SliceManifest.checkEnvelopeCompatibility(Option.none())
+                         .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+        }
+
+        @Test
+        void checkEnvelopeCompatibility_devVersion_succeeds() {
+            SliceManifest.checkEnvelopeCompatibility(Option.some("dev"))
+                         .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+        }
+
+        @Test
+        void checkEnvelopeCompatibility_unsupportedVersion_fails() {
+            SliceManifest.checkEnvelopeCompatibility(Option.some("99"))
+                         .onSuccessRun(Assertions::fail)
+                         .onFailure(cause -> assertThat(cause.message()).contains("99")
+                                                                        .contains("not supported"));
+        }
+    }
+
+    private Path createJarWithManifest(String artifact, String sliceClass) throws IOException {
+        return createJarWithPartialManifest(artifact, sliceClass, null);
+    }
+
+    private Path createJarWithPartialManifest(String artifact, String sliceClass, String envelopeVersion) throws IOException {
         var manifest = new Manifest();
         var mainAttrs = manifest.getMainAttributes();
         mainAttrs.put(Attributes.Name.MANIFEST_VERSION, "1.0");
@@ -148,6 +217,9 @@ class SliceManifestTest {
         }
         if (sliceClass != null) {
             mainAttrs.putValue(SliceManifest.SLICE_CLASS_ATTR, sliceClass);
+        }
+        if (envelopeVersion != null) {
+            mainAttrs.putValue(SliceManifest.ENVELOPE_VERSION_ATTR, envelopeVersion);
         }
 
         var jarPath = tempDir.resolve("test-slice-" + System.nanoTime() + ".jar");

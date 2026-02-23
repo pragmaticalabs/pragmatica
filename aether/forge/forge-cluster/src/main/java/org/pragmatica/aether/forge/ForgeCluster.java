@@ -1,6 +1,6 @@
 package org.pragmatica.aether.forge;
 
-import org.pragmatica.aether.config.ConfigurationProvider;
+import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
@@ -536,6 +536,7 @@ public final class ForgeCluster {
                                           org.pragmatica.aether.config.SliceConfig.sliceConfig(),
                                           mgmtPort,
                                           DHTConfig.FULL,
+                                          DHTConfig.CACHE_DEFAULT,
                                           Option.empty(),
                                           org.pragmatica.aether.config.TtmConfig.ttmConfig(),
                                           RollbackConfig.rollbackConfig(),

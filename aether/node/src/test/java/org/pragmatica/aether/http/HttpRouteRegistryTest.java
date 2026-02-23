@@ -2,9 +2,7 @@ package org.pragmatica.aether.http;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -113,7 +111,7 @@ class HttpRouteRegistryTest {
     }
 
     @Test
-    void onValueRemove_removes_route() {
+    void onRouteRemove_removes_route() {
         registerRoute("GET", "/users/", Set.of(NODE_1));
         assertThat(registry.findRoute("GET", "/users/").isPresent()).isTrue();
         unregisterRoute("GET", "/users/");
@@ -147,15 +145,15 @@ class HttpRouteRegistryTest {
     private void registerRoute(String method, String path, Set<NodeId> nodes) {
         var key = HttpRouteKey.httpRouteKey(method, path);
         var value = HttpRouteValue.httpRouteValue(nodes);
-        var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+        var command = new KVCommand.Put<HttpRouteKey, HttpRouteValue>(key, value);
         var notification = new ValuePut<>(command, Option.none());
-        registry.onValuePut(notification);
+        registry.onRoutePut(notification);
     }
 
     private void unregisterRoute(String method, String path) {
         var key = HttpRouteKey.httpRouteKey(method, path);
-        var command = new KVCommand.Remove<AetherKey>(key);
-        var notification = new ValueRemove<AetherKey, AetherValue>(command, Option.none());
-        registry.onValueRemove(notification);
+        var command = new KVCommand.Remove<HttpRouteKey>(key);
+        var notification = new ValueRemove<HttpRouteKey, HttpRouteValue>(command, Option.none());
+        registry.onRouteRemove(notification);
     }
 }

@@ -73,11 +73,4 @@ public sealed interface ResourceProvisioningError extends Cause {
             return "ConfigService not available - call ConfigService.setInstance() first";
         }
     }
-
-    record unused() implements ResourceProvisioningError {
-        @Override
-        public String message() {
-            return "unused";
-        }
-    }
 }

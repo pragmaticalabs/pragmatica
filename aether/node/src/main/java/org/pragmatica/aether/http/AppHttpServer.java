@@ -8,9 +8,8 @@ import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationContext;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -72,11 +71,11 @@ public interface AppHttpServer {
 
     /// Handle KV-Store updates to rebuild router when routes change.
     @MessageReceiver
-    void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
+    void onRoutePut(ValuePut<HttpRouteKey, HttpRouteValue> valuePut);
 
     /// Handle KV-Store removals to rebuild router when routes change.
     @MessageReceiver
-    void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
+    void onRouteRemove(ValueRemove<HttpRouteKey, HttpRouteValue> valueRemove);
 
     /// Handle incoming HTTP forward request from another node.
     @MessageReceiver
@@ -116,24 +115,6 @@ public interface AppHttpServer {
                                      clusterNetwork,
                                      serializer,
                                      deserializer,
-                                     tls);
-    }
-
-    /// @deprecated Use full factory method with all parameters.
-    @Deprecated
-    static AppHttpServer appHttpServer(AppHttpConfig config,
-                                       HttpRouteRegistry routeRegistry,
-                                       Option<org.pragmatica.aether.invoke.SliceInvoker> sliceInvoker,
-                                       Option<HttpRoutePublisher> httpRoutePublisher,
-                                       Option<TlsConfig> tls) {
-        // Legacy factory - creates server without HTTP forwarding support
-        return new AppHttpServerImpl(config,
-                                     null,
-                                     routeRegistry,
-                                     httpRoutePublisher,
-                                     Option.none(),
-                                     Option.none(),
-                                     Option.none(),
                                      tls);
     }
 }
@@ -255,23 +236,17 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     @Override
-    public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-        if (valuePut.cause()
-                    .key() instanceof HttpRouteKey) {
-            routeSyncReceived.set(true);
-            log.debug("HttpRouteKey added, rebuilding router");
-            rebuildRouter();
-        }
+    public void onRoutePut(ValuePut<HttpRouteKey, HttpRouteValue> valuePut) {
+        routeSyncReceived.set(true);
+        log.debug("HttpRouteKey added, rebuilding router");
+        rebuildRouter();
     }
 
     @Override
-    public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-        if (valueRemove.cause()
-                       .key() instanceof HttpRouteKey) {
-            routeSyncReceived.set(true);
-            log.debug("HttpRouteKey removed, rebuilding router");
-            rebuildRouter();
-        }
+    public void onRouteRemove(ValueRemove<HttpRouteKey, HttpRouteValue> valueRemove) {
+        routeSyncReceived.set(true);
+        log.debug("HttpRouteKey removed, rebuilding router");
+        rebuildRouter();
     }
 
     // ================== Request Handling ==================
@@ -322,25 +297,23 @@ class AppHttpServerImpl implements AppHttpServer {
     private Option<HttpRouteKey> findMatchingLocalRoute(Set<HttpRouteKey> localRoutes,
                                                         String method,
                                                         String normalizedPath) {
-        return Option.option(localRoutes.stream()
-                                        .filter(key -> key.httpMethod()
-                                                          .equalsIgnoreCase(method))
-                                        .filter(key -> pathMatchesPrefix(normalizedPath,
-                                                                         key.pathPrefix()))
-                                        .findFirst()
-                                        .orElse(null));
+        return Option.from(localRoutes.stream()
+                                      .filter(key -> key.httpMethod()
+                                                        .equalsIgnoreCase(method))
+                                      .filter(key -> pathMatchesPrefix(normalizedPath,
+                                                                       key.pathPrefix()))
+                                      .findFirst());
     }
 
     private Option<HttpRouteRegistry.RouteInfo> findMatchingRemoteRoute(List<HttpRouteRegistry.RouteInfo> remoteRoutes,
                                                                         String method,
                                                                         String normalizedPath) {
-        return Option.option(remoteRoutes.stream()
-                                         .filter(route -> route.httpMethod()
-                                                               .equalsIgnoreCase(method))
-                                         .filter(route -> pathMatchesPrefix(normalizedPath,
-                                                                            route.pathPrefix()))
-                                         .findFirst()
-                                         .orElse(null));
+        return Option.from(remoteRoutes.stream()
+                                       .filter(route -> route.httpMethod()
+                                                             .equalsIgnoreCase(method))
+                                       .filter(route -> pathMatchesPrefix(normalizedPath,
+                                                                          route.pathPrefix()))
+                                       .findFirst());
     }
 
     private boolean pathMatchesPrefix(String normalizedPath, String pathPrefix) {
@@ -351,6 +324,7 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     private String normalizePath(String path) {
+        // Boundary guard: path may be null from external HTTP request parsing
         if (path == null || path.isBlank()) {
             return "/";
         }
@@ -471,13 +445,13 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     private List<NodeId> freshCandidatesForRoute(HttpRouteKey routeKey) {
-        return routeRegistry.allRoutes()
-                            .stream()
-                            .filter(r -> r.toKey()
-                                          .equals(routeKey))
-                            .findFirst()
-                            .map(r -> filterConnectedNodes(r.nodes()))
-                            .orElse(List.of());
+        return Option.from(routeRegistry.allRoutes()
+                                        .stream()
+                                        .filter(r -> r.toKey()
+                                                      .equals(routeKey))
+                                        .findFirst())
+                     .map(r -> filterConnectedNodes(r.nodes()))
+                     .or(List.of());
     }
 
     private NodeId selectNodeRoundRobin(HttpRouteKey routeKey, List<NodeId> nodes) {
@@ -714,20 +688,20 @@ class AppHttpServerImpl implements AppHttpServer {
                   response.requestId(),
                   response.correlationId(),
                   response.success());
-        var pending = pendingForwards.remove(response.correlationId());
-        if (pending == null) {
-            log.warn("[{}] Received forward response for unknown correlationId: {}",
-                     response.requestId(),
-                     response.correlationId());
-            return;
-        }
-        // Remove from secondary index
-        removeFromNodeIndex(response.correlationId(), pending.targetNode());
-        if (response.success()) {
-            handleSuccessfulForwardResponse(pending, response);
-        } else {
-            handleFailedForwardResponse(pending, response);
-        }
+        Option.option(pendingForwards.remove(response.correlationId()))
+              .onEmpty(() -> log.warn("[{}] Received forward response for unknown correlationId: {}",
+                                      response.requestId(),
+                                      response.correlationId()))
+              .onPresent(pending -> {
+                             // Remove from secondary index
+        removeFromNodeIndex(response.correlationId(),
+                            pending.targetNode());
+                             if (response.success()) {
+                                 handleSuccessfulForwardResponse(pending, response);
+                             } else {
+                                 handleFailedForwardResponse(pending, response);
+                             }
+                         });
     }
 
     @Override
@@ -741,13 +715,17 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     private void handleNodeDeparture(NodeId departedNode) {
-        var correlationIds = pendingForwardsByNode.remove(departedNode);
-        if (correlationIds == null || correlationIds.isEmpty()) {
-            return;
-        }
+        routeRegistry.evictNode(departedNode);
+        Option.option(pendingForwardsByNode.remove(departedNode))
+              .filter(ids -> !ids.isEmpty())
+              .onPresent(correlationIds -> retryPendingForwards(departedNode, correlationIds));
+    }
+
+    private void retryPendingForwards(NodeId departedNode, Set<String> correlationIds) {
         var affectedRequestIds = correlationIds.stream()
                                                .map(pendingForwards::get)
-                                               .filter(p -> p != null)
+                                               .flatMap(p -> Option.option(p)
+                                                                   .stream())
                                                .map(PendingForward::requestId)
                                                .limit(5)
                                                .toList();
@@ -756,15 +734,15 @@ class AppHttpServerImpl implements AppHttpServer {
                   correlationIds.size(),
                   affectedRequestIds);
         for (var correlationId : correlationIds) {
-            var pending = pendingForwards.remove(correlationId);
-            if (pending != null) {
-                log.debug("Triggering retry for request [{}] due to node {} departure",
-                          pending.requestId(),
-                          departedNode);
-                // Fail the promise to trigger onFailure callback which handles retry
-                pending.promise()
-                       .fail(Causes.cause("Target node " + departedNode + " departed"));
-            }
+            Option.option(pendingForwards.remove(correlationId))
+                  .onPresent(pending -> {
+                                 log.debug("Triggering retry for request [{}] due to node {} departure",
+                                           pending.requestId(),
+                                           departedNode);
+                                 // Fail the promise to trigger onFailure callback which handles retry
+            pending.promise()
+                   .fail(Causes.cause("Target node " + departedNode + " departed"));
+                             });
         }
     }
 
@@ -774,14 +752,14 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     private void removeFromNodeIndex(String correlationId, NodeId targetNode) {
-        var nodeCorrelations = pendingForwardsByNode.get(targetNode);
-        if (nodeCorrelations != null) {
-            nodeCorrelations.remove(correlationId);
-            // Clean up empty sets
-            if (nodeCorrelations.isEmpty()) {
-                pendingForwardsByNode.remove(targetNode, nodeCorrelations);
-            }
-        }
+        Option.option(pendingForwardsByNode.get(targetNode))
+              .onPresent(nodeCorrelations -> {
+                             nodeCorrelations.remove(correlationId);
+                             // Clean up empty sets
+        if (nodeCorrelations.isEmpty()) {
+                                 pendingForwardsByNode.remove(targetNode, nodeCorrelations);
+                             }
+                         });
     }
 
     private void handleSuccessfulForwardResponse(PendingForward pending, HttpForwardResponse response) {
@@ -878,12 +856,16 @@ class AppHttpServerImpl implements AppHttpServer {
                               });
     }
 
+    private static final int MAX_WARN_BODY_LENGTH = 200;
+
     private void sendResponse(ResponseWriter response, HttpResponseData responseData, String requestId) {
         if (responseData.statusCode() >= 400) {
-            log.warn("HTTP error response [{}]: {} body={}",
-                     requestId,
-                     responseData.statusCode(),
-                     new String(responseData.body(), StandardCharsets.UTF_8));
+            var fullBody = new String(responseData.body(), StandardCharsets.UTF_8);
+            var truncatedBody = fullBody.length() > MAX_WARN_BODY_LENGTH
+                                ? fullBody.substring(0, MAX_WARN_BODY_LENGTH) + "...(truncated)"
+                                : fullBody;
+            log.warn("HTTP error response [{}]: {} body={}", requestId, responseData.statusCode(), truncatedBody);
+            log.debug("HTTP error response full body [{}]: {}", requestId, fullBody);
         } else {
             log.trace("Sending response [{}]: {} {}", requestId, responseData.statusCode(), responseData.headers());
         }

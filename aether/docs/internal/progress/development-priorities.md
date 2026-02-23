@@ -1,10 +1,30 @@
 # Development Priorities
 
-## Current Status (v0.16.0)
+## Current Status (v0.17.0)
 
-Release 0.16.0 continues production hardening with bug fixes and documentation updates.
+Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy repair, re-replication, per-use-case config), pub-sub messaging infrastructure (RFC-0011), and blueprint-only deployment model. 85 new tests added, 5 E2E tests re-enabled.
 
 ## Completed ✅
+
+### DHT & Data (v0.17.0)
+- **DHT Anti-Entropy Repair** - CRC32 digest exchange between replicas, automatic data migration on mismatch
+- **DHT Re-Replication** - DHTRebalancer pushes partition data to new replicas when a node departs
+- **Per-Use-Case DHT Config** - `DHTClient.scoped(DHTConfig)` — artifact storage (RF=3) and cache (RF=1) use independent configs
+- **Distributed Hash Table** - Consistent hash ring (150 vnodes, 1024 partitions), quorum R/W, topology-aware
+
+### Pub-Sub Messaging (v0.17.0, RFC-0011)
+- **Publisher/Subscriber API** - `Publisher<T>` functional interface, `Subscriber` marker, `@Subscription` annotation
+- **Topic Subscription Registry** - KV-Store backed subscriber discovery with competing consumers (round-robin)
+- **Message Delivery** - TopicPublisher fans out via SliceInvoker, PublisherFactory registered as SPI
+- **Resource Lifecycle** - Reference-counted `releaseAll()`, generated `stop()` cleanup, SliceId auto-injected into ProvisioningContext
+- **Pub-Sub Code Generation** - Subscription metadata in manifest, envelope v2
+
+### Scheduled Invocation (v0.17.0)
+- **Scheduled.java marker interface** - `@ResourceQualifier(type=Scheduled.class)` on zero-arg `Promise<Unit>` methods
+- **Interval and cron scheduling** - Fixed-rate (`"5m"`, `"30s"`) and 5-field cron (`"0 0 * * *"`) modes
+- **Leader-only and all-node execution** - Quorum-gated timer lifecycle
+- **KV-Store backed registry** - Runtime reconfiguration via Management API
+- **Full stack** - Annotation processor, manifest generation (envelope v3), deployment wiring, CronExpression parser, ScheduledTaskRegistry, ScheduledTaskManager, REST API, CLI, 29 unit tests
 
 ### Core Infrastructure
 - **Request ID Propagation** - ScopedValue-based context with ServiceLoader propagation hook in Promise
@@ -16,7 +36,7 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
 - **EndpointRegistry** - Service discovery with weighted routing
 - **NodeDeploymentManager** - Node-level slice management
 - **HTTP Router** - External request routing with route self-registration
-- **Management API** - Complete cluster control endpoints (30+ endpoints)
+- **Management API** - Complete cluster control endpoints (60+ endpoints across 12 route classes)
 - **CLI** - REPL and batch modes with full command coverage
 - **Automatic Route Cleanup** - Routes removed on last slice instance deactivation
 - **HTTP Keep-Alive** - Connection reuse in Netty server; load generators pinned to HTTP/1.1
@@ -35,9 +55,10 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
 - **DeploymentMap** - Event-driven slice-to-node index with cluster-wide deployment visibility
 - **EMA Latency Smoothing** - 5-second effective window for stable dashboard metrics
 - **Zero-Loss Forwarding** - Fresh re-routing on retry, proactive disconnection detection, and backoff retry with delayed re-query for route table healing during node transitions
+- **Fast-Path Route Eviction** - Immediate local cache eviction from `HttpRouteRegistry` on node departure, eliminating ~5s window of failed forwards during rolling restarts
 - **Dynamic Aspects** - Runtime-togglable per-method LOG/METRICS/LOG_AND_METRICS modes via `DynamicAspectRegistry`, REST API (`/api/aspects`), KV-store consensus sync, and `DynamicAspectInterceptor` wired into both local and remote invocation paths
 - **Dynamic Configuration** - Runtime config updates via consensus KV store with REST API. Config overlay pattern: base config from TOML/env/system properties, overrides from KV store. Cluster-wide and per-node scoped keys. No restart required.
-- **Logging Overhaul (tinylog → Log4j2)** - Production-grade structured logging: request ID auto-injected via SLF4J MDC (`[rid=%X{requestId}]`), optional JSON output via `-Dlog4j2.appender=JsonConsole`, runtime log level management via Management API (`/api/logging/levels`) with cluster-wide KV-store consensus sync, noise reduction (Fury→error, Netty→warn, H2→error), shared `test-logging` module replacing 47 per-module tinylog configs. Unblocks RFC-0009 Tier 2.
+- **Logging Overhaul (tinylog → Log4j2)** - Production-grade structured logging: request ID auto-injected via SLF4J MDC (`[rid=%X{requestId}]`), optional JSON output via `-Dlog4j2.appender=JsonConsole`, runtime log level management via Management API (`/api/logging/levels`) with cluster-wide KV-store consensus sync, noise reduction (Fury→error, Netty→warn, H2→error), shared `test-logging` module replacing 47 per-module tinylog configs. Unblocks structured logging in RFC-0010 (SLF4J bridge).
 
 ### Dashboard & Real-Time
 - **WebSocket Push** - Zero-polling dashboard via `/ws/status` with polling fallback
@@ -52,6 +73,7 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
 - **Weighted Routing** - Traffic distribution during updates
 - **Blueprint Parser** - Standard TOML format
 - **Docker Infrastructure** - Separate images for node and forge
+- **Blueprint-Only Deployment** - Removed individual slice deploy/undeploy to enforce dependency validation. Scale guarded by blueprint membership. Eliminates the correctness gap where undeploying a dependency could orphan active slices.
 
 ### Slice Lifecycle (v0.8.0)
 - **start()/stop() Timeouts** - Configurable via `SliceActionConfig.startStopTimeout`
@@ -86,29 +108,41 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
 - **Developer Guides** - Slice development, migration
 - **Slice Lifecycle** - Hook semantics, materialization, execution order
 
+### Resource Provisioning & Infra Modules Overhaul
+- **Unified `@ResourceQualifier(type, config)` pattern** — injected dependencies (database, HTTP client) AND behavioral wrappers (cache, rate limit, retry, circuit breaker, log, metrics). No separate "aspect" category.
+- **Annotation processor** — `ResourceQualifierModel` detection + `FactoryClassGenerator` code generation. Parameter annotation = inject resource, method annotation = wrap method.
+- **Core SPI** — `ResourceFactory`, `ResourceProvider`, `SpiResourceProvider` with ServiceLoader discovery, priority-based factory selection, instance caching
+- **SliceCreationContext** — unified invoker + resource facades with `ProvisioningContext` (type tokens, key extractors)
+- **Pre-made qualifiers** — `@Sql` (database), `@Http` (HTTP client)
+- **Interceptors** — cache (in-memory + DHT + tiered), circuit breaker, retry, rate-limit, logging, metrics
+- **HttpClient JSON API** — typed request/response with `JsonConfig`, `HttpClientError`, default headers, zero Jackson leakage
+
+### DB Connector Infrastructure
+- **JDBC** — HikariCP-based pooling, full SQL API (`queryOne`, `queryOptional`, `queryList`, `update`, `batch`, `transactional`)
+- **R2DBC** — Reactive/async SQL with connection pooling
+- **jOOQ sync** — Type-safe queries via JDBC-backed jOOQ
+- **jOOQ async** — Type-safe queries via R2DBC-backed jOOQ
+- **`DatabaseConnectorConfig`** — Rich config with JDBC/R2DBC URL overrides, pool settings, properties
+- **`DatabaseConnectorError`** — Sealed error types, `@Sql` qualifier annotation
+
 ---
 
 ## Next Up
 
 ### HIGH PRIORITY - Observability & Operations
 
-1. **Built-in Request Tracing** ← recommended next — [RFC-0009](../../../../docs/rfc/RFC-0009-request-tracing.md)
-   - Two-tier: in-memory ring buffer (dashboard) + structured logging (persistence)
-   - Single instrumentation point at invocation boundary (DynamicAspectInterceptor pipeline)
-   - Management API: `/api/traces`, `/api/traces/{requestId}`, `/api/traces/stats`
+1. **Unified Invocation Observability** ← recommended next — [RFC-0010](../../../../docs/rfc/RFC-0010-unified-invocation-observability.md)
+   - Single invocation tree: tracing (timing/flow) + depth-logging (input/output) + metrics
+   - Automatic instrumentation at dependency boundaries — zero business logic logging code
+   - Depth-based verbosity control: adjust detail level dynamically per method via KV store
+   - SLF4J bridge: projects depth → traditional severity levels for standard log consumers
+   - Ring buffer for dashboard + structured logging for persistence
+   - Management API: `/api/traces`, `/api/traces/{requestId}`, `/api/observability/depth`
    - Foundation exists: request ID propagation, InvocationTimingContext, DynamicAspectInterceptor
-   - OpenTelemetry rejected: heavyweight dependency, gRPC mismatch, microservices-oriented
-   - Logging Overhaul complete — Tier 2 structured logging unblocked
-   - Dashboard UI tracked separately in Dashboard & UI section (#7)
+   - Supersedes RFC-0009 (Request Tracing)
+   - **Separate design decisions:** redaction strategy, dashboard UI, serialization limits, sampling
 
-2. **Dependency Lifecycle Management**
-   - Block manual unload while dependents are ACTIVE
-   - Graceful degradation on dependency failure (calls fail, slice handles it)
-   - Dependency graph tracking in KV store
-   - Clear error reporting with dependency chain visualization
-   - **Why important:** Correctness gap — currently possible to break running slices by unloading dependencies.
-
-3. **Cloud Integration**
+2. **Cloud Integration**
    - Implement `NodeLifecycleManager.executeAction(NodeAction)`
    - Cloud provider adapters: Hetzner (primary), AWS, GCP, Azure
    - Execute `StartNode`, `StopNode`, `MigrateSlices` decisions from controller
@@ -124,123 +158,197 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
      - Drain connections before node removal (graceful deregistration delay)
      - TLS termination configuration (certificate ARN/ID passthrough)
    - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
-   - **Enables:** Spot Instance Support (#16), Expense Tracking (#17)
+   - **Enables:** Spot Instance Support (#24), Expense Tracking (#25) in FUTURE section
 
-4. **Resource Provisioning & Infra Modules Overhaul**
-   - **One unified pattern:** `@ResourceQualifier(type, config)` governs everything — injected dependencies (database, scheduler, lock, pubsub) AND behavioral wrappers (cache, rate limit, retry, log, metrics). No separate "aspect" category.
-   - Annotation processor distinguishes by position: **parameter annotation** = inject resource, **method annotation** = wrap method with resource behavior. Same meta-annotation, different wiring.
-   - **No configuration data in annotations** — user defines custom annotation per use case, meta-annotated with `@ResourceQualifier(type, config)`. Config lives in TOML, not Java source.
-   - Each annotation usage creates a new resource instance (same annotation on multiple methods = multiple resources, same config)
-   - **Compile-time validation:** Annotation processor must fail if two different annotation types resolve to the same `(resource type, config section)` pair
-   - Aether manages resource lifecycle — provisions backing implementation based on config (in-memory for Forge, external for production)
-   - **Eliminates from RFC-0008:** `AspectKind` enum, `AspectFactory` (same provisioning as `@Database`), convention-based config hierarchy (`[slice.method.cache]`). Fn1 composition (`Aspects.withCaching()`, etc.) and `@Key` for cache key extraction remain. RFC-0008 needs revision.
-   - **Infra modules disposition:**
-     | Module | Replacement | Example |
-     |--------|-------------|---------|
-     | `infra-database` | `@ResourceQualifier(type=DatabaseConnector.class)` on parameter | **Done** — `@Database` reference impl |
-     | `infra-cache` | `@ResourceQualifier(type=Cache.class)` on method | `@OrderCache` wraps method with caching |
-     | `infra-ratelimit` | `@ResourceQualifier(type=RateLimiter.class)` on method | `@PublicApiLimit` wraps method with rate limiting |
-     | `infra-scheduler` | `@ResourceQualifier(type=Scheduler.class)` on method | `@CleanupSchedule` triggers method on schedule |
-     | `infra-lock` | `@ResourceQualifier(type=Lock.class)` on parameter | `@InventoryLock` injects distributed lock |
-     | `infra-pubsub` | `@ResourceQualifier(type=Publisher/Subscriber.class)` | `@OrderEvents` on parameter or method |
-     | `infra-statemachine` | Lightweight builder DSL in core | Business logic, not a provisioned resource |
-     | `infra-config` | **Remove** — Dynamic Configuration via KV store | — |
-     | `infra-http` | **Remove** — fold into core as utility | — |
-     | `infra-aspect` | **Keep** — Fn1 composition utilities (`Aspects.withCaching()`, etc.) | — |
-   - LOG/METRICS (currently `DynamicAspectMode`) — same pattern: `@ResourceQualifier(type=InvocationLogger.class)` on method. Runtime reconfigurability (KV store + REST API toggle) is a property of the `InvocationLogger` resource implementation, not a special mechanism.
-   - **Why important:** Eliminates 7+ modules and the aspect/resource distinction. One pattern to learn.
+3. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
+    - Cluster-level schema migration managed by Aether runtime, not individual nodes
+    - Per-datasource lifecycle with independent history tables (`aether_schema_history`)
+    - Leader-driven execution via Rabia consensus; exactly one node runs migrations
+    - TOML-declared schema versions in service descriptors; versioned SQL scripts (`V001__*.sql`)
+    - Readiness gate: traffic only routed after all datasources reach declared version
+    - Expand-contract support for zero-downtime schema changes
+    - Lightweight `AetherSchemaManager` — plain JDBC, no Flyway/Liquibase dependency
 
 ### HIGH PRIORITY - Dashboard & UI
 
-5. **Dynamic Aspect Dashboard UI**
+4. **Dynamic Aspect Dashboard UI**
    - Wire `DynamicAspectRegistry` data to dashboard with convenient UI for toggling per-method aspect modes
    - Backend REST API (`/api/aspects`) and KV-store sync already implemented
    - Smallest UI task — good starting point for establishing dashboard patterns
 
-6. **Request Tracing Dashboard Tab**
-   - "Requests" tab: table view with timestamp, requestId, source → target.method, duration, status
-   - Click-to-expand waterfall view for multi-hop request visualization
-   - Filters: time range, slice, method, status (success/failure)
+5. **Invocation Observability Dashboard Tab**
+   - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
+   - Click-to-expand tree view showing invocation depth with input/output at each level
+   - Waterfall view for multi-hop request visualization
+   - Filters: time range, slice, method, status, depth range
    - Auto-refresh via existing WebSocket push
-   - See [RFC-0009](../../../../docs/rfc/RFC-0009-request-tracing.md) for full specification
-   - Depends on: Built-in Request Tracing (#1) backend
+   - See [RFC-0010](../../../../docs/rfc/RFC-0010-unified-invocation-observability.md) for data model and API
+   - Depends on: Unified Invocation Observability (#1) backend
 
-7. **Log Level Management UI**
+6. **Log Level Management UI**
    - Per-package log level controls in dashboard
    - Current effective levels display
    - Backend ready: `/api/logging/levels` endpoints implemented
 
-### MEDIUM PRIORITY
+### MEDIUM PRIORITY - Packaging & Distribution
 
-8. **DB Connector Infrastructure**
-    - Database connectivity layer for slices
-    - Connection pooling and transaction management
-    - Support for common databases (PostgreSQL, MySQL, etc.)
-    - Modules exist: `infra-db-connector/jdbc`, `r2dbc`, `jooq`, `jooq-r2dbc`
+7. **Official Aether Container Image**
+    - Production-ready OCI container for `aether-node`
+    - Multi-stage build: build layer (Maven + JDK) → runtime layer (JRE-only)
+    - Base image: Eclipse Temurin JRE (Alpine or distroless for minimal attack surface)
+    - Non-root user, health check endpoint, signal handling for graceful shutdown
+    - Published to GitHub Container Registry (ghcr.io) and/or Docker Hub
+    - Versioned tags: `latest`, `0.17.0`, `0.17.0-alpine`
+    - Currently: Dockerfile exists but images are built locally for E2E tests only
 
-9. **Disruption Budget**
+8. **Official Installation Binaries**
+    - Pre-built distribution archives for all production artifacts: `aether-node`, `aether-cli`, `aether-forge`
+    - Formats: `.tar.gz` (Linux/macOS), `.zip` (Windows), platform-specific packages (`.deb`, `.rpm`, Homebrew formula)
+    - Self-contained: bundled JRE (jlink/jpackage) so users don't need pre-installed Java
+    - Published to GitHub Releases on each version tag
+    - Checksums (SHA-256) and optional GPG signatures
+
+9. **Installation and Upgrade Scripts**
+    - `install.sh` / `install.ps1` — download correct binary for platform, place in PATH, verify checksum
+    - `upgrade.sh` — detect current version, download new version, swap binaries, restart services if running
+    - Covers all three artifacts: Ember (local dev), Forge (testing), Aether node (production)
+    - Version pinning support: `install.sh --version 0.17.0`
+    - Idempotent: safe to run multiple times
+
+10. **Forge Modular Rework**
+    - Current state: Forge bundles load generator + chaos testing + local cluster into single `aether-forge.jar`
+    - Target: three independently usable components, each supporting embedded and standalone modes:
+      - **Ember** — single-process Aether runtime (the clustering engine already in Forge). Standalone mode for production migration scenarios (run Aether as a single process without clustering). Embedded mode for development (zero-config local runtime). Replaces the current `forge-cluster` module
+      - **Tester** — unified testing component: load generator (TOML-configured traffic patterns), chaos testing (fault injection scenarios), and Forge Script DSL for scenario definition. Standalone mode for production-like testing against remote clusters (CI/CD, cloud). Embedded mode for local development testing
+      - **Forge** — the composition: Ember + Tester + dashboard in one package for local development convenience
+    - Ember and Tester must work against remote clusters, not just embedded — this is the key enabler for cloud testing
+    - Forge Script DSL: declarative scenario language for load/chaos test definitions, reusable scenario libraries, CI/CD integration
+    - Partially complete: modules already separated (`forge-simulator`, `forge-load`, `forge-cluster`), but packaged as single JAR
+
+11. **Aether Runtime Rolling Upgrade**
+    - Upgrade the Aether node software across a running cluster without downtime
+    - Sequence: upgrade one node at a time → verify health → proceed to next
+    - Interacts with envelope versioning: multi-version support ensures old-format slices still load on new runtime
+    - Upgrade orchestration: `upgrade-cluster.sh` script or Management API-driven (leader coordinates)
+    - Rollback: if upgraded node fails health check, revert to previous version before continuing
+    - Prerequisite: Official Container (#7) or Official Binaries (#8)
+
+### MEDIUM PRIORITY - Reliability
+
+12. **Disruption Budget**
     - Minimum healthy instances during rolling updates and node failures
     - Configurable per slice or blueprint
     - Controller respects budget before scaling down or migrating
     - Prevents cascading failures during maintenance
 
-10. **Placement Hints**
+13. **Placement Hints**
     - Affinity/anti-affinity rules for slice placement
     - Spread: distribute instances across nodes/zones
     - Co-locate: place related slices on same node
     - Zone-aware scheduling for high availability
 
+14. **Graceful Node Drain**
+    - `POST /api/nodes/{id}/drain` — move all slice instances off a node before maintenance
+    - Drain sequence: stop accepting new requests → migrate slices to other nodes → wait for in-flight requests → mark node drained
+    - Use cases: hardware maintenance, kernel upgrades, cloud instance replacement
+    - Integrates with Disruption Budget (#12) — drain respects minimum healthy instances
+    - CLI: `aether drain <nodeId>`, `aether undrain <nodeId>`
+
+15. **Readiness vs Liveness Probes**
+    - Split current `/api/health` into two distinct endpoints:
+      - `/api/health/live` — is the process alive? (liveness probe)
+      - `/api/health/ready` — should it receive traffic? (readiness probe)
+    - Node is live but not ready during: slice loading, drain in progress, quorum not yet established
+    - Required for container orchestrators (Kubernetes, Nomad) and cloud load balancer health checks
+    - Small scope — route existing health data to two endpoints with different criteria
+
+16. **Dead Letter Handling**
+    - Failed pub-sub messages and failed scheduled task invocations currently logged and lost
+    - DLQ storage: KV-Store backed dead letter queue per topic/task
+    - Retry policy: configurable max attempts with exponential backoff before dead-lettering
+    - Inspection: Management API endpoints to list, inspect, replay, or purge dead letters
+    - CLI: `aether dead-letters list`, `aether dead-letters replay <id>`
+
 ### LOWER PRIORITY - Security & Operations
 
-11. **TLS Certificate Management**
-    - Certificate provisioning and rotation
-    - Mutual TLS between nodes
-    - Integration with external CA or self-signed
+17. **TLS Certificate Management**
+     - Certificate provisioning and rotation
+     - Mutual TLS between nodes
+     - Integration with external CA or self-signed
 
-12. **Canary & Blue-Green Deployment Strategies**
-    - Current: Rolling updates with weighted routing exist
-    - Add explicit canary deployment with automatic rollback on error threshold
-    - Add blue-green deployment with instant switchover
-    - A/B testing support with traffic splitting by criteria
+18. **Canary & Blue-Green Deployment Strategies**
+     - Current: Rolling updates with weighted routing exist
+     - Add explicit canary deployment with automatic rollback on error threshold
+     - Add blue-green deployment with instant switchover
+     - A/B testing support with traffic splitting by criteria
 
-13. **Topology in KV Store**
-    - Leader maintains cluster topology in consensus KV store
-    - Best-effort updates on membership changes
-    - Enables external observability without direct node queries
+19. **Topology in KV Store**
+     - Leader maintains cluster topology in consensus KV store
+     - Best-effort updates on membership changes
+     - Enables external observability without direct node queries
 
-14. **RBAC for Management API**
-    - Role-based access control for operations
-    - Predefined roles: admin, operator, viewer
-    - Per-endpoint authorization rules
-    - Audit logging for sensitive operations
+20. **RBAC for Management API**
+     - Role-based access control for operations
+     - Predefined roles: admin, operator, viewer
+     - Per-endpoint authorization rules
+     - Audit logging for sensitive operations
 
-15. **Configurable Rate Limiting per HTTP Route**
-    - Per-route rate limiting configuration in blueprint or management API
-    - Token bucket or sliding window algorithm
-    - Configurable limits: requests/second, burst size
-    - 429 Too Many Requests response with Retry-After header
-    - Cluster-aware: distributed counters via consensus or per-node local limits
-    - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
+21. **Configurable Rate Limiting per HTTP Route**
+     - Per-route rate limiting configuration in blueprint or management API
+     - Token bucket or sliding window algorithm
+     - Configurable limits: requests/second, burst size
+     - 429 Too Many Requests response with Retry-After header
+     - Cluster-aware: distributed counters via consensus or per-node local limits
+     - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
 
-### Hetzner Cloud
+22. **KV-Store State Backup/Snapshot**
+    - Periodic snapshot of consensus KV-Store state to durable external storage
+    - Recovery: bootstrap a new cluster from snapshot when quorum is permanently lost
+    - Storage targets: local filesystem, S3-compatible object storage
+    - Configurable snapshot interval and retention policy
+    - Complements re-replication (handles single-node failures) with full disaster recovery
 
-**Testing (near-term):**
-- Cloud cluster formation test — code committed (`545300ce`), **not yet executed against real infrastructure**
-- Load balancer test — create LB, add servers as targets, verify traffic distribution. LoadBalancerProvider SPI ready.
+23. **Email Messaging Resource**
+    - Facade with pluggable backends via SPI (same `@ResourceQualifier` pattern as other resources)
+    - **Sending:** plain text + HTML body, To/CC/BCC, attachments, configurable sender identity
+    - **Receiving:** inbound email processing for automated conversations (webhook-based or polling)
+    - **Backends (SPI implementations):**
+      - SMTP — direct conversation for testing and simple trusted setups
+      - AWS SES — production sending + receiving (SNS/SQS inbound)
+      - SendGrid — transactional email with delivery tracking
+      - Mailgun — alternative transactional provider
+    - **API shape:** `EmailSender` (send) + `EmailReceiver` (inbound callback) resource types
+    - **Config:** per-backend TOML section (`[email.smtp]`, `[email.ses]`, etc.)
+    - **Scope exclusions:** no template engine (slices own their content), no mailing list management
+    - **Depends on:** Cloud Integration (#2) for SES/cloud-based backends; SMTP backend standalone
+
+### Cloud Provider Support
+
+Part of Cloud Integration (#2). Per-provider status:
+
+| Provider | Tier | Compute | Load Balancer | Discovery | Secrets | Status |
+|----------|------|---------|---------------|-----------|---------|--------|
+| Hetzner | 2 | ComputeProvider done | LoadBalancerProvider done | Label-based (planned) | — | **Partial** |
+| AWS | 1 | Planned | ALB/NLB | Tag-based | Secrets Manager | Planned |
+| GCP | 1 | Planned | Cloud LB | Label-based | Secret Manager | Planned |
+| Azure | 1 | Planned | Azure LB | Tag-based | Key Vault | Planned |
+| DigitalOcean | 2 | Planned | DO LB | Tag-based | — | Planned |
+| Vultr | 2 | Planned | Vultr LB | Tag-based | — | Planned |
+
+**Cloud Testing Milestones** (initial provider: Hetzner):
+- Cloud cluster formation — code committed (`545300ce`), **not yet executed against real infrastructure**
+- Load balancer integration — create LB, add servers as targets, verify traffic distribution
 - Node failure + re-election — kill servers, verify quorum maintained and new leader elected
-- Network partition — manipulate Hetzner firewall rules to block traffic between nodes
-- Slice deployment — deploy echo-slice via management API, verify ACTIVE on all nodes
-- Pre-baked snapshots — Hetzner image with Java + JAR for instant boot (~30s vs ~3min)
-
-**Production (longer-term):**
-- Multi-region cluster — nodes in fsn1 + nbg1 + hel1, test consensus over higher-latency links
-- Cloud-native discovery — Hetzner label-based peer discovery (eliminates static peer list)
+- Network partition — manipulate firewall rules to block traffic between nodes
+- Slice deployment — deploy via management API, verify ACTIVE on all nodes
+- Pre-baked images — provider snapshot with Java + JAR for instant boot (~30s vs ~3min)
+- Multi-region cluster — test consensus over higher-latency links
+- Cloud-native discovery — label/tag-based peer discovery (eliminates static peer list)
 - Disaster recovery — terminate majority, bring up replacements, verify state recovery via Rabia sync
-- Cost tracking — timestamps + actual cost per test run as test metric
 
 ### FUTURE
 
-16. **Spot Instance Support for Elastic Scaling**
+24. **Spot Instance Support for Elastic Scaling**
     - Cost-optimized scaling using cloud spot/preemptible instances
     - 60-90% cost savings for traffic spike handling
 
@@ -291,9 +399,10 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
     - Upcoming known events (prefer on-demand for releases/campaigns)
 
     **Complexity:** Low - just configuration and cloud API flag
-    **Prerequisite:** Cloud Integration (#3)
+    **Prerequisite:** Cloud Integration (#2)
 
-17. **Cluster Expense Tracking**
+25. **Cluster Expense Tracking**
+
     - Real-time cost visibility for cluster operations
     - Enables cost-aware scaling decisions
 
@@ -323,20 +432,20 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
     - TTM/LLM: cost optimization recommendations
 
     **Complexity:** Medium - cloud billing APIs have quirks, data aggregation needed
-    **Prerequisite:** Cloud Integration (#3)
+    **Prerequisite:** Cloud Integration (#2)
 
-18. **LLM Integration (Layer 3)**
+26. **LLM Integration (Layer 3)**
     - Claude/GPT API integration
     - Complex reasoning workflows
     - Multi-cloud decision support
 
-19. **Mini-Kafka (Message Streaming)**
+27. **Mini-Kafka (Message Streaming)**
     - Ordered message streaming with partitions (differs from pub/sub)
     - In-memory storage (initial implementation)
     - Consumer group coordination
     - Retention policies
 
-20. **Cross-Slice Transaction Support (2PC)**
+28. **Cross-Slice Transaction Support (2PC)**
     - Distributed transactions via Transaction aspect
     - Scope: DB transactions + internal services (pub-sub, queues, streaming)
     - NOT Saga pattern (user-unfriendly compensation design)
@@ -363,36 +472,30 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
     - Aether's "each call eventually succeeds, if cluster is alive" applies
     - DB failure = transaction failure (expected behavior)
 
-21. **Distributed Saga Orchestration**
+29. **Distributed Saga Orchestration**
     - Long-running transaction orchestration (saga pattern)
     - Durable state transitions with compensation on failure
     - Differs from local state machine — coordinates across multiple slices
     - Automatic retry, timeout, and dead-letter handling
     - Visualization of in-flight sagas and their states
 
-22. **Forge Script - Scenario Language**
-    - DSL for defining load/chaos test scenarios
-    - Reusable scenario libraries
-    - CI/CD integration for automated testing
-    - Note: Paid tier feature
-
 ---
 
 ## Infra Development
 
-All infrastructure modules transition to unified `@ResourceQualifier(type, config)` pattern. See #5.
+All infrastructure modules transition to unified `@ResourceQualifier(type, config)` pattern. All resource types complete as of v0.17.0.
 
-| Module | Target | Annotation position | Notes |
-|--------|--------|---------------------|-------|
-| infra-database | `@ResourceQualifier(type=DatabaseConnector.class)` | Parameter | **Done** — `@Database` reference impl |
-| infra-cache | `@ResourceQualifier(type=Cache.class)` | Method (wraps) | `Aspects.withCaching()` Fn1 composition |
-| infra-ratelimit | `@ResourceQualifier(type=RateLimiter.class)` | Method (wraps) | `Aspects.withRateLimit()` Fn1 composition |
-| infra-scheduler | `@ResourceQualifier(type=Scheduler.class)` | Method (triggers) | Config: cron, timezone, etc. |
-| infra-lock | `@ResourceQualifier(type=Lock.class)` | Parameter (injects) | Consensus-backed distributed lock |
-| infra-pubsub | `@ResourceQualifier(type=Publisher/Subscriber.class)` | Parameter / Method | Pub: inject, Sub: trigger on message |
+| Module | Target | Annotation position | Status |
+|--------|--------|---------------------|--------|
+| infra-database | `@ResourceQualifier(type=DatabaseConnector.class)` | Parameter | **Done** — `@Sql` qualifier, JDBC/R2DBC/jOOQ |
+| infra-cache | `@ResourceQualifier(type=Cache.class)` | Method (wraps) | **Done** — in-memory + DHT + tiered cache interceptors |
+| infra-ratelimit | `@ResourceQualifier(type=RateLimiter.class)` | Method (wraps) | **Done** — rate-limit interceptor |
+| infra-http | `@ResourceQualifier(type=HttpClient.class)` | Parameter | **Done** — `@Http` qualifier, JSON API |
+| infra-pubsub | `Publisher<T>`, `Subscriber`, `@Subscription` | Parameter / Method | **Done** — RFC-0011, code generation, 18 tests (v0.17.0) |
+| infra-scheduler | `@ResourceQualifier(type=Scheduled.class)` | Method (triggers) | **Done** — interval/cron, leader-only, 29 tests (v0.17.0) |
+| infra-email | `@ResourceQualifier(type=EmailSender.class)` / `EmailReceiver` | Parameter | **Planned** — facade with SMTP/SES/SendGrid backends (#23) |
 | infra-statemachine | Lightweight builder DSL in core | — | Business logic, not a provisioned resource |
 | infra-config | **Remove** | — | Dynamic Configuration via KV store covers this |
-| infra-http | **Remove** | — | Fold into core as utility |
 | infra-aspect | **Keep** — Fn1 composition utilities | — | `Aspects.withCaching()`, `@Key`, etc. |
 
 **Dropped:** infra-server, infra-streaming, infra-outbox, infra-blob, infra-feature

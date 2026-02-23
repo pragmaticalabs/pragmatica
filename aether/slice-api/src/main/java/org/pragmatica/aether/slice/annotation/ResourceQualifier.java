@@ -8,11 +8,11 @@ import java.lang.annotation.Target;
 /// Meta-annotation for defining resource qualifiers.
 ///
 /// Use this to create custom annotations that bind infrastructure resources
-/// (like DatabaseConnector) to specific configuration sections in aether.toml.
+/// (like SqlConnector) to specific configuration sections in aether.toml.
 ///
 /// Example defining a qualifier:
 /// ```{@code
-/// @ResourceQualifier(type = DatabaseConnector.class, config = "database.primary")
+/// @ResourceQualifier(type = SqlConnector.class, config = "database.primary")
 /// @Retention(RetentionPolicy.RUNTIME)
 /// @Target(ElementType.PARAMETER)
 /// public @interface PrimaryDb {}
@@ -25,7 +25,7 @@ import java.lang.annotation.Target;
 ///     Promise<Order> save(Order order);
 ///
 ///     static OrderRepository orderRepository(
-///             @PrimaryDb DatabaseConnector db,
+///             @PrimaryDb SqlConnector db,
 ///             InventoryService inventory) {
 ///         return new orderRepository(db, inventory);
 ///     }
@@ -35,7 +35,7 @@ import java.lang.annotation.Target;
 /// The annotation processor detects `@ResourceQualifier` on parameter annotations
 /// and generates code that calls:
 /// ```{@code
-/// ctx.resources().provide(DatabaseConnector.class, "database.primary")
+/// ctx.resources().provide(SqlConnector.class, "database.primary")
 /// }```
 ///
 /// Configuration in aether.toml:
@@ -50,7 +50,7 @@ import java.lang.annotation.Target;
 public @interface ResourceQualifier {
     /// The resource type to provision.
     ///
-    /// This should be the interface type (e.g., DatabaseConnector.class),
+    /// This should be the interface type (e.g., SqlConnector.class),
     /// not the implementation type.
     ///
     /// @return Resource interface class

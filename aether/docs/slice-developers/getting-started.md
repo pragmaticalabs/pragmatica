@@ -12,7 +12,7 @@ modify it to make it your own, and deploy it to a local Forge.
 |----------|----------|------------------|
 | Java     | 25+      | `java --version` |
 | Maven    | 3.8+     | `mvn --version`  |
-| JBCT CLI | 0.16.0+  | `jbct --version` |
+| JBCT CLI | 0.17.0+  | `jbct --version` |
 
 > **Don't have the JBCT CLI?** Install it with `mvn dependency:copy` or download from Maven Central.
 
@@ -732,14 +732,14 @@ everything else, or in a separate file if you prefer:
 
 ```java
 import org.pragmatica.aether.slice.annotation.ResourceQualifier;
-import org.pragmatica.aether.resource.db.DatabaseConnector;
+import org.pragmatica.aether.resource.db.SqlConnector;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
-@ResourceQualifier(type = DatabaseConnector.class, config = "database.greetings")
+@ResourceQualifier(type = SqlConnector.class, config = "database.greetings")
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.PARAMETER)
 @interface GreetingDb {}
@@ -749,26 +749,26 @@ This is a **meta-annotation** pattern. `@ResourceQualifier` is never placed on p
 directly — instead, you create a custom annotation (here `@GreetingDb`) that carries the
 qualifier metadata:
 
-- **`type`** — the resource interface to provision (`DatabaseConnector.class`)
+- **`type`** — the resource interface to provision (`SqlConnector.class`)
 - **`config`** — the configuration section in `aether.toml` that holds the connection details
   (`"database.greetings"`)
 
 The annotation processor detects `@ResourceQualifier` on your custom annotation and
-generates a `ctx.resources().provide(DatabaseConnector.class, "database.greetings")` call
+generates a `ctx.resources().provide(SqlConnector.class, "database.greetings")` call
 in the factory.
 
-> **Built-in convenience:** Aether ships a `@Database` annotation that points to the
+> **Built-in convenience:** Aether ships a `@Sql` annotation that points to the
 > top-level `"database"` config section — useful for slices with a single database.
 > Custom qualifiers like `@GreetingDb` let you target specific config sections when you
 > need multiple databases or want descriptive naming.
 
 ### Add the Dependency
 
-Update the factory method to accept the annotated `DatabaseConnector`:
+Update the factory method to accept the annotated `SqlConnector`:
 
 ```java
-static MyFirstSlice myFirstSlice(@GreetingDb DatabaseConnector db) {
-    record myFirstSlice(DatabaseConnector db) implements MyFirstSlice {
+static MyFirstSlice myFirstSlice(@GreetingDb SqlConnector db) {
+    record myFirstSlice(SqlConnector db) implements MyFirstSlice {
         // ...
     }
     return new myFirstSlice(db);
@@ -777,7 +777,7 @@ static MyFirstSlice myFirstSlice(@GreetingDb DatabaseConnector db) {
 
 The `@GreetingDb` annotation tells the annotation processor that this parameter is a
 resource dependency, not a slice dependency. The generated factory will provision the
-`DatabaseConnector` before creating the slice instance.
+`SqlConnector` before creating the slice instance.
 
 ### Update the Implementation
 
@@ -795,8 +795,8 @@ private static String greetingFor(String name, String language) {
     };
 }
 
-static MyFirstSlice myFirstSlice(@GreetingDb DatabaseConnector db) {
-    record myFirstSlice(DatabaseConnector db) implements MyFirstSlice {
+static MyFirstSlice myFirstSlice(@GreetingDb SqlConnector db) {
+    record myFirstSlice(SqlConnector db) implements MyFirstSlice {
         private static final java.util.List<String> LANGUAGES =
             java.util.List.of("en", "es", "fr", "de", "ja");
 
@@ -840,8 +840,8 @@ max_connections = 5
 ```
 
 The config maps to a `DatabaseConnectorConfig` record. The runtime uses Java SPI to discover
-the appropriate `ResourceFactory` — `JdbcDatabaseConnectorFactory` for JDBC (backed by
-HikariCP), `R2dbcDatabaseConnectorFactory` for reactive — and provisions the connector.
+the appropriate `ResourceFactory` — `JdbcSqlConnectorFactory` for JDBC (backed by
+HikariCP), `R2dbcSqlConnectorFactory` for reactive — and provisions the connector.
 The result is cached: identical `(type, config)` pairs always return the same instance.
 
 ### How Resource Provisioning Works
@@ -857,7 +857,7 @@ infrastructure resource:
 @interface PaymentGateway {}
 
 // Another database for analytics
-@ResourceQualifier(type = DatabaseConnector.class, config = "database.analytics")
+@ResourceQualifier(type = SqlConnector.class, config = "database.analytics")
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.PARAMETER)
 @interface AnalyticsDb {}
@@ -871,7 +871,7 @@ The flow is always the same:
 4. The annotation processor **generates** the provisioning call at compile time
 5. The runtime **provisions, caches, and injects** the resource at startup
 
-This keeps infrastructure out of your business logic — the slice sees a `DatabaseConnector`
+This keeps infrastructure out of your business logic — the slice sees a `SqlConnector`
 or `HttpClient` interface, never a connection pool or HTTP library.
 
 ## Step 9: Deploy to Forge
@@ -941,7 +941,7 @@ Here's where to go next:
 | Declarative HTTP routing             | `routes.toml` maps endpoints to slice methods       | No hand-written controllers; compile-time generation   |
 | Error-to-HTTP mapping                | `[errors]` section with glob patterns               | Sealed `Cause` types map to HTTP status codes          |
 | Resource qualifiers                  | `@ResourceQualifier(type, config)` meta-annotation  | Compile-time provisioning of databases, HTTP clients   |
-| Dependency capture                   | `record mySlice(DatabaseConnector db)`              | Inline record captures injected resources              |
+| Dependency capture                   | `record mySlice(SqlConnector db)`                   | Inline record captures injected resources              |
 
 ### Common Commands
 

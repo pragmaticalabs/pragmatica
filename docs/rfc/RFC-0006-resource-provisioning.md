@@ -4,7 +4,7 @@ Title: Resource Provisioning Architecture
 Status: Draft
 Author: Sergiy Yevtushenko
 Created: 2026-02-04
-Updated: 2026-02-04
+Updated: 2026-02-19
 Affects: [jbct-cli, aether]
 ---
 
@@ -41,7 +41,7 @@ Provide a unified, type-safe mechanism for resource provisioning that:
 - **aether/config**: ConfigService SPI and TOML parsing
 - **aether/infra-api**: ResourceProvider SPI, ResourceFactory interface
 - **aether/slice-api**: @ResourceQualifier meta-annotation, SliceCreationContext
-- **aether/infra-slices**: Concrete resource implementations (DatabaseConnector, HttpClient, etc.) and their ResourceFactory SPI implementations
+- **aether/infra-slices**: Concrete resource implementations (SqlConnector, JooqConnector, HttpClient, etc.) and their ResourceFactory SPI implementations
 
 ### 1. @ResourceQualifier Meta-Annotation
 
@@ -54,19 +54,19 @@ Enables users to define custom qualifiers that bind parameter types to configura
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.ANNOTATION_TYPE)
 public @interface ResourceQualifier {
-    Class<?> type();        // Resource interface class (e.g., DatabaseConnector.class)
+    Class<?> type();        // Resource interface class (e.g., SqlConnector.class)
     String config();        // Config section path (e.g., "database.primary")
 }
 ```
 
 **Annotations created by users:**
 ```java
-@ResourceQualifier(type = DatabaseConnector.class, config = "database.primary")
+@ResourceQualifier(type = SqlConnector.class, config = "database.primary")
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.PARAMETER)
 public @interface PrimaryDb {}
 
-@ResourceQualifier(type = DatabaseConnector.class, config = "database.readonly")
+@ResourceQualifier(type = SqlConnector.class, config = "database.readonly")
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.PARAMETER)
 public @interface ReadonlyDb {}
@@ -94,12 +94,12 @@ public interface ResourceFactory<T, C> {
 
 **Example implementation:**
 ```java
-public final class JdbcDatabaseConnectorFactory
-       implements ResourceFactory<DatabaseConnector, DatabaseConnectorConfig> {
+public final class JdbcSqlConnectorFactory
+       implements ResourceFactory<SqlConnector, DatabaseConnectorConfig> {
 
     @Override
-    public Class<DatabaseConnector> resourceType() {
-        return DatabaseConnector.class;
+    public Class<SqlConnector> resourceType() {
+        return SqlConnector.class;
     }
 
     @Override
@@ -108,18 +108,18 @@ public final class JdbcDatabaseConnectorFactory
     }
 
     @Override
-    public Promise<DatabaseConnector> create(DatabaseConnectorConfig config) {
+    public Promise<SqlConnector> provision(DatabaseConnectorConfig config) {
         return Promise.lift(
             DatabaseConnectorError::databaseFailure,
             () -> {
                 var hikariConfig = new HikariConfig();
                 hikariConfig.setJdbcUrl(config.effectiveJdbcUrl());
-                hikariConfig.setUsername(config.username());
-                hikariConfig.setPassword(config.password());
+                config.username().onPresent(hikariConfig::setUsername);
+                config.password().onPresent(hikariConfig::setPassword);
                 hikariConfig.setConnectionTimeout(config.poolConfig().connectionTimeout().toMillis());
                 // ... more config
                 var dataSource = new HikariDataSource(hikariConfig);
-                return JdbcDatabaseConnector.jdbcDatabaseConnector(config, dataSource);
+                return JdbcSqlConnector.jdbcSqlConnector(config, dataSource);
             }
         );
     }
@@ -222,8 +222,8 @@ public interface OrderRepository {
     Promise<Order> save(Order order);
 
     static OrderRepository orderRepository(
-            @PrimaryDb DatabaseConnector db,
-            @ReadonlyDb DatabaseConnector reportDb,
+            @PrimaryDb SqlConnector db,
+            @ReadonlyDb SqlConnector reportDb,
             InventoryService inventory) {
         return new orderRepository(db, reportDb, inventory);
     }
@@ -237,8 +237,8 @@ public final class OrderRepositoryFactory {
             Aspect<OrderRepository> aspect,
             SliceCreationContext ctx) {
         return Promise.all(
-                ctx.resources().provide(DatabaseConnector.class, "database.primary"),
-                ctx.resources().provide(DatabaseConnector.class, "database.readonly"),
+                ctx.resources().provide(SqlConnector.class, "database.primary"),
+                ctx.resources().provide(SqlConnector.class, "database.readonly"),
                 ctx.invoker().methodHandle("inventory:artifact", "save", ...),
                 ctx.invoker().methodHandle("inventory:artifact", "check", ...))
             .map((db, reportDb, saveHandle, checkHandle) -> {
@@ -263,8 +263,8 @@ public final class OrderRepositoryFactory {
    - Pass provisioned resources as arguments to the plain interface factory
 4. Build Promise.all(...) chain capturing all async dependencies (resources + slice handles)
 5. Extract qualifier info:
-   - `@PrimaryDb` → `@ResourceQualifier(type=DatabaseConnector.class, config="database.primary")`
-   - `@ReadonlyDb` → `@ResourceQualifier(type=DatabaseConnector.class, config="database.readonly")`
+   - `@PrimaryDb` → `@ResourceQualifier(type=SqlConnector.class, config="database.primary")`
+   - `@ReadonlyDb` → `@ResourceQualifier(type=SqlConnector.class, config="database.readonly")`
 6. Generate `ctx.resources().provide(type, config)` calls (direct + transitive from plain interfaces)
 7. Generate `ctx.invoker().methodHandle(...)` calls for slice dependencies
 8. Construct plain interface instances by calling their factory methods with provisioned args
@@ -388,19 +388,26 @@ aether/
     ├── pom.xml
     └── infra-db-connector/       # Database connector suite
         ├── api/
-        │   ├── DatabaseConnector.java
+        │   ├── DatabaseConnector.java       (lifecycle: config, isHealthy, stop)
+        │   ├── SqlConnector.java            (raw SQL: queryOne, queryList, update, batch)
         │   ├── DatabaseConnectorConfig.java
-        │   ├── DatabaseConnectorError.java
-        │   └── DatabaseConnectorFactory.java (abstract base)
+        │   └── DatabaseConnectorError.java
+        │
+        ├── db-jooq-api/
+        │   ├── JooqConnector.java           (type-safe jOOQ: dsl, fetchOne, fetch, execute)
+        │   └── Jooq.java                    (@ResourceQualifier for JooqConnector)
         │
         ├── jdbc/
-        │   └── JdbcDatabaseConnectorFactory.java (SPI impl)
+        │   └── JdbcSqlConnectorFactory.java       (SPI: SqlConnector via JDBC)
         │
         ├── r2dbc/
-        │   └── R2dbcDatabaseConnectorFactory.java (SPI impl)
+        │   └── R2dbcSqlConnectorFactory.java      (SPI: SqlConnector via R2DBC, priority 10)
         │
-        └── jooq/
-            └── JooqDatabaseConnectorFactory.java (SPI impl)
+        ├── jooq/jdbc/
+        │   └── JdbcJooqConnectorFactory.java      (SPI: JooqConnector via JDBC)
+        │
+        └── jooq-r2dbc/
+            └── R2dbcJooqConnectorFactory.java     (SPI: JooqConnector via R2DBC, priority 10)
 ```
 
 ## Runtime Flow
@@ -416,16 +423,16 @@ aether/
 - jbct-generated wrapper factory is invoked with `SliceCreationContext`
 - Generated code calls:
   ```
-  ctx.resources().provide(DatabaseConnector.class, "database.primary")
+  ctx.resources().provide(SqlConnector.class, "database.primary")
   ```
 - ResourceProvider flow:
-  1. Check cache for (DatabaseConnector, "database.primary") → Found/Not found
+  1. Check cache for (SqlConnector, "database.primary") → Found/Not found
   2. If not cached:
      a. ConfigService loads "database.primary" section as DatabaseConnectorConfig
-     b. ResourceProvider discovers JdbcDatabaseConnectorFactory (via SPI)
-     c. Calls factory.create(config) → Promise<DatabaseConnector>
+     b. ResourceProvider discovers JdbcSqlConnectorFactory (via SPI, highest-priority factory whose `supports(config)` returns true)
+     c. Calls factory.provision(config) → Promise<SqlConnector>
      d. Caches result
-  3. Return cached/newly created DatabaseConnector
+  3. Return cached/newly created SqlConnector
 
 **Step 3: Cross-slice invocation (parallel)**
 ```
@@ -460,7 +467,7 @@ slice.factory(
 **Approach:** Inject resources via constructor parameters
 ```java
 public OrderRepository(
-        @PrimaryDb DatabaseConnector db,
+        @PrimaryDb SqlConnector db,
         InventoryService inventory) { ... }
 ```
 
@@ -476,8 +483,8 @@ public OrderRepository(
 
 **Approach:** Single container managing all resource provisioning
 ```java
-container.register(DatabaseConnector.class, "primary", ...)
-container.register(DatabaseConnector.class, "readonly", ...)
+container.register(SqlConnector.class, "primary", ...)
+container.register(SqlConnector.class, "readonly", ...)
 ```
 
 **Problems:**
@@ -492,7 +499,7 @@ container.register(DatabaseConnector.class, "readonly", ...)
 
 **Alternative:** Embed config paths in code
 ```java
-@ResourceQualifier(type = DatabaseConnector.class, config = "database.primary")
+@ResourceQualifier(type = SqlConnector.class, config = "database.primary")
 ```
 
 **Problems with code-embedded:**
@@ -532,7 +539,7 @@ public interface OrderRepository {
     Promise<Order> save(Order order);
 
     static OrderRepository orderRepository(
-            @PrimaryDb DatabaseConnector db,
+            @PrimaryDb SqlConnector db,
             InventoryService inventory) {
         return new orderRepository(db, inventory);
     }

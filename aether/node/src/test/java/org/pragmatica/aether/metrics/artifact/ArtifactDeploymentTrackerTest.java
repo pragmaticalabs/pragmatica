@@ -4,9 +4,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceState;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -47,7 +45,7 @@ class ArtifactDeploymentTrackerTest {
     }
 
     @Test
-    void onValuePut_tracksDeployment_forSingleNode() {
+    void onSliceNodePut_tracksDeployment_forSingleNode() {
         deployArtifact(artifact1, node1);
 
         assertThat(tracker.isDeployed(artifact1)).isTrue();
@@ -56,7 +54,7 @@ class ArtifactDeploymentTrackerTest {
     }
 
     @Test
-    void onValuePut_tracksMultipleDeployments_forSameArtifact() {
+    void onSliceNodePut_tracksMultipleDeployments_forSameArtifact() {
         deployArtifact(artifact1, node1);
         deployArtifact(artifact1, node2);
 
@@ -66,7 +64,7 @@ class ArtifactDeploymentTrackerTest {
     }
 
     @Test
-    void onValuePut_tracksMultipleArtifacts() {
+    void onSliceNodePut_tracksMultipleArtifacts() {
         deployArtifact(artifact1, node1);
         deployArtifact(artifact2, node1);
 
@@ -76,7 +74,7 @@ class ArtifactDeploymentTrackerTest {
     }
 
     @Test
-    void onValueRemove_removesDeployment_whenLastInstanceRemoved() {
+    void onSliceNodeRemove_removesDeployment_whenLastInstanceRemoved() {
         deployArtifact(artifact1, node1);
         undeployArtifact(artifact1, node1);
 
@@ -85,7 +83,7 @@ class ArtifactDeploymentTrackerTest {
     }
 
     @Test
-    void onValueRemove_keepsDeployment_whenOtherInstancesExist() {
+    void onSliceNodeRemove_keepsDeployment_whenOtherInstancesExist() {
         deployArtifact(artifact1, node1);
         deployArtifact(artifact1, node2);
         undeployArtifact(artifact1, node1);
@@ -95,7 +93,7 @@ class ArtifactDeploymentTrackerTest {
     }
 
     @Test
-    void onValueRemove_handlesUnknownArtifact_gracefully() {
+    void onSliceNodeRemove_handlesUnknownArtifact_gracefully() {
         undeployArtifact(artifact1, node1);
 
         assertThat(tracker.isDeployed(artifact1)).isFalse();
@@ -111,20 +109,18 @@ class ArtifactDeploymentTrackerTest {
             .isInstanceOf(UnsupportedOperationException.class);
     }
 
-    @SuppressWarnings("unchecked")
     private void deployArtifact(Artifact artifact, NodeId nodeId) {
         var sliceNodeKey = new SliceNodeKey(artifact, nodeId);
         var sliceNodeValue = new SliceNodeValue(SliceState.ACTIVE);
-        var put = new KVCommand.Put<AetherKey, AetherValue>(sliceNodeKey, sliceNodeValue);
-        var valuePut = new ValuePut<AetherKey, AetherValue>(put, Option.none());
-        tracker.onValuePut(valuePut);
+        var put = new KVCommand.Put<SliceNodeKey, SliceNodeValue>(sliceNodeKey, sliceNodeValue);
+        var valuePut = new ValuePut<SliceNodeKey, SliceNodeValue>(put, Option.none());
+        tracker.onSliceNodePut(valuePut);
     }
 
-    @SuppressWarnings("unchecked")
     private void undeployArtifact(Artifact artifact, NodeId nodeId) {
         var sliceNodeKey = new SliceNodeKey(artifact, nodeId);
-        var remove = new KVCommand.Remove<AetherKey>(sliceNodeKey);
-        var valueRemove = new ValueRemove<AetherKey, AetherValue>(remove, Option.none());
-        tracker.onValueRemove(valueRemove);
+        var remove = new KVCommand.Remove<SliceNodeKey>(sliceNodeKey);
+        var valueRemove = new ValueRemove<SliceNodeKey, SliceNodeValue>(remove, Option.none());
+        tracker.onSliceNodeRemove(valueRemove);
     }
 }

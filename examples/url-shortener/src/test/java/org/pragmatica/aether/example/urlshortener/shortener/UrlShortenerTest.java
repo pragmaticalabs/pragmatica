@@ -7,7 +7,6 @@ import org.pragmatica.aether.example.urlshortener.analytics.Analytics;
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.ResolveRequest;
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.ShortenRequest;
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.UrlError;
-import org.pragmatica.aether.resource.db.DatabaseConnector;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -117,7 +116,7 @@ class UrlShortenerTest {
     class ShortenOperation {
         @Test
         void shorten_succeeds_forValidUrl() {
-            var request = new ShortenRequest("https://example.com/long/path");
+            var request = ShortenRequest.shortenRequest("https://example.com/long/path").unwrap();
 
             urlShortener.shorten(request)
                         .await()
@@ -131,7 +130,7 @@ class UrlShortenerTest {
 
         @Test
         void shorten_returnsSameCode_forDuplicateUrl() {
-            var request = new ShortenRequest("https://example.com/duplicate");
+            var request = ShortenRequest.shortenRequest("https://example.com/duplicate").unwrap();
 
             var firstCode = urlShortener.shorten(request)
                                         .await()
@@ -146,8 +145,8 @@ class UrlShortenerTest {
 
         @Test
         void shorten_returnsDifferentCodes_forDifferentUrls() {
-            var request1 = new ShortenRequest("https://example.com/path1");
-            var request2 = new ShortenRequest("https://example.com/path2");
+            var request1 = ShortenRequest.shortenRequest("https://example.com/path1").unwrap();
+            var request2 = ShortenRequest.shortenRequest("https://example.com/path2").unwrap();
 
             var code1 = urlShortener.shorten(request1)
                                     .await()
@@ -168,12 +167,12 @@ class UrlShortenerTest {
         @Test
         void resolve_succeeds_forExistingCode() {
             var url = "https://example.com/to-resolve";
-            var shortenedCode = urlShortener.shorten(new ShortenRequest(url))
+            var shortenedCode = urlShortener.shorten(ShortenRequest.shortenRequest(url).unwrap())
                                             .await()
                                             .unwrap()
                                             .shortCode();
 
-            urlShortener.resolve(new ResolveRequest(shortenedCode))
+            urlShortener.resolve(ResolveRequest.resolveRequest(shortenedCode).unwrap())
                         .await()
                         .onFailureRun(() -> fail("Expected success"))
                         .onSuccess(response -> {
@@ -184,7 +183,7 @@ class UrlShortenerTest {
 
         @Test
         void resolve_fails_forNonexistentCode() {
-            urlShortener.resolve(new ResolveRequest("NoExist"))
+            urlShortener.resolve(ResolveRequest.resolveRequest("NoExist1").unwrap())
                         .await()
                         .onSuccessRun(() -> fail("Expected failure"))
                         .onFailure(cause -> assertThat(cause).isInstanceOf(UrlError.NotFound.class));
@@ -193,18 +192,20 @@ class UrlShortenerTest {
         @Test
         void resolve_recordsClick_forExistingCode() {
             var url = "https://example.com/track-clicks";
-            var shortenedCode = urlShortener.shorten(new ShortenRequest(url))
+            var shortenedCode = urlShortener.shorten(ShortenRequest.shortenRequest(url).unwrap())
                                             .await()
                                             .unwrap()
                                             .shortCode();
 
+            var resolveRequest = ResolveRequest.resolveRequest(shortenedCode).unwrap();
+
             // Resolve multiple times
-            urlShortener.resolve(new ResolveRequest(shortenedCode)).await();
-            urlShortener.resolve(new ResolveRequest(shortenedCode)).await();
-            urlShortener.resolve(new ResolveRequest(shortenedCode)).await();
+            urlShortener.resolve(resolveRequest).await();
+            urlShortener.resolve(resolveRequest).await();
+            urlShortener.resolve(resolveRequest).await();
 
             // Check analytics
-            analytics.getStats(new Analytics.GetStatsRequest(shortenedCode))
+            analytics.getStats(Analytics.GetStatsRequest.getStatsRequest(shortenedCode).unwrap())
                      .await()
                      .onFailureRun(() -> fail("Expected success"))
                      .onSuccess(stats -> assertThat(stats.clickCount()).isEqualTo(3));
@@ -217,12 +218,12 @@ class UrlShortenerTest {
         void shortenThenResolve_returnsOriginalUrl() {
             var originalUrl = "https://github.com/pragmatica-lite/aether";
 
-            var shortCode = urlShortener.shorten(new ShortenRequest(originalUrl))
+            var shortCode = urlShortener.shorten(ShortenRequest.shortenRequest(originalUrl).unwrap())
                                         .await()
                                         .unwrap()
                                         .shortCode();
 
-            urlShortener.resolve(new ResolveRequest(shortCode))
+            urlShortener.resolve(ResolveRequest.resolveRequest(shortCode).unwrap())
                         .await()
                         .onFailureRun(() -> fail("Expected success"))
                         .onSuccess(response -> assertThat(response.originalUrl()).isEqualTo(originalUrl));

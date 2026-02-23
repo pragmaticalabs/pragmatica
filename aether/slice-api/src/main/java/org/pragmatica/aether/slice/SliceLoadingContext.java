@@ -1,6 +1,7 @@
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -53,6 +54,18 @@ public final class SliceLoadingContext implements SliceCreationContext {
         return new SliceLoadingContext(SliceCreationContext.sliceCreationContext(invokerFacade, resourceFacade));
     }
 
+    /// Create a new SliceLoadingContext from an invoker facade, resource provider, and slice ID.
+    ///
+    /// @param invokerFacade   The slice invoker facade for cross-slice calls
+    /// @param resourceFacade  The resource provider facade for resource provisioning
+    /// @param sliceId         Artifact coordinate string identifying the slice
+    /// @return A new SliceLoadingContext
+    public static SliceLoadingContext sliceLoadingContext(SliceInvokerFacade invokerFacade,
+                                                          ResourceProviderFacade resourceFacade,
+                                                          String sliceId) {
+        return new SliceLoadingContext(SliceCreationContext.sliceCreationContext(invokerFacade, resourceFacade, sliceId));
+    }
+
     /// Create a new SliceLoadingContext from an invoker facade only (backward compatibility).
     /// Uses a no-op resource provider that fails for any resource request.
     ///
@@ -72,8 +85,16 @@ public final class SliceLoadingContext implements SliceCreationContext {
     }
 
     @Override
+    public Option<String> sliceId() {
+        return delegate.sliceId();
+    }
+
+    @Override
     public ResourceProviderFacade resources() {
-        return delegate.resources();
+        return delegate.sliceId()
+                       .map(id -> sliceAwareResourceProvider(delegate.resources(),
+                                                             id))
+                       .or(delegate.resources());
     }
 
     /// Materialize all buffered handles by verifying their target endpoints exist.
@@ -124,6 +145,41 @@ public final class SliceLoadingContext implements SliceCreationContext {
     /// @return The delegate SliceCreationContext
     public SliceCreationContext delegate() {
         return delegate;
+    }
+
+    private static ResourceProviderFacade sliceAwareResourceProvider(ResourceProviderFacade delegate,
+                                                                     String sliceId) {
+        return new SliceAwareResourceProvider(delegate, sliceId);
+    }
+
+    /// Resource provider wrapper that automatically injects sliceId into ProvisioningContext.
+    ///
+    /// This ensures resource lifecycle tracking works correctly — when a slice provisions
+    /// resources via {@code ctx.resources().provide(type, section, context)}, the sliceId
+    /// is always present in the context for consumer tracking.
+    private static final class SliceAwareResourceProvider implements ResourceProviderFacade {
+        private final ResourceProviderFacade delegate;
+        private final String sliceId;
+
+        SliceAwareResourceProvider(ResourceProviderFacade delegate, String sliceId) {
+            this.delegate = delegate;
+            this.sliceId = sliceId;
+        }
+
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+            return delegate.provide(resourceType, configSection);
+        }
+
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+            return delegate.provide(resourceType, configSection, context.withExtension(String.class, sliceId));
+        }
+
+        @Override
+        public Promise<Unit> releaseAll(String releaseSliceId) {
+            return delegate.releaseAll(releaseSliceId);
+        }
     }
 
     /// No-op resource provider that fails for any resource request.

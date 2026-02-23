@@ -1,5 +1,6 @@
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.HealthResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.MetricsSummary;
@@ -11,9 +12,12 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.lang.Option;
 
+import java.time.Instant;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.function.Supplier;
@@ -39,10 +43,22 @@ public final class StatusRoutes implements RouteSource {
                               .toJson(this::buildNodesResponse),
                          Route.<HealthResponse> get("/api/health")
                               .toJson(this::buildHealthResponse),
-                         Route.<List<?>> get("/api/events")
-                              .toJson(() -> List.of()),
-                         Route.<String> get("/api/panel/chaos")
-                              .toText(() -> ""));
+                         Route.<List<ClusterEvent>> get("/api/events")
+                              .<String> withQuery(QueryParameter.aString("since"))
+                              .toValue(this::buildEventsResponse)
+                              .asJson());
+    }
+
+    private List<ClusterEvent> buildEventsResponse(Option<String> sinceParam) {
+        var aggregator = nodeSupplier.get()
+                                     .eventAggregator();
+        return sinceParam.map(StatusRoutes::parseInstant)
+                         .map(aggregator::eventsSince)
+                         .or(aggregator.events());
+    }
+
+    private static Instant parseInstant(String raw) {
+        return Instant.parse(raw);
     }
 
     private StatusResponse buildStatusResponse() {

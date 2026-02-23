@@ -60,7 +60,7 @@ class NodeDeploymentManagerTest {
     // === Quorum State Tests ===
 
     @Test
-    void onValuePut_ignoresCommand_beforeQuorumEstablished() {
+    void onSliceNodePut_ignoresCommand_beforeQuorumEstablished() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -71,12 +71,12 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void onValuePut_processesCommand_afterQuorumEstablished() {
+    void onSliceNodePut_processesCommand_afterQuorumEstablished() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
         // Establish quorum
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
 
         // Now ValuePut should be processed
         sendValuePut(key, SliceState.LOAD);
@@ -85,13 +85,13 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void onValuePut_ignoresCommand_afterQuorumDisappeared() {
+    void onSliceNodePut_ignoresCommand_afterQuorumDisappeared() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
         // Establish then lose quorum
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
-        manager.onQuorumStateChange(QuorumStateNotification.DISAPPEARED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
+        manager.onQuorumStateChange(QuorumStateNotification.disappeared());
 
         // ValuePut should be ignored again
         sendValuePut(key, SliceState.LOAD);
@@ -102,23 +102,23 @@ class NodeDeploymentManagerTest {
     // === Key Filtering Tests ===
 
     @Test
-    void onValuePut_ignoresKey_forOtherNodes() {
+    void onSliceNodePut_ignoresKey_forOtherNodes() {
         var artifact = createTestArtifact();
         var otherNode = NodeId.randomNodeId();
         var key = new SliceNodeKey(artifact, otherNode);
 
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
         sendValuePut(key, SliceState.LOAD);
 
         assertThat(sliceStore.loadCalls).isEmpty();
     }
 
     @Test
-    void onValuePut_processesKey_forOwnNode() {
+    void onSliceNodePut_processesKey_forOwnNode() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
         sendValuePut(key, SliceState.LOAD);
 
         assertThat(sliceStore.loadCalls).containsExactly(artifact);
@@ -127,61 +127,61 @@ class NodeDeploymentManagerTest {
     // === State Transition Tests ===
 
     @Test
-    void onValuePut_triggersLoading_forLoadState() {
+    void onSliceNodePut_triggersLoading_forLoadState() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
         sendValuePut(key, SliceState.LOAD);
 
         assertThat(sliceStore.loadCalls).containsExactly(artifact);
     }
 
     @Test
-    void onValuePut_triggersActivation_forActivateState() {
+    void onSliceNodePut_triggersActivation_forActivateState() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
         // Slice must be loaded before it can be activated - with mock slice for methods()
         sliceStore.markAsLoadedWithSlice(artifact);
 
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
         sendValuePut(key, SliceState.ACTIVATE);
 
         assertThat(sliceStore.activateCalls).containsExactly(artifact);
     }
 
     @Test
-    void onValuePut_triggersDeactivation_forDeactivateState() {
+    void onSliceNodePut_triggersDeactivation_forDeactivateState() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
         // Slice must be loaded for deactivation to find it - with mock slice for methods()
         sliceStore.markAsLoadedWithSlice(artifact);
 
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
         sendValuePut(key, SliceState.DEACTIVATE);
 
         assertThat(sliceStore.deactivateCalls).containsExactly(artifact);
     }
 
     @Test
-    void onValuePut_triggersUnloading_forUnloadState() {
+    void onSliceNodePut_triggersUnloading_forUnloadState() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
         sendValuePut(key, SliceState.UNLOAD);
 
         assertThat(sliceStore.unloadCalls).containsExactly(artifact);
     }
 
     @Test
-    void onValuePut_ignoresTransitionalStates() {
+    void onSliceNodePut_ignoresTransitionalStates() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
 
         // Transitional states should not trigger any action
         sendValuePut(key, SliceState.LOADING);
@@ -196,11 +196,11 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void onValuePut_recordsButNoAction_forLoadedState() {
+    void onSliceNodePut_recordsButNoAction_forLoadedState() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
         sendValuePut(key, SliceState.LOADED);
 
         // LOADED is a stable state, no action required
@@ -209,11 +209,11 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void onValuePut_recordsButNoAction_forActiveState() {
+    void onSliceNodePut_recordsButNoAction_forActiveState() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
         sendValuePut(key, SliceState.ACTIVE);
 
         // ACTIVE is a stable state, no action required
@@ -222,11 +222,11 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void onValuePut_recordsButNoAction_forFailedState() {
+    void onSliceNodePut_recordsButNoAction_forFailedState() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
         sendValuePut(key, SliceState.FAILED);
 
         // FAILED awaits UNLOAD command
@@ -236,11 +236,11 @@ class NodeDeploymentManagerTest {
     // === Consensus Integration Tests ===
 
     @Test
-    void onValuePut_transitionsToLoaded_afterSuccessfulLoad() {
+    void onSliceNodePut_transitionsToLoaded_afterSuccessfulLoad() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
         sendValuePut(key, SliceState.LOAD);
 
         // Now writes LOADING first, then LOADED after success
@@ -256,14 +256,14 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void onValuePut_transitionsToActive_afterSuccessfulActivation() {
+    void onSliceNodePut_transitionsToActive_afterSuccessfulActivation() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
         // Slice must be loaded before it can be activated - with mock slice that has methods()
         sliceStore.markAsLoadedWithSlice(artifact);
 
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
         sendValuePut(key, SliceState.ACTIVATE);
 
         // Now writes ACTIVATING first, then ACTIVE after success (plus endpoint publish commands)
@@ -284,11 +284,11 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void onValuePut_transitionsToLoaded_afterSuccessfulDeactivation() {
+    void onSliceNodePut_transitionsToLoaded_afterSuccessfulDeactivation() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
         sendValuePut(key, SliceState.DEACTIVATE);
 
         assertThat(clusterNode.appliedCommands).hasSize(1);
@@ -297,13 +297,13 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void onValuePut_transitionsToFailed_afterFailedLoad() {
+    void onSliceNodePut_transitionsToFailed_afterFailedLoad() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
         sliceStore.failNextLoad = true;
 
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
         sendValuePut(key, SliceState.LOAD);
 
         // Now writes LOADING first, then FAILED after failure
@@ -319,11 +319,11 @@ class NodeDeploymentManagerTest {
     // === ValueRemove Tests ===
 
     @Test
-    void onValueRemove_triggersCleanup_forActiveSlice() {
+    void onSliceNodeRemove_triggersCleanup_forActiveSlice() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
 
         // First, record an ACTIVE state
         sendValuePut(key, SliceState.ACTIVE);
@@ -337,11 +337,11 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void onValueRemove_noCleanup_forNonActiveSlice() {
+    void onSliceNodeRemove_noCleanup_forNonActiveSlice() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
-        manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
+        manager.onQuorumStateChange(QuorumStateNotification.established());
 
         // Record LOADED state (not ACTIVE)
         sendValuePut(key, SliceState.LOADED);
@@ -354,7 +354,7 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void onValueRemove_ignoresCommand_inDormantState() {
+    void onSliceNodeRemove_ignoresCommand_inDormantState() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -365,6 +365,26 @@ class NodeDeploymentManagerTest {
         assertThat(sliceStore.unloadCalls).isEmpty();
     }
 
+    @Test
+    void onQuorumStateChange_reversedDeliveryOrder_ignoresStaleDisappeared() {
+        // Reset for proper simulation
+        setUp();
+
+        // Create notifications in the order they would be created by processViewChange
+        // Thread A (ADD operation) creates ESTABLISHED first (lower seq)
+        var earlyEstablished = QuorumStateNotification.established();
+        // Thread B (REMOVE operation) creates DISAPPEARED second (higher seq)
+        var lateDisappeared = QuorumStateNotification.disappeared();
+
+        // But Thread B delivers first (lighter handler chain)
+        manager.onQuorumStateChange(lateDisappeared);
+        assertThat(manager.isActive()).isFalse();
+
+        // Thread A delivers second - should be REJECTED because it has lower sequence
+        manager.onQuorumStateChange(earlyEstablished);
+        assertThat(manager.isActive()).isFalse(); // Still dormant - stale ESTABLISHED was ignored
+    }
+
     // === Helper Methods ===
 
     private Artifact createTestArtifact() {
@@ -373,15 +393,15 @@ class NodeDeploymentManagerTest {
 
     private void sendValuePut(SliceNodeKey key, SliceState state) {
         var value = new SliceNodeValue(state);
-        var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+        var command = new KVCommand.Put<SliceNodeKey, SliceNodeValue>(key, value);
         var notification = new ValuePut<>(command, Option.none());
-        manager.onValuePut(notification);
+        manager.onSliceNodePut(notification);
     }
 
     private void sendValueRemove(SliceNodeKey key) {
-        var command = new KVCommand.Remove<AetherKey>(key);
-        var notification = new ValueRemove<AetherKey, AetherValue>(command, Option.none());
-        manager.onValueRemove(notification);
+        var command = new KVCommand.Remove<SliceNodeKey>(key);
+        var notification = new ValueRemove<SliceNodeKey, SliceNodeValue>(command, Option.none());
+        manager.onSliceNodeRemove(notification);
     }
 
     // === Test Doubles ===

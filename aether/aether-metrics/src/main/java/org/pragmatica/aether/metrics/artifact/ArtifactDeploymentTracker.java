@@ -1,9 +1,8 @@
 package org.pragmatica.aether.metrics.artifact;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.messaging.MessageReceiver;
@@ -30,12 +29,12 @@ public interface ArtifactDeploymentTracker {
     /// Handle slice deployment event.
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
-    void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
+    void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut);
 
     /// Handle slice removal event.
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
-    void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
+    void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove);
 
     /// Check if an artifact is deployed anywhere in the cluster.
     boolean isDeployed(Artifact artifact);
@@ -60,30 +59,24 @@ class ArtifactDeploymentTrackerImpl implements ArtifactDeploymentTracker {
 
     @Override
     @SuppressWarnings("JBCT-RET-01")
-    public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-        var key = valuePut.cause()
-                          .key();
-        if (key instanceof SliceNodeKey sliceNodeKey) {
-            var artifact = sliceNodeKey.artifact();
-            deploymentCounts.compute(artifact, (_, count) -> incrementCount(count));
-            log.debug("Artifact deployed: {} (total deployments: {})",
-                      artifact.asString(),
-                      deploymentCounts.get(artifact));
-        }
+    public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
+        var artifact = valuePut.cause()
+                               .key()
+                               .artifact();
+        deploymentCounts.compute(artifact, (_, count) -> incrementCount(count));
+        log.debug("Artifact deployed: {} (total deployments: {})", artifact.asString(), deploymentCounts.get(artifact));
     }
 
     @Override
     @SuppressWarnings("JBCT-RET-01")
-    public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-        var key = valueRemove.cause()
-                             .key();
-        if (key instanceof SliceNodeKey sliceNodeKey) {
-            var artifact = sliceNodeKey.artifact();
-            deploymentCounts.compute(artifact, (_, count) -> decrementCount(count));
-            log.debug("Artifact undeployed: {} (remaining deployments: {})",
-                      artifact.asString(),
-                      deploymentCounts.getOrDefault(artifact, 0));
-        }
+    public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
+        var artifact = valueRemove.cause()
+                                  .key()
+                                  .artifact();
+        deploymentCounts.compute(artifact, (_, count) -> decrementCount(count));
+        log.debug("Artifact undeployed: {} (remaining deployments: {})",
+                  artifact.asString(),
+                  deploymentCounts.getOrDefault(artifact, 0));
     }
 
     @SuppressWarnings("JBCT-RET-03") // null return required by ConcurrentHashMap.compute API to signal absence

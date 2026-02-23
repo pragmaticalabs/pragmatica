@@ -4,9 +4,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.MethodName;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.aether.invoke.InvocationContext;
 import org.pragmatica.aether.update.VersionRouting;
@@ -42,11 +40,11 @@ import org.slf4j.LoggerFactory;
 public interface EndpointRegistry {
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
-    void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
+    void onEndpointPut(ValuePut<EndpointKey, EndpointValue> valuePut);
 
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
-    void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
+    void onEndpointRemove(ValueRemove<EndpointKey, EndpointValue> valueRemove);
 
     /// Find all endpoints for a given artifact and method.
     List<Endpoint> findEndpoints(Artifact artifact, MethodName methodName);
@@ -65,6 +63,16 @@ public interface EndpointRegistry {
     Option<Endpoint> selectEndpointExcluding(Artifact artifact,
                                              MethodName methodName,
                                              java.util.Set<NodeId> excludeNodes);
+
+    /// Select endpoint by cache affinity — route to the node owning the DHT partition for the key.
+    /// Prefers the endpoint on the given affinity node. Falls back to round-robin if the
+    /// affinity node has no endpoint for this artifact/method.
+    ///
+    /// @param artifact the slice artifact
+    /// @param methodName the method to invoke
+    /// @param affinityNode the preferred node for cache locality
+    /// @return selected endpoint, or empty if none available
+    Option<Endpoint> selectEndpointByAffinity(Artifact artifact, MethodName methodName, NodeId affinityNode);
 
     /// Select an endpoint with version-aware weighted routing.
     ///
@@ -117,30 +125,26 @@ public interface EndpointRegistry {
 
             @Override
             @SuppressWarnings("JBCT-RET-01")
-            public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                var key = valuePut.cause()
-                                  .key();
-                var value = valuePut.cause()
-                                    .value();
-                if (key instanceof EndpointKey endpointKey && value instanceof EndpointValue endpointValue) {
-                    var endpoint = new Endpoint(endpointKey.artifact(),
-                                                endpointKey.methodName(),
-                                                endpointKey.instanceNumber(),
-                                                endpointValue.nodeId());
-                    endpoints.put(endpointKey, endpoint);
-                    log.debug("Registered endpoint: {}", endpoint);
-                }
+            public void onEndpointPut(ValuePut<EndpointKey, EndpointValue> valuePut) {
+                var endpointKey = valuePut.cause()
+                                          .key();
+                var endpointValue = valuePut.cause()
+                                            .value();
+                var endpoint = new Endpoint(endpointKey.artifact(),
+                                            endpointKey.methodName(),
+                                            endpointKey.instanceNumber(),
+                                            endpointValue.nodeId());
+                endpoints.put(endpointKey, endpoint);
+                log.debug("Registered endpoint: {}", endpoint);
             }
 
             @Override
             @SuppressWarnings("JBCT-RET-01")
-            public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-                var key = valueRemove.cause()
-                                     .key();
-                if (key instanceof EndpointKey endpointKey) {
-                    Option.option(endpoints.remove(endpointKey))
-                          .onPresent(removed -> log.debug("Unregistered endpoint: {}", removed));
-                }
+            public void onEndpointRemove(ValueRemove<EndpointKey, EndpointValue> valueRemove) {
+                var endpointKey = valueRemove.cause()
+                                             .key();
+                Option.option(endpoints.remove(endpointKey))
+                      .onPresent(removed -> log.debug("Unregistered endpoint: {}", removed));
             }
 
             @Override
@@ -186,6 +190,21 @@ public interface EndpointRegistry {
                 var counter = roundRobinCounters.computeIfAbsent(lookupKey, _ -> new AtomicInteger(0));
                 var index = (counter.getAndIncrement() & 0x7FFFFFFF) % available.size();
                 return Option.option(available.get(index));
+            }
+
+            @Override
+            public Option<Endpoint> selectEndpointByAffinity(Artifact artifact,
+                                                             MethodName methodName,
+                                                             NodeId affinityNode) {
+                var available = findEndpoints(artifact, methodName);
+                var affinity = available.stream()
+                                        .filter(e -> e.nodeId()
+                                                      .equals(affinityNode))
+                                        .findFirst();
+                if (affinity.isPresent()) {
+                    return Option.some(affinity.get());
+                }
+                return selectEndpoint(artifact, methodName);
             }
 
             @Override

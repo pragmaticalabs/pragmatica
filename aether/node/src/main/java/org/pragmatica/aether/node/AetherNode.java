@@ -7,10 +7,10 @@ import org.pragmatica.aether.api.DynamicAspectRegistry;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.DynamicConfigManager;
-import org.pragmatica.aether.config.ConfigService;
-import org.pragmatica.aether.config.ConfigurationProvider;
-import org.pragmatica.aether.config.DynamicConfigurationProvider;
-import org.pragmatica.aether.config.ProviderBasedConfigService;
+import org.pragmatica.config.ConfigService;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.DynamicConfigurationProvider;
+import org.pragmatica.config.ProviderBasedConfigService;
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.DecisionTreeController;
@@ -21,6 +21,7 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
+import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.HttpRouteRegistry;
@@ -31,6 +32,8 @@ import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
 import org.pragmatica.aether.invoke.DynamicAspectInterceptor;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.InvocationMessage;
+import org.pragmatica.aether.invoke.ScheduledTaskManager;
+import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
@@ -68,8 +71,11 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.dht.ConsistentHashRing;
+import org.pragmatica.dht.DHTAntiEntropy;
+import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.DHTNode;
+import org.pragmatica.dht.DHTRebalancer;
 import org.pragmatica.dht.DHTTopologyListener;
 import org.pragmatica.dht.DistributedDHTClient;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
@@ -85,6 +91,7 @@ import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -92,8 +99,6 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.cluster.state.kvstore.KVStoreNotification.filterPut;
-import static org.pragmatica.cluster.state.kvstore.KVStoreNotification.filterRemove;
 import static org.pragmatica.serialization.fury.FuryDeserializer.furyDeserializer;
 import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 
@@ -101,7 +106,7 @@ import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 /// Assembles all components: consensus, KV-store, slice management, deployment managers.
 @SuppressWarnings("JBCT-RET-01")
 public interface AetherNode {
-    String VERSION = "0.16.0";
+    String VERSION = "0.17.0";
     NodeId self();
 
     Promise<Unit> start();
@@ -281,6 +286,8 @@ public interface AetherNode {
                                                    DHTNode dhtNode) {
         // Create distributed DHT client with quorum-based reads/writes via ClusterNetwork
         var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode, clusterNode.network(), config.artifactRepo());
+        // Create scoped DHT client for cache operations (lower replication, single-replica default)
+        var cacheDhtClient = dhtClient.scoped(config.cache());
         var artifactStore = ArtifactStore.artifactStore(dhtClient);
         // Create repositories from SliceConfig using RepositoryFactory
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
@@ -294,8 +301,12 @@ public interface AetherNode {
                                                deferredInvoker,
                                                resourceProviderSetup.facade(),
                                                config.sliceAction());
+        // Create DHTRebalancer for re-replication on node departure
+        var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, clusterNode.network(), config.artifactRepo());
         // Create DHTTopologyListener for ring updates on topology changes
-        var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode);
+        var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer);
+        // Create DHT anti-entropy for replica synchronization
+        var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode, clusterNode.network(), config.artifactRepo());
         record aetherNode(AetherNodeConfig config,
                           MessageRouter.DelegateRouter router,
                           KVStore<AetherKey, AetherValue> kvStore,
@@ -326,6 +337,7 @@ public interface AetherNode {
                           AppHttpServer appHttpServer,
                           TTMManager ttmManager,
                           RollbackManager rollbackManager,
+                          ScheduledTaskManager scheduledTaskManager,
                           ComprehensiveSnapshotCollector snapshotCollector,
                           ArtifactMetricsCollector artifactMetricsCollector,
                           DeploymentMap deploymentMap,
@@ -358,7 +370,7 @@ public interface AetherNode {
             public Promise<Unit> stop() {
                 log.info("Stopping Aether node {}", self());
                 // 1. Notify components that quorum is gone (stops scheduled tasks via SharedScheduler)
-                router.route(QuorumStateNotification.DISAPPEARED);
+                router.route(QuorumStateNotification.disappeared());
                 // 2. Stop message delivery (no new messages will be routed)
                 router.quiesce();
                 // 3. Stop components (they've already stopped their activities via quorum notification)
@@ -366,6 +378,7 @@ public interface AetherNode {
                 metricsScheduler.stop();
                 deploymentMetricsScheduler.stop();
                 ttmManager.stop();
+                scheduledTaskManager.stop();
                 snapshotCollector.stop();
                 SliceRuntime.clear();
                 // 4. Stop servers and network
@@ -415,15 +428,15 @@ public interface AetherNode {
 
             private void printStartupBanner() {
                 var nodeId = self().id();
-                var clusterPort = config.topology()
-                                        .coreNodes()
-                                        .stream()
-                                        .filter(n -> n.id()
-                                                      .equals(self()))
-                                        .findFirst()
+                var clusterPort = Option.from(config.topology()
+                                                    .coreNodes()
+                                                    .stream()
+                                                    .filter(n -> n.id()
+                                                                  .equals(self()))
+                                                    .findFirst())
                                         .map(n -> n.address()
                                                    .port())
-                                        .orElse(0);
+                                        .or(0);
                 var mgmtPort = config.managementPort();
                 var appHttpPort = config.appHttp()
                                         .enabled()
@@ -571,6 +584,10 @@ public interface AetherNode {
                                                                                                        .port()));
         // Create endpoint registry
         var endpointRegistry = EndpointRegistry.endpointRegistry();
+        // Create topic subscription registry for pub/sub messaging
+        var topicSubscriptionRegistry = TopicSubscriptionRegistry.topicSubscriptionRegistry();
+        // Create scheduled task registry and manager for periodic slice method invocation
+        var scheduledTaskRegistry = ScheduledTaskRegistry.scheduledTaskRegistry();
         // Create HTTP route registry for application HTTP routing
         var httpRouteRegistry = HttpRouteRegistry.httpRouteRegistry();
         // Create metrics components
@@ -649,6 +666,16 @@ public interface AetherNode {
                                                      aspectInterceptor);
         // Wire the deferred invoker facade to the actual SliceInvoker
         deferredInvoker.setDelegate(sliceInvoker);
+        // Create scheduled task manager (needs sliceInvoker for method execution)
+        var scheduledTaskManager = ScheduledTaskManager.scheduledTaskManager(scheduledTaskRegistry,
+                                                                             sliceInvoker,
+                                                                             config.self());
+        // Register runtime extensions for Publisher provisioning via SPI
+        resourceProviderSetup.spiProvider()
+                             .onPresent(spi -> registerRuntimeExtensions(spi,
+                                                                         topicSubscriptionRegistry,
+                                                                         sliceInvoker,
+                                                                         cacheDhtClient));
         // Create node deployment manager (now created after sliceInvoker for HTTP route publishing)
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManager(config.self(),
                                                                                 delegateRouter,
@@ -673,6 +700,9 @@ public interface AetherNode {
                                                 nodeDeploymentManager,
                                                 clusterDeploymentManager,
                                                 endpointRegistry,
+                                                topicSubscriptionRegistry,
+                                                scheduledTaskRegistry,
+                                                scheduledTaskManager,
                                                 httpRouteRegistry,
                                                 metricsCollector,
                                                 metricsScheduler,
@@ -721,15 +751,21 @@ public interface AetherNode {
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.PutResponse.class, dhtClient::onPutResponse));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.RemoveResponse.class, dhtClient::onRemoveResponse));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.ExistsResponse.class, dhtClient::onExistsResponse));
-        // DHT migration/digest routes (no-op — migration not yet implemented)
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataRequest.class,
-                                                    _ -> {}));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class,
-                                                    _ -> {}));
+        // DHT digest routes — anti-entropy replica synchronization
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.DigestRequest.class,
-                                                    _ -> {}));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.DigestResponse.class,
-                                                    _ -> {}));
+                                                    request -> dhtNode.handleDigestRequest(request,
+                                                                                           response -> clusterNode.network()
+                                                                                                                  .send(request.sender(),
+                                                                                                                        response))));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.DigestResponse.class, dhtAntiEntropy::onDigestResponse));
+        // DHT migration routes — data transfer for partition repair
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataRequest.class,
+                                                    request -> dhtNode.handleMigrationDataRequest(request,
+                                                                                                  response -> clusterNode.network()
+                                                                                                                         .send(request.sender(),
+                                                                                                                               response))));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class,
+                                                    dhtAntiEntropy::onMigrationDataResponse));
         // DHT topology listener — update consistent hash ring on node add/remove
         aetherEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
                                                     dhtTopologyListener::onNodeAdded));
@@ -769,6 +805,7 @@ public interface AetherNode {
                                   appHttpServer,
                                   ttmManager,
                                   rollbackManager,
+                                  scheduledTaskManager,
                                   snapshotCollector,
                                   artifactMetricsCollector,
                                   deploymentMap,
@@ -787,6 +824,8 @@ public interface AetherNode {
                                                                                               aspectRegistry,
                                                                                               logLevelRegistry,
                                                                                               dynamicConfigManager,
+                                                                                              scheduledTaskRegistry,
+                                                                                              scheduledTaskManager,
                                                                                               config.tls());
                                      return new aetherNode(config,
                                                            delegateRouter,
@@ -818,6 +857,7 @@ public interface AetherNode {
                                                            appHttpServer,
                                                            ttmManager,
                                                            rollbackManager,
+                                                           scheduledTaskManager,
                                                            snapshotCollector,
                                                            artifactMetricsCollector,
                                                            deploymentMap,
@@ -834,6 +874,9 @@ public interface AetherNode {
                                                                     NodeDeploymentManager nodeDeploymentManager,
                                                                     ClusterDeploymentManager clusterDeploymentManager,
                                                                     EndpointRegistry endpointRegistry,
+                                                                    TopicSubscriptionRegistry topicSubscriptionRegistry,
+                                                                    ScheduledTaskRegistry scheduledTaskRegistry,
+                                                                    ScheduledTaskManager scheduledTaskManager,
                                                                     HttpRouteRegistry httpRouteRegistry,
                                                                     MetricsCollector metricsCollector,
                                                                     MetricsScheduler metricsScheduler,
@@ -857,90 +900,80 @@ public interface AetherNode {
                                                                     AppHttpServer appHttpServer,
                                                                     Option<LoadBalancerManager> loadBalancerManager) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
-        // KVStore notifications - ORDER MATTERS!
-        // EndpointRegistry MUST process before ClusterDeploymentManager so endpoints
-        // are available when ClusterDeploymentManager triggers dependent slice activation.
-        // NOTE: All handlers are wrapped with filterPut/filterRemove to avoid ClassCastException
-        // due to type erasure. Without filters, ValuePut<LeaderKey, LeaderValue> notifications
-        // would be routed to handlers expecting ValuePut<AetherKey, AetherValue>.
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, nodeDeploymentManager::onValuePut)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, endpointRegistry::onValuePut)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, clusterDeploymentManager::onValuePut)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class, nodeDeploymentManager::onValueRemove)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class, endpointRegistry::onValueRemove)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class, clusterDeploymentManager::onValueRemove)));
-        // HTTP route registry for application HTTP routing
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, httpRouteRegistry::onValuePut)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class, httpRouteRegistry::onValueRemove)));
-        // Artifact metrics tracking via KV-Store
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, artifactMetricsCollector::onValuePut)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class, artifactMetricsCollector::onValueRemove)));
-        // DeploymentMap: event-driven slice-node index
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, deploymentMap::onValuePut)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class, deploymentMap::onValueRemove)));
-        // ControlLoop blueprint sync via KV-Store
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, controlLoop::onValuePut)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class, controlLoop::onValueRemove)));
-        // Alert threshold sync via KV-Store
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey, AetherValue> notification) -> alertManager.onKvStoreUpdate(notification.cause()
-                                                                                                                                                                        .key(),
-                                                                                                                                                            notification.cause()
-                                                                                                                                                                        .value()))));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class,
-                                                           notification -> alertManager.onKvStoreRemove(notification.cause()
-                                                                                                                    .key()))));
-        // Dynamic aspect sync via KV-Store
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey, AetherValue> notification) -> aspectRegistry.onKvStoreUpdate(notification.cause()
-                                                                                                                                                                          .key(),
-                                                                                                                                                              notification.cause()
-                                                                                                                                                                          .value()))));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class,
-                                                           notification -> aspectRegistry.onKvStoreRemove(notification.cause()
-                                                                                                                      .key()))));
-        // Log level sync via KV-Store
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey, AetherValue> notification) -> logLevelRegistry.onKvStoreUpdate(notification.cause()
-                                                                                                                                                                            .key(),
-                                                                                                                                                                notification.cause()
-                                                                                                                                                                            .value()))));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class,
-                                                           notification -> logLevelRegistry.onKvStoreRemove(notification.cause()
-                                                                                                                        .key()))));
-        // Dynamic config sync via KV-Store
-        dynamicConfigManager.onPresent(dcm -> {
-                                           entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                                                                 filterPut(AetherKey.class,
-                                                                                           (KVStoreNotification.ValuePut<AetherKey, AetherValue> notification) -> dcm.onKvStoreUpdate(notification.cause()
-                                                                                                                                                                                                  .key(),
-                                                                                                                                                                                      notification.cause()
-                                                                                                                                                                                                  .value()))));
-                                           entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                                                                 filterRemove(AetherKey.class,
-                                                                                              notification -> dcm.onKvStoreRemove(notification.cause()
-                                                                                                                                              .key()))));
-                                       });
+        // KV-Store notification sub-router — type-safe key-based dispatch.
+        // Replaces per-handler filterPut/filterRemove with key-type dispatch via KVNotificationRouter.
+        // Registration order within each key type = dispatch order.
+        var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                                  .onPut(AetherKey.EndpointKey.class, endpointRegistry::onEndpointPut)
+                                                  .onRemove(AetherKey.EndpointKey.class,
+                                                            endpointRegistry::onEndpointRemove)
+                                                  .onPut(AetherKey.SliceNodeKey.class,
+                                                         nodeDeploymentManager::onSliceNodePut)
+                                                  .onRemove(AetherKey.SliceNodeKey.class,
+                                                            nodeDeploymentManager::onSliceNodeRemove)
+                                                  .onPut(AetherKey.AppBlueprintKey.class,
+                                                         clusterDeploymentManager::onAppBlueprintPut)
+                                                  .onPut(AetherKey.SliceTargetKey.class,
+                                                         clusterDeploymentManager::onSliceTargetPut)
+                                                  .onPut(AetherKey.SliceNodeKey.class,
+                                                         clusterDeploymentManager::onSliceNodePut)
+                                                  .onPut(AetherKey.VersionRoutingKey.class,
+                                                         clusterDeploymentManager::onVersionRoutingPut)
+                                                  .onRemove(AetherKey.AppBlueprintKey.class,
+                                                            clusterDeploymentManager::onAppBlueprintRemove)
+                                                  .onRemove(AetherKey.SliceTargetKey.class,
+                                                            clusterDeploymentManager::onSliceTargetRemove)
+                                                  .onRemove(AetherKey.SliceNodeKey.class,
+                                                            clusterDeploymentManager::onSliceNodeRemove)
+                                                  .onRemove(AetherKey.VersionRoutingKey.class,
+                                                            clusterDeploymentManager::onVersionRoutingRemove)
+                                                  .onPut(AetherKey.HttpRouteKey.class, httpRouteRegistry::onRoutePut)
+                                                  .onRemove(AetherKey.HttpRouteKey.class,
+                                                            httpRouteRegistry::onRouteRemove)
+                                                  .onPut(AetherKey.SliceNodeKey.class,
+                                                         artifactMetricsCollector.deploymentTracker()::onSliceNodePut)
+                                                  .onRemove(AetherKey.SliceNodeKey.class,
+                                                            artifactMetricsCollector.deploymentTracker()::onSliceNodeRemove)
+                                                  .onPut(AetherKey.SliceNodeKey.class, deploymentMap::onSliceNodePut)
+                                                  .onRemove(AetherKey.SliceNodeKey.class,
+                                                            deploymentMap::onSliceNodeRemove)
+                                                  .onPut(AetherKey.SliceTargetKey.class, controlLoop::onSliceTargetPut)
+                                                  .onPut(AetherKey.SliceNodeKey.class, controlLoop::onSliceNodePut)
+                                                  .onRemove(AetherKey.SliceTargetKey.class,
+                                                            controlLoop::onSliceTargetRemove)
+                                                  .onRemove(AetherKey.SliceNodeKey.class, controlLoop::onSliceNodeRemove)
+                                                  .onPut(AetherKey.AlertThresholdKey.class,
+                                                         alertManager::onAlertThresholdPut)
+                                                  .onRemove(AetherKey.AlertThresholdKey.class,
+                                                            alertManager::onAlertThresholdRemove)
+                                                  .onPut(AetherKey.DynamicAspectKey.class, aspectRegistry::onAspectPut)
+                                                  .onRemove(AetherKey.DynamicAspectKey.class,
+                                                            aspectRegistry::onAspectRemove)
+                                                  .onPut(AetherKey.LogLevelKey.class, logLevelRegistry::onLogLevelPut)
+                                                  .onRemove(AetherKey.LogLevelKey.class,
+                                                            logLevelRegistry::onLogLevelRemove)
+                                                  .onPut(AetherKey.SliceTargetKey.class,
+                                                         rollbackManager::onSliceTargetPut)
+                                                  .onPut(AetherKey.PreviousVersionKey.class,
+                                                         rollbackManager::onPreviousVersionPut)
+                                                  .onPut(AetherKey.HttpRouteKey.class, appHttpServer::onRoutePut)
+                                                  .onRemove(AetherKey.HttpRouteKey.class, appHttpServer::onRouteRemove)
+                                                  .onPut(AetherKey.TopicSubscriptionKey.class,
+                                                         topicSubscriptionRegistry::onSubscriptionPut)
+                                                  .onRemove(AetherKey.TopicSubscriptionKey.class,
+                                                            topicSubscriptionRegistry::onSubscriptionRemove)
+                                                  .onPut(AetherKey.ScheduledTaskKey.class,
+                                                         scheduledTaskRegistry::onScheduledTaskPut)
+                                                  .onRemove(AetherKey.ScheduledTaskKey.class,
+                                                            scheduledTaskRegistry::onScheduledTaskRemove);
+        // Dynamic config manager (optional)
+        dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
+                                                             .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
+        // Load balancer manager KV routes (optional)
+        loadBalancerManager.onPresent(lbm -> kvRouterBuilder.onPut(AetherKey.HttpRouteKey.class, lbm::onRoutePut)
+                                                            .onRemove(AetherKey.HttpRouteKey.class, lbm::onRouteRemove));
+        entries.addAll(kvRouterBuilder.build()
+                                      .asRouteEntries());
         // Quorum state notifications - these handlers activate/deactivate components.
         // NOTE: RabiaNode's handlers run first (consensus activates before LeaderManager emits LeaderChange).
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
@@ -948,6 +981,7 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, metricsScheduler::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
                                               deploymentMetricsScheduler::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, scheduledTaskManager::onQuorumStateChange));
         // Leader change notifications - handlers may call cluster.apply(), which is safe because
         // consensus engine is already active by the time LeaderChange is emitted (see RabiaNode handler order).
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
@@ -962,9 +996,9 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               rollingUpdateManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, rollbackManager::onLeaderChange));
-        // RollbackManager KV-Store notifications and slice failure events
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, rollbackManager::onValuePut)));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              scheduledTaskManager::onLeaderChange));
+        // RollbackManager slice failure events (KV-Store notifications handled by sub-router above)
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               rollbackManager::onAllInstancesFailed));
         // Topology change notifications - must register for each subtype since router uses exact class matching
@@ -1051,26 +1085,15 @@ public interface AetherNode {
                                               appHttpServer::onHttpForwardRequest));
         entries.add(MessageRouter.Entry.route(org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse.class,
                                               appHttpServer::onHttpForwardResponse));
-        // AppHttpServer route registry updates (to rebuild router when routes change)
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              filterPut(AetherKey.class, appHttpServer::onValuePut)));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              filterRemove(AetherKey.class, appHttpServer::onValueRemove)));
         // KVStore local operations
         entries.add(MessageRouter.Entry.route(KVStoreLocalIO.Request.Find.class, kvStore::find));
         // Leader election commit listener - notifies LeaderManager when leader is committed through consensus
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                               notification -> handleLeaderCommit(notification, leaderManager)));
-        // Load balancer manager routes
+        // Load balancer manager routes (KV routes handled by sub-router above)
         loadBalancerManager.onPresent(lbm -> {
                                           entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                                                 lbm::onLeaderChange));
-                                          entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                                                                filterPut(AetherKey.class,
-                                                                                          lbm::onValuePut)));
-                                          entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                                                                filterRemove(AetherKey.class,
-                                                                                             lbm::onValueRemove)));
                                           entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
                                                                                 lbm::onTopologyChange));
                                           entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
@@ -1122,7 +1145,8 @@ public interface AetherNode {
     }
 
     record ResourceProviderSetup(ResourceProviderFacade facade,
-                                 Option<DynamicConfigurationProvider> dynamicProvider) {}
+                                 Option<DynamicConfigurationProvider> dynamicProvider,
+                                 Option<SpiResourceProvider> spiProvider) {}
 
     /// Create ResourceProviderFacade from config.
     /// If ConfigurationProvider is configured, creates ConfigService and ResourceProvider
@@ -1134,6 +1158,7 @@ public interface AetherNode {
                      .fold(() -> {
                                log.debug("No configuration provider configured, resource provisioning disabled");
                                return new ResourceProviderSetup(noOpResourceProviderFacade(),
+                                                                Option.empty(),
                                                                 Option.empty());
                            },
                            configProvider -> {
@@ -1147,6 +1172,7 @@ public interface AetherNode {
                                                                 log.error("Failed to resolve secrets in configuration: {}",
                                                                           cause.message());
                                                                 return new ResourceProviderSetup(noOpResourceProviderFacade(),
+                                                                                                 Option.empty(),
                                                                                                  Option.empty());
                                                             },
                                                             provider -> {
@@ -1170,7 +1196,8 @@ public interface AetherNode {
                                                                                                                                      context);
                                                                                                  }
         },
-                                                                                                 Option.some(dynamicProvider));
+                                                                                                 Option.some(dynamicProvider),
+                                                                                                 Option.some(resourceProvider));
                                                             });
                            });
     }
@@ -1202,5 +1229,15 @@ public interface AetherNode {
         }
         // Use first repository (most configurations use a single repository)
         return repositories.getFirst();
+    }
+
+    /// Register runtime extensions into SpiResourceProvider for Publisher provisioning.
+    private static void registerRuntimeExtensions(SpiResourceProvider spi,
+                                                  TopicSubscriptionRegistry topicSubscriptionRegistry,
+                                                  SliceInvoker sliceInvoker,
+                                                  DHTClient cacheDhtClient) {
+        spi.registerExtension(TopicSubscriptionRegistry.class, topicSubscriptionRegistry);
+        spi.registerExtension(SliceInvoker.class, sliceInvoker);
+        spi.registerExtension(DHTClient.class, cacheDhtClient);
     }
 }

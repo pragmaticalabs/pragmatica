@@ -92,7 +92,9 @@ public record SliceModel(
 - Static methods and default methods are ignored
 
 **Factory method detection:**
-- Static method returning the interface type
+- Static method named `{sliceName}(...)` (lowercase-first)
+- Return type: the interface type directly, or wrapped in `Result<T>`, `Option<T>`, or `Promise<T>`
+- The processor detects the return kind at compile time and generates appropriate wrapping (see `FactoryReturnKind`)
 - Parameters become dependencies
 - Name becomes `factoryMethodName`
 

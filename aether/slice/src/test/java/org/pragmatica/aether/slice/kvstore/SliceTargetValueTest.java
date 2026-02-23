@@ -16,6 +16,7 @@ class SliceTargetValueTest {
 
         assertThat(value.currentVersion()).isEqualTo(version);
         assertThat(value.targetInstances()).isEqualTo(3);
+        assertThat(value.minInstances()).isEqualTo(3);
         assertThat(value.owningBlueprint()).isEqualTo(Option.none());
         assertThat(value.updatedAt()).isGreaterThan(0);
     }
@@ -40,8 +41,25 @@ class SliceTargetValueTest {
 
         assertThat(updated.currentVersion()).isEqualTo(version);
         assertThat(updated.targetInstances()).isEqualTo(10);
+        assertThat(updated.minInstances()).isEqualTo(3);
         assertThat(updated.owningBlueprint()).isEqualTo(value.owningBlueprint());
         assertThat(updated.updatedAt()).isGreaterThanOrEqualTo(value.updatedAt());
+    }
+
+    @Test
+    void sliceTargetValue_effectiveMinInstances_defaultsToOne() {
+        var version = Version.version("1.0.0").unwrap();
+        var value = new SliceTargetValue(version, 3, 0, Option.none(), System.currentTimeMillis());
+
+        assertThat(value.effectiveMinInstances()).isEqualTo(1);
+    }
+
+    @Test
+    void sliceTargetValue_effectiveMinInstances_returnsMinInstances() {
+        var version = Version.version("1.0.0").unwrap();
+        var value = SliceTargetValue.sliceTargetValue(version, 5);
+
+        assertThat(value.effectiveMinInstances()).isEqualTo(5);
     }
 
     @Test
@@ -86,8 +104,8 @@ class SliceTargetValueTest {
         var version = Version.version("1.0.0").unwrap();
         // Create two values at the same time to have matching updatedAt
         var now = System.currentTimeMillis();
-        var value1 = new SliceTargetValue(version, 3, Option.none(), now);
-        var value2 = new SliceTargetValue(version, 3, Option.none(), now);
+        var value1 = new SliceTargetValue(version, 3, 3, Option.none(), now);
+        var value2 = new SliceTargetValue(version, 3, 3, Option.none(), now);
 
         assertThat(value1).isEqualTo(value2);
         assertThat(value1.hashCode()).isEqualTo(value2.hashCode());
@@ -98,8 +116,8 @@ class SliceTargetValueTest {
         var version1 = Version.version("1.0.0").unwrap();
         var version2 = Version.version("2.0.0").unwrap();
         var now = System.currentTimeMillis();
-        var value1 = new SliceTargetValue(version1, 3, Option.none(), now);
-        var value2 = new SliceTargetValue(version2, 3, Option.none(), now);
+        var value1 = new SliceTargetValue(version1, 3, 3, Option.none(), now);
+        var value2 = new SliceTargetValue(version2, 3, 3, Option.none(), now);
 
         assertThat(value1).isNotEqualTo(value2);
     }
@@ -108,8 +126,8 @@ class SliceTargetValueTest {
     void sliceTargetValue_inequality_with_different_instances() {
         var version = Version.version("1.0.0").unwrap();
         var now = System.currentTimeMillis();
-        var value1 = new SliceTargetValue(version, 3, Option.none(), now);
-        var value2 = new SliceTargetValue(version, 5, Option.none(), now);
+        var value1 = new SliceTargetValue(version, 3, 3, Option.none(), now);
+        var value2 = new SliceTargetValue(version, 5, 5, Option.none(), now);
 
         assertThat(value1).isNotEqualTo(value2);
     }

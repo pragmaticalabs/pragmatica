@@ -62,13 +62,21 @@ class LoadBalancerManagerTest {
     @Nested
     class DormantState {
         @Test
-        void dormantState_onValuePut_doesNothing() {
+        void dormantState_onRoutePut_doesNothing() {
             var routeKey = HttpRouteKey.httpRouteKey("GET", "/api/test");
             var routeValue = HttpRouteValue.httpRouteValue(Set.of(node1));
             fireValuePut(routeKey, routeValue);
 
             assertThat(provider.routeChanges).isEmpty();
             assertThat(provider.reconcileCalls).isEmpty();
+        }
+
+        @Test
+        void dormantState_onRouteRemove_doesNothing() {
+            var routeKey = HttpRouteKey.httpRouteKey("GET", "/api/test");
+            fireValueRemove(routeKey, null);
+
+            assertThat(provider.routeChanges).isEmpty();
         }
 
         @Test
@@ -156,15 +164,38 @@ class LoadBalancerManagerTest {
         }
 
         @Test
-        void activeState_onNonHttpRouteKey_doesNothing() {
-            var artifactBase = org.pragmatica.aether.artifact.ArtifactBase.artifactBase("org.example:test-slice").unwrap();
-            var sliceTargetKey = AetherKey.SliceTargetKey.sliceTargetKey(artifactBase);
-            var sliceTargetValue = AetherValue.SliceTargetValue.sliceTargetValue(
-                org.pragmatica.aether.artifact.Version.version("1.0.0").unwrap(), 3);
-            fireValuePut(sliceTargetKey, sliceTargetValue);
+        void activeState_onRouteRemove_callsProviderWithEmptyNodeIps() {
+            var routeKey = HttpRouteKey.httpRouteKey("DELETE", "/api/items");
+            var routeValue = HttpRouteValue.httpRouteValue(Set.of(node1));
 
-            assertThat(provider.routeChanges).isEmpty();
+            // First add the route
+            fireValuePut(routeKey, routeValue);
+            provider.clear();
+
+            // Now remove the route
+            fireValueRemove(routeKey, routeValue);
+
+            assertThat(provider.routeChanges).hasSize(1);
+            var change = provider.routeChanges.getFirst();
+            assertThat(change.httpMethod()).isEqualTo("DELETE");
+            assertThat(change.pathPrefix()).isEqualTo("/api/items/");
+            assertThat(change.nodeIps()).isEmpty();
         }
+
+        @Test
+        void activeState_onRouteRemove_withoutPriorPut_stillNotifiesProvider() {
+            var routeKey = HttpRouteKey.httpRouteKey("GET", "/api/gone");
+
+            fireValueRemove(routeKey, null);
+
+            assertThat(provider.routeChanges).hasSize(1);
+            var change = provider.routeChanges.getFirst();
+            assertThat(change.httpMethod()).isEqualTo("GET");
+            assertThat(change.pathPrefix()).isEqualTo("/api/gone/");
+            assertThat(change.nodeIps()).isEmpty();
+        }
+
+        // Non-HTTP-route keys are now prevented by the type system — onRoutePut only accepts HttpRouteKey
     }
 
     // === Helpers ===
@@ -173,10 +204,16 @@ class LoadBalancerManagerTest {
         manager.onLeaderChange(LeaderNotification.leaderChange(Option.some(selfNode), true));
     }
 
-    private void fireValuePut(AetherKey key, AetherValue value) {
-        var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+    private void fireValuePut(HttpRouteKey key, HttpRouteValue value) {
+        var command = new KVCommand.Put<HttpRouteKey, HttpRouteValue>(key, value);
         var notification = new ValuePut<>(command, Option.none());
-        manager.onValuePut(notification);
+        manager.onRoutePut(notification);
+    }
+
+    private void fireValueRemove(HttpRouteKey key, HttpRouteValue previousValue) {
+        var command = new KVCommand.Remove<HttpRouteKey>(key);
+        var notification = new ValueRemove<>(command, Option.option(previousValue));
+        manager.onRouteRemove(notification);
     }
 
     // === Recording Stubs ===

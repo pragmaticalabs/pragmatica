@@ -6,7 +6,7 @@
 
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>pragmatica</artifactId>
-    <version>0.16.0</version>
+    <version>0.17.0</version>
     <packaging>pom</packaging>
 
     <name>Pragmatica</name>
@@ -84,9 +84,13 @@
         <maven-plugin-api.version>3.9.9</maven-plugin-api.version>
         <maven-plugin-annotations.version>3.15.1</maven-plugin-annotations.version>
         <maven-plugin-plugin.version>4.0.0-beta-2</maven-plugin-plugin.version>
+        <jacoco.version>0.8.13</jacoco.version>
 
         <!-- Default true to avoid reactor cycle; override with -Djbct.skip=false -pl !jbct -->
         <jbct.skip>true</jbct.skip>
+
+        <!-- Virtual thread carrier pool: min 8 to prevent deadlocks on low-vCPU CI runners -->
+        <vthread.argLine>-Djdk.virtualThreadScheduler.parallelism=8</vthread.argLine>
     </properties>
 
     <dependencyManagement>
@@ -137,6 +141,11 @@
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>toml</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>config-service</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -448,6 +457,7 @@
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>${maven-surefire-plugin.version}</version>
                     <configuration>
+                        <argLine>${vthread.argLine}</argLine>
                         <excludes>
                             <exclude>**/*IT.java</exclude>
                         </excludes>
@@ -458,6 +468,7 @@
                     <artifactId>maven-failsafe-plugin</artifactId>
                     <version>${maven-failsafe-plugin.version}</version>
                     <configuration>
+                        <argLine>${vthread.argLine}</argLine>
                         <includes>
                             <include>**/*IT.java</include>
                         </includes>
@@ -560,6 +571,32 @@
                     </executions>
                 </plugin>
                 <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>${jacoco.version}</version>
+                    <executions>
+                        <execution>
+                            <id>prepare-agent</id>
+                            <goals>
+                                <goal>prepare-agent</goal>
+                            </goals>
+                        </execution>
+                        <execution>
+                            <id>prepare-agent-integration</id>
+                            <goals>
+                                <goal>prepare-agent-integration</goal>
+                            </goals>
+                        </execution>
+                        <execution>
+                            <id>report</id>
+                            <phase>verify</phase>
+                            <goals>
+                                <goal>report</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+                <plugin>
                     <groupId>org.pragmatica-lite</groupId>
                     <artifactId>jbct-maven-plugin</artifactId>
                     <version>${project.version}</version>
@@ -624,6 +661,17 @@
                     <plugin>
                         <groupId>org.sonatype.central</groupId>
                         <artifactId>central-publishing-maven-plugin</artifactId>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>coverage</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.jacoco</groupId>
+                        <artifactId>jacoco-maven-plugin</artifactId>
                     </plugin>
                 </plugins>
             </build>

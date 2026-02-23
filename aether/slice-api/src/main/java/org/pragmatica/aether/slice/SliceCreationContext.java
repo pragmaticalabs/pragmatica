@@ -1,7 +1,9 @@
 package org.pragmatica.aether.slice;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Result.success;
 
 /// Unified context for slice factory methods during slice creation.
@@ -17,7 +19,7 @@ import static org.pragmatica.lang.Result.success;
 /// public static Promise<OrderRepository> orderRepository(Aspect<OrderRepository> aspect,
 ///                                                         SliceCreationContext ctx) {
 ///     return Promise.all(
-///             ctx.resources().provide(DatabaseConnector.class, "database.primary"),
+///             ctx.resources().provide(SqlConnector.class, "database.primary"),
 ///             ctx.invoker().methodHandle("inventory:artifact", "check", ...),
 ///             ctx.invoker().methodHandle("inventory:artifact", "save", ...))
 ///         .map((db, checkHandle, saveHandle) -> {
@@ -40,11 +42,18 @@ public interface SliceCreationContext {
 
     /// Get the resource provider for infrastructure resource provisioning.
     ///
-    /// Use this to obtain infrastructure resources like DatabaseConnector,
+    /// Use this to obtain infrastructure resources like SqlConnector,
     /// HttpClient, etc. based on configuration sections.
     ///
     /// @return ResourceProviderFacade instance
     ResourceProviderFacade resources();
+
+    /// Get the slice artifact ID for resource lifecycle tracking.
+    ///
+    /// @return Optional slice artifact coordinate string
+    default Option<String> sliceId() {
+        return none();
+    }
 
     /// Create a SliceCreationContext with the given components.
     ///
@@ -53,16 +62,35 @@ public interface SliceCreationContext {
     /// @return New SliceCreationContext
     static SliceCreationContext sliceCreationContext(SliceInvokerFacade invoker,
                                                      ResourceProviderFacade resources) {
-        return DefaultSliceCreationContext.defaultSliceCreationContext(invoker, resources)
+        return DefaultSliceCreationContext.defaultSliceCreationContext(invoker,
+                                                                       resources,
+                                                                       none())
+                                          .unwrap();
+    }
+
+    /// Create a SliceCreationContext with the given components and slice ID.
+    ///
+    /// @param invoker   SliceInvokerFacade for cross-slice invocation
+    /// @param resources ResourceProviderFacade for resource provisioning
+    /// @param sliceId   Artifact coordinate string identifying the slice
+    /// @return New SliceCreationContext
+    static SliceCreationContext sliceCreationContext(SliceInvokerFacade invoker,
+                                                     ResourceProviderFacade resources,
+                                                     String sliceId) {
+        return DefaultSliceCreationContext.defaultSliceCreationContext(invoker,
+                                                                       resources,
+                                                                       Option.some(sliceId))
                                           .unwrap();
     }
 }
 
 /// Default implementation of SliceCreationContext.
 record DefaultSliceCreationContext(SliceInvokerFacade invoker,
-                                   ResourceProviderFacade resources) implements SliceCreationContext {
+                                   ResourceProviderFacade resources,
+                                   Option<String> sliceId) implements SliceCreationContext {
     static Result<DefaultSliceCreationContext> defaultSliceCreationContext(SliceInvokerFacade invoker,
-                                                                           ResourceProviderFacade resources) {
-        return success(new DefaultSliceCreationContext(invoker, resources));
+                                                                           ResourceProviderFacade resources,
+                                                                           Option<String> sliceId) {
+        return success(new DefaultSliceCreationContext(invoker, resources, sliceId));
     }
 }

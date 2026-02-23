@@ -107,8 +107,8 @@ public class FactoryClassGenerator {
         importTracker.use("org.pragmatica.lang.Promise");
         importTracker.use("org.pragmatica.lang.Unit");
         importTracker.use("org.pragmatica.lang.type.TypeToken");
+        importTracker.use("org.pragmatica.aether.slice.ResourceProviderFacade");
         if (model.hasMethodInterceptors()) {
-            importTracker.use("org.pragmatica.aether.slice.MethodInterceptor");
             importTracker.use("org.pragmatica.aether.slice.ProvisioningContext");
             importTracker.use("org.pragmatica.lang.Functions.Fn1");
         }
@@ -365,11 +365,13 @@ public class FactoryClassGenerator {
             out.println("            " + entry.promiseExpression() + comma);
         }
         out.println("        )");
-        // Generate .map((v1, v2, ...) -> { ... })
+        // Generate .map/.flatMap((v1, v2, ...) -> { ... })
         var varNames = entries.stream()
                               .map(AllEntry::varName)
                               .toList();
-        out.println("        .map((" + String.join(", ", varNames) + ") -> {");
+        var isNonDirect = model.factoryReturnKind() != SliceModel.FactoryReturnKind.DIRECT;
+        var chainMethod = isNonDirect ? "flatMap" : "map";
+        out.println("        ." + chainMethod + "((" + String.join(", ", varNames) + ") -> {");
         // Instantiate proxy records from handle vars
         for (var dep : sliceDeps) {
             var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
@@ -395,21 +397,54 @@ public class FactoryClassGenerator {
                                .stream()
                                .map(DependencyModel::parameterName)
                                .toList();
-        if (model.hasMethodInterceptors()) {
-            out.println("            var impl = " + sliceName + "." + model.factoryMethodName() + "(" + String.join(", ",
-                                                                                                                    factoryArgs)
-                        + ");");
+        var factoryCall = sliceName + "." + model.factoryMethodName() + "(" + String.join(", ", factoryArgs) + ")";
+        if (isNonDirect) {
+            generateNonDirectAsyncFactoryCall(out, model, factoryCall, interceptorEntries, importTracker);
+        } else if (model.hasMethodInterceptors()) {
+            out.println("            var impl = " + factoryCall + ";");
             out.println();
             generateInterceptorWrapping(out, model, interceptorEntries, "            ", importTracker);
         } else {
-            out.println("            return aspect.apply(" + sliceName + "." + model.factoryMethodName() + "(" + String.join(", ",
-                                                                                                                             factoryArgs)
-                        + "));");
+            out.println("            return aspect.apply(" + factoryCall + ");");
         }
         out.println("        });");
     }
 
+    private void generateNonDirectAsyncFactoryCall(PrintWriter out,
+                                                    SliceModel model,
+                                                    String factoryCall,
+                                                    List<InterceptorEntry> interceptorEntries,
+                                                    ImportTracker importTracker) {
+        var hasInterceptors = model.hasMethodInterceptors();
+        if (hasInterceptors) {
+            // Open the wrapping chain
+            switch (model.factoryReturnKind()) {
+                case OPTION -> out.println("            return " + factoryCall + ".toResult().map(impl -> {");
+                case RESULT -> out.println("            return " + factoryCall + ".map(impl -> {");
+                case PROMISE -> out.println("            return " + factoryCall + ".map(impl -> {");
+                default -> throw new IllegalStateException("DIRECT should not reach here");
+            }
+            generateInterceptorWrapping(out, model, interceptorEntries, "                ", importTracker);
+            switch (model.factoryReturnKind()) {
+                case RESULT, OPTION -> out.println("            }).async();");
+                case PROMISE -> out.println("            });");
+                default -> throw new IllegalStateException("DIRECT should not reach here");
+            }
+        } else {
+            switch (model.factoryReturnKind()) {
+                case RESULT -> out.println("            return " + factoryCall + ".map(aspect::apply).async();");
+                case OPTION -> out.println("            return " + factoryCall + ".toResult().map(aspect::apply).async();");
+                case PROMISE -> out.println("            return " + factoryCall + ".map(aspect::apply);");
+                default -> throw new IllegalStateException("DIRECT should not reach here");
+            }
+        }
+    }
+
     private void generateNoDepInterceptorBody(PrintWriter out, SliceModel model, String sliceName, ImportTracker importTracker) {
+        if (model.factoryReturnKind() != SliceModel.FactoryReturnKind.DIRECT) {
+            generateNonDirectNoDepInterceptorBody(out, model, sliceName, importTracker);
+            return;
+        }
         var wrapperName = sliceName + "Wrapper";
         var factoryArgs = model.dependencies()
                                .stream()
@@ -450,6 +485,57 @@ public class FactoryClassGenerator {
                     + ")));");
     }
 
+    private void generateNonDirectNoDepInterceptorBody(PrintWriter out, SliceModel model, String sliceName, ImportTracker importTracker) {
+        var wrapperName = sliceName + "Wrapper";
+        var factoryArgs = model.dependencies()
+                               .stream()
+                               .map(DependencyModel::parameterName)
+                               .toList();
+        var factoryCall = sliceName + "." + model.factoryMethodName() + "(" + String.join(", ", factoryArgs) + ")";
+
+        // Open the chain
+        switch (model.factoryReturnKind()) {
+            case OPTION -> out.println("        return " + factoryCall + ".toResult().map(impl -> {");
+            case RESULT -> out.println("        return " + factoryCall + ".map(impl -> {");
+            case PROMISE -> out.println("        return " + factoryCall + ".map(impl -> {");
+            default -> throw new IllegalStateException("DIRECT should not reach here");
+        }
+        // Generate wrapped functions (deeper indent)
+        for (var method : model.methods()) {
+            var wrappedVar = method.name() + "Wrapped";
+            var responseType = importTracker.use(method.responseType().toString());
+            var effectiveType = effectiveParamTypeString(method, model, importTracker);
+            if (method.hasNoParams()) {
+                out.println("            Fn1<Promise<" + responseType + ">, Unit> " + wrappedVar
+                            + " = _unit -> impl." + method.name() + "();");
+            } else if (method.hasSingleParam()) {
+                out.println("            Fn1<Promise<" + responseType + ">, " + effectiveType + "> " + wrappedVar
+                            + " = impl::" + method.name() + ";");
+            } else {
+                var requestRecordName = capitalize(method.name()) + "Request";
+                var argList = method.parameters()
+                                    .stream()
+                                    .map(p -> "req." + p.name() + "()")
+                                    .collect(Collectors.joining(", "));
+                out.println("            Fn1<Promise<" + responseType + ">, " + requestRecordName + "> " + wrappedVar
+                            + " = req -> impl." + method.name() + "(" + argList + ");");
+            }
+        }
+        out.println();
+        var wrappedArgs = model.methods()
+                               .stream()
+                               .map(m -> m.name() + "Wrapped")
+                               .toList();
+        out.println("            return aspect.apply(new " + wrapperName + "(" + String.join(", ", wrappedArgs) + "));");
+
+        // Close the chain
+        switch (model.factoryReturnKind()) {
+            case RESULT, OPTION -> out.println("        }).async();");
+            case PROMISE -> out.println("        });");
+            default -> throw new IllegalStateException("DIRECT should not reach here");
+        }
+    }
+
     /// Generates body when there are no async entries (only plain/no deps).
     private void generateSyncOnlyBody(PrintWriter out,
                                        SliceModel model,
@@ -472,9 +558,16 @@ public class FactoryClassGenerator {
                         + factoryMethodName + "(" + argList + ");");
         }
         var factoryArgs = buildFactoryArgs(model, plainDeps);
-        out.println("        var instance = " + sliceName + "." + model.factoryMethodName() + "("
-                    + String.join(", ", factoryArgs) + ");");
-        out.println("        return Promise.success(aspect.apply(instance));");
+        var factoryCall = sliceName + "." + model.factoryMethodName() + "(" + String.join(", ", factoryArgs) + ")";
+        switch (model.factoryReturnKind()) {
+            case DIRECT -> {
+                out.println("        var instance = " + factoryCall + ";");
+                out.println("        return Promise.success(aspect.apply(instance));");
+            }
+            case RESULT -> out.println("        return " + factoryCall + ".map(aspect::apply).async();");
+            case OPTION -> out.println("        return " + factoryCall + ".toResult().map(aspect::apply).async();");
+            case PROMISE -> out.println("        return " + factoryCall + ".map(aspect::apply);");
+        }
     }
 
     /// Generate interceptor wrapping for each method.
@@ -546,19 +639,21 @@ public class FactoryClassGenerator {
     private String generateInterceptorProvideCall(InterceptorEntry entry, SliceModel model, ImportTracker importTracker) {
         var qualifier = entry.qualifier();
         var configSection = escapeJavaString(qualifier.configSection());
+        var typeName = importTracker.use(qualifier.resourceType().toString());
         return findKeyInfoForInterceptor(entry, model)
-        .fold(() -> "ctx.resources().provide(MethodInterceptor.class, \"" + configSection + "\")",
-              ki -> generateProvideWithContext(configSection, ki, entry.firstMethod(), model, importTracker));
+        .fold(() -> "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\")",
+              ki -> generateProvideWithContext(configSection, ki, entry.firstMethod(), model, importTracker, typeName));
     }
 
     private String generateProvideWithContext(String configSection,
                                                KeyExtractorInfo ki,
                                                MethodModel method,
                                                SliceModel model,
-                                               ImportTracker importTracker) {
+                                               ImportTracker importTracker,
+                                               String typeName) {
         var paramType = effectiveParamTypeString(method, model, importTracker);
         var responseType = importTracker.use(method.responseType().toString());
-        return "ctx.resources().provide(MethodInterceptor.class, \"" + configSection + "\",\n"
+        return "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\",\n"
                + "                ProvisioningContext.provisioningContext()\n"
                + "                    .withTypeToken(new TypeToken<" + importTracker.use(ki.keyType()) + ">() {})\n"
                + "                    .withTypeToken(new TypeToken<" + responseType + ">() {})\n"
@@ -752,10 +847,11 @@ public class FactoryClassGenerator {
         var sliceName = model.simpleName();
         var methodName = lowercaseFirst(sliceName);
         var sliceRecordName = methodName + "Slice";
+        var sliceArtifactCoordinate = computeSliceArtifactCoordinate(sliceName);
         out.println("    public static Promise<Slice> " + methodName + "Slice(Aspect<" + sliceName + "> aspect,");
         out.println("                                              SliceCreationContext ctx) {");
         // Generate local adapter record
-        out.println("        record " + sliceRecordName + "(" + sliceName + " delegate) implements Slice, " + sliceName
+        out.println("        record " + sliceRecordName + "(" + sliceName + " delegate, ResourceProviderFacade resources) implements Slice, " + sliceName
                     + " {");
         out.println("            @Override");
         out.println("            public List<SliceMethod<?, ?>> methods() {");
@@ -793,6 +889,12 @@ public class FactoryClassGenerator {
         }
         out.println("                );");
         out.println("            }");
+        // Generate stop() override for resource cleanup
+        out.println();
+        out.println("            @Override");
+        out.println("            public Promise<Unit> stop() {");
+        out.println("                return resources.releaseAll(\"" + escapeJavaString(sliceArtifactCoordinate) + "\");");
+        out.println("            }");
         // Generate delegate methods for the slice interface
         for (var method : methods) {
             out.println();
@@ -822,8 +924,9 @@ public class FactoryClassGenerator {
         }
         out.println("        }");
         out.println();
+        out.println("        var resources = ctx.resources();");
         out.println("        return " + methodName + "(aspect, ctx)");
-        out.println("                   .map(" + sliceRecordName + "::new);");
+        out.println("                   .map(impl -> new " + sliceRecordName + "(impl, resources));");
         out.println("    }");
     }
 
@@ -897,6 +1000,36 @@ public class FactoryClassGenerator {
             return "";
         }
         return Character.toUpperCase(name.charAt(0)) + name.substring(1);
+    }
+
+    /// Convert PascalCase to kebab-case.
+    /// Examples: OrderService -> order-service, PlaceOrder -> place-order
+    private String toKebabCase(String pascalCase) {
+        if (pascalCase == null || pascalCase.isEmpty()) {
+            return pascalCase;
+        }
+        var result = new StringBuilder();
+        for (int i = 0; i < pascalCase.length(); i++) {
+            char c = pascalCase.charAt(i);
+            if (Character.isUpperCase(c)) {
+                if (i > 0) {
+                    result.append('-');
+                }
+                result.append(Character.toLowerCase(c));
+            } else {
+                result.append(c);
+            }
+        }
+        return result.toString();
+    }
+
+    /// Compute the slice artifact coordinate string for resource cleanup.
+    /// Format: "groupId:artifactId-kebab-case-slice-name"
+    private String computeSliceArtifactCoordinate(String sliceName) {
+        var options = processingEnv.getOptions();
+        var groupId = options.getOrDefault("slice.groupId", "unknown");
+        var artifactId = options.getOrDefault("slice.artifactId", "unknown");
+        return groupId + ":" + artifactId + "-" + toKebabCase(sliceName);
     }
 
     /// Generate resource provisioning call: ctx.resources().provide(Type.class, "config.section")

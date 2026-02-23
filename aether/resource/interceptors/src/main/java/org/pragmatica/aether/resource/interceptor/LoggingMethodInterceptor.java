@@ -9,7 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /// Method interceptor that logs entry, exit, and duration of method invocations.
-record LoggingMethodInterceptor(LogConfig config) implements MethodInterceptor {
+public record LoggingMethodInterceptor(LogConfig config) implements MethodInterceptor {
     private static final Logger log = LoggerFactory.getLogger(LoggingMethodInterceptor.class);
 
     @Override

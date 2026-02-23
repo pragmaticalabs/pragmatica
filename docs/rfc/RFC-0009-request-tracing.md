@@ -1,13 +1,15 @@
 ---
 RFC: 0009
 Title: Built-in Request Tracing
-Status: Draft
-Superseded-By:
+Status: Superseded
+Superseded-By: RFC-0010
 Author: Aether Team
 Created: 2026-02-15
-Updated: 2026-02-15
+Updated: 2026-02-20
 Affects: [aether-invoke, aether-node, forge-core]
 ---
+
+> **Note:** This RFC has been superseded by [RFC-0010: Unified Invocation Observability](RFC-0010-unified-invocation-observability.md), which unifies request tracing with depth-based automatic logging into a single invocation tree system.
 
 ## Summary
 

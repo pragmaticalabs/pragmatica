@@ -37,7 +37,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class NetworkPartitionE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.16.0");
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.17.0");
     private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
 
     // Common timeouts (CI gets 2x via adapt())
@@ -69,9 +69,8 @@ class NetworkPartitionE2ETest {
         // Restore all stopped nodes
         restoreAllNodes();
 
-        // Wait for cluster stability
-        cluster.awaitLeader();
-        cluster.awaitAllHealthy();
+        // Wait for full cluster convergence (all nodes agree on leader + peers)
+        cluster.awaitClusterConverged();
 
         // Undeploy all slices
         undeployAllSlices();
@@ -134,7 +133,6 @@ class NetworkPartitionE2ETest {
 
     @Test
     @Order(3)
-    @Disabled("Flaky - timeout in leader failover/partition recovery scenarios")
     void partitionHealing_clusterReconverges() {
         cluster.awaitLeader();
 
@@ -171,7 +169,6 @@ class NetworkPartitionE2ETest {
 
     @Test
     @Order(4)
-    @Disabled("Flaky - timeout in leader failover/partition recovery scenarios")
     void quorumTransitions_maintainConsistency() {
         cluster.awaitLeader();
 

@@ -484,6 +484,82 @@ affinity_key = "customerId"
 
 If no config file exists, default values are used (logged as info). This is intentional - you don't need a config file for simple slices.
 
+### Pub-Sub Messaging
+
+Slices can subscribe to topics for event-driven communication. A subscription handler receives messages published to a topic.
+
+**1. Define a subscription annotation:**
+```java
+@ResourceQualifier(type = Subscriber.class, config = "messaging.orders")
+@Retention(RUNTIME) @Target(METHOD)
+public @interface OrderEvents {}
+```
+
+**2. Annotate a handler method:**
+```java
+@Slice
+public interface OrderProcessor {
+    @OrderEvents
+    Promise<Unit> handleOrderEvent(OrderEvent event);
+}
+```
+
+**3. Configure the topic in TOML:**
+```toml
+# src/main/resources/slices/OrderProcessor.toml
+[messaging.orders]
+topic = "order-events"
+```
+
+Subscription methods must return `Promise<Unit>`. The runtime registers the handler with the cluster pub-sub system and routes messages to any node with the slice loaded.
+
+### Scheduled Invocation
+
+Slices can declare methods for periodic execution using interval or cron scheduling.
+
+**1. Define a schedule annotation:**
+```java
+@ResourceQualifier(type = Scheduled.class, config = "scheduling.cleanup")
+@Retention(RUNTIME) @Target(METHOD)
+public @interface CleanupSchedule {}
+```
+
+**2. Annotate a zero-parameter method:**
+```java
+@Slice
+public interface OrderService {
+    Promise<OrderResult> placeOrder(PlaceOrderRequest request);
+
+    @CleanupSchedule
+    Promise<Unit> cleanupExpiredOrders();
+}
+```
+
+**3. Configure the schedule in TOML:**
+```toml
+# src/main/resources/slices/OrderService.toml
+[scheduling.cleanup]
+interval = "5m"       # fixed-rate: "30s", "5m", "1h", "1d"
+leaderOnly = true     # only the leader node triggers (default: true)
+```
+
+Or use cron expressions:
+```toml
+[scheduling.report]
+cron = "0 0 * * *"    # standard 5-field: min hour dom month dow
+leaderOnly = true
+```
+
+**Method constraints** (validated at compile time):
+- Zero parameters
+- Returns `Promise<Unit>`
+
+**Execution modes:**
+- `leaderOnly = true` (default): only the leader node starts the timer; invocation routes to any node with the slice
+- `leaderOnly = false`: every node with the slice runs its own timer
+
+Schedules are stored in the cluster KV-Store and can be updated at runtime via the Management API (`PUT /api/scheduled-tasks/{configSection}`).
+
 ## Build Workflow
 
 ### Standard Build
