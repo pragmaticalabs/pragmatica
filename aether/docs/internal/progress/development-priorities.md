@@ -396,7 +396,7 @@ Release 0.17.0 delivers three major themes: production-grade DHT (anti-entropy r
 
 ## Infra Development
 
-All infrastructure modules transition to unified `@ResourceQualifier(type, config)` pattern. See #3 for remaining item (Scheduler).
+All infrastructure modules transition to unified `@ResourceQualifier(type, config)` pattern. All resource types complete as of v0.17.0.
 
 | Module | Target | Annotation position | Status |
 |--------|--------|---------------------|--------|
@@ -405,7 +405,7 @@ All infrastructure modules transition to unified `@ResourceQualifier(type, confi
 | infra-ratelimit | `@ResourceQualifier(type=RateLimiter.class)` | Method (wraps) | **Done** — rate-limit interceptor |
 | infra-http | `@ResourceQualifier(type=HttpClient.class)` | Parameter | **Done** — `@Http` qualifier, JSON API |
 | infra-pubsub | `Publisher<T>`, `Subscriber`, `@Subscription` | Parameter / Method | **Done** — RFC-0011, code generation, 18 tests (v0.17.0) |
-| infra-scheduler | `@ResourceQualifier(type=Scheduler.class)` | Method (triggers) | **Next** — see #3 |
+| infra-scheduler | `@ResourceQualifier(type=Scheduled.class)` | Method (triggers) | **Done** — interval/cron, leader-only, 29 tests (v0.17.0) |
 | infra-statemachine | Lightweight builder DSL in core | — | Business logic, not a provisioned resource |
 | infra-config | **Remove** | — | Dynamic Configuration via KV store covers this |
 | infra-aspect | **Keep** — Fn1 composition utilities | — | `Aspects.withCaching()`, `@Key`, etc. |
