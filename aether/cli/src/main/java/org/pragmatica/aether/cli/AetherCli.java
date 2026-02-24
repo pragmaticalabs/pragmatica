@@ -117,9 +117,7 @@ public class AetherCli implements Runnable {
 
     @SuppressWarnings("JBCT-SEQ-01")
     private static boolean isConnectionOption(String arg) {
-        return arg.startsWith("-c") || arg.startsWith("--connect") || arg.startsWith("--config")
-               || arg.startsWith("-k") || arg.startsWith("--api-key")
-               || arg.equals("-h") || arg.equals("--help") || arg.equals("-V") || arg.equals("--version");
+        return arg.startsWith("-c") || arg.startsWith("--connect") || arg.startsWith("--config") || arg.startsWith("-k") || arg.startsWith("--api-key") || arg.equals("-h") || arg.equals("--help") || arg.equals("-V") || arg.equals("--version");
     }
 
     @SuppressWarnings("JBCT-UTIL-02")
@@ -239,11 +237,10 @@ public class AetherCli implements Runnable {
         var args = new ArrayList<String>();
         args.add("--connect");
         args.add(nodeAddress);
-        var key = resolveApiKey();
-        if (key != null) {
+        resolveApiKey().onPresent(key -> {
             args.add("--api-key");
             args.add(key);
-        }
+        });
         for (var arg : replArgs) {
             args.add(arg);
         }
@@ -298,20 +295,14 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @SuppressWarnings("JBCT-SEQ-01")
-    private String resolveApiKey() {
-        if (apiKey != null && !apiKey.isBlank()) {
-            return apiKey;
-        }
-        var envKey = System.getenv("AETHER_API_KEY");
-        return (envKey != null && !envKey.isBlank()) ? envKey : null;
+    private Option<String> resolveApiKey() {
+        return option(apiKey).filter(k -> !k.isBlank())
+                             .orElse(() -> option(System.getenv("AETHER_API_KEY"))
+                                               .filter(k -> !k.isBlank()));
     }
 
     private void attachApiKey(HttpRequest.Builder builder) {
-        var key = resolveApiKey();
-        if (key != null) {
-            builder.header("X-API-Key", key);
-        }
+        resolveApiKey().onPresent(key -> builder.header("X-API-Key", key));
     }
 
     private HttpRequest buildGetRequest(URI uri) {
