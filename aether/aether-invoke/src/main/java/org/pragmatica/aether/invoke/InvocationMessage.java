@@ -18,6 +18,14 @@ import org.pragmatica.consensus.NodeId;
 /// All invocations carry a requestId for distributed tracing.
 /// The requestId remains constant through the entire invocation chain
 /// (slice A → slice B → slice C), while correlationId is unique per request/response pair.
+///
+///
+/// Observability fields (RFC-0010):
+///
+///   - depth: invocation depth in the call chain (0 = entry point)
+///   - hops: number of network hops traversed
+///   - sampled: whether this request is sampled for detailed tracing
+///
 public sealed interface InvocationMessage extends ProtocolMessage {
     /// Request to invoke a method on a remote slice.
     ///
@@ -28,14 +36,43 @@ public sealed interface InvocationMessage extends ProtocolMessage {
     /// @param method         Method name to call
     /// @param payload        Serialized request parameter
     /// @param expectResponse Whether caller expects a response
+    /// @param depth          Invocation depth in the call chain (0 = entry point)
+    /// @param hops           Number of network hops traversed
+    /// @param sampled        Whether this request is sampled for detailed tracing
     record InvokeRequest(NodeId sender,
                          String correlationId,
                          String requestId,
                          Artifact targetSlice,
                          MethodName method,
                          byte[] payload,
-                         boolean expectResponse) implements InvocationMessage {
-        /// Factory method following JBCT naming convention. */
+                         boolean expectResponse,
+                         int depth,
+                         int hops,
+                         boolean sampled) implements InvocationMessage {
+        /// Factory method following JBCT naming convention.
+        public static InvokeRequest invokeRequest(NodeId sender,
+                                                  String correlationId,
+                                                  String requestId,
+                                                  Artifact targetSlice,
+                                                  MethodName method,
+                                                  byte[] payload,
+                                                  boolean expectResponse,
+                                                  int depth,
+                                                  int hops,
+                                                  boolean sampled) {
+            return new InvokeRequest(sender,
+                                     correlationId,
+                                     requestId,
+                                     targetSlice,
+                                     method,
+                                     payload,
+                                     expectResponse,
+                                     depth,
+                                     hops,
+                                     sampled);
+        }
+
+        /// Backward-compatible factory (defaults: depth=0, hops=0, sampled=false).
         public static InvokeRequest invokeRequest(NodeId sender,
                                                   String correlationId,
                                                   String requestId,
@@ -43,7 +80,16 @@ public sealed interface InvocationMessage extends ProtocolMessage {
                                                   MethodName method,
                                                   byte[] payload,
                                                   boolean expectResponse) {
-            return new InvokeRequest(sender, correlationId, requestId, targetSlice, method, payload, expectResponse);
+            return new InvokeRequest(sender,
+                                     correlationId,
+                                     requestId,
+                                     targetSlice,
+                                     method,
+                                     payload,
+                                     expectResponse,
+                                     0,
+                                     0,
+                                     false);
         }
     }
 

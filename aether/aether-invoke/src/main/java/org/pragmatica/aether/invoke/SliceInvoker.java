@@ -241,7 +241,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                      Serializer serializer,
                                      Deserializer deserializer,
                                      RollingUpdateManager rollingUpdateManager,
-                                     DynamicAspectInterceptor aspectInterceptor) {
+                                     ObservabilityInterceptor observabilityInterceptor) {
         return new SliceInvokerImpl(self,
                                     network,
                                     endpointRegistry,
@@ -250,7 +250,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                     deserializer,
                                     DEFAULT_TIMEOUT_MS,
                                     rollingUpdateManager,
-                                    aspectInterceptor);
+                                    observabilityInterceptor);
     }
 
     /// Create with custom timeout.
@@ -262,7 +262,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                      Deserializer deserializer,
                                      long timeoutMs,
                                      RollingUpdateManager rollingUpdateManager,
-                                     DynamicAspectInterceptor aspectInterceptor) {
+                                     ObservabilityInterceptor observabilityInterceptor) {
         return new SliceInvokerImpl(self,
                                     network,
                                     endpointRegistry,
@@ -271,7 +271,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                     deserializer,
                                     timeoutMs,
                                     rollingUpdateManager,
-                                    aspectInterceptor);
+                                    observabilityInterceptor);
     }
 }
 
@@ -292,7 +292,7 @@ class SliceInvokerImpl implements SliceInvoker {
     private final long timeoutMs;
     private final ScheduledExecutorService scheduler;
     private final RollingUpdateManager rollingUpdateManager;
-    private final DynamicAspectInterceptor aspectInterceptor;
+    private final ObservabilityInterceptor observabilityInterceptor;
 
     // Pending request-response invocations awaiting responses
     // Maps correlationId -> (promise, createdAtMs)
@@ -316,7 +316,7 @@ class SliceInvokerImpl implements SliceInvoker {
                      Deserializer deserializer,
                      long timeoutMs,
                      RollingUpdateManager rollingUpdateManager,
-                     DynamicAspectInterceptor aspectInterceptor) {
+                     ObservabilityInterceptor observabilityInterceptor) {
         this.self = self;
         this.network = network;
         this.endpointRegistry = endpointRegistry;
@@ -325,7 +325,7 @@ class SliceInvokerImpl implements SliceInvoker {
         this.deserializer = deserializer;
         this.timeoutMs = timeoutMs;
         this.rollingUpdateManager = rollingUpdateManager;
-        this.aspectInterceptor = aspectInterceptor;
+        this.observabilityInterceptor = observabilityInterceptor;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(this::createSchedulerThread);
         // Schedule periodic cleanup of stale pending invocations
         scheduler.scheduleAtFixedRate(this::cleanupStaleInvocations,
@@ -408,12 +408,13 @@ class SliceInvokerImpl implements SliceInvoker {
     private Promise<Unit> invokeLocalFireAndForget(Artifact slice, MethodName method, Object request) {
         return invocationHandler.localSlice(slice)
                                 .async(SLICE_NOT_FOUND)
-                                .flatMap(bridge -> aspectInterceptor.intercept(slice,
-                                                                               method,
-                                                                               InvocationContext.getOrGenerateRequestId(),
-                                                                               () -> invokeViaBridge(bridge,
-                                                                                                     method,
-                                                                                                     request)))
+                                .flatMap(bridge -> observabilityInterceptor.intercept(slice,
+                                                                                      method,
+                                                                                      InvocationContext.getOrGenerateRequestId(),
+                                                                                      InvocationContext.currentDepth() + 1,
+                                                                                      true,
+                                                                                      // local
+        () -> invokeViaBridge(bridge, method, request)))
                                 .mapToUnit();
     }
 
@@ -422,7 +423,17 @@ class SliceInvokerImpl implements SliceInvoker {
         var correlationId = KSUID.ksuid()
                                  .toString();
         var requestId = InvocationContext.getOrGenerateRequestId();
-        var invokeRequest = InvokeRequest.invokeRequest(self, correlationId, requestId, slice, method, payload, false);
+        var invokeRequest = InvokeRequest.invokeRequest(self,
+                                                        correlationId,
+                                                        requestId,
+                                                        slice,
+                                                        method,
+                                                        payload,
+                                                        false,
+                                                        InvocationContext.currentDepth() + 1,
+                                                        1,
+                                                        // hops=1 for remote
+        InvocationContext.isSampled());
         network.send(endpoint.nodeId(), invokeRequest);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent fire-and-forget invocation to {}: {}.{}",
@@ -475,7 +486,17 @@ class SliceInvokerImpl implements SliceInvoker {
                                 .add(correlationId);
         pendingPromise.timeout(timeSpan(timeoutMs).millis())
                       .onResult(_ -> removePendingInvocation(correlationId, targetNode));
-        var invokeRequest = InvokeRequest.invokeRequest(self, correlationId, requestId, slice, method, payload, true);
+        var invokeRequest = InvokeRequest.invokeRequest(self,
+                                                        correlationId,
+                                                        requestId,
+                                                        slice,
+                                                        method,
+                                                        payload,
+                                                        true,
+                                                        InvocationContext.currentDepth() + 1,
+                                                        1,
+                                                        // hops=1 for remote
+        InvocationContext.isSampled());
         network.send(targetNode, invokeRequest);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent InvokeRequest to {}: {}.{} [{}]",
@@ -583,12 +604,13 @@ class SliceInvokerImpl implements SliceInvoker {
     private <R> void invokeLocalForFailover(Promise<R> promise, FailoverContext<R> ctx) {
         invocationHandler.localSlice(ctx.slice)
                          .async(SLICE_NOT_FOUND)
-                         .flatMap(bridge -> aspectInterceptor.intercept(ctx.slice,
-                                                                        ctx.method,
-                                                                        ctx.requestId,
-                                                                        () -> invokeViaBridge(bridge,
-                                                                                              ctx.method,
-                                                                                              ctx.request)))
+                         .flatMap(bridge -> observabilityInterceptor.intercept(ctx.slice,
+                                                                               ctx.method,
+                                                                               ctx.requestId,
+                                                                               InvocationContext.currentDepth() + 1,
+                                                                               true,
+                                                                               // local
+        () -> invokeViaBridge(bridge, ctx.method, ctx.request)))
                          .onSuccess(result -> promise.succeed((R) result))
                          .onFailure(cause -> handleFailoverFailure(promise, ctx, self, cause));
     }
@@ -612,7 +634,11 @@ class SliceInvokerImpl implements SliceInvoker {
                                                         ctx.slice,
                                                         ctx.method,
                                                         payload,
-                                                        true);
+                                                        true,
+                                                        InvocationContext.currentDepth() + 1,
+                                                        1,
+                                                        // hops=1 for remote
+        InvocationContext.isSampled());
         network.send(targetNode, invokeRequest);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent failover invocation to {}: {}.{} [{}] (attempt {})",
@@ -737,12 +763,13 @@ class SliceInvokerImpl implements SliceInvoker {
     public <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
         return invocationHandler.localSlice(slice)
                                 .async(SLICE_NOT_FOUND)
-                                .flatMap(bridge -> aspectInterceptor.intercept(slice,
-                                                                               method,
-                                                                               InvocationContext.getOrGenerateRequestId(),
-                                                                               () -> invokeViaBridge(bridge,
-                                                                                                     method,
-                                                                                                     request)));
+                                .flatMap(bridge -> observabilityInterceptor.intercept(slice,
+                                                                                      method,
+                                                                                      InvocationContext.getOrGenerateRequestId(),
+                                                                                      InvocationContext.currentDepth() + 1,
+                                                                                      true,
+                                                                                      // local
+        () -> invokeViaBridge(bridge, method, request)));
     }
 
     @SuppressWarnings("unchecked")

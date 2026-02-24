@@ -4,11 +4,11 @@ import org.pragmatica.aether.api.routes.AlertRoutes;
 import org.pragmatica.aether.api.routes.ConfigRoutes;
 import org.pragmatica.aether.api.routes.ControllerRoutes;
 import org.pragmatica.aether.api.routes.DashboardRoutes;
-import org.pragmatica.aether.api.routes.DynamicAspectRoutes;
 import org.pragmatica.aether.api.routes.LogLevelRoutes;
 import org.pragmatica.aether.api.routes.ManagementRouter;
 import org.pragmatica.aether.api.routes.MavenProtocolRoutes;
 import org.pragmatica.aether.api.routes.MetricsRoutes;
+import org.pragmatica.aether.api.routes.ObservabilityRoutes;
 import org.pragmatica.aether.api.routes.RepositoryRoutes;
 import org.pragmatica.aether.api.routes.RollingUpdateRoutes;
 import org.pragmatica.aether.api.routes.RouteHandler;
@@ -20,6 +20,7 @@ import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.aether.http.security.SecurityValidator;
+import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.deployment.DeploymentMap.SliceDeploymentInfo;
@@ -76,7 +77,8 @@ public interface ManagementServer {
     static ManagementServer managementServer(int port,
                                              Supplier<AetherNode> nodeSupplier,
                                              AlertManager alertManager,
-                                             DynamicAspectRegistry aspectManager,
+                                             ObservabilityDepthRegistry depthRegistry,
+                                             InvocationTraceStore traceStore,
                                              LogLevelRegistry logLevelRegistry,
                                              Option<DynamicConfigManager> dynamicConfigManager,
                                              ScheduledTaskRegistry scheduledTaskRegistry,
@@ -87,7 +89,8 @@ public interface ManagementServer {
         return new ManagementServerImpl(port,
                                         nodeSupplier,
                                         alertManager,
-                                        aspectManager,
+                                        depthRegistry,
+                                        traceStore,
                                         logLevelRegistry,
                                         dynamicConfigManager,
                                         scheduledTaskRegistry,
@@ -106,7 +109,8 @@ class ManagementServerImpl implements ManagementServer {
     private final int port;
     private final Supplier<AetherNode> nodeSupplier;
     private final AlertManager alertManager;
-    private final DynamicAspectRegistry aspectManager;
+    private final ObservabilityDepthRegistry depthRegistry;
+    private final InvocationTraceStore traceStore;
     private final LogLevelRegistry logLevelRegistry;
     private final DashboardMetricsPublisher metricsPublisher;
     private final StatusWebSocketHandler statusWsHandler;
@@ -133,7 +137,8 @@ class ManagementServerImpl implements ManagementServer {
     ManagementServerImpl(int port,
                          Supplier<AetherNode> nodeSupplier,
                          AlertManager alertManager,
-                         DynamicAspectRegistry aspectManager,
+                         ObservabilityDepthRegistry depthRegistry,
+                         InvocationTraceStore traceStore,
                          LogLevelRegistry logLevelRegistry,
                          Option<DynamicConfigManager> dynamicConfigManager,
                          ScheduledTaskRegistry scheduledTaskRegistry,
@@ -144,12 +149,13 @@ class ManagementServerImpl implements ManagementServer {
         this.port = port;
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
-        this.aspectManager = aspectManager;
+        this.depthRegistry = depthRegistry;
+        this.traceStore = traceStore;
         this.logLevelRegistry = logLevelRegistry;
         this.securityValidator = securityValidator;
         this.securityEnabled = securityEnabled;
         this.wsAuthenticator = WebSocketAuthenticator.webSocketAuthenticator(securityValidator, securityEnabled);
-        this.metricsPublisher = new DashboardMetricsPublisher(nodeSupplier, alertManager, aspectManager);
+        this.metricsPublisher = new DashboardMetricsPublisher(nodeSupplier, alertManager);
         this.statusWsHandler = new StatusWebSocketHandler(wsAuthenticator);
         this.statusWsPublisher = StatusWebSocketPublisher.statusWebSocketPublisher(statusWsHandler,
                                                                                    () -> buildStatusJson(nodeSupplier));
@@ -169,8 +175,8 @@ class ManagementServerImpl implements ManagementServer {
                                                                         .appHttpServer());
         routeSources.add(statusRoutes);
         routeSources.add(AlertRoutes.alertRoutes(alertManager));
-        routeSources.add(DynamicAspectRoutes.dynamicAspectRoutes(aspectManager));
         routeSources.add(LogLevelRoutes.logLevelRoutes(logLevelRegistry));
+        routeSources.add(ObservabilityRoutes.observabilityRoutes(depthRegistry, traceStore));
         routeSources.add(ControllerRoutes.controllerRoutes(nodeSupplier));
         routeSources.add(SliceRoutes.sliceRoutes(nodeSupplier));
         routeSources.add(MetricsRoutes.metricsRoutes(nodeSupplier, observability));

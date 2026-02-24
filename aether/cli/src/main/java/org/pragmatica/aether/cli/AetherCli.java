@@ -67,7 +67,8 @@ AetherCli.InvocationMetricsCommand.class,
 AetherCli.ControllerCommand.class,
 AetherCli.AlertsCommand.class,
 AetherCli.ThresholdsCommand.class,
-AetherCli.AspectsCommand.class,
+AetherCli.TracesCommand.class,
+AetherCli.ObservabilityCommand.class,
 AetherCli.LoggingCommand.class,
 AetherCli.ConfigCommand.class,
 AetherCli.ScheduledTasksCommand.class,
@@ -1609,165 +1610,165 @@ public class AetherCli implements Runnable {
         }
     }
 
-    // ===== Aspects Commands =====
-    @Command(name = "aspects",
-    description = "Dynamic aspect management",
-    subcommands = {AspectsCommand.ListCommand.class,
-    AspectsCommand.SetCommand.class,
-    AspectsCommand.RemoveCommand.class})
-    static class AspectsCommand implements Runnable {
+    // ===== Traces Commands =====
+    @Command(name = "traces",
+    description = "View distributed invocation traces",
+    subcommands = {TracesCommand.ListCommand.class,
+    TracesCommand.GetCommand.class,
+    TracesCommand.StatsCommand.class})
+    static class TracesCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
 
         @Override
         public void run() {
-            // Default: show all aspects as table
-            var response = parent.fetchFromNode("/api/aspects");
-            printAspectsTable(response);
+            CommandLine.usage(this, System.out);
         }
 
-        @Command(name = "list", description = "List all configured aspects")
+        @Command(name = "list", description = "List recent traces")
         static class ListCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
-            private AspectsCommand aspectsParent;
+            private TracesCommand tracesParent;
+
+            @CommandLine.Option(names = {"-l", "--limit"}, description = "Max traces", defaultValue = "100")
+            private int limit;
+
+            @CommandLine.Option(names = {"-m", "--method"}, description = "Filter by method")
+            private String method;
+
+            @CommandLine.Option(names = {"-s", "--status"}, description = "Filter by status (SUCCESS/FAILURE)")
+            private String status;
 
             @Override
             public Integer call() {
-                var response = aspectsParent.parent.fetchFromNode("/api/aspects");
-                printAspectsTable(response);
-                return 0;
-            }
-        }
-
-        @Command(name = "set", description = "Set aspect mode on a method")
-        static class SetCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private AspectsCommand aspectsParent;
-
-            @Parameters(index = "0", description = "Target (artifact#method)")
-            private String target;
-
-            @Parameters(index = "1", description = "Mode (NONE, LOG, METRICS, LOG_AND_METRICS)")
-            private String mode;
-
-            @Override
-            public Integer call() {
-                var hashIndex = target.indexOf('#');
-                if (hashIndex == - 1) {
-                    System.err.println("Invalid target format. Expected: artifact#method");
-                    return 1;
-                }
-                var artifact = target.substring(0, hashIndex);
-                var method = target.substring(hashIndex + 1);
-                var normalizedMode = mode.toUpperCase();
-                var body = buildAspectSetBody(artifact, method, normalizedMode);
-                var response = aspectsParent.parent.postToNode("/api/aspects", body);
-                System.out.println(formatJson(response));
+                var path = buildTracesListPath();
+                System.out.println(formatJson(tracesParent.parent.fetchFromNode(path)));
                 return 0;
             }
 
-            private static String buildAspectSetBody(String artifact, String method, String normalizedMode) {
-                return "{\"artifact\":\"" + artifact + "\",\"method\":\"" + method + "\",\"mode\":\"" + normalizedMode
-                       + "\"}";
+            @SuppressWarnings("JBCT-UTIL-02")
+            private String buildTracesListPath() {
+                var sb = new StringBuilder("/api/traces?limit=").append(limit);
+                option(method).onPresent(m -> sb.append("&method=")
+                                                .append(m));
+                option(status).onPresent(s -> sb.append("&status=")
+                                                .append(s));
+                return sb.toString();
             }
         }
 
-        @Command(name = "remove", description = "Remove aspect configuration")
-        static class RemoveCommand implements Callable<Integer> {
+        @Command(name = "get", description = "Get traces for a request ID")
+        static class GetCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
-            private AspectsCommand aspectsParent;
+            private TracesCommand tracesParent;
 
-            @Parameters(index = "0", description = "Target (artifact#method)")
-            private String target;
+            @Parameters(index = "0", description = "Request ID")
+            private String requestId;
 
             @Override
             public Integer call() {
-                var hashIndex = target.indexOf('#');
-                if (hashIndex == - 1) {
-                    System.err.println("Invalid target format. Expected: artifact#method");
-                    return 1;
-                }
-                var artifact = target.substring(0, hashIndex);
-                var method = target.substring(hashIndex + 1);
-                var response = aspectsParent.parent.deleteFromNode("/api/aspects/" + artifact + "/" + method);
+                var response = tracesParent.parent.fetchFromNode("/api/traces/" + requestId);
                 System.out.println(formatJson(response));
                 return 0;
             }
         }
 
-        @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"})
-        private static void printAspectsTable(String json) {
-            // Parse JSON map: {"key::mode", ...}
-            var jsonOpt = option(json).map(String::trim)
-                                .filter(s -> !s.equals("{}"))
-                                .filter(s -> !s.contains("\"error\":"));
-            if (jsonOpt.isEmpty()) {
-                printAspectsError(json);
-                return;
+        @Command(name = "stats", description = "Show trace statistics")
+        static class StatsCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private TracesCommand tracesParent;
+
+            @Override
+            public Integer call() {
+                var response = tracesParent.parent.fetchFromNode("/api/traces/stats");
+                System.out.println(formatJson(response));
+                return 0;
             }
-            System.out.printf("%-40s %-20s %s%n", "ARTIFACT", "METHOD", "MODE");
-            System.out.println("\u2500".repeat(75));
-            // Simple JSON map parsing: {"artifactBase/method":"MODE", ...}
-            var content = extractMapContent(jsonOpt.or(""));
-            if (content.trim()
-                       .isEmpty()) {
-                System.out.println("No active aspects");
-                return;
+        }
+    }
+
+    // ===== Observability Commands =====
+    @Command(name = "observability",
+    description = "Manage observability configuration",
+    subcommands = {ObservabilityCommand.DepthListCommand.class,
+    ObservabilityCommand.DepthSetCommand.class,
+    ObservabilityCommand.DepthRemoveCommand.class})
+    static class ObservabilityCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        @Command(name = "depth", description = "List depth overrides")
+        static class DepthListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ObservabilityCommand obsParent;
+
+            @Override
+            public Integer call() {
+                var response = obsParent.parent.fetchFromNode("/api/observability/depth");
+                System.out.println(formatJson(response));
+                return 0;
             }
-            parseAndPrintAspectEntries(content);
         }
 
-        @SuppressWarnings("JBCT-UTIL-02")
-        private static void printAspectsError(String json) {
-            option(json).filter(s -> s.contains("\"error\":"))
-                  .onPresent(s -> System.out.println(formatJson(s)))
-                  .onEmpty(() -> System.out.println("No active aspects"));
-        }
+        @Command(name = "depth-set", description = "Set depth threshold for a method")
+        static class DepthSetCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ObservabilityCommand obsParent;
 
-        private static String extractMapContent(String json) {
-            var content = json.trim();
-            if (content.startsWith("{")) content = content.substring(1);
-            if (content.endsWith("}")) content = content.substring(0, content.length() - 1);
-            return content;
-        }
+            @Parameters(index = "0", description = "Artifact#method (e.g., org.example:my-slice:1.0.0#processOrder)")
+            private String target;
 
-        @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
-        private static void parseAndPrintAspectEntries(String content) {
-            // Parse key-value pairs
-            var inString = false;
-            var tokenStart = - 1;
-            var key = "";
-            var expectValue = false;
-            for (int i = 0; i < content.length(); i++) {
-                var c = content.charAt(i);
-                if (c == '"' && (i == 0 || content.charAt(i - 1) != '\\')) {
-                    if (!inString) {
-                        inString = true;
-                        tokenStart = i + 1;
-                    } else {
-                        inString = false;
-                        var token = content.substring(tokenStart, i);
-                        if (!expectValue) {
-                            key = token;
-                            expectValue = true;
-                        } else {
-                            printAspectEntry(key, token);
-                            expectValue = false;
-                        }
-                    }
+            @Parameters(index = "1", description = "Depth threshold")
+            private int depthThreshold;
+
+            @Override
+            @SuppressWarnings("JBCT-UTIL-02")
+            public Integer call() {
+                var hashIndex = target.indexOf('#');
+                if (hashIndex == - 1) {
+                    System.err.println("Invalid format. Use: artifact#method");
+                    return 1;
                 }
+                var artifact = target.substring(0, hashIndex);
+                var method = target.substring(hashIndex + 1);
+                var body = buildDepthSetBody(artifact, method);
+                var response = obsParent.parent.postToNode("/api/observability/depth", body);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+
+            private String buildDepthSetBody(String artifact, String method) {
+                return "{\"artifact\":\"" + artifact + "\",\"method\":\"" + method + "\",\"depthThreshold\":" + depthThreshold
+                       + "}";
             }
         }
 
-        private static void printAspectEntry(String key, String mode) {
-            var slashIndex = key.indexOf('/');
-            var artifact = slashIndex != - 1
-                           ? key.substring(0, slashIndex)
-                           : key;
-            var method = slashIndex != - 1
-                         ? key.substring(slashIndex + 1)
-                         : "";
-            System.out.printf("%-40s %-20s %s%n", artifact, method, mode);
+        @Command(name = "depth-remove", description = "Remove depth override")
+        static class DepthRemoveCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ObservabilityCommand obsParent;
+
+            @Parameters(index = "0", description = "Artifact#method")
+            private String target;
+
+            @Override
+            public Integer call() {
+                var hashIndex = target.indexOf('#');
+                if (hashIndex == - 1) {
+                    System.err.println("Invalid format. Use: artifact#method");
+                    return 1;
+                }
+                var artifact = target.substring(0, hashIndex);
+                var method = target.substring(hashIndex + 1);
+                var response = obsParent.parent.deleteFromNode("/api/observability/depth/" + artifact + "/" + method);
+                System.out.println(formatJson(response));
+                return 0;
+            }
         }
     }
 

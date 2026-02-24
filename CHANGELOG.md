@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [0.18.0] - Unreleased
 
 ### Added
+- **Unified Invocation Observability (RFC-0010)** — sampling-based distributed tracing with depth-to-SLF4J bridge
+  - `InvocationNode` trace record with requestId, depth, caller/callee, duration, outcome, hops
+  - `AdaptiveSampler` — per-node throughput-aware sampling (auto-adjusts: 100% at low load, ~1% at 50K/sec)
+  - `InvocationTraceStore` — thread-safe ring buffer (50K capacity) for recent traces
+  - `ObservabilityInterceptor` — replaces `DynamicAspectInterceptor` with sampling + depth-based SLF4J logging
+  - `ObservabilityDepthRegistry` — per-method depth config via KV-store consensus with cluster notifications
+  - `ObservabilityConfig` — depth threshold + sampling target configuration
+  - Wire protocol: `InvokeRequest` extended with `depth`, `hops`, `sampled` fields
+  - `InvocationContext` — ScopedValue-based `DEPTH` and `SAMPLED` propagation across invocation chains
+  - REST API: `GET /api/traces`, `GET /api/traces/{requestId}`, `GET /api/traces/stats`, `GET/POST/DELETE /api/observability/depth`
+  - CLI: `traces list|get|stats`, `observability depth|depth-set|depth-remove`
+  - Forge proxy routes for trace and depth endpoints
 - Liveness probe (`/health/live`) and readiness probe (`/health/ready`) with component-level checks (consensus, routes, quorum) for container orchestrator compatibility
 - RBAC Tier 1: API key authentication for management server, app HTTP server, and WebSocket connections
 - Per-API-key names and roles via config (`[app-http.api-keys.*]` TOML sections or `AETHER_API_KEYS` env)
@@ -20,6 +32,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 
 ### Changed
+- **BREAKING:** Removed `DynamicAspectMode`, `DynamicAspectInterceptor`, `DynamicAspectRegistry`, `DynamicAspectRoutes`, `AspectProxyRoutes` — superseded by Unified Observability
+- **BREAKING:** Removed `/api/aspects` REST endpoints and `aspects` CLI command — use `/api/observability/depth` and `observability` command instead
+- Removed `DynamicAspectKey`/`DynamicAspectValue` from KV-store types — replaced by `ObservabilityDepthKey`/`ObservabilityDepthValue`
 
 ## [0.17.0] - 2026-02-23
 

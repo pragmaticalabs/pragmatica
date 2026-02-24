@@ -55,7 +55,7 @@ class SliceInvokerAffinityTest {
                                              stubSerializer,
                                              stubDeserializer,
                                              stubRollingUpdateManager,
-                                             DynamicAspectInterceptor.noOp());
+                                             ObservabilityInterceptor.noOp());
     }
 
     private void registerEndpoint(Artifact artifact, MethodName method, int instance, NodeId nodeId) {

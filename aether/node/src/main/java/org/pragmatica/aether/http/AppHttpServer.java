@@ -304,7 +304,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                        String path,
                                        String requestId) {
         var principal = securityContext.principal()
-                                      .value();
+                                       .value();
         if (config.securityEnabled()) {
             AuditLog.authSuccess(requestId, principal, method, path);
         }

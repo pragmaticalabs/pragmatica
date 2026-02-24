@@ -22,6 +22,7 @@ RFCs document design decisions affecting multiple projects in the Pragmatica eco
 | [RFC-0009](RFC-0009-request-tracing.md) | Request Tracing | Superseded | aether |
 | [RFC-0010](RFC-0010-unified-invocation-observability.md) | Unified Invocation Observability | Draft | aether-invoke, aether-node, forge-core, slice-processor, resource-api |
 | [RFC-0011](RFC-0011-messaging-and-resource-lifecycle.md) | Messaging & Resource Lifecycle | Draft | slice-processor, slice-api, aether-invoke, aether-deployment, resource-api |
+| [RFC-0012](RFC-0012-resource-provisioning.md) | Resource Provisioning Architecture | Draft | jbct-cli, aether |
 
 ## Process
 

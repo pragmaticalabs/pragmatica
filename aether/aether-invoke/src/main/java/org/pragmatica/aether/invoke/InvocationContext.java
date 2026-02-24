@@ -40,6 +40,8 @@ public final class InvocationContext {
     private static final ScopedValue<String> REQUEST_ID = ScopedValue.newInstance();
     private static final ScopedValue<String> PRINCIPAL = ScopedValue.newInstance();
     private static final ScopedValue<String> ORIGIN_NODE = ScopedValue.newInstance();
+    private static final ScopedValue<Integer> DEPTH = ScopedValue.newInstance();
+    private static final ScopedValue<Boolean> SAMPLED = ScopedValue.newInstance();
 
     private static final String MDC_KEY = "requestId";
     private static final String MDC_PRINCIPAL = "principal";
@@ -84,6 +86,18 @@ public final class InvocationContext {
                : generateRequestId();
     }
 
+    /// Get the current invocation depth (0 if not in an invocation context).
+    public static int currentDepth() {
+        return DEPTH.isBound()
+               ? DEPTH.get()
+               : 0;
+    }
+
+    /// Check if the current request is sampled for tracing.
+    public static boolean isSampled() {
+        return SAMPLED.isBound() && SAMPLED.get();
+    }
+
     /// Run a supplier within a request ID scope.
     ///
     /// @param requestId the request ID to set for this scope
@@ -116,11 +130,13 @@ public final class InvocationContext {
         }
     }
 
-    /// Run a supplier within a full context scope (requestId + principal + originNode).
+    /// Run a supplier within a full context scope (requestId + principal + originNode + depth + sampled).
     ///
     /// @param requestId  the request ID to set for this scope
     /// @param principal  the principal identity (nullable)
     /// @param originNode the origin node identifier (nullable)
+    /// @param depth      the invocation depth
+    /// @param sampled    whether the request is sampled for tracing
     /// @param supplier   the supplier to execute within the scope
     /// @param <T>        the return type
     ///
@@ -128,12 +144,16 @@ public final class InvocationContext {
     public static <T> T runWithContext(String requestId,
                                        String principal,
                                        String originNode,
+                                       int depth,
+                                       boolean sampled,
                                        Supplier<T> supplier) {
         MDC.put(MDC_KEY, requestId);
         putIfNotNull(MDC_PRINCIPAL, principal);
         putIfNotNull(MDC_ORIGIN_NODE, originNode);
         try{
-            var carrier = ScopedValue.where(REQUEST_ID, requestId);
+            var carrier = ScopedValue.where(REQUEST_ID, requestId)
+                                     .where(DEPTH, depth)
+                                     .where(SAMPLED, sampled);
             if (principal != null) {
                 carrier = carrier.where(PRINCIPAL, principal);
             }
@@ -148,22 +168,28 @@ public final class InvocationContext {
         }
     }
 
-    /// Run a runnable within a full context scope (requestId + principal + originNode).
+    /// Run a runnable within a full context scope (requestId + principal + originNode + depth + sampled).
     ///
     /// @param requestId  the request ID to set for this scope
     /// @param principal  the principal identity (nullable)
     /// @param originNode the origin node identifier (nullable)
+    /// @param depth      the invocation depth
+    /// @param sampled    whether the request is sampled for tracing
     /// @param runnable   the runnable to execute within the scope
     @SuppressWarnings("JBCT-RET-01") // ScopedValue.run() requires Runnable — void is inherent
     public static void runWithContext(String requestId,
                                       String principal,
                                       String originNode,
+                                      int depth,
+                                      boolean sampled,
                                       Runnable runnable) {
         MDC.put(MDC_KEY, requestId);
         putIfNotNull(MDC_PRINCIPAL, principal);
         putIfNotNull(MDC_ORIGIN_NODE, originNode);
         try{
-            var carrier = ScopedValue.where(REQUEST_ID, requestId);
+            var carrier = ScopedValue.where(REQUEST_ID, requestId)
+                                     .where(DEPTH, depth)
+                                     .where(SAMPLED, sampled);
             if (principal != null) {
                 carrier = carrier.where(PRINCIPAL, principal);
             }
@@ -192,7 +218,9 @@ public final class InvocationContext {
     public static ContextSnapshot captureContext() {
         return new ContextSnapshot(currentRequestId().or((String) null),
                                    currentPrincipal().or((String) null),
-                                   currentOriginNode().or((String) null));
+                                   currentOriginNode().or((String) null),
+                                   currentDepth(),
+                                   isSampled());
     }
 
     /// Generate a new request ID using KSUID.
@@ -205,7 +233,13 @@ public final class InvocationContext {
 
     /// A snapshot of the invocation context that can be captured and restored
     /// across thread boundaries for async operations.
-    public record ContextSnapshot(String requestId, String principal, String originNode) {
+    ///
+    /// @param requestId  the request ID (null if no context was active)
+    /// @param principal  the principal identity (null if no context was active)
+    /// @param originNode the origin node identifier (null if no context was active)
+    /// @param depth      the invocation depth at capture time
+    /// @param sampled    whether the request was sampled at capture time
+    public record ContextSnapshot(String requestId, String principal, String originNode, int depth, boolean sampled) {
         /// Run a supplier with the captured context restored.
         ///
         /// @param supplier the supplier to execute
@@ -216,7 +250,7 @@ public final class InvocationContext {
             if (requestId == null) {
                 return supplier.get();
             }
-            return runWithContext(requestId, principal, originNode, supplier);
+            return runWithContext(requestId, principal, originNode, depth, sampled, supplier);
         }
 
         /// Run a runnable with the captured context restored.
@@ -228,7 +262,7 @@ public final class InvocationContext {
                 runnable.run();
                 return;
             }
-            runWithContext(requestId, principal, originNode, runnable);
+            runWithContext(requestId, principal, originNode, depth, sampled, runnable);
         }
     }
 }

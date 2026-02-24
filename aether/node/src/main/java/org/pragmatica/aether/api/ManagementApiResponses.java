@@ -226,16 +226,6 @@ public sealed interface ManagementApiResponses {
     record LogLevelResetResponse(String status,
                                  String logger) {}
 
-    // ===== Dynamic Aspect Routes =====
-    record AspectModeSetResponse(String status,
-                                 String artifact,
-                                 String method,
-                                 String mode) {}
-
-    record AspectRemovedResponse(String status,
-                                 String artifact,
-                                 String method) {}
-
     // ===== Controller Routes =====
     record ControllerStatusResponse(boolean enabled,
                                     long evaluationIntervalMs,

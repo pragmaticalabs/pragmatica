@@ -369,13 +369,13 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    /// Dynamic aspect key format:
+    /// Observability depth key format:
     /// ```
-    /// dynamic-aspect/{artifactBase}/{methodName}
+    /// obs-depth/{artifactBase}/{methodName}
     /// ```
-    /// Stores runtime aspect configuration (logging/metrics) per artifact method.
-    record DynamicAspectKey(String artifactBase, String methodName) implements AetherKey {
-        private static final String PREFIX = "dynamic-aspect/";
+    /// Stores per-method observability depth threshold configuration.
+    record ObservabilityDepthKey(String artifactBase, String methodName) implements AetherKey {
+        private static final String PREFIX = "obs-depth/";
 
         @Override
         public String asString() {
@@ -388,24 +388,24 @@ public sealed interface AetherKey extends StructuredKey {
         }
 
         @SuppressWarnings("JBCT-VO-02")
-        public static DynamicAspectKey dynamicAspectKey(String artifactBase, String methodName) {
-            return new DynamicAspectKey(artifactBase, methodName);
+        public static ObservabilityDepthKey observabilityDepthKey(String artifactBase, String methodName) {
+            return new ObservabilityDepthKey(artifactBase, methodName);
         }
 
-        public static Result<DynamicAspectKey> dynamicAspectKey(String key) {
+        public static Result<ObservabilityDepthKey> observabilityDepthKey(String key) {
             if (!key.startsWith(PREFIX)) {
-                return DYNAMIC_ASPECT_KEY_FORMAT_ERROR.apply(key)
-                                                      .result();
+                return OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR.apply(key)
+                                                           .result();
             }
             var content = key.substring(PREFIX.length());
             var slashIndex = content.indexOf('/');
             if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {
-                return DYNAMIC_ASPECT_KEY_FORMAT_ERROR.apply(key)
-                                                      .result();
+                return OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR.apply(key)
+                                                           .result();
             }
             var artifactBase = content.substring(0, slashIndex);
             var methodName = content.substring(slashIndex + 1);
-            return success(new DynamicAspectKey(artifactBase, methodName));
+            return success(new ObservabilityDepthKey(artifactBase, methodName));
         }
     }
 
@@ -624,6 +624,7 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> HTTP_ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid http-routes key format: %s");
     Fn1<Cause, String> ALERT_THRESHOLD_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid alert-threshold key format: %s");
     Fn1<Cause, String> LOG_LEVEL_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid log-level key format: %s");
-    Fn1<Cause, String> DYNAMIC_ASPECT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid dynamic-aspect key format: %s");
+
+    Fn1<Cause, String> OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid obs-depth key format: %s");
     Fn1<Cause, String> CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid config key format: %s");
 }

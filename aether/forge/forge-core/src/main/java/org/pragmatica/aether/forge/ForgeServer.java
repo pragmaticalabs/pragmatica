@@ -78,8 +78,8 @@ public final class ForgeServer {
     private volatile Option<HttpServer> httpServer = Option.empty();
     private volatile Option<ScheduledExecutorService> metricsScheduler = Option.empty();
     private volatile Option<StatusWebSocketPublisher> wsPublisher = Option.empty();
-    private final StatusWebSocketHandler wsHandler = new StatusWebSocketHandler(
-        WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(), false));
+    private final StatusWebSocketHandler wsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
+                                                                                                                              false));
     private final long startTime = System.currentTimeMillis();
 
     private ForgeServer(StartupConfig startupConfig, ForgeConfig forgeConfig) {

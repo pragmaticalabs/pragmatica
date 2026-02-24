@@ -432,6 +432,48 @@ aether aspects remove org.example:my-slice:1.0.0#processOrder
 
 Available modes: `NONE`, `LOG`, `METRICS`, `LOG_AND_METRICS`
 
+#### traces
+
+View distributed invocation traces:
+
+```bash
+# List recent traces
+aether traces list [--limit N] [--method METHOD] [--status SUCCESS|FAILURE]
+
+# Get traces for a specific request
+aether traces get <requestId>
+
+# Show trace statistics
+aether traces stats
+```
+
+#### observability
+
+Manage observability depth configuration:
+
+```bash
+# List all depth overrides
+aether observability depth
+
+# Set depth threshold for a method
+aether observability depth-set <artifact#method> <threshold>
+
+# Remove depth override
+aether observability depth-remove <artifact#method>
+```
+
+Example:
+```bash
+# Set depth threshold to 3 for a specific method
+aether observability depth-set org.example:order-processor:1.0.0#processOrder 3
+
+# Check configured overrides
+aether observability depth
+
+# Remove override
+aether observability depth-remove org.example:order-processor:1.0.0#processOrder
+```
+
 #### config
 
 Manage dynamic configuration overrides:
