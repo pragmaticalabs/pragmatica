@@ -7,11 +7,14 @@ import java.util.Set;
 /// @param name  human-readable name for audit logs
 /// @param roles assigned role names (e.g., "admin", "service")
 public record ApiKeyEntry(String name, Set<String> roles) {
-
     /// Canonical constructor — defensive copy.
     public ApiKeyEntry {
-        name = name == null || name.isBlank() ? "unnamed" : name;
-        roles = roles == null || roles.isEmpty() ? Set.of("service") : Set.copyOf(roles);
+        name = name == null || name.isBlank()
+               ? "unnamed"
+               : name;
+        roles = roles == null || roles.isEmpty()
+                ? Set.of("service")
+                : Set.copyOf(roles);
     }
 
     /// Full factory.

@@ -819,9 +819,11 @@ public interface AetherNode {
                         .map(_ -> {
                                  // Create management server if enabled
         if (config.managementPort() > 0) {
-                                     var mgmtSecurityEnabled = config.appHttp().securityEnabled();
+                                     var mgmtSecurityEnabled = config.appHttp()
+                                                                     .securityEnabled();
                                      var mgmtSecurityValidator = mgmtSecurityEnabled
-                                                                 ? SecurityValidator.apiKeyValidator(config.appHttp().apiKeyValues())
+                                                                 ? SecurityValidator.apiKeyValidator(config.appHttp()
+                                                                                                           .apiKeyValues())
                                                                  : SecurityValidator.noOpValidator();
                                      var managementServer = ManagementServer.managementServer(config.managementPort(),
                                                                                               () -> node,

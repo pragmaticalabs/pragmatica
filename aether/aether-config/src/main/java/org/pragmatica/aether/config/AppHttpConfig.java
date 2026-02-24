@@ -65,7 +65,11 @@ public record AppHttpConfig(boolean enabled,
 
     /// Create enabled config with API keys for security (backward-compat convenience).
     public static AppHttpConfig appHttpConfig(int port, Set<String> apiKeys) {
-        return appHttpConfig(true, port, wrapSimpleKeys(apiKeys), DEFAULT_FORWARD_TIMEOUT_MS, DEFAULT_FORWARD_MAX_RETRIES).unwrap();
+        return appHttpConfig(true,
+                             port,
+                             wrapSimpleKeys(apiKeys),
+                             DEFAULT_FORWARD_TIMEOUT_MS,
+                             DEFAULT_FORWARD_MAX_RETRIES).unwrap();
     }
 
     /// Raw API key values for backward-compatible security checks.
@@ -80,7 +84,7 @@ public record AppHttpConfig(boolean enabled,
 
     /// Check if security is enabled (has API keys configured).
     public boolean securityEnabled() {
-        return !apiKeys.isEmpty();
+        return ! apiKeys.isEmpty();
     }
 
     public AppHttpConfig withEnabled(boolean enabled) {

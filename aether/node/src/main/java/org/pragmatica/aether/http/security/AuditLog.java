@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 /// Uses a separate logger name (org.pragmatica.aether.audit) so security events
 /// can be routed to a dedicated log file/sink via logback configuration.
 /// Never logs raw API key values — only principals and paths.
+@SuppressWarnings("JBCT-RET-01")
 public final class AuditLog {
     private static final Logger AUDIT = LoggerFactory.getLogger("org.pragmatica.aether.audit");
 

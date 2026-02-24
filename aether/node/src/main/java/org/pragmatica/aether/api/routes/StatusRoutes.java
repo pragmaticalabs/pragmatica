@@ -178,23 +178,31 @@ public final class StatusRoutes implements RouteSource {
     private static ComponentHealth buildConsensusHealth(AetherNode node) {
         var consensusReady = node.isReady();
         return new ComponentHealth("consensus",
-                                   consensusReady ? "UP" : "DOWN",
-                                   consensusReady ? "Cluster active" : "Consensus not established");
+                                   consensusReady
+                                   ? "UP"
+                                   : "DOWN",
+                                   consensusReady
+                                   ? "Cluster active"
+                                   : "Consensus not established");
     }
 
     private ComponentHealth buildRoutesHealth() {
         var routesReady = appHttpServerSupplier.get()
-                                              .isRouteReady();
+                                               .isRouteReady();
         return new ComponentHealth("routes",
-                                   routesReady ? "UP" : "DOWN",
-                                   routesReady ? "Route sync received" : "Awaiting initial route sync");
+                                   routesReady
+                                   ? "UP"
+                                   : "DOWN",
+                                   routesReady
+                                   ? "Route sync received"
+                                   : "Awaiting initial route sync");
     }
 
     private static ComponentHealth buildQuorumHealth(AetherNode node) {
         var connectedCount = node.connectedNodeCount();
         var hasQuorum = connectedCount + 1 >= 2;
-        return new ComponentHealth("quorum",
-                                   hasQuorum ? "UP" : "DOWN",
-                                   "Connected peers: " + connectedCount);
+        return new ComponentHealth("quorum", hasQuorum
+                                            ? "UP"
+                                            : "DOWN", "Connected peers: " + connectedCount);
     }
 }

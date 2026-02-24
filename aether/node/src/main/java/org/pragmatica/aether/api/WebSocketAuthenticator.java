@@ -37,7 +37,7 @@ public final class WebSocketAuthenticator {
     }
 
     public static WebSocketAuthenticator webSocketAuthenticator(SecurityValidator securityValidator,
-                                                                 boolean securityEnabled) {
+                                                                boolean securityEnabled) {
         return new WebSocketAuthenticator(securityValidator, securityEnabled);
     }
 
@@ -68,7 +68,7 @@ public final class WebSocketAuthenticator {
 
     /// Check if a session is authenticated.
     public boolean isAuthenticated(String sessionId) {
-        return !securityEnabled || authenticatedSessions.contains(sessionId);
+        return ! securityEnabled || authenticatedSessions.contains(sessionId);
     }
 
     /// Remove session on close.
@@ -83,10 +83,11 @@ public final class WebSocketAuthenticator {
 
     @SuppressWarnings("JBCT-PAT-01")
     private void waitAndExpireSession(WebSocketSession session) {
-        try {
+        try{
             Thread.sleep(AUTH_TIMEOUT_MS);
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            Thread.currentThread()
+                  .interrupt();
             return;
         }
         if (pendingSessions.remove(session.id()) != null) {
@@ -123,7 +124,10 @@ public final class WebSocketAuthenticator {
         var context = HttpRequestContext.httpRequestContext("/ws", "GET", Map.of(), headers, "ws-auth");
         var result = securityValidator.validate(context, RouteSecurityPolicy.apiKeyRequired());
         if (result.isSuccess()) {
-            acceptSession(session, result.unwrap().principal().value());
+            acceptSession(session,
+                          result.unwrap()
+                                .principal()
+                                .value());
         } else {
             rejectSession(session);
         }

@@ -132,7 +132,7 @@ public final class InvocationContext {
         MDC.put(MDC_KEY, requestId);
         putIfNotNull(MDC_PRINCIPAL, principal);
         putIfNotNull(MDC_ORIGIN_NODE, originNode);
-        try {
+        try{
             var carrier = ScopedValue.where(REQUEST_ID, requestId);
             if (principal != null) {
                 carrier = carrier.where(PRINCIPAL, principal);
@@ -141,7 +141,7 @@ public final class InvocationContext {
                 carrier = carrier.where(ORIGIN_NODE, originNode);
             }
             return carrier.call(supplier::get);
-        } finally {
+        } finally{
             MDC.remove(MDC_KEY);
             MDC.remove(MDC_PRINCIPAL);
             MDC.remove(MDC_ORIGIN_NODE);
@@ -162,7 +162,7 @@ public final class InvocationContext {
         MDC.put(MDC_KEY, requestId);
         putIfNotNull(MDC_PRINCIPAL, principal);
         putIfNotNull(MDC_ORIGIN_NODE, originNode);
-        try {
+        try{
             var carrier = ScopedValue.where(REQUEST_ID, requestId);
             if (principal != null) {
                 carrier = carrier.where(PRINCIPAL, principal);
@@ -171,7 +171,7 @@ public final class InvocationContext {
                 carrier = carrier.where(ORIGIN_NODE, originNode);
             }
             carrier.run(runnable);
-        } finally {
+        } finally{
             MDC.remove(MDC_KEY);
             MDC.remove(MDC_PRINCIPAL);
             MDC.remove(MDC_ORIGIN_NODE);
@@ -190,11 +190,9 @@ public final class InvocationContext {
     /// @return a snapshot that can be used to restore context in another thread
     @SuppressWarnings("JBCT-RET-03") // Nullable fields required for ContextSnapshot — null means "no context"
     public static ContextSnapshot captureContext() {
-        return new ContextSnapshot(
-            currentRequestId().or((String) null),
-            currentPrincipal().or((String) null),
-            currentOriginNode().or((String) null)
-        );
+        return new ContextSnapshot(currentRequestId().or((String) null),
+                                   currentPrincipal().or((String) null),
+                                   currentOriginNode().or((String) null));
     }
 
     /// Generate a new request ID using KSUID.

@@ -278,7 +278,14 @@ class AppHttpServerImpl implements AppHttpServer {
         var policy = resolveSecurityPolicy();
         securityValidator.validate(httpContext, policy)
                          .apply(cause -> handleSecurityFailure(response, cause, path, requestId, method),
-                                ctx -> dispatchAuthenticated(request, response, routeTable, ctx, method, normalizedPath, path, requestId));
+                                ctx -> dispatchAuthenticated(request,
+                                                             response,
+                                                             routeTable,
+                                                             ctx,
+                                                             method,
+                                                             normalizedPath,
+                                                             path,
+                                                             requestId));
     }
 
     private RouteSecurityPolicy resolveSecurityPolicy() {
@@ -297,11 +304,21 @@ class AppHttpServerImpl implements AppHttpServer {
                                        String path,
                                        String requestId) {
         var principal = securityContext.isAuthenticated()
-                        ? securityContext.principal().value()
+                        ? securityContext.principal()
+                                         .value()
                         : null;
-        AuditLog.authSuccess(requestId, principal != null ? principal : "anonymous", method, path);
-        InvocationContext.runWithContext(requestId, principal, selfNodeId.id(),
-                                        () -> dispatchToRoute(request, response, routeTable, method, normalizedPath, requestId));
+        AuditLog.authSuccess(requestId, principal != null
+                                       ? principal
+                                       : "anonymous", method, path);
+        InvocationContext.runWithContext(requestId,
+                                         principal,
+                                         selfNodeId.id(),
+                                         () -> dispatchToRoute(request,
+                                                               response,
+                                                               routeTable,
+                                                               method,
+                                                               normalizedPath,
+                                                               requestId));
     }
 
     private void dispatchToRoute(RequestContext request,
@@ -337,8 +354,11 @@ class AppHttpServerImpl implements AppHttpServer {
                         requestId);
         } else {
             log.warn("No route found for {} {} [{}]", method, request.path(), requestId);
-            sendProblem(response, HttpStatus.NOT_FOUND,
-                        "No route found for " + method + " " + request.path(), request.path(), requestId);
+            sendProblem(response,
+                        HttpStatus.NOT_FOUND,
+                        "No route found for " + method + " " + request.path(),
+                        request.path(),
+                        requestId);
         }
     }
 
@@ -412,7 +432,8 @@ class AppHttpServerImpl implements AppHttpServer {
     private void sendHealthResponse(ResponseWriter response, String requestId) {
         var body = "{\"status\":\"UP\",\"nodeId\":\"" + selfNodeId.id() + "\"}";
         response.header(ResponseWriter.X_REQUEST_ID, requestId)
-                .header("X-Node-Id", selfNodeId.id())
+                .header("X-Node-Id",
+                        selfNodeId.id())
                 .write(org.pragmatica.http.HttpStatus.OK,
                        body.getBytes(StandardCharsets.UTF_8),
                        CommonContentType.APPLICATION_JSON);
@@ -426,14 +447,17 @@ class AppHttpServerImpl implements AppHttpServer {
         log.trace("Handling local route {} {} [{}]", routeKey.httpMethod(), routeKey.pathPrefix(), requestId);
         httpRoutePublisher.flatMap(pub -> pub.findLocalRouter(routeKey.httpMethod(),
                                                               routeKey.pathPrefix()))
-                          .onEmpty(() -> handleMissingLocalRouter(response, request.path(), routeKey, requestId))
+                          .onEmpty(() -> handleMissingLocalRouter(response,
+                                                                  request.path(),
+                                                                  routeKey,
+                                                                  requestId))
                           .onPresent(router -> invokeLocalRouter(request, response, router, requestId));
     }
 
     private void handleMissingLocalRouter(ResponseWriter response,
-                                           String path,
-                                           HttpRouteKey routeKey,
-                                           String requestId) {
+                                          String path,
+                                          HttpRouteKey routeKey,
+                                          String requestId) {
         log.error("Local router not found for route {} [{}]", routeKey, requestId);
         sendProblem(response, HttpStatus.INTERNAL_SERVER_ERROR, "Local router not found", path, requestId);
     }
@@ -445,13 +469,19 @@ class AppHttpServerImpl implements AppHttpServer {
         var context = toHttpRequestContext(request, requestId);
         router.handle(context)
               .onSuccess(responseData -> sendResponse(response, responseData, requestId))
-              .onFailure(cause -> handleLocalRouteFailure(response, request.path(), requestId, cause));
+              .onFailure(cause -> handleLocalRouteFailure(response,
+                                                          request.path(),
+                                                          requestId,
+                                                          cause));
     }
 
     private void handleLocalRouteFailure(ResponseWriter response, String path, String requestId, Cause cause) {
         log.error("Failed to handle local route [{}]: {}", requestId, cause.message());
-        sendProblem(response, HttpStatus.INTERNAL_SERVER_ERROR,
-                    "Request processing failed: " + cause.message(), path, requestId);
+        sendProblem(response,
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Request processing failed: " + cause.message(),
+                    path,
+                    requestId);
     }
 
     private HttpRequestContext toHttpRequestContext(RequestContext request, String requestId) {
@@ -590,8 +620,12 @@ class AppHttpServerImpl implements AppHttpServer {
                                response,
                                targetNode,
                                requestId,
-                               () -> handleRetryOrExhausted(request, response, newTriedNodes,
-                                                            routeKey, requestId, retriesRemaining));
+                               () -> handleRetryOrExhausted(request,
+                                                            response,
+                                                            newTriedNodes,
+                                                            routeKey,
+                                                            requestId,
+                                                            retriesRemaining));
     }
 
     private void retryAfterDelay(RequestContext request,
@@ -600,8 +634,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                  String requestId,
                                  int retriesRemaining) {
         var freshNodes = freshCandidatesForRoute(routeKey);
-        forwardRequestWithRetry(request, response, freshNodes, Set.of(),
-                                routeKey, requestId, retriesRemaining - 1);
+        forwardRequestWithRetry(request, response, freshNodes, Set.of(), routeKey, requestId, retriesRemaining - 1);
     }
 
     private void handleRetryOrExhausted(RequestContext request,
@@ -611,15 +644,16 @@ class AppHttpServerImpl implements AppHttpServer {
                                         String requestId,
                                         int retriesRemaining) {
         if (retriesRemaining > 0) {
-            log.debug("Retrying request [{}], {} retries remaining, re-querying route",
-                      requestId, retriesRemaining);
+            log.debug("Retrying request [{}], {} retries remaining, re-querying route", requestId, retriesRemaining);
             var freshNodes = freshCandidatesForRoute(routeKey);
-            forwardRequestWithRetry(request, response, freshNodes, triedNodes,
-                                    routeKey, requestId, retriesRemaining - 1);
+            forwardRequestWithRetry(request, response, freshNodes, triedNodes, routeKey, requestId, retriesRemaining - 1);
         } else {
             log.error("All retries exhausted for [{}]", requestId);
-            sendProblem(response, HttpStatus.GATEWAY_TIMEOUT,
-                        "Request failed after all retries", request.path(), requestId);
+            sendProblem(response,
+                        HttpStatus.GATEWAY_TIMEOUT,
+                        "Request failed after all retries",
+                        request.path(),
+                        requestId);
         }
     }
 
@@ -729,7 +763,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                                        String method,
                                                        String normalizedPath) {
         return findMatchingLocalRoute(pub.allLocalRoutes(), method, normalizedPath)
-                   .flatMap(key -> pub.findLocalRouter(key.httpMethod(), key.pathPrefix()));
+        .flatMap(key -> pub.findLocalRouter(key.httpMethod(), key.pathPrefix()));
     }
 
     private void sendForwardSuccess(ClusterNetwork network,
@@ -821,8 +855,7 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     private void failPendingForwardOnDeparture(PendingForward pending, NodeId departedNode) {
-        log.debug("Triggering retry for request [{}] due to node {} departure",
-                  pending.requestId(), departedNode);
+        log.debug("Triggering retry for request [{}] due to node {} departure", pending.requestId(), departedNode);
         pending.promise()
                .fail(Causes.cause("Target node " + departedNode + " departed"));
     }

@@ -297,8 +297,7 @@ public class AetherCli implements Runnable {
 
     private Option<String> resolveApiKey() {
         return option(apiKey).filter(k -> !k.isBlank())
-                             .orElse(() -> option(System.getenv("AETHER_API_KEY"))
-                                               .filter(k -> !k.isBlank()));
+                     .orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()));
     }
 
     private void attachApiKey(HttpRequest.Builder builder) {

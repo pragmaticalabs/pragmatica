@@ -44,11 +44,11 @@ public interface SecurityValidator {
     ///
     /// @return SecurityValidator that always returns system context
     static SecurityValidator noOpValidator() {
-        var systemContext = SecurityContext.securityContext(
-            Principal.principal("system", Principal.PrincipalType.SERVICE).unwrap(),
-            Set.of(Role.ADMIN, Role.SERVICE),
-            Map.of()
-        );
+        var systemContext = SecurityContext.securityContext(Principal.principal("system",
+                                                                                Principal.PrincipalType.SERVICE)
+                                                                     .unwrap(),
+                                                            Set.of(Role.ADMIN, Role.SERVICE),
+                                                            Map.of());
         return (_, _) -> Result.success(systemContext);
     }
 }

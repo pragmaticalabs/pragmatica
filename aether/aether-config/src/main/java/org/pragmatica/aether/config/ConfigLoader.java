@@ -225,9 +225,9 @@ public final class ConfigLoader {
         var forwardMaxRetries = doc.getInt("app-http", "forward_max_retries")
                                    .or(AppHttpConfig.DEFAULT_FORWARD_MAX_RETRIES);
         var apiKeys = resolveApiKeys(doc);
-
         if (enabled || !apiKeys.isEmpty()) {
-            builder.appHttp(AppHttpConfig.appHttpConfig(enabled, port, apiKeys, forwardTimeoutMs, forwardMaxRetries).unwrap());
+            builder.appHttp(AppHttpConfig.appHttpConfig(enabled, port, apiKeys, forwardTimeoutMs, forwardMaxRetries)
+                                         .unwrap());
         }
     }
 
@@ -237,13 +237,11 @@ public final class ConfigLoader {
         if (envKeys != null && !envKeys.isBlank()) {
             return parseEnvApiKeys(envKeys);
         }
-
         // 2. Rich TOML sections: [app-http.api-keys.<keyvalue>]
         var richKeys = parseRichApiKeys(doc);
         if (!richKeys.isEmpty()) {
             return richKeys;
         }
-
         // 3. Simple string list: app-http.api_keys = ["key1", "key2"]
         return doc.getStringList("app-http", "api_keys")
                   .map(ConfigLoader::wrapSimpleKeyList)
@@ -254,20 +252,22 @@ public final class ConfigLoader {
     @SuppressWarnings("JBCT-PAT-01")
     private static Map<String, ApiKeyEntry> parseEnvApiKeys(String envValue) {
         var result = new HashMap<String, ApiKeyEntry>();
-
         for (var segment : envValue.split(";")) {
-            var parts = segment.trim().split(":", 3);
-
+            var parts = segment.trim()
+                               .split(":", 3);
             if (parts.length >= 1 && !parts[0].isBlank()) {
                 var keyValue = parts[0].trim();
-                var name = parts.length >= 2 ? parts[1].trim() : ApiKeyEntry.defaultEntry(keyValue).name();
+                var name = parts.length >= 2
+                           ? parts[1].trim()
+                           : ApiKeyEntry.defaultEntry(keyValue)
+                                        .name();
                 var roles = parts.length >= 3
-                            ? Set.of(parts[2].trim().split(","))
+                            ? Set.of(parts[2].trim()
+                                          .split(","))
                             : Set.of("service");
                 result.put(keyValue, ApiKeyEntry.apiKeyEntry(name, roles));
             }
         }
-
         return Map.copyOf(result);
     }
 
@@ -275,19 +275,18 @@ public final class ConfigLoader {
     private static Map<String, ApiKeyEntry> parseRichApiKeys(TomlDocument doc) {
         var prefix = "app-http.api-keys.";
         var result = new HashMap<String, ApiKeyEntry>();
-
         for (var sectionName : doc.sectionNames()) {
             if (sectionName.startsWith(prefix)) {
                 var keyValue = sectionName.substring(prefix.length());
                 var name = doc.getString(sectionName, "name")
-                              .or(ApiKeyEntry.defaultEntry(keyValue).name());
+                              .or(ApiKeyEntry.defaultEntry(keyValue)
+                                             .name());
                 var roles = doc.getStringList(sectionName, "roles")
                                .map(Set::copyOf)
                                .or(Set.of("service"));
                 result.put(keyValue, ApiKeyEntry.apiKeyEntry(name, roles));
             }
         }
-
         return Map.copyOf(result);
     }
 

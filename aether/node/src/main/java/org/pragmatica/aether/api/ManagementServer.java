@@ -164,7 +164,9 @@ class ManagementServerImpl implements ManagementServer {
         this.probeJsonMapper = JsonMapper.defaultJsonMapper();
         // Route-based router for migrated routes — build route sources dynamically
         var routeSources = new ArrayList<RouteSource>();
-        this.statusRoutes = StatusRoutes.statusRoutes(nodeSupplier, () -> nodeSupplier.get().appHttpServer());
+        this.statusRoutes = StatusRoutes.statusRoutes(nodeSupplier,
+                                                      () -> nodeSupplier.get()
+                                                                        .appHttpServer());
         routeSources.add(statusRoutes);
         routeSources.add(AlertRoutes.alertRoutes(alertManager));
         routeSources.add(DynamicAspectRoutes.dynamicAspectRoutes(aspectManager));
@@ -256,20 +258,27 @@ class ManagementServerImpl implements ManagementServer {
 
     /// Iteration: appends the `nodeMetrics` JSON array from collected metrics.
     @SuppressWarnings("JBCT-PAT-01")
-    private static void appendNodeMetrics(StringBuilder sb, Map<NodeId, Map<String, Double>> allMetrics,
+    private static void appendNodeMetrics(StringBuilder sb,
+                                          Map<NodeId, Map<String, Double>> allMetrics,
                                           String leaderId) {
         sb.append(",\"nodeMetrics\":[");
         boolean first = true;
         for (var entry : allMetrics.entrySet()) {
             if (!first) sb.append(",");
-            appendSingleNodeMetric(sb, entry.getKey().id(), entry.getValue(), leaderId);
+            appendSingleNodeMetric(sb,
+                                   entry.getKey()
+                                        .id(),
+                                   entry.getValue(),
+                                   leaderId);
             first = false;
         }
         sb.append("]");
     }
 
     /// Leaf: appends a single node metric JSON object.
-    private static void appendSingleNodeMetric(StringBuilder sb, String nodeId, Map<String, Double> metrics,
+    private static void appendSingleNodeMetric(StringBuilder sb,
+                                               String nodeId,
+                                               Map<String, Double> metrics,
                                                String leaderId) {
         var cpuUsage = metrics.getOrDefault("cpu.usage", 0.0);
         var heapUsed = metrics.getOrDefault("heap.used", 0.0);
@@ -282,9 +291,9 @@ class ManagementServerImpl implements ManagementServer {
         sb.append(",\"cpuUsage\":")
           .append(cpuUsage);
         sb.append(",\"heapUsedMb\":")
-          .append((long) (heapUsed / 1024 / 1024));
+          .append((long)(heapUsed / 1024 / 1024));
         sb.append(",\"heapMaxMb\":")
-          .append((long) (heapMax / 1024 / 1024));
+          .append((long)(heapMax / 1024 / 1024));
         sb.append("}");
     }
 
@@ -336,7 +345,8 @@ class ManagementServerImpl implements ManagementServer {
 
     /// Sequencer: appends the `cluster` JSON object with nodes array and leader info.
     @SuppressWarnings("JBCT-PAT-01")
-    private static void appendClusterInfo(StringBuilder sb, Map<NodeId, Map<String, Double>> allMetrics,
+    private static void appendClusterInfo(StringBuilder sb,
+                                          Map<NodeId, Map<String, Double>> allMetrics,
                                           String leaderId) {
         sb.append(",\"cluster\":{\"nodes\":[");
         boolean first = true;
@@ -451,11 +461,14 @@ class ManagementServerImpl implements ManagementServer {
     private void writeProbeJson(ResponseWriter response, Object value, HttpStatus httpStatus) {
         probeJsonMapper.writeAsString(value)
                        .onSuccess(json -> response.respond(httpStatus, json))
-                       .onFailure(cause -> response.error(HttpStatus.INTERNAL_SERVER_ERROR, cause.message()));
+                       .onFailure(cause -> response.error(HttpStatus.INTERNAL_SERVER_ERROR,
+                                                          cause.message()));
     }
 
     @SuppressWarnings("JBCT-PAT-01")
-    private boolean validateManagementSecurity(RequestContext ctx, ResponseWriter response, String path,
+    private boolean validateManagementSecurity(RequestContext ctx,
+                                               ResponseWriter response,
+                                               String path,
                                                HttpMethod method) {
         var httpContext = toManagementRequestContext(ctx, path);
         var policy = RouteSecurityPolicy.apiKeyRequired();
@@ -466,20 +479,24 @@ class ManagementServerImpl implements ManagementServer {
                                 .isSuccess();
     }
 
-    private static void logManagementAccess(
-            org.pragmatica.aether.http.handler.security.SecurityContext securityContext,
-            String method, String path) {
+    private static void logManagementAccess(org.pragmatica.aether.http.handler.security.SecurityContext securityContext,
+                                            String method,
+                                            String path) {
         var principal = securityContext.isAuthenticated()
-                        ? securityContext.principal().value()
+                        ? securityContext.principal()
+                                         .value()
                         : "anonymous";
         AuditLog.managementAccess("mgmt", principal, method, path);
     }
 
     private static HttpRequestContext toManagementRequestContext(RequestContext ctx, String path) {
         return HttpRequestContext.httpRequestContext(path,
-                                                     ctx.method().name(),
-                                                     ctx.queryParams().asMap(),
-                                                     ctx.headers().asMap(),
+                                                     ctx.method()
+                                                        .name(),
+                                                     ctx.queryParams()
+                                                        .asMap(),
+                                                     ctx.headers()
+                                                        .asMap(),
                                                      ctx.body(),
                                                      "mgmt");
     }
@@ -494,7 +511,8 @@ class ManagementServerImpl implements ManagementServer {
         };
         if (status == HttpStatus.UNAUTHORIZED) {
             response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"")
-                    .error(status, cause.message());
+                    .error(status,
+                           cause.message());
         } else {
             response.error(status, cause.message());
         }
