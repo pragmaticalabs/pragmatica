@@ -311,6 +311,8 @@ class AppHttpServerImpl implements AppHttpServer {
         InvocationContext.runWithContext(requestId,
                                          principal,
                                          selfNodeId.id(),
+                                         0,
+                                         true,
                                          () -> dispatchToRoute(request,
                                                                response,
                                                                routeTable,

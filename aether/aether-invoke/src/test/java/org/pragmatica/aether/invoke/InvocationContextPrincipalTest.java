@@ -19,7 +19,7 @@ class InvocationContextPrincipalTest {
     @Test
     void runWithContext_setsAllThreeValues() {
         var result = InvocationContext.runWithContext(
-            "req-123", "api-key:admin-svc", "node-0",
+            "req-123", "api-key:admin-svc", "node-0", 0, false,
             () -> {
                 var reqId = InvocationContext.currentRequestId();
                 var principal = InvocationContext.currentPrincipal();
@@ -40,7 +40,7 @@ class InvocationContextPrincipalTest {
     @Test
     void runWithContext_nullPrincipalAndOriginNode_doesNotFail() {
         var result = InvocationContext.runWithContext(
-            "req-456", null, null,
+            "req-456", null, null, 0, false,
             () -> {
                 var principal = InvocationContext.currentPrincipal();
                 var origin = InvocationContext.currentOriginNode();
@@ -55,7 +55,7 @@ class InvocationContextPrincipalTest {
     @Test
     void captureContext_capturesAllThreeValues() {
         var snapshot = InvocationContext.runWithContext(
-            "req-789", "user:admin", "node-2",
+            "req-789", "user:admin", "node-2", 0, false,
             InvocationContext::captureContext
         );
 
@@ -67,7 +67,7 @@ class InvocationContextPrincipalTest {
     @Test
     void contextSnapshot_runWithCaptured_restoresAllThreeValues() {
         var snapshot = InvocationContext.runWithContext(
-            "req-aaa", "service:gateway", "node-1",
+            "req-aaa", "service:gateway", "node-1", 0, false,
             InvocationContext::captureContext
         );
 
@@ -113,7 +113,7 @@ class InvocationContextPrincipalTest {
 
     @Test
     void contextSnapshot_runWithCaptured_nullRequestId_executesDirectly() {
-        var snapshot = new InvocationContext.ContextSnapshot(null, null, null);
+        var snapshot = new InvocationContext.ContextSnapshot(null, null, null, 0, false);
 
         var result = snapshot.runWithCaptured(() -> "executed");
 
@@ -125,7 +125,7 @@ class InvocationContextPrincipalTest {
         var holder = new String[3];
 
         InvocationContext.runWithContext(
-            "req-run", "api-key:svc", "node-5",
+            "req-run", "api-key:svc", "node-5", 0, false,
             () -> {
                 holder[0] = InvocationContext.currentRequestId().or("");
                 holder[1] = InvocationContext.currentPrincipal().or("");
@@ -141,7 +141,7 @@ class InvocationContextPrincipalTest {
     @Test
     void contextSnapshot_runWithCaptured_runnableOverload_restoresValues() {
         var snapshot = InvocationContext.runWithContext(
-            "req-bbb", "user:test", "node-3",
+            "req-bbb", "user:test", "node-3", 0, false,
             InvocationContext::captureContext
         );
 
