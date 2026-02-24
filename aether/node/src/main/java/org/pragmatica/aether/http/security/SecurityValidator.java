@@ -1,5 +1,6 @@
 package org.pragmatica.aether.http.security;
 
+import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.Principal;
 import org.pragmatica.aether.http.handler.security.Role;
@@ -34,7 +35,7 @@ public interface SecurityValidator {
     ///
     /// @param keyEntries map of raw API key to entry metadata
     /// @return SecurityValidator for API key authentication with custom roles
-    static SecurityValidator apiKeyValidator(Map<String, ApiKeySecurityValidator.ApiKeyEntry> keyEntries) {
+    static SecurityValidator apiKeyValidator(Map<String, ApiKeyEntry> keyEntries) {
         return new ApiKeySecurityValidator(keyEntries);
     }
 

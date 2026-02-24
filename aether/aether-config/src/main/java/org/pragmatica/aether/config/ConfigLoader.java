@@ -67,6 +67,7 @@ public final class ConfigLoader {
                           .flatMap(environment -> assembleConfig(doc, overrides, environment));
     }
 
+    @SuppressWarnings("JBCT-UTIL-01")
     private static Result<AetherConfig> assembleConfig(TomlDocument doc,
                                                        Map<String, String> overrides,
                                                        Environment environment) {

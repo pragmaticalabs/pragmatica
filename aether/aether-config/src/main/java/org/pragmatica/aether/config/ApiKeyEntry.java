@@ -19,11 +19,10 @@ public record ApiKeyEntry(String name, Set<String> roles) {
         return new ApiKeyEntry(name, roles);
     }
 
-    /// Default entry for backward-compat: truncated key as name, SERVICE role.
+    /// Default entry for backward-compat: hash-derived identifier as name, SERVICE role.
     public static ApiKeyEntry defaultEntry(String keyValue) {
-        var truncatedName = keyValue.length() > 8
-                            ? keyValue.substring(0, 8) + "..."
-                            : keyValue;
-        return new ApiKeyEntry(truncatedName, Set.of("service"));
+        var hash = Integer.toHexString(keyValue.hashCode());
+        var name = "key-" + hash;
+        return new ApiKeyEntry(name, Set.of("service"));
     }
 }

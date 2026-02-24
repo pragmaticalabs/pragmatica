@@ -1,5 +1,6 @@
 package org.pragmatica.aether.http.security;
 
+import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
@@ -24,17 +25,6 @@ import java.util.stream.Collectors;
 class ApiKeySecurityValidator implements SecurityValidator {
     private static final String API_KEY_HEADER = "X-API-Key";
     private final Map<String, ApiKeyEntry> keyEntries;
-
-    /// Metadata for a configured API key.
-    ///
-    /// @param name  human-readable key identifier
-    /// @param roles role names assigned to this key
-    record ApiKeyEntry(String name, Set<String> roles) {
-        /// Create a default entry with SERVICE role for backward compatibility.
-        static ApiKeyEntry defaultEntry(String keyValue) {
-            return new ApiKeyEntry(keyValue, Set.of("service"));
-        }
-    }
 
     ApiKeySecurityValidator(Map<String, ApiKeyEntry> keyEntries) {
         var hashedEntries = new HashMap<String, ApiKeyEntry>();

@@ -145,6 +145,7 @@ public final class WebSocketAuthenticator {
     }
 
     /// Extract a JSON string value by key (simple parsing without Jackson dependency).
+    /// Handles escaped quotes within values.
     @SuppressWarnings("JBCT-PAT-01")
     static String extractJsonValue(String json, String key) {
         var pattern = "\"" + key + "\"";
@@ -160,10 +161,14 @@ public final class WebSocketAuthenticator {
         if (quoteStart < 0) {
             return null;
         }
-        var quoteEnd = json.indexOf('"', quoteStart + 1);
-        if (quoteEnd < 0) {
-            return null;
+        // Scan for unescaped closing quote
+        var pos = quoteStart + 1;
+        while (pos < json.length()) {
+            if (json.charAt(pos) == '"' && json.charAt(pos - 1) != '\\') {
+                return json.substring(quoteStart + 1, pos);
+            }
+            pos++;
         }
-        return json.substring(quoteStart + 1, quoteEnd);
+        return null;
     }
 }

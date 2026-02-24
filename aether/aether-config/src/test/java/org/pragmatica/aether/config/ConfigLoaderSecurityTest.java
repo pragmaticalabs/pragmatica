@@ -1,9 +1,9 @@
 package org.pragmatica.aether.config;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 class ConfigLoaderSecurityTest {
 
@@ -23,7 +23,7 @@ class ConfigLoaderSecurityTest {
             """;
 
         ConfigLoader.loadFromString(toml)
-            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
                 assertThat(config.appHttp().securityEnabled()).isTrue();
                 assertThat(config.appHttp().apiKeyValues()).containsExactlyInAnyOrder("key1", "key2");
@@ -48,7 +48,7 @@ class ConfigLoaderSecurityTest {
             """;
 
         ConfigLoader.loadFromString(toml)
-            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
                 assertThat(config.appHttp().securityEnabled()).isTrue();
                 assertThat(config.appHttp().apiKeys()).hasSize(2);
@@ -72,7 +72,7 @@ class ConfigLoaderSecurityTest {
             """;
 
         ConfigLoader.loadFromString(toml)
-            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
                 assertThat(config.appHttp().securityEnabled()).isFalse();
                 assertThat(config.appHttp().apiKeys()).isEmpty();
@@ -89,7 +89,7 @@ class ConfigLoaderSecurityTest {
             """;
 
         ConfigLoader.loadFromString(toml)
-            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
                 assertThat(config.appHttp().enabled()).isTrue();
                 assertThat(config.appHttp().port()).isEqualTo(9090);
@@ -107,7 +107,7 @@ class ConfigLoaderSecurityTest {
             """;
 
         ConfigLoader.loadFromString(toml)
-            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
                 assertThat(config.appHttp().forwardTimeoutMs()).isEqualTo(10000);
                 assertThat(config.appHttp().forwardMaxRetries()).isEqualTo(5);
@@ -119,7 +119,7 @@ class ConfigLoaderSecurityTest {
         var toml = MINIMAL_CLUSTER;
 
         ConfigLoader.loadFromString(toml)
-            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
                 assertThat(config.appHttp().enabled()).isFalse();
                 assertThat(config.appHttp().securityEnabled()).isFalse();
@@ -138,13 +138,13 @@ class ConfigLoaderSecurityTest {
             """;
 
         ConfigLoader.loadFromString(toml)
-            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
                 assertThat(config.appHttp().securityEnabled()).isTrue();
                 var entry = config.appHttp().apiKeys().get("my-secret-key-value");
                 assertThat(entry).isNotNull();
-                // Default name is truncated key, default role is service
-                assertThat(entry.name()).isEqualTo("my-secre...");
+                // Default name is hash-derived, default role is service
+                assertThat(entry.name()).isEqualTo("key-" + Integer.toHexString("my-secret-key-value".hashCode()));
                 assertThat(entry.roles()).containsExactly("service");
             });
     }

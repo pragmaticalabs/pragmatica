@@ -1,6 +1,7 @@
 package org.pragmatica.aether.http.security;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
@@ -40,7 +41,7 @@ class ApiKeySecurityValidatorTest {
                  .onSuccess(context -> {
                      assertThat(context.isAuthenticated()).isTrue();
                      assertThat(context.principal().isApiKey()).isTrue();
-                     assertThat(context.principal().value()).contains(VALID_KEY);
+                     assertThat(context.principal().value()).startsWith("api-key:key-");
                  });
     }
 
@@ -101,7 +102,7 @@ class ApiKeySecurityValidatorTest {
     @Test
     void validate_succeeds_forNamedKeyEntry() {
         var entries = Map.of(
-            VALID_KEY, new ApiKeySecurityValidator.ApiKeyEntry("my-service", Set.of("admin", "service"))
+            VALID_KEY, new ApiKeyEntry("my-service", Set.of("admin", "service"))
         );
         var validator = SecurityValidator.apiKeyValidator(entries);
         var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
@@ -140,8 +141,8 @@ class ApiKeySecurityValidatorTest {
         var key1 = "first-key-value";
         var key2 = "second-key-value";
         var entries = Map.of(
-            key1, new ApiKeySecurityValidator.ApiKeyEntry("first-svc", Set.of("admin")),
-            key2, new ApiKeySecurityValidator.ApiKeyEntry("second-svc", Set.of("service"))
+            key1, new ApiKeyEntry("first-svc", Set.of("admin")),
+            key2, new ApiKeyEntry("second-svc", Set.of("service"))
         );
         var validator = SecurityValidator.apiKeyValidator(entries);
 
