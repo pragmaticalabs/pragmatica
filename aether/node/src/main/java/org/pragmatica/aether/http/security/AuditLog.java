@@ -16,7 +16,7 @@ public final class AuditLog {
 
     /// Log successful authentication.
     public static void authSuccess(String requestId, String principal, String method, String path) {
-        AUDIT.info("AUTH_SUCCESS requestId={} principal={} method={} path={}", requestId, principal, method, path);
+        AUDIT.debug("AUTH_SUCCESS requestId={} principal={} method={} path={}", requestId, principal, method, path);
     }
 
     /// Log authentication failure.
@@ -26,12 +26,12 @@ public final class AuditLog {
 
     /// Log management API access.
     public static void managementAccess(String requestId, String principal, String method, String path) {
-        AUDIT.info("MGMT_ACCESS requestId={} principal={} method={} path={}", requestId, principal, method, path);
+        AUDIT.debug("MGMT_ACCESS requestId={} principal={} method={} path={}", requestId, principal, method, path);
     }
 
     /// Log WebSocket authentication success.
     public static void wsAuthSuccess(String sessionId, String principal) {
-        AUDIT.info("WS_AUTH_SUCCESS sessionId={} principal={}", sessionId, principal);
+        AUDIT.debug("WS_AUTH_SUCCESS sessionId={} principal={}", sessionId, principal);
     }
 
     /// Log WebSocket authentication failure.
