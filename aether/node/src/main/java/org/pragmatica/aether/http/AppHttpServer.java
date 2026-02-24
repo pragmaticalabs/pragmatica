@@ -303,13 +303,11 @@ class AppHttpServerImpl implements AppHttpServer {
                                        String normalizedPath,
                                        String path,
                                        String requestId) {
-        var principal = securityContext.isAuthenticated()
-                        ? securityContext.principal()
-                                         .value()
-                        : null;
-        AuditLog.authSuccess(requestId, principal != null
-                                       ? principal
-                                       : "anonymous", method, path);
+        var principal = securityContext.principal()
+                                      .value();
+        if (config.securityEnabled()) {
+            AuditLog.authSuccess(requestId, principal, method, path);
+        }
         InvocationContext.runWithContext(requestId,
                                          principal,
                                          selfNodeId.id(),
