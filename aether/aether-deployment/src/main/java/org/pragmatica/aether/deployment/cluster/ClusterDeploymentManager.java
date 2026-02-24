@@ -9,6 +9,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
@@ -17,6 +18,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
@@ -109,6 +112,9 @@ public interface ClusterDeploymentManager {
     @MessageReceiver
     void onTopologyChange(TopologyChangeNotification topologyChange);
 
+    @MessageReceiver
+    void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
+
     /// State of the cluster deployment manager.
     sealed interface ClusterDeploymentState {
         default void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) {}
@@ -128,6 +134,8 @@ public interface ClusterDeploymentManager {
         default void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) {}
 
         default void onTopologyChange(TopologyChangeNotification topologyChange) {}
+
+        default void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {}
 
         /// Dormant state when node is NOT the leader.
         record Dormant() implements ClusterDeploymentState {}
@@ -159,7 +167,8 @@ public interface ClusterDeploymentManager {
                       AtomicInteger allocationIndex,
                       AtomicBoolean deactivated,
                       AtomicReference<ScheduledFuture<?>> autoHealFuture,
-                      AtomicBoolean cooldownActive) implements ClusterDeploymentState {
+                      AtomicBoolean cooldownActive,
+                      Set<NodeId> drainingNodes) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
 
             /// Mark this Active state as deactivated, preventing stale scheduled callbacks
@@ -205,6 +214,17 @@ public interface ClusterDeploymentManager {
                 cleanupStaleEndpointEntries();
                 // Clean up orphaned slice entries with no matching blueprint
                 cleanupOrphanedSliceEntries();
+                // Resume drain evictions for any nodes that were mid-drain
+                resumeDrainEvictions();
+            }
+
+            /// Resume drain evictions for nodes that were DRAINING when the previous leader died.
+            private void resumeDrainEvictions() {
+                if (drainingNodes.isEmpty()) {
+                    return;
+                }
+                log.info("Resuming drain evictions for {} nodes", drainingNodes.size());
+                drainingNodes.forEach(this::evictNextSliceFromNode);
             }
 
             /// After state rebuild, check all LOADED slices and trigger activation if dependencies are ready.
@@ -231,7 +251,16 @@ public interface ClusterDeploymentManager {
                     case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue sliceNodeValue ->
                     restoreSliceState(sliceNodeKey, sliceNodeValue);
                     case AetherKey.VersionRoutingKey routingKey -> activeRoutings.add(routingKey.artifactBase());
+                    case NodeLifecycleKey lifecycleKey when value instanceof NodeLifecycleValue lifecycleValue ->
+                    restoreDrainingNode(lifecycleKey, lifecycleValue);
                     default -> {}
+                }
+            }
+
+            private void restoreDrainingNode(NodeLifecycleKey key, NodeLifecycleValue value) {
+                if (value.state() == NodeLifecycleState.DRAINING) {
+                    drainingNodes.add(key.nodeId());
+                    log.info("Restored draining node: {}", key.nodeId());
                 }
             }
 
@@ -245,11 +274,11 @@ public interface ClusterDeploymentManager {
                 buildDependencyMap(expanded);
                 for (var slice : expanded.loadOrder()) {
                     var artifact = slice.artifact();
-                    var nodes = activeNodes.get();
+                    var nodes = allocatableNodes();
                     var instances = nodes.isEmpty()
                                     ? Math.min(1, slice.instances())
                                     : Math.min(slice.instances(), nodes.size());
-                    blueprints.put(artifact, Blueprint.blueprint(artifact, instances));
+                    blueprints.put(artifact, Blueprint.blueprint(artifact, instances, slice.minAvailable()));
                 }
             }
 
@@ -257,8 +286,9 @@ public interface ClusterDeploymentManager {
                 var artifact = sliceTargetKey.artifactBase()
                                              .withVersion(sliceTargetValue.currentVersion());
                 var instances = sliceTargetValue.targetInstances();
-                blueprints.put(artifact, Blueprint.blueprint(artifact, instances));
-                log.trace("Restored slice target: {} with {} instances", artifact, instances);
+                var minInstances = sliceTargetValue.effectiveMinInstances();
+                blueprints.put(artifact, Blueprint.blueprint(artifact, instances, minInstances));
+                log.trace("Restored slice target: {} with {} instances (min: {})", artifact, instances, minInstances);
             }
 
             private void restoreSliceState(SliceNodeKey sliceNodeKey, SliceNodeValue sliceNodeValue) {
@@ -371,6 +401,141 @@ public interface ClusterDeploymentManager {
                 activeNodes.set(List.copyOf(topology));
             }
 
+            /// Filter active nodes to only those with ON_DUTY lifecycle state.
+            /// Nodes without a lifecycle key are treated as NOT allocatable (conservative default).
+            private List<NodeId> allocatableNodes() {
+                return activeNodes.get()
+                                  .stream()
+                                  .filter(this::isNodeOnDuty)
+                                  .toList();
+            }
+
+            /// Check if a node has ON_DUTY lifecycle state in KV store.
+            private boolean isNodeOnDuty(NodeId nodeId) {
+                return kvStore.get(NodeLifecycleKey.nodeLifecycleKey(nodeId))
+                              .filter(v -> v instanceof NodeLifecycleValue)
+                              .map(v -> (NodeLifecycleValue) v)
+                              .filter(v -> v.state() == NodeLifecycleState.ON_DUTY)
+                              .isPresent();
+            }
+
+            @Override
+            public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
+                var nodeId = valuePut.cause()
+                                     .key()
+                                     .nodeId();
+                var state = valuePut.cause()
+                                    .value()
+                                    .state();
+                handleNodeLifecycleChange(nodeId, state);
+            }
+
+            private void handleNodeLifecycleChange(NodeId nodeId, NodeLifecycleState state) {
+                switch (state) {
+                    case DRAINING -> startDrainEviction(nodeId);
+                    case ON_DUTY -> cancelDrainEviction(nodeId);
+                    default -> {}
+                }
+            }
+
+            /// Start drain eviction: for each slice on the draining node, deploy replacement
+            /// on another allocatable node, then issue UNLOAD on the draining node.
+            private void startDrainEviction(NodeId drainingNode) {
+                if (!drainingNodes.add(drainingNode)) {
+                    log.debug("Drain eviction already in progress for {}", drainingNode);
+                    return;
+                }
+                log.info("Starting drain eviction for node {}", drainingNode);
+                evictNextSliceFromNode(drainingNode);
+            }
+
+            /// Cancel any ongoing drain eviction for a node (e.g., when it goes back to ON_DUTY).
+            private void cancelDrainEviction(NodeId nodeId) {
+                if (drainingNodes.remove(nodeId)) {
+                    log.info("Cancelled drain eviction for node {} (returned to ON_DUTY)", nodeId);
+                }
+            }
+
+            /// Evict one slice at a time from a draining node.
+            /// When the replacement is ACTIVE, issue UNLOAD and schedule next eviction.
+            private void evictNextSliceFromNode(NodeId drainingNode) {
+                if (deactivated.get() || !drainingNodes.contains(drainingNode)) {
+                    return;
+                }
+                var slicesOnNode = sliceStates.keySet()
+                                              .stream()
+                                              .filter(key -> key.nodeId()
+                                                                .equals(drainingNode))
+                                              .filter(key -> isLiveState(sliceStates.getOrDefault(key, SliceState.FAILED)))
+                                              .toList();
+                if (slicesOnNode.isEmpty()) {
+                    completeDrain(drainingNode);
+                    return;
+                }
+                var sliceKey = slicesOnNode.getFirst();
+                log.info("Drain eviction: deploying replacement for {} from node {}", sliceKey.artifact(), drainingNode);
+                deployReplacementForDrain(sliceKey);
+            }
+
+            /// Deploy a replacement instance for a slice being drained, then schedule
+            /// the UNLOAD of the original once the replacement is verified ACTIVE.
+            private void deployReplacementForDrain(SliceNodeKey originalKey) {
+                var artifact = originalKey.artifact();
+                var drainingNode = originalKey.nodeId();
+                var targetNodes = allocatableNodes().stream()
+                                                    .filter(n -> !n.equals(drainingNode))
+                                                    .collect(Collectors.toSet());
+                var commands = collectAllocationsForNodes(artifact, 1, targetNodes);
+                if (commands.isEmpty()) {
+                    log.warn("Drain eviction: no allocatable node for replacement of {} (will retry)", artifact);
+                    SharedScheduler.schedule(() -> evictNextSliceFromNode(drainingNode), timeSpan(5).seconds());
+                    return;
+                }
+                submitBatch(commands);
+                // Schedule check: once replacement is ACTIVE, unload from draining node
+                SharedScheduler.schedule(() -> checkReplacementAndUnload(originalKey), timeSpan(3).seconds());
+            }
+
+            /// Check if a replacement for the drained slice is active, and if so, unload the original.
+            private void checkReplacementAndUnload(SliceNodeKey originalKey) {
+                if (deactivated.get() || !drainingNodes.contains(originalKey.nodeId())) {
+                    return;
+                }
+                var artifact = originalKey.artifact();
+                var drainingNode = originalKey.nodeId();
+                // Count ACTIVE instances on non-draining nodes
+                var hasActiveReplacement = sliceStates.entrySet()
+                                                      .stream()
+                                                      .filter(e -> e.getKey()
+                                                                     .artifact()
+                                                                     .equals(artifact))
+                                                      .filter(e -> !e.getKey()
+                                                                      .nodeId()
+                                                                      .equals(drainingNode))
+                                                      .anyMatch(e -> e.getValue() == SliceState.ACTIVE);
+                if (hasActiveReplacement) {
+                    log.info("Drain eviction: replacement ACTIVE for {}, unloading from {}", artifact, drainingNode);
+                    issueUnloadCommand(originalKey);
+                    SharedScheduler.schedule(() -> evictNextSliceFromNode(drainingNode), timeSpan(2).seconds());
+                } else {
+                    log.debug("Drain eviction: replacement not yet ACTIVE for {}, rechecking", artifact);
+                    SharedScheduler.schedule(() -> checkReplacementAndUnload(originalKey), timeSpan(3).seconds());
+                }
+            }
+
+            /// Complete drain: all slices evacuated. Write DECOMMISSIONED lifecycle state.
+            private void completeDrain(NodeId drainingNode) {
+                drainingNodes.remove(drainingNode);
+                log.info("Drain complete for node {}, writing DECOMMISSIONED state", drainingNode);
+                var command = new KVCommand.Put<AetherKey, AetherValue>(
+                    NodeLifecycleKey.nodeLifecycleKey(drainingNode),
+                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED));
+                cluster.apply(List.of(command))
+                       .onFailure(cause -> log.error("Failed to write DECOMMISSIONED for {}: {}",
+                                                     drainingNode,
+                                                     cause.message()));
+            }
+
             /// Compute cluster deficit: target size minus current active nodes.
             private int computeAutoHealDeficit() {
                 return topologyManager.clusterSize() - activeNodes.get()
@@ -471,15 +636,16 @@ public interface ClusterDeploymentManager {
                         allCommands.addAll(collectDeallocationCommands(oldArtifact));
                     }
                 }
-                log.info("Slice target changed for {}: {} instances", newArtifact, desiredInstances);
-                blueprints.put(newArtifact, Blueprint.blueprint(newArtifact, desiredInstances));
+                var minInstances = value.effectiveMinInstances();
+                log.info("Slice target changed for {}: {} instances (min: {})", newArtifact, desiredInstances, minInstances);
+                blueprints.put(newArtifact, Blueprint.blueprint(newArtifact, desiredInstances, minInstances));
                 allCommands.addAll(collectAllocationCommands(newArtifact, desiredInstances));
                 submitBatch(allCommands);
             }
 
             private void handleAppBlueprintChange(AppBlueprintKey key, AppBlueprintValue value) {
                 var expanded = value.blueprint();
-                var nodes = activeNodes.get();
+                var nodes = allocatableNodes();
                 log.info("App blueprint '{}' deployed with {} slices across {} nodes",
                          expanded.id()
                                  .asString(),
@@ -496,11 +662,12 @@ public interface ClusterDeploymentManager {
                              artifact,
                              desiredInstances,
                              slice.instances());
-                    blueprints.put(artifact, Blueprint.blueprint(artifact, desiredInstances));
+                    blueprints.put(artifact, Blueprint.blueprint(artifact, desiredInstances, slice.minAvailable()));
                     // Create SliceTargetKey so rolling updates can find the current version
                     allCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
                                                         SliceTargetValue.sliceTargetValue(artifact.version(),
-                                                                                          desiredInstances)));
+                                                                                          desiredInstances,
+                                                                                          slice.minAvailable())));
                     allCommands.addAll(collectAllocationCommands(artifact, desiredInstances));
                 }
                 submitBatch(allCommands);
@@ -700,6 +867,8 @@ public interface ClusterDeploymentManager {
                                     .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
                                     .forEach(allCommands::add);
                 allCommands.addAll(httpRouteCommands);
+                // Remove lifecycle key for departed node
+                allCommands.add(new KVCommand.Remove<>(NodeLifecycleKey.nodeLifecycleKey(removedNode)));
                 // Remove from KVStore to prevent stale state after leader changes
                 if (!allCommands.isEmpty()) {
                     cluster.apply(allCommands)
@@ -889,7 +1058,7 @@ public interface ClusterDeploymentManager {
 
             /// Collect allocation commands across cluster nodes using round-robin strategy.
             private List<KVCommand<AetherKey>> collectAllocationCommands(Artifact artifact, int desiredInstances) {
-                if (hasNoActiveNodes(artifact)) {
+                if (hasNoAllocatableNodes(artifact)) {
                     return List.of();
                 }
                 var currentInstances = getCurrentInstances(artifact);
@@ -897,11 +1066,10 @@ public interface ClusterDeploymentManager {
                 return collectAdjustmentCommands(artifact, desiredInstances, currentInstances);
             }
 
-            /// Check if there are no active nodes available for allocation.
-            private boolean hasNoActiveNodes(Artifact artifact) {
-                if (activeNodes.get()
-                               .isEmpty()) {
-                    log.warn("No active nodes available for allocation of {}", artifact);
+            /// Check if there are no allocatable nodes available for allocation.
+            private boolean hasNoAllocatableNodes(Artifact artifact) {
+                if (allocatableNodes().isEmpty()) {
+                    log.warn("No allocatable nodes available for allocation of {}", artifact);
                     return true;
                 }
                 return false;
@@ -911,12 +1079,11 @@ public interface ClusterDeploymentManager {
             private void logAllocationAttempt(Artifact artifact,
                                               int desiredInstances,
                                               List<SliceNodeKey> currentInstances) {
-                log.debug("Allocating {} instances of {} (current: {}) across {} nodes",
+                log.debug("Allocating {} instances of {} (current: {}) across {} allocatable nodes",
                           desiredInstances,
                           artifact,
                           currentInstances.size(),
-                          activeNodes.get()
-                                     .size());
+                          allocatableNodes().size());
             }
 
             /// Collect adjustment commands by scaling up or down as needed.
@@ -935,12 +1102,12 @@ public interface ClusterDeploymentManager {
             private List<KVCommand<AetherKey>> collectScaleUpCommands(Artifact artifact,
                                                                       int toAdd,
                                                                       List<SliceNodeKey> existingInstances) {
-                log.debug("collectScaleUpCommands: artifact={}, toAdd={}, activeNodes={}, activeNodeIds={}",
+                var nodes = allocatableNodes();
+                log.debug("collectScaleUpCommands: artifact={}, toAdd={}, allocatableNodes={}, nodeIds={}",
                           artifact,
                           toAdd,
-                          activeNodes.get()
-                                     .size(),
-                          activeNodes.get());
+                          nodes.size(),
+                          nodes);
                 var nodesWithInstances = existingInstances.stream()
                                                           .map(SliceNodeKey::nodeId)
                                                           .collect(Collectors.toSet());
@@ -971,17 +1138,16 @@ public interface ClusterDeploymentManager {
                 return commands;
             }
 
-            /// Find nodes that have absolutely no slices deployed (truly empty).
+            /// Find allocatable nodes that have absolutely no slices deployed (truly empty).
             /// These are ideal candidates for new deployments (e.g., AUTO-HEAL nodes).
             private Set<NodeId> findTrulyEmptyNodes() {
                 var nodesWithAnySlice = sliceStates.keySet()
                                                    .stream()
                                                    .map(SliceNodeKey::nodeId)
                                                    .collect(Collectors.toSet());
-                return activeNodes.get()
-                                  .stream()
-                                  .filter(node -> !nodesWithAnySlice.contains(node))
-                                  .collect(Collectors.toSet());
+                return allocatableNodes().stream()
+                                         .filter(node -> !nodesWithAnySlice.contains(node))
+                                         .collect(Collectors.toSet());
             }
 
             /// Collect allocation commands for a specific set of nodes.
@@ -1001,7 +1167,7 @@ public interface ClusterDeploymentManager {
             private List<KVCommand<AetherKey>> collectAllocationsForEmptyNodes(Artifact artifact,
                                                                                int toAdd,
                                                                                Set<NodeId> nodesWithInstances) {
-                var nodes = activeNodes.get();
+                var nodes = allocatableNodes();
                 var nodeCount = nodes.size();
                 if (nodeCount == 0) {
                     return List.of();
@@ -1032,7 +1198,7 @@ public interface ClusterDeploymentManager {
             }
 
             private List<KVCommand<AetherKey>> collectRoundRobinAllocations(Artifact artifact, int remaining) {
-                var nodes = activeNodes.get();
+                var nodes = allocatableNodes();
                 var commands = new ArrayList<KVCommand<AetherKey>>();
                 var attempts = 0;
                 var maxAttempts = nodes.size() * 2;
@@ -1055,10 +1221,22 @@ public interface ClusterDeploymentManager {
             private List<KVCommand<AetherKey>> collectScaleDownCommands(Artifact artifact,
                                                                         int toRemove,
                                                                         List<SliceNodeKey> existingInstances) {
+                var blueprint = blueprints.get(artifact);
+                var minInstances = blueprint != null ? blueprint.minInstances() : 1;
+                var activeCount = existingInstances.size();
+                // Enforce budget: do not scale below minInstances
+                var maxRemovable = Math.max(0, activeCount - minInstances);
+                var actualRemove = Math.min(toRemove, maxRemovable);
+                if (actualRemove < toRemove) {
+                    log.info("Budget enforcement: capping scale-down of {} from {} to {} (min: {}, active: {})",
+                             artifact, toRemove, actualRemove, minInstances, activeCount);
+                }
+                if (actualRemove == 0) {
+                    return List.of();
+                }
                 // Remove from the end (LIFO to maintain round-robin balance)
                 return existingInstances.stream()
-                                        .skip(Math.max(0,
-                                                       existingInstances.size() - toRemove))
+                                        .skip(Math.max(0, activeCount - actualRemove))
                                         .map(this::prepareUnloadCommand)
                                         .collect(Collectors.toList());
             }
@@ -1127,9 +1305,16 @@ public interface ClusterDeploymentManager {
     }
 
     /// Blueprint representation (desired state).
-    record Blueprint(Artifact artifact, int instances) {
+    /// @param artifact the artifact to deploy
+    /// @param instances current desired instance count
+    /// @param minInstances minimum instance count (hard floor for scale-down)
+    record Blueprint(Artifact artifact, int instances, int minInstances) {
+        static Blueprint blueprint(Artifact artifact, int instances, int minInstances) {
+            return new Blueprint(artifact, instances, minInstances);
+        }
+
         static Blueprint blueprint(Artifact artifact, int instances) {
-            return new Blueprint(artifact, instances);
+            return new Blueprint(artifact, instances, 1);
         }
     }
 
@@ -1188,7 +1373,8 @@ public interface ClusterDeploymentManager {
                                                                         new AtomicInteger(0),
                                                                         new AtomicBoolean(false),
                                                                         new AtomicReference<>(),
-                                                                        new AtomicBoolean(false));
+                                                                        new AtomicBoolean(false),
+                                                                        ConcurrentHashMap.newKeySet());
                     state.set(activeState);
                     // Rebuild state from KVStore and reconcile
                     activeState.rebuildStateFromKVStore();
@@ -1261,6 +1447,12 @@ public interface ClusterDeploymentManager {
             public void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) {
                 state.get()
                      .onVersionRoutingRemove(valueRemove);
+            }
+
+            @Override
+            public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
+                state.get()
+                     .onNodeLifecyclePut(valuePut);
             }
 
             @Override

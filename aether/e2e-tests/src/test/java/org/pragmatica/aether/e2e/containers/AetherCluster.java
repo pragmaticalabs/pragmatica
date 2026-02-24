@@ -523,6 +523,23 @@ public class AetherCluster implements AutoCloseable {
         }
     }
 
+    /// Waits for a node to reach the expected lifecycle state.
+    /// Polls the lifecycle endpoint on any running node until the expected state is observed.
+    ///
+    /// @param nodeId        target node identifier
+    /// @param expectedState expected lifecycle state (e.g., "ON_DUTY", "DRAINING")
+    /// @param timeout       maximum time to wait
+    public void awaitNodeLifecycle(String nodeId, String expectedState, Duration timeout) {
+        await().atMost(timeout)
+               .pollInterval(POLL_INTERVAL)
+               .ignoreExceptions()
+               .until(() -> {
+                   var lifecycle = anyNode().getNodeLifecycle(nodeId);
+                   System.out.println("[DEBUG] awaitNodeLifecycle " + nodeId + ": " + lifecycle);
+                   return lifecycle.contains("\"state\":\"" + expectedState + "\"");
+               });
+    }
+
     /// Waits for a specific node count in the cluster.
     ///
     /// @param expectedCount expected number of active nodes

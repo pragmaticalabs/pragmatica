@@ -107,8 +107,8 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 49 | REST management API | Battle-tested | 60+ endpoints across 12 route classes: status, health, blueprints, slices, scaling, rolling updates, config, thresholds, alerts, aspects, logging, TTM, invocation metrics, controller config |
-| 50 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, metrics, health, scale, artifact, blueprint, update, invocation-metrics, controller, alerts, thresholds, aspects, traces, observability, config, logging, events |
+| 49 | REST management API | Battle-tested | 60+ endpoints across 13 route classes: status, health, blueprints, slices, scaling, rolling updates, config, thresholds, alerts, aspects, logging, TTM, invocation metrics, controller config, node lifecycle |
+| 50 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, metrics, health, scale, artifact, blueprint, update, invocation-metrics, controller, alerts, thresholds, aspects, traces, observability, config, logging, events, node lifecycle/drain/activate/shutdown |
 | 51 | WebSocket streams | Complete | `/ws/dashboard` (metrics), `/ws/status` (cluster state), `/ws/events` (real-time cluster events with delta broadcasting) |
 | 52 | Dynamic log levels | Complete | Runtime log level adjustment per logger via KV-Store. CLI and API control |
 | 53 | E2E test framework | Complete | Testcontainers-based cluster testing with echo slices (v1/v2), Docker image building from JAR |
@@ -122,6 +122,14 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 56 | Envelope format versioning | Complete | `ENVELOPE_FORMAT_VERSION` in ManifestGenerator with runtime compatibility check |
 | 57 | Forge simulator | Battle-tested | Standalone cluster simulator with load generation (constant/ramp/spike), chaos injection, visual dashboard, REST API |
 | 58 | Web dashboard | Partial | Forge dashboard complete (cluster visualization, load generation, chaos injection, metrics). Node management dashboard needs modernization for production use |
+
+## Node Operations
+
+| # | Feature | Status | Description |
+|---|---------|--------|-------------|
+| 63 | Node lifecycle state machine | Complete | States: JOINING, ON_DUTY, DRAINING, DECOMMISSIONED, SHUTTING_DOWN. Self-registration (ON_DUTY on quorum), remote shutdown (SHUTTING_DOWN via KV watch), lifecycle key cleanup on node departure |
+| 64 | Graceful node drain | Complete | Drain orchestration (CDM evacuates slices respecting disruption budget), cancel drain (return to ON_DUTY), automatic DECOMMISSIONED on eviction complete |
+| 65 | Disruption budget | Complete | `minAvailable` in blueprint TOML, budget enforcement in scale-down and drain eviction |
 
 ## Security & Resilience
 
@@ -139,7 +147,6 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Security | No per-endpoint role authorization (all API keys get same access) | RBAC Tier 2 (#63) |
 | Security | No TLS between cluster nodes | TLS Certificate Management (#66) |
 | Data durability | No KV-Store backup/restore; quorum loss = data loss | KV-Store State Backup (#72) |
-| Operations | No graceful node drain | Graceful Node Drain (#69) |
 | Networking | Single-region only; no multi-region deployment | Not yet planned |
 | Storage | KV-Store in-memory only (recovered from peers via consensus) | KV-Store State Backup (#72) |
 
@@ -153,8 +160,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 64 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
 | 65 | Spot instance support | Planned | Elastic pool of spot/preemptible instances for cost-optimized scaling. Core (on-demand) + elastic (spot) pools. Prerequisite: Cloud Integration |
 | 66 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts. Prerequisite: Cloud Integration |
-| 67 | Graceful node drain | Planned | `POST /api/nodes/{id}/drain` to migrate slices off a node before maintenance. Integrates with disruption budget |
-| 68 | TLS certificate management | Planned | Mutual TLS between cluster nodes and management API authentication |
+| 67 | TLS certificate management | Planned | Mutual TLS between cluster nodes and management API authentication |
 | 69 | KV-Store state backup | Planned | Periodic KV-Store snapshots to durable storage (filesystem, S3). Disaster recovery when quorum permanently lost |
 | 70 | Aether runtime rolling upgrade | Planned | Upgrade Aether node software across running cluster without downtime. Node-by-node with health verification |
 | 71 | Email messaging resource | Planned | Facade with pluggable backends (SMTP, AWS SES, SendGrid). Sending (plain text + HTML, attachments) and receiving (automated conversations). SPI-based |
@@ -167,10 +173,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 21 |
-| Complete | 39 |
+| Complete | 42 |
 | Partial | 2 |
-| Planned | 12 |
-| Total | 74 |
+| Planned | 11 |
+| Total | 76 |
 
 **Battle-tested features (21):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint
 
@@ -191,7 +197,6 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | TLS certificate management | — |
 | Per-route rate limiting | — |
 | Spot instance support | Cloud Integration |
-| Graceful node drain | — |
 | Cluster expense tracking | Cloud Integration |
 | Dead letter handling | Pub-sub + scheduler complete |
 | KV-Store state backup | — |

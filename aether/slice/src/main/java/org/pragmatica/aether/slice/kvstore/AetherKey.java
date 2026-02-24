@@ -551,6 +551,44 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Node lifecycle key format:
+    /// ```
+    /// node-lifecycle/{nodeId}
+    /// ```
+    /// Stores the lifecycle state of a cluster node (ON_DUTY, DRAINING, DECOMMISSIONED, SHUTTING_DOWN).
+    record NodeLifecycleKey(NodeId nodeId) implements AetherKey {
+        private static final String PREFIX = "node-lifecycle/";
+
+        @Override
+        public String asString() {
+            return PREFIX + nodeId.id();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static NodeLifecycleKey nodeLifecycleKey(NodeId nodeId) {
+            return new NodeLifecycleKey(nodeId);
+        }
+
+        public static Result<NodeLifecycleKey> nodeLifecycleKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return NODE_LIFECYCLE_KEY_FORMAT_ERROR.apply(key)
+                                                      .result();
+            }
+            var nodeIdPart = key.substring(PREFIX.length());
+            if (nodeIdPart.isEmpty()) {
+                return NODE_LIFECYCLE_KEY_FORMAT_ERROR.apply(key)
+                                                      .result();
+            }
+            return NodeId.nodeId(nodeIdPart)
+                         .map(NodeLifecycleKey::new);
+        }
+    }
+
     /// Config key format:
     /// ```
     /// config/{key}                    — cluster-wide
@@ -627,4 +665,5 @@ public sealed interface AetherKey extends StructuredKey {
 
     Fn1<Cause, String> OBSERVABILITY_DEPTH_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid obs-depth key format: %s");
     Fn1<Cause, String> CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid config key format: %s");
+    Fn1<Cause, String> NODE_LIFECYCLE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-lifecycle key format: %s");
 }

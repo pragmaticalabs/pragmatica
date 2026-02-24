@@ -39,6 +39,11 @@ public sealed interface AetherValue {
             return new SliceTargetValue(version, instances, instances, none(), System.currentTimeMillis());
         }
 
+        /// Creates a standalone slice target with explicit minInstances.
+        public static SliceTargetValue sliceTargetValue(Version version, int instances, int minInstances) {
+            return new SliceTargetValue(version, instances, minInstances, none(), System.currentTimeMillis());
+        }
+
         /// Returns the effective minimum instances (handles backward-compat where minInstances == 0).
         public int effectiveMinInstances() {
             return Math.max(1, minInstances);
@@ -338,6 +343,45 @@ public sealed interface AetherValue {
         /// Creates a new config value with current timestamp.
         public static ConfigValue configValue(String key, String value) {
             return new ConfigValue(key, value, System.currentTimeMillis());
+        }
+    }
+
+    /// Node lifecycle states for the state machine.
+    ///
+    /// State machine:
+    /// ```
+    /// JOINING → ON_DUTY ←→ DRAINING → DECOMMISSIONED → SHUTTING_DOWN
+    ///                    ←────────────┘
+    ///           any KV state ──────────→ SHUTTING_DOWN
+    /// ```
+    enum NodeLifecycleState {
+        JOINING,
+        ON_DUTY,
+        DRAINING,
+        DECOMMISSIONED,
+        SHUTTING_DOWN
+    }
+
+    /// Node lifecycle value tracks the current lifecycle state of a cluster node.
+    /// Written to KV when node first establishes quorum (ON_DUTY), updated during
+    /// drain/decommission/shutdown operations.
+    ///
+    /// @param state the current lifecycle state
+    /// @param updatedAt timestamp of last state transition
+    record NodeLifecycleValue(NodeLifecycleState state, long updatedAt) implements AetherValue {
+        /// Creates a new lifecycle value with current timestamp.
+        public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state) {
+            return new NodeLifecycleValue(state, System.currentTimeMillis());
+        }
+
+        /// Creates a new lifecycle value with explicit timestamp.
+        public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, long updatedAt) {
+            return new NodeLifecycleValue(state, updatedAt);
+        }
+
+        /// Returns a new value with updated state and current timestamp.
+        public NodeLifecycleValue withState(NodeLifecycleState newState) {
+            return new NodeLifecycleValue(newState, System.currentTimeMillis());
         }
     }
 }

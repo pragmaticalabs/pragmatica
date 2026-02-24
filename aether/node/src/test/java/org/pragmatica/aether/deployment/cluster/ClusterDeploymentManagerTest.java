@@ -232,7 +232,9 @@ class ClusterDeploymentManagerTest {
 
         clusterNode.appliedCommands.clear();
 
-        // Add third node
+        // Add third node with ON_DUTY lifecycle
+        kvStore.put(AetherKey.NodeLifecycleKey.nodeLifecycleKey(node3),
+                    AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY));
         manager.onTopologyChange(TopologyChangeNotification.nodeAdded(node3, List.of(self, node2, node3)));
 
         // Should allocate 1 more instance to reach desired 3
@@ -257,17 +259,21 @@ class ClusterDeploymentManagerTest {
         // Reconciliation won't add more because we can't exceed node count
         manager.onTopologyChange(TopologyChangeNotification.nodeRemoved(node3, List.of(self, node2)));
 
-        // Expect 1 command: Remove command to clean KVStore for departed node
+        // Expect 2 commands: Remove for departed node's slice + Remove for departed node's lifecycle key
         // No LOAD command because remaining 2 instances already cover all available nodes
-        assertThat(clusterNode.appliedCommands).hasSize(1);
+        assertThat(clusterNode.appliedCommands).hasSize(2);
 
-        // Command should be Remove for the departed node's slice
-        var removeCmd = clusterNode.appliedCommands.getFirst();
-        assertThat(removeCmd).isInstanceOf(KVCommand.Remove.class);
-        var removeKey = ((KVCommand.Remove<?>) removeCmd).key();
-        assertThat(removeKey).isInstanceOf(SliceNodeKey.class);
-        assertThat(((SliceNodeKey) removeKey).nodeId()).isEqualTo(node3);
-        assertThat(((SliceNodeKey) removeKey).artifact()).isEqualTo(artifact);
+        // Commands should include Remove for the departed node's slice and lifecycle key
+        var removeCommands = clusterNode.appliedCommands.stream()
+                                                         .filter(cmd -> cmd instanceof KVCommand.Remove<?>)
+                                                         .map(cmd -> ((KVCommand.Remove<?>) cmd).key())
+                                                         .toList();
+        assertThat(removeCommands).hasSize(2);
+        assertThat(removeCommands).anySatisfy(key -> {
+            assertThat(key).isInstanceOf(SliceNodeKey.class);
+            assertThat(((SliceNodeKey) key).nodeId()).isEqualTo(node3);
+            assertThat(((SliceNodeKey) key).artifact()).isEqualTo(artifact);
+        });
     }
 
     // === Slice State Tracking Tests ===
@@ -429,6 +435,11 @@ class ClusterDeploymentManagerTest {
 
     private void addTopology(NodeId... nodes) {
         var topology = List.of(nodes);
+        // Register ON_DUTY lifecycle for each node so CDM considers them allocatable
+        for (var nodeId : nodes) {
+            kvStore.put(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId),
+                        AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY));
+        }
         manager.onTopologyChange(TopologyChangeNotification.nodeAdded(nodes[nodes.length - 1], topology));
     }
 
@@ -527,6 +538,11 @@ class ClusterDeploymentManagerTest {
 
         void put(AetherKey key, AetherValue value) {
             entries.put(key, value);
+        }
+
+        @Override
+        public Option<AetherValue> get(AetherKey key) {
+            return Option.option(entries.get(key));
         }
 
         @Override

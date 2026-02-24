@@ -184,6 +184,6 @@ public interface BlueprintExpander {
         var deps = allDeps.getOrDefault(artifact, Set.of());
         return option(explicitSlices.get(artifact))
         .fold(() -> ResolvedSlice.resolvedSlice(artifact, 1, true, deps),
-              spec -> ResolvedSlice.resolvedSlice(artifact, spec.instances(), false, deps));
+              spec -> ResolvedSlice.resolvedSlice(artifact, spec.instances(), spec.minAvailable(), false, deps));
     }
 }

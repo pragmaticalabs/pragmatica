@@ -879,6 +879,47 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         return post(path, body);
     }
 
+    // ===== Node Lifecycle API =====
+
+    /// Initiates drain on a node, transitioning it from ON_DUTY to DRAINING.
+    ///
+    /// @param nodeId target node identifier
+    /// @return transition result JSON
+    public String drainNode(String nodeId) {
+        return post("/api/node/drain/" + nodeId, "{}");
+    }
+
+    /// Activates a drained or decommissioned node, returning it to ON_DUTY.
+    ///
+    /// @param nodeId target node identifier
+    /// @return transition result JSON
+    public String activateNode(String nodeId) {
+        return post("/api/node/activate/" + nodeId, "{}");
+    }
+
+    /// Initiates remote shutdown of a node, transitioning it to SHUTTING_DOWN.
+    ///
+    /// @param nodeId target node identifier
+    /// @return transition result JSON
+    public String shutdownNode(String nodeId) {
+        return post("/api/node/shutdown/" + nodeId, "{}");
+    }
+
+    /// Fetches lifecycle state for a specific node.
+    ///
+    /// @param nodeId target node identifier
+    /// @return lifecycle entry JSON
+    public String getNodeLifecycle(String nodeId) {
+        return get("/api/node/lifecycle/" + nodeId);
+    }
+
+    /// Fetches lifecycle states for all nodes in the cluster.
+    ///
+    /// @return lifecycle entries JSON array
+    public String getAllNodeLifecycles() {
+        return get("/api/nodes/lifecycle");
+    }
+
     // ===== Routes API =====
 
     /// Fetches all registered routes.

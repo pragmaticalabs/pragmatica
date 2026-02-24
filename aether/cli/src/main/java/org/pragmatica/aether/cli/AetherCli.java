@@ -13,6 +13,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
+import java.time.Instant;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -72,7 +73,8 @@ AetherCli.ObservabilityCommand.class,
 AetherCli.LoggingCommand.class,
 AetherCli.ConfigCommand.class,
 AetherCli.ScheduledTasksCommand.class,
-AetherCli.EventsCommand.class})
+AetherCli.EventsCommand.class,
+AetherCli.NodeCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -2013,6 +2015,192 @@ public class AetherCli implements Runnable {
         private String buildEventsPath() {
             return option(since).map(s -> "/api/events?since=" + s)
                          .or("/api/events");
+        }
+    }
+
+    // ===== Node Commands =====
+    @Command(name = "node",
+    description = "Node lifecycle management",
+    subcommands = {NodeCommand.LifecycleCommand.class,
+    NodeCommand.DrainCommand.class,
+    NodeCommand.ActivateCommand.class,
+    NodeCommand.ShutdownCommand.class})
+    static class NodeCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        @Command(name = "lifecycle", description = "Show node lifecycle states")
+        static class LifecycleCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodeCommand nodeParent;
+
+            @Parameters(index = "0", description = "Node ID (omit to list all)", arity = "0..1")
+            private String nodeId;
+
+            @Override
+            public Integer call() {
+                return option(nodeId).map(this::showSingleNodeLifecycle)
+                             .or(() -> showAllLifecycleStates());
+            }
+
+            @SuppressWarnings("JBCT-PAT-01")
+            private Integer showAllLifecycleStates() {
+                var response = nodeParent.parent.fetchFromNode("/api/nodes/lifecycle");
+                if (response.contains("\"error\":")) {
+                    System.out.println("Failed to fetch lifecycle states: " + response);
+                    return 1;
+                }
+                System.out.println("Node Lifecycle States:");
+                var arrayStart = response.indexOf('[');
+                var arrayEnd = response.lastIndexOf(']');
+                if (arrayStart == -1 || arrayEnd == -1 || arrayEnd <= arrayStart) {
+                    System.out.println("  (none)");
+                    return 0;
+                }
+                var arrayContent = response.substring(arrayStart + 1, arrayEnd);
+                if (arrayContent.trim().isEmpty()) {
+                    System.out.println("  (none)");
+                    return 0;
+                }
+                extractLifecycleObjects(arrayContent).forEach(LifecycleCommand::printLifecycleEntry);
+                return 0;
+            }
+
+            private Integer showSingleNodeLifecycle(String id) {
+                var response = nodeParent.parent.fetchFromNode("/api/node/lifecycle/" + id);
+                if (response.contains("\"error\":")) {
+                    System.out.println("Failed to fetch lifecycle for " + id + ": " + response);
+                    return 1;
+                }
+                printLifecycleEntry(response);
+                return 0;
+            }
+
+            private static void printLifecycleEntry(String json) {
+                var entryNodeId = extractJsonString(json, "nodeId");
+                var state = extractJsonString(json, "state");
+                var updatedAt = extractJsonNumber(json, "updatedAt");
+                var timestamp = formatTimestamp(updatedAt);
+                System.out.println("  " + entryNodeId + ": " + state + " (updated: " + timestamp + ")");
+            }
+
+            private static String formatTimestamp(String epochMs) {
+                return option(epochMs).filter(s -> !s.equals("0"))
+                             .map(Long::parseLong)
+                             .map(ms -> Instant.ofEpochMilli(ms).toString())
+                             .or("unknown");
+            }
+        }
+
+        @Command(name = "drain", description = "Drain a node (ON_DUTY -> DRAINING)")
+        static class DrainCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodeCommand nodeParent;
+
+            @Parameters(index = "0", description = "Node ID")
+            private String nodeId;
+
+            @Override
+            public Integer call() {
+                return executeTransition("drain", nodeId, nodeParent);
+            }
+        }
+
+        @Command(name = "activate", description = "Activate a node (DRAINING/DECOMMISSIONED -> ON_DUTY)")
+        static class ActivateCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodeCommand nodeParent;
+
+            @Parameters(index = "0", description = "Node ID")
+            private String nodeId;
+
+            @Override
+            public Integer call() {
+                return executeTransition("activate", nodeId, nodeParent);
+            }
+        }
+
+        @Command(name = "shutdown", description = "Shutdown a node (any -> SHUTTING_DOWN)")
+        static class ShutdownCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodeCommand nodeParent;
+
+            @Parameters(index = "0", description = "Node ID")
+            private String nodeId;
+
+            @Override
+            public Integer call() {
+                return executeTransition("shutdown", nodeId, nodeParent);
+            }
+        }
+
+        @SuppressWarnings("JBCT-UTIL-02")
+        private static Integer executeTransition(String action, String nodeId, NodeCommand nodeParent) {
+            var response = nodeParent.parent.postToNode("/api/node/" + action + "/" + nodeId, "");
+            if (response.contains("\"error\":")) {
+                System.out.println("Failed to " + action + " node " + nodeId + ": " + response);
+                return 1;
+            }
+            return printTransitionResult(response);
+        }
+
+        private static Integer printTransitionResult(String json) {
+            var success = json.contains("\"success\":true");
+            var resultNodeId = extractJsonString(json, "nodeId");
+            var state = extractJsonString(json, "state");
+            var message = extractJsonString(json, "message");
+            var symbol = success ? "\u2713" : "\u2717";
+            System.out.println(symbol + " " + resultNodeId + ": " + state + " - " + message);
+            return success ? 0 : 1;
+        }
+
+        @SuppressWarnings("JBCT-PAT-01")
+        private static List<String> extractLifecycleObjects(String arrayContent) {
+            var objects = new ArrayList<String>();
+            var depth = 0;
+            var start = 0;
+            for (int i = 0; i < arrayContent.length(); i++) {
+                var c = arrayContent.charAt(i);
+                if (c == '{') {
+                    if (depth == 0) start = i;
+                    depth++;
+                } else if (c == '}') {
+                    depth--;
+                    if (depth == 0) {
+                        objects.add(arrayContent.substring(start, i + 1));
+                    }
+                }
+            }
+            return objects;
+        }
+
+        private static String extractJsonString(String json, String key) {
+            var pattern = "\"" + key + "\":\"";
+            var start = json.indexOf(pattern);
+            if (start == -1) return "";
+            start += pattern.length();
+            var end = json.indexOf("\"", start);
+            if (end == -1) return "";
+            return json.substring(start, end);
+        }
+
+        @SuppressWarnings("JBCT-PAT-01")
+        private static String extractJsonNumber(String json, String key) {
+            var pattern = "\"" + key + "\":";
+            var start = json.indexOf(pattern);
+            if (start == -1) return "0";
+            start += pattern.length();
+            var end = start;
+            while (end < json.length() && (Character.isDigit(json.charAt(end)) || json.charAt(end) == '-')) {
+                end++;
+            }
+            if (end == start) return "0";
+            return json.substring(start, end);
         }
     }
 

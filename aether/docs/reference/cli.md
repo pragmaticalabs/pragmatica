@@ -719,6 +719,45 @@ curl -X POST http://localhost:8888/api/chaos/kill-node/node-3
 curl -X POST http://localhost:8888/api/load/rate/500
 ```
 
+#### node lifecycle
+
+Manage node lifecycle states:
+
+```bash
+# List all node lifecycle states
+aether node lifecycle
+
+# Get lifecycle state for a specific node
+aether node lifecycle <nodeId>
+
+# Drain a node (ON_DUTY → DRAINING, CDM evacuates slices respecting budget)
+aether node drain <nodeId>
+
+# Activate a node (DRAINING/DECOMMISSIONED → ON_DUTY)
+aether node activate <nodeId>
+
+# Shut down a node (any → SHUTTING_DOWN)
+aether node shutdown <nodeId>
+```
+
+Example workflow:
+```bash
+# Check current lifecycle states
+aether node lifecycle
+
+# Drain a node before maintenance
+aether node drain node-2
+
+# Verify it's draining
+aether node lifecycle node-2
+
+# Cancel drain and return to active duty
+aether node activate node-2
+
+# Initiate shutdown
+aether node shutdown node-3
+```
+
 #### scheduled-tasks
 
 Manage scheduled tasks:

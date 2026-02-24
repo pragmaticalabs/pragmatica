@@ -1550,8 +1550,103 @@ When no API keys are configured, WebSocket connections are immediately authorize
 | WS | `/ws/status` | WebSocket |
 | WS | `/ws/events` | WebSocket |
 
+| GET | `/api/nodes/lifecycle` | Node Lifecycle |
+| GET | `/api/node/lifecycle/{nodeId}` | Node Lifecycle |
+| POST | `/api/node/drain/{nodeId}` | Node Lifecycle |
+| POST | `/api/node/activate/{nodeId}` | Node Lifecycle |
+| POST | `/api/node/shutdown/{nodeId}` | Node Lifecycle |
 | GET | `/api/scheduled-tasks` | Scheduled Tasks |
 | GET | `/api/scheduled-tasks/{configSection}` | Scheduled Tasks |
+
+---
+
+## Node Lifecycle
+
+Manage node lifecycle states for graceful operations (drain, shutdown, activation).
+
+**States:** `JOINING`, `ON_DUTY`, `DRAINING`, `DECOMMISSIONED`, `SHUTTING_DOWN`
+
+**State transitions:**
+```
+JOINING → ON_DUTY ←→ DRAINING → DECOMMISSIONED → SHUTTING_DOWN
+                   ←────────────┘
+         any KV state ──────────→ SHUTTING_DOWN
+```
+
+### GET /api/nodes/lifecycle
+
+Get lifecycle state for all nodes.
+
+**Response:**
+```json
+[
+  {
+    "nodeId": "node-1",
+    "state": "ON_DUTY",
+    "updatedAt": 1704067200000
+  },
+  {
+    "nodeId": "node-2",
+    "state": "DRAINING",
+    "updatedAt": 1704067201000
+  }
+]
+```
+
+### GET /api/node/lifecycle/{nodeId}
+
+Get lifecycle state for a specific node.
+
+**Response:**
+```json
+{
+  "nodeId": "node-1",
+  "state": "ON_DUTY",
+  "updatedAt": 1704067200000
+}
+```
+
+### POST /api/node/drain/{nodeId}
+
+Transition a node from `ON_DUTY` to `DRAINING`. The CDM will evacuate slices respecting the disruption budget.
+
+**Response:**
+```json
+{
+  "success": true,
+  "nodeId": "node-1",
+  "state": "DRAINING",
+  "message": "Node draining initiated"
+}
+```
+
+### POST /api/node/activate/{nodeId}
+
+Transition a node from `DRAINING` or `DECOMMISSIONED` back to `ON_DUTY`.
+
+**Response:**
+```json
+{
+  "success": true,
+  "nodeId": "node-1",
+  "state": "ON_DUTY",
+  "message": "Node activated"
+}
+```
+
+### POST /api/node/shutdown/{nodeId}
+
+Transition a node from any state to `SHUTTING_DOWN`.
+
+**Response:**
+```json
+{
+  "success": true,
+  "nodeId": "node-1",
+  "state": "SHUTTING_DOWN",
+  "message": "Node shutdown initiated"
+}
+```
 
 ---
 

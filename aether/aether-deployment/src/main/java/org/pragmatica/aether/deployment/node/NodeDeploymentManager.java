@@ -15,11 +15,14 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
@@ -69,6 +72,12 @@ public interface NodeDeploymentManager {
     @MessageReceiver
     void onQuorumStateChange(QuorumStateNotification quorumStateNotification);
 
+    @MessageReceiver
+    void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
+
+    /// Set a shutdown callback to be invoked when SHUTTING_DOWN lifecycle state is received.
+    void setShutdownCallback(Runnable callback);
+
     boolean isActive();
 
     /// Information about a suspended slice that can be reactivated.
@@ -79,6 +88,8 @@ public interface NodeDeploymentManager {
         default void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {}
 
         default void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {}
+
+        default void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {}
 
         /// Dormant state with optional suspended slices for reactivation.
         record DormantNodeDeploymentState(List<SuspendedSlice> suspendedSlices) implements NodeDeploymentState {
@@ -1039,7 +1050,8 @@ public interface NodeDeploymentManager {
                                  AtomicReference<NodeDeploymentState> state,
                                  AtomicLong quorumSequence,
                                  Option<HttpRoutePublisher> httpRoutePublisher,
-                                 Option<SliceInvokerFacade> sliceInvokerFacade) implements NodeDeploymentManager {
+                                 Option<SliceInvokerFacade> sliceInvokerFacade,
+                                 AtomicReference<Runnable> shutdownCallback) implements NodeDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(NodeDeploymentManager.class);
 
             @Override
@@ -1079,6 +1091,8 @@ public interface NodeDeploymentManager {
                                                                                                 sliceInvokerFacade());
                             state().set(activeState);
                             log.info("Node {} NodeDeploymentManager activated", self().id());
+                            // Register ON_DUTY lifecycle state (only if key doesn't exist — preserve DECOMMISSIONED on restart)
+                            registerLifecycleOnDuty();
                             // Reactivate suspended slices if any
                             if (!suspended.isEmpty()) {
                                 log.info("Node {} has {} suspended slices to reactivate", self().id(), suspended.size());
@@ -1106,9 +1120,40 @@ public interface NodeDeploymentManager {
                 }
             }
 
+            private void registerLifecycleOnDuty() {
+                var lifecycleKey = AetherKey.NodeLifecycleKey.nodeLifecycleKey(self());
+                // Check if key already exists (preserve DECOMMISSIONED state on restart)
+                kvStore().get(lifecycleKey)
+                         .onEmpty(() -> writeLifecycleOnDuty(lifecycleKey));
+            }
+
+            private void writeLifecycleOnDuty(AetherKey.NodeLifecycleKey lifecycleKey) {
+                var value = AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY);
+                cluster().apply(List.of(new KVCommand.Put<>(lifecycleKey, value)))
+                         .onSuccess(_ -> log.info("Node {} registered lifecycle state: ON_DUTY", self().id()))
+                         .onFailure(cause -> log.warn("Failed to register lifecycle ON_DUTY: {}", cause.message()));
+            }
+
             @Override
             public boolean isActive() {
                 return state().get() instanceof NodeDeploymentState.ActiveNodeDeploymentState;
+            }
+
+            @Override
+            public void onNodeLifecyclePut(ValuePut<AetherKey.NodeLifecycleKey, AetherValue.NodeLifecycleValue> valuePut) {
+                var key = valuePut.cause().key();
+                var value = valuePut.cause().value();
+                // Only watch our own lifecycle key
+                if (key.nodeId().equals(self()) && value.state() == AetherValue.NodeLifecycleState.SHUTTING_DOWN) {
+                    log.warn("Node {} received SHUTTING_DOWN lifecycle state — initiating shutdown", self().id());
+                    Option.option(shutdownCallback().get())
+                          .onPresent(Runnable::run);
+                }
+            }
+
+            @Override
+            public void setShutdownCallback(Runnable callback) {
+                shutdownCallback().set(callback);
             }
         }
         return new deploymentManager(self,
@@ -1121,6 +1166,7 @@ public interface NodeDeploymentManager {
                                      new AtomicReference<>(new NodeDeploymentState.DormantNodeDeploymentState()),
                                      new AtomicLong(0),
                                      httpRoutePublisher,
-                                     sliceInvokerFacade);
+                                     sliceInvokerFacade,
+                                     new AtomicReference<>());
     }
 }

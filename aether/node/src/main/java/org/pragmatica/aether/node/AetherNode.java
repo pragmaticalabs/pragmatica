@@ -827,6 +827,8 @@ public interface AetherNode {
                                   eventLoopMetricsCollector,
                                   Option.empty(),
                                   startTimeMs);
+        // Wire remote shutdown: when SHUTTING_DOWN lifecycle is received, stop the node
+        nodeDeploymentManager.setShutdownCallback(node::stop);
         // Build and wire ImmutableRouter, then create final node
         return RabiaNode.buildAndWireRouter(delegateRouter, allEntries)
                         .map(_ -> {
@@ -990,7 +992,11 @@ public interface AetherNode {
                                                   .onPut(AetherKey.ScheduledTaskKey.class,
                                                          scheduledTaskRegistry::onScheduledTaskPut)
                                                   .onRemove(AetherKey.ScheduledTaskKey.class,
-                                                            scheduledTaskRegistry::onScheduledTaskRemove);
+                                                            scheduledTaskRegistry::onScheduledTaskRemove)
+                                                  .onPut(AetherKey.NodeLifecycleKey.class,
+                                                         nodeDeploymentManager::onNodeLifecyclePut)
+                                                  .onPut(AetherKey.NodeLifecycleKey.class,
+                                                         clusterDeploymentManager::onNodeLifecyclePut);
         // Dynamic config manager (optional)
         dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
                                                              .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));

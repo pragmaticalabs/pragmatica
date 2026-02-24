@@ -8,6 +8,7 @@ import org.pragmatica.aether.api.routes.LogLevelRoutes;
 import org.pragmatica.aether.api.routes.ManagementRouter;
 import org.pragmatica.aether.api.routes.MavenProtocolRoutes;
 import org.pragmatica.aether.api.routes.MetricsRoutes;
+import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.api.routes.ObservabilityRoutes;
 import org.pragmatica.aether.api.routes.RepositoryRoutes;
 import org.pragmatica.aether.api.routes.RollingUpdateRoutes;
@@ -181,6 +182,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(SliceRoutes.sliceRoutes(nodeSupplier));
         routeSources.add(MetricsRoutes.metricsRoutes(nodeSupplier, observability));
         routeSources.add(RollingUpdateRoutes.rollingUpdateRoutes(nodeSupplier));
+        routeSources.add(NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier));
         routeSources.add(RepositoryRoutes.repositoryRoutes(nodeSupplier));
         routeSources.add(DashboardRoutes.dashboardRoutes());
         routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry, scheduledTaskManager));
