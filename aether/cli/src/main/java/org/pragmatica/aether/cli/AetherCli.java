@@ -84,6 +84,10 @@ public class AetherCli implements Runnable {
     description = "Path to aether.toml config file")
     private Path configPath;
 
+    @CommandLine.Option(names = {"--api-key", "-k"},
+    description = "API key for authenticated access")
+    private String apiKey;
+
     private final HttpClient httpClient = HttpClient.newHttpClient();
 
     @SuppressWarnings("JBCT-RET-01")
@@ -113,7 +117,9 @@ public class AetherCli implements Runnable {
 
     @SuppressWarnings("JBCT-SEQ-01")
     private static boolean isConnectionOption(String arg) {
-        return arg.startsWith("-c") || arg.startsWith("--connect") || arg.startsWith("--config") || arg.equals("-h") || arg.equals("--help") || arg.equals("-V") || arg.equals("--version");
+        return arg.startsWith("-c") || arg.startsWith("--connect") || arg.startsWith("--config")
+               || arg.startsWith("-k") || arg.startsWith("--api-key")
+               || arg.equals("-h") || arg.equals("--help") || arg.equals("-V") || arg.equals("--version");
     }
 
     @SuppressWarnings("JBCT-UTIL-02")
@@ -228,12 +234,20 @@ public class AetherCli implements Runnable {
         }
     }
 
+    @SuppressWarnings("JBCT-SEQ-01")
     private String[] buildReplArgs(String[] replArgs) {
-        var fullArgs = new String[replArgs.length + 2];
-        fullArgs[0] = "--connect";
-        fullArgs[1] = nodeAddress;
-        System.arraycopy(replArgs, 0, fullArgs, 2, replArgs.length);
-        return fullArgs;
+        var args = new ArrayList<String>();
+        args.add("--connect");
+        args.add(nodeAddress);
+        var key = resolveApiKey();
+        if (key != null) {
+            args.add("--api-key");
+            args.add(key);
+        }
+        for (var arg : replArgs) {
+            args.add(arg);
+        }
+        return args.toArray(String[]::new);
     }
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
@@ -284,41 +298,68 @@ public class AetherCli implements Runnable {
         }
     }
 
-    private static HttpRequest buildGetRequest(URI uri) {
-        return HttpRequest.newBuilder()
-                          .uri(uri)
-                          .GET()
-                          .build();
+    @SuppressWarnings("JBCT-SEQ-01")
+    private String resolveApiKey() {
+        if (apiKey != null && !apiKey.isBlank()) {
+            return apiKey;
+        }
+        var envKey = System.getenv("AETHER_API_KEY");
+        return (envKey != null && !envKey.isBlank()) ? envKey : null;
+    }
+
+    private void attachApiKey(HttpRequest.Builder builder) {
+        var key = resolveApiKey();
+        if (key != null) {
+            builder.header("X-API-Key", key);
+        }
+    }
+
+    private HttpRequest buildGetRequest(URI uri) {
+        var builder = HttpRequest.newBuilder()
+                                 .uri(uri)
+                                 .GET();
+        attachApiKey(builder);
+        return builder.build();
     }
 
     @SuppressWarnings("JBCT-SEQ-01")
-    private static HttpRequest buildPostRequest(URI uri, String body) {
-        return HttpRequest.newBuilder()
-                          .uri(uri)
-                          .header("Content-Type", "application/json")
-                          .POST(HttpRequest.BodyPublishers.ofString(body))
-                          .build();
+    private HttpRequest buildPostRequest(URI uri, String body) {
+        var builder = HttpRequest.newBuilder()
+                                 .uri(uri)
+                                 .header("Content-Type", "application/json")
+                                 .POST(HttpRequest.BodyPublishers.ofString(body));
+        attachApiKey(builder);
+        return builder.build();
     }
 
     @SuppressWarnings("JBCT-SEQ-01")
-    private static HttpRequest buildPutRequest(URI uri, byte[] content, String contentType) {
-        return HttpRequest.newBuilder()
-                          .uri(uri)
-                          .header("Content-Type", contentType)
-                          .PUT(HttpRequest.BodyPublishers.ofByteArray(content))
-                          .build();
+    private HttpRequest buildPutRequest(URI uri, byte[] content, String contentType) {
+        var builder = HttpRequest.newBuilder()
+                                 .uri(uri)
+                                 .header("Content-Type", contentType)
+                                 .PUT(HttpRequest.BodyPublishers.ofByteArray(content));
+        attachApiKey(builder);
+        return builder.build();
     }
 
-    private static HttpRequest buildDeleteRequest(URI uri) {
-        return HttpRequest.newBuilder()
-                          .uri(uri)
-                          .DELETE()
-                          .build();
+    private HttpRequest buildDeleteRequest(URI uri) {
+        var builder = HttpRequest.newBuilder()
+                                 .uri(uri)
+                                 .DELETE();
+        attachApiKey(builder);
+        return builder.build();
     }
 
+    @SuppressWarnings("JBCT-SEQ-01")
     private static String extractResponseBody(HttpResponse<String> response) {
         if (response.statusCode() == 200) {
             return response.body();
+        }
+        if (response.statusCode() == 401) {
+            return "{\"error\":\"Authentication required. Use --api-key or set AETHER_API_KEY environment variable.\"}";
+        }
+        if (response.statusCode() == 403) {
+            return "{\"error\":\"Access denied. The provided API key does not have sufficient permissions.\"}";
         }
         return formatErrorResponse(response);
     }

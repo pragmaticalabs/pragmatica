@@ -8,7 +8,21 @@ This document describes the HTTP Management API for Aether cluster management.
 
 ## Authentication
 
-Currently no authentication is required. TLS can be enabled via `AetherNodeConfig.withTls()`.
+When API keys are configured, all management endpoints require authentication via the `X-API-Key` header:
+
+```
+X-API-Key: your-api-key
+```
+
+**Exceptions (always public, no auth required):**
+- `GET /health/live` — Liveness probe
+- `GET /health/ready` — Readiness probe
+
+**Error responses:**
+- `401 Unauthorized` — Missing `X-API-Key` header. Response includes `WWW-Authenticate: ApiKey realm="Aether"`.
+- `403 Forbidden` — Invalid API key provided.
+
+When no API keys are configured, all endpoints are accessible without authentication (backward compatible).
 
 ---
 
@@ -59,6 +73,42 @@ Get node health status including readiness and quorum.
   "sliceCount": 5
 }
 ```
+
+### GET /health/live
+
+Liveness probe for container orchestrators. Always returns 200 if the process is running.
+No authentication required.
+
+**Response (200 OK):**
+```json
+{
+  "status": "UP",
+  "nodeId": "node-1"
+}
+```
+
+### GET /health/ready
+
+Readiness probe for container orchestrators. Returns 200 when the node is ready to receive traffic, 503 when not ready.
+No authentication required.
+
+**Response (200 OK or 503 Service Unavailable):**
+```json
+{
+  "status": "UP",
+  "nodeId": "node-1",
+  "components": [
+    {"name": "consensus", "status": "UP", "detail": "Cluster active"},
+    {"name": "routes", "status": "UP", "detail": "Route sync received"},
+    {"name": "quorum", "status": "UP", "detail": "Connected peers: 2"}
+  ]
+}
+```
+
+Components checked:
+- **consensus** — Is the node participating in consensus? DOWN during initial cluster formation.
+- **routes** — Has the node received its initial route synchronization from the KV-Store?
+- **quorum** — Does the node have a quorum (at least 2 nodes total)?
 
 ### GET /api/nodes
 
@@ -1262,12 +1312,27 @@ ws.onmessage = (event) => {
 
 Messages are only sent when new events have occurred since the previous broadcast. Each message is a JSON array of `ClusterEvent` objects.
 
+## WebSocket Authentication
+
+When API keys are configured, WebSocket connections require first-message authentication:
+
+1. Client connects to WebSocket endpoint
+2. Server sends: `{"type":"AUTH_REQUIRED"}`
+3. Client sends: `{"type":"AUTH","apiKey":"your-api-key"}`
+4. Server responds: `{"type":"AUTH_SUCCESS"}` or `{"type":"AUTH_FAILED","reason":"..."}`
+
+If not authenticated within 5 seconds, the connection is closed.
+
+When no API keys are configured, WebSocket connections are immediately authorized.
+
 ---
 
 ## Endpoint Summary
 
 | Method | Path | Section |
 |--------|------|---------|
+| GET | `/health/live` | Health Probes |
+| GET | `/health/ready` | Health Probes |
 | GET | `/api/status` | Cluster Status |
 | GET | `/api/health` | Cluster Status |
 | GET | `/api/nodes` | Cluster Status |
@@ -1388,5 +1453,7 @@ All errors return JSON with an `error` field:
 
 Common HTTP status codes:
 - `400 Bad Request` -- Invalid request format or missing required fields
+- `401 Unauthorized` -- Missing API key (when authentication is configured)
+- `403 Forbidden` -- Invalid API key
 - `404 Not Found` -- Resource not found
 - `500 Internal Server Error` -- Server error

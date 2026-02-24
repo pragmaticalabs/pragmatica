@@ -25,6 +25,7 @@ import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.HttpRouteRegistry;
+import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.resource.SpiResourceProvider;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
@@ -818,6 +819,10 @@ public interface AetherNode {
                         .map(_ -> {
                                  // Create management server if enabled
         if (config.managementPort() > 0) {
+                                     var mgmtSecurityEnabled = config.appHttp().securityEnabled();
+                                     var mgmtSecurityValidator = mgmtSecurityEnabled
+                                                                 ? SecurityValidator.apiKeyValidator(config.appHttp().apiKeyValues())
+                                                                 : SecurityValidator.noOpValidator();
                                      var managementServer = ManagementServer.managementServer(config.managementPort(),
                                                                                               () -> node,
                                                                                               alertManager,
@@ -826,7 +831,9 @@ public interface AetherNode {
                                                                                               dynamicConfigManager,
                                                                                               scheduledTaskRegistry,
                                                                                               scheduledTaskManager,
-                                                                                              config.tls());
+                                                                                              config.tls(),
+                                                                                              mgmtSecurityValidator,
+                                                                                              mgmtSecurityEnabled);
                                      return new aetherNode(config,
                                                            delegateRouter,
                                                            kvStore,

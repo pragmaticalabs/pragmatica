@@ -45,6 +45,18 @@ public sealed interface ManagementApiResponses {
                           int metricsNodeCount,
                           int sliceCount) {}
 
+    // ===== Probe Routes =====
+    record LivenessResponse(String status,
+                            String nodeId) {}
+
+    record ReadinessResponse(String status,
+                             String nodeId,
+                             List<ComponentHealth> components) {}
+
+    record ComponentHealth(String name,
+                           String status,
+                           String detail) {}
+
     // ===== Slice Routes =====
     record SlicesResponse(List<String> slices) {}
 

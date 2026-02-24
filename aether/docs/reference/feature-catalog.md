@@ -77,12 +77,12 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 61 | Unified invocation observability | Planned | Single invocation tree: tracing + depth-logging + metrics. Automatic instrumentation at dependency boundaries. SLF4J bridge. See RFC-0010 |
 | 62 | Per-data-source DB schema management | Planned | Cluster-level schema migration managed by Aether runtime. Leader-driven execution via consensus. Readiness gate blocks traffic until schema current |
 | 63 | Canary & blue-green deployment | Planned | Canary with automatic rollback on error threshold, blue-green with instant switchover, A/B testing with traffic splitting |
-| 64 | RBAC for management API | Planned | Role-based access control (admin, operator, viewer), per-endpoint authorization, audit logging for sensitive operations |
+| 64 | RBAC for management API | Partial | Tier 1: API key authentication with per-key names/roles, SHA-256 key hashing, audit logging. Management + app HTTP + WebSocket secured. **Gap:** No per-endpoint role-based authorization (all keys get same access) |
 | 65 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
 | 66 | Spot instance support | Planned | Elastic pool of spot/preemptible instances for cost-optimized scaling. Core (on-demand) + elastic (spot) pools. Prerequisite: Cloud Integration |
 | 67 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts. Prerequisite: Cloud Integration |
 | 68 | Graceful node drain | Planned | `POST /api/nodes/{id}/drain` to migrate slices off a node before maintenance. Integrates with disruption budget |
-| 69 | Readiness vs liveness probes | Planned | Split `/api/health` into `/api/health/live` and `/api/health/ready` for container orchestrator compatibility |
+| 69 | Readiness vs liveness probes | Complete | `/health/live` (always 200) and `/health/ready` (200/503 with component checks: consensus, routes, quorum). Container orchestrator compatible. App HTTP `/health` endpoint also added |
 | 70 | Dead letter handling | Planned | KV-Store backed DLQ for failed pub-sub messages and scheduled task invocations. Retry, inspect, replay via API and CLI |
 | 71 | KV-Store state backup | Planned | Periodic KV-Store snapshots to durable storage (filesystem, S3). Disaster recovery when quorum permanently lost |
 | 72 | Aether runtime rolling upgrade | Planned | Upgrade Aether node software across running cluster without downtime. Node-by-node with health verification |
@@ -154,9 +154,9 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | Status | Count |
 |--------|-------|
-| Complete | 59 |
-| Partial | 1 |
-| Planned | 14 |
+| Complete | 60 |
+| Partial | 2 |
+| Planned | 12 |
 | Total | 74 |
 
 **Partial features and their gaps:**
@@ -164,6 +164,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Feature | Key Gap |
 |---------|---------|
 | TTM predictive scaling | Disabled by default, no live model training |
+| RBAC for management API | No per-endpoint role-based authorization (Tier 2) |
 
 **Planned features:**
 
@@ -173,12 +174,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Unified invocation observability | RFC-0010 |
 | Per-data-source DB schema management | Design spec ready |
 | Canary & blue-green deployment | — |
-| RBAC for management API | — |
 | Per-route rate limiting | — |
 | Spot instance support | Cloud Integration |
 | Cluster expense tracking | Cloud Integration |
 | Graceful node drain | — |
-| Readiness vs liveness probes | — |
 | Dead letter handling | Pub-sub + scheduler complete |
 | KV-Store state backup | — |
 | Aether runtime rolling upgrade | Official container or binaries |
@@ -186,4 +185,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-02-23 (v0.18.0)*
+*Last updated: 2026-02-24 (v0.18.0)*

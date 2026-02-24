@@ -15,16 +15,25 @@ import org.pragmatica.aether.api.routes.RouteHandler;
 import org.pragmatica.aether.api.routes.ScheduledTaskRoutes;
 import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.api.routes.StatusRoutes;
+import org.pragmatica.aether.http.handler.HttpRequestContext;
+import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
+import org.pragmatica.aether.http.security.AuditLog;
+import org.pragmatica.aether.http.security.SecurityError;
+import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.server.RequestContext;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.http.websocket.WebSocketEndpoint;
+import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -68,7 +77,9 @@ public interface ManagementServer {
                                              Option<DynamicConfigManager> dynamicConfigManager,
                                              ScheduledTaskRegistry scheduledTaskRegistry,
                                              ScheduledTaskManager scheduledTaskManager,
-                                             Option<TlsConfig> tls) {
+                                             Option<TlsConfig> tls,
+                                             SecurityValidator securityValidator,
+                                             boolean securityEnabled) {
         return new ManagementServerImpl(port,
                                         nodeSupplier,
                                         alertManager,
@@ -77,7 +88,9 @@ public interface ManagementServer {
                                         dynamicConfigManager,
                                         scheduledTaskRegistry,
                                         scheduledTaskManager,
-                                        tls);
+                                        tls,
+                                        securityValidator,
+                                        securityEnabled);
     }
 }
 
@@ -98,10 +111,17 @@ class ManagementServerImpl implements ManagementServer {
     private final EventWebSocketPublisher eventWsPublisher;
     private final ObservabilityRegistry observability;
     private final Option<TlsConfig> tls;
+    private final SecurityValidator securityValidator;
+    private final boolean securityEnabled;
+    private final WebSocketAuthenticator wsAuthenticator;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
 
     // Route-based router (new pattern)
     private final ManagementRouter router;
+
+    // Status routes for probe endpoints (need direct access for status code control)
+    private final StatusRoutes statusRoutes;
+    private final JsonMapper probeJsonMapper;
 
     // Legacy route handlers (old pattern - to be migrated)
     private final List<RouteHandler> legacyRoutes;
@@ -114,17 +134,22 @@ class ManagementServerImpl implements ManagementServer {
                          Option<DynamicConfigManager> dynamicConfigManager,
                          ScheduledTaskRegistry scheduledTaskRegistry,
                          ScheduledTaskManager scheduledTaskManager,
-                         Option<TlsConfig> tls) {
+                         Option<TlsConfig> tls,
+                         SecurityValidator securityValidator,
+                         boolean securityEnabled) {
         this.port = port;
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
         this.aspectManager = aspectManager;
         this.logLevelRegistry = logLevelRegistry;
+        this.securityValidator = securityValidator;
+        this.securityEnabled = securityEnabled;
+        this.wsAuthenticator = WebSocketAuthenticator.webSocketAuthenticator(securityValidator, securityEnabled);
         this.metricsPublisher = new DashboardMetricsPublisher(nodeSupplier, alertManager, aspectManager);
-        this.statusWsHandler = new StatusWebSocketHandler();
+        this.statusWsHandler = new StatusWebSocketHandler(wsAuthenticator);
         this.statusWsPublisher = StatusWebSocketPublisher.statusWebSocketPublisher(statusWsHandler,
                                                                                    () -> buildStatusJson(nodeSupplier));
-        this.eventWsHandler = new EventWebSocketHandler();
+        this.eventWsHandler = new EventWebSocketHandler(wsAuthenticator);
         this.eventWsPublisher = EventWebSocketPublisher.eventWebSocketPublisher(eventWsHandler,
                                                                                 since -> nodeSupplier.get()
                                                                                                      .eventAggregator()
@@ -132,9 +157,11 @@ class ManagementServerImpl implements ManagementServer {
                                                                                 ManagementServerImpl::buildEventsJson);
         this.observability = ObservabilityRegistry.prometheus();
         this.tls = tls;
+        this.probeJsonMapper = JsonMapper.defaultJsonMapper();
         // Route-based router for migrated routes — build route sources dynamically
         var routeSources = new ArrayList<RouteSource>();
-        routeSources.add(StatusRoutes.statusRoutes(nodeSupplier));
+        this.statusRoutes = StatusRoutes.statusRoutes(nodeSupplier, () -> nodeSupplier.get().appHttpServer());
+        routeSources.add(statusRoutes);
         routeSources.add(AlertRoutes.alertRoutes(alertManager));
         routeSources.add(DynamicAspectRoutes.dynamicAspectRoutes(aspectManager));
         routeSources.add(LogLevelRoutes.logLevelRoutes(logLevelRegistry));
@@ -153,7 +180,7 @@ class ManagementServerImpl implements ManagementServer {
 
     @Override
     public Promise<Unit> start() {
-        var wsHandler = new DashboardWebSocketHandler(metricsPublisher);
+        var wsHandler = new DashboardWebSocketHandler(metricsPublisher, wsAuthenticator);
         var wsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/dashboard", wsHandler);
         var statusWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/status", statusWsHandler);
         var eventWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/events", eventWsHandler);
@@ -345,6 +372,14 @@ class ManagementServerImpl implements ManagementServer {
         var path = ctx.path();
         var method = ctx.method();
         log.debug("Received {} {}", method, path);
+        // Probe endpoints — handled before router for HTTP status code control
+        if (handleProbeRequest(path, response)) {
+            return;
+        }
+        // Security check — probes already bypassed
+        if (securityEnabled && !validateManagementSecurity(ctx, response, path, method)) {
+            return;
+        }
         // Try route-based routing first
         if (router.handle(ctx, response)) {
             return;
@@ -357,5 +392,74 @@ class ManagementServerImpl implements ManagementServer {
         }
         // No route matched
         response.notFound();
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private boolean handleProbeRequest(String path, ResponseWriter response) {
+        if ("/health/live".equals(path)) {
+            writeProbeJson(response, statusRoutes.buildLivenessResponse(), HttpStatus.OK);
+            return true;
+        }
+        if ("/health/ready".equals(path)) {
+            var readiness = statusRoutes.buildReadinessResponse();
+            var httpStatus = "UP".equals(readiness.status())
+                             ? HttpStatus.OK
+                             : HttpStatus.SERVICE_UNAVAILABLE;
+            writeProbeJson(response, readiness, httpStatus);
+            return true;
+        }
+        return false;
+    }
+
+    private void writeProbeJson(ResponseWriter response, Object value, HttpStatus httpStatus) {
+        probeJsonMapper.writeAsString(value)
+                       .onSuccess(json -> response.respond(httpStatus, json))
+                       .onFailure(cause -> response.error(HttpStatus.INTERNAL_SERVER_ERROR, cause.message()));
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private boolean validateManagementSecurity(RequestContext ctx, ResponseWriter response, String path,
+                                               HttpMethod method) {
+        var httpContext = toManagementRequestContext(ctx, path);
+        var policy = RouteSecurityPolicy.apiKeyRequired();
+        var methodName = method.name();
+        return securityValidator.validate(httpContext, policy)
+                                .onFailure(cause -> handleManagementSecurityFailure(response, cause, path, methodName))
+                                .onSuccess(sc -> logManagementAccess(sc, methodName, path))
+                                .isSuccess();
+    }
+
+    private static void logManagementAccess(
+            org.pragmatica.aether.http.handler.security.SecurityContext securityContext,
+            String method, String path) {
+        var principal = securityContext.isAuthenticated()
+                        ? securityContext.principal().value()
+                        : "anonymous";
+        AuditLog.managementAccess("mgmt", principal, method, path);
+    }
+
+    private static HttpRequestContext toManagementRequestContext(RequestContext ctx, String path) {
+        return HttpRequestContext.httpRequestContext(path,
+                                                     ctx.method().name(),
+                                                     ctx.queryParams().asMap(),
+                                                     ctx.headers().asMap(),
+                                                     ctx.body(),
+                                                     "mgmt");
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private void handleManagementSecurityFailure(ResponseWriter response, Cause cause, String path, String method) {
+        AuditLog.authFailure("mgmt", cause.message(), method, path);
+        var status = switch (cause) {
+            case SecurityError.MissingCredentials _ -> HttpStatus.UNAUTHORIZED;
+            case SecurityError.InvalidCredentials _ -> HttpStatus.FORBIDDEN;
+            default -> HttpStatus.UNAUTHORIZED;
+        };
+        if (status == HttpStatus.UNAUTHORIZED) {
+            response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"")
+                    .error(status, cause.message());
+        } else {
+            response.error(status, cause.message());
+        }
     }
 }

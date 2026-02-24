@@ -6,6 +6,10 @@ import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
+import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
+import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.aether.http.security.AuditLog;
+import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationContext;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
@@ -169,7 +173,7 @@ class AppHttpServerImpl implements AppHttpServer {
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.securityValidator = config.securityEnabled()
-                                 ? SecurityValidator.apiKeyValidator(config.apiKeys())
+                                 ? SecurityValidator.apiKeyValidator(config.apiKeyValues())
                                  : SecurityValidator.noOpValidator();
         this.tls = tls;
     }
@@ -263,6 +267,48 @@ class AppHttpServerImpl implements AppHttpServer {
         log.trace("Received {} {} [{}]", method, path, requestId);
         var routeTable = routeTableRef.get();
         var normalizedPath = normalizePath(path);
+        // Health endpoint — always returns 200 (no route table dependency)
+        if (isHealthEndpoint(normalizedPath)) {
+            sendHealthResponse(response, requestId);
+            return;
+        }
+        // Security validation — health endpoint already bypassed above
+        var httpContext = toHttpRequestContext(request, requestId);
+        var policy = resolveSecurityPolicy();
+        securityValidator.validate(httpContext, policy)
+                         .apply(cause -> handleSecurityFailure(response, cause, path, requestId, method),
+                                ctx -> dispatchAuthenticated(request, response, routeTable, ctx, method, normalizedPath, path, requestId));
+    }
+
+    private RouteSecurityPolicy resolveSecurityPolicy() {
+        return config.securityEnabled()
+               ? RouteSecurityPolicy.apiKeyRequired()
+               : RouteSecurityPolicy.publicRoute();
+    }
+
+    @SuppressWarnings("JBCT-RET-01")
+    private void dispatchAuthenticated(RequestContext request,
+                                       ResponseWriter response,
+                                       RouteTable routeTable,
+                                       SecurityContext securityContext,
+                                       String method,
+                                       String normalizedPath,
+                                       String path,
+                                       String requestId) {
+        var principal = securityContext.isAuthenticated()
+                        ? securityContext.principal().value()
+                        : null;
+        AuditLog.authSuccess(requestId, principal != null ? principal : "anonymous", method, path);
+        InvocationContext.runWithContext(requestId, principal, selfNodeId.id(),
+                                        () -> dispatchToRoute(request, response, routeTable, method, normalizedPath, requestId));
+    }
+
+    private void dispatchToRoute(RequestContext request,
+                                 ResponseWriter response,
+                                 RouteTable routeTable,
+                                 String method,
+                                 String normalizedPath,
+                                 String requestId) {
         // Try local route first
         if (httpRoutePublisher.isPresent()) {
             var localRouteOpt = findMatchingLocalRoute(routeTable.localRoutes(), method, normalizedPath);
@@ -281,17 +327,36 @@ class AppHttpServerImpl implements AppHttpServer {
         if (!routeSyncReceived.get() && httpRoutePublisher.isPresent()) {
             log.debug("Route not yet available for {} {} [{}] — node starting, routes not synchronized",
                       method,
-                      path,
+                      request.path(),
                       requestId);
             sendProblem(response,
                         HttpStatus.SERVICE_UNAVAILABLE,
                         "Node starting, routes not yet synchronized",
-                        path,
+                        request.path(),
                         requestId);
         } else {
-            log.warn("No route found for {} {} [{}]", method, path, requestId);
-            sendProblem(response, HttpStatus.NOT_FOUND, "No route found for " + method + " " + path, path, requestId);
+            log.warn("No route found for {} {} [{}]", method, request.path(), requestId);
+            sendProblem(response, HttpStatus.NOT_FOUND,
+                        "No route found for " + method + " " + request.path(), request.path(), requestId);
         }
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private void handleSecurityFailure(ResponseWriter response,
+                                       Cause cause,
+                                       String path,
+                                       String requestId,
+                                       String method) {
+        var status = switch (cause) {
+            case SecurityError.MissingCredentials _ -> HttpStatus.UNAUTHORIZED;
+            case SecurityError.InvalidCredentials _ -> HttpStatus.FORBIDDEN;
+            default -> HttpStatus.UNAUTHORIZED;
+        };
+        AuditLog.authFailure(requestId, cause.message(), method, path);
+        if (status == HttpStatus.UNAUTHORIZED) {
+            response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
+        }
+        sendProblem(response, status, cause.message(), path, requestId);
     }
 
     private Option<HttpRouteKey> findMatchingLocalRoute(Set<HttpRouteKey> localRoutes,
@@ -336,6 +401,20 @@ class AppHttpServerImpl implements AppHttpServer {
             normalized = normalized + "/";
         }
         return normalized;
+    }
+
+    // ================== Health Endpoint ==================
+    private static boolean isHealthEndpoint(String normalizedPath) {
+        return "/health/".equals(normalizedPath);
+    }
+
+    private void sendHealthResponse(ResponseWriter response, String requestId) {
+        var body = "{\"status\":\"UP\",\"nodeId\":\"" + selfNodeId.id() + "\"}";
+        response.header(ResponseWriter.X_REQUEST_ID, requestId)
+                .header("X-Node-Id", selfNodeId.id())
+                .write(org.pragmatica.http.HttpStatus.OK,
+                       body.getBytes(StandardCharsets.UTF_8),
+                       CommonContentType.APPLICATION_JSON);
     }
 
     // ================== Local Route Handling ==================

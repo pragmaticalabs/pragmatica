@@ -52,10 +52,28 @@ Interactive CLI for managing Aether clusters.
 |--------|-------------|---------|
 | `-c, --connect <host:port>` | Node address to connect to | `localhost:8080` |
 | `--config <path>` | Path to aether.toml config file | |
+| `-k, --api-key <key>` | API key for authenticated access | `AETHER_API_KEY` env |
 | `-h, --help` | Show help | |
 | `-V, --version` | Show version | |
 
 When `--config` is specified, the CLI reads the management port from the config file. The `--connect` option takes precedence if both are provided.
+
+### Authentication
+
+When connecting to a secured cluster, provide an API key:
+
+```bash
+# Via command-line flag
+aether --api-key mykey123 status
+
+# Via environment variable
+export AETHER_API_KEY=mykey123
+aether status
+```
+
+The CLI will display user-friendly error messages for authentication failures:
+- `Authentication required` (401) — API key not provided
+- `Access denied` (403) — Invalid API key
 
 ### Commands
 

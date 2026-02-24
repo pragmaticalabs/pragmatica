@@ -1,10 +1,9 @@
 package org.pragmatica.aether.http.security;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
+import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
-import org.pragmatica.aether.http.handler.security.SecurityContext;
 
 import java.util.List;
 import java.util.Map;
@@ -84,15 +83,82 @@ class ApiKeySecurityValidatorTest {
     }
 
     @Test
-    void validate_returnsAnonymous_forNoOpValidator() {
+    void validate_returnsSystemContext_forNoOpValidator() {
         var validator = SecurityValidator.noOpValidator();
         var request = createRequest(Map.of());
 
         validator.validate(request, RouteSecurityPolicy.apiKeyRequired())
                  .onFailureRun(() -> fail("Expected success"))
                  .onSuccess(context -> {
-                     assertThat(context).isEqualTo(SecurityContext.securityContext());
+                     assertThat(context.isAuthenticated()).isTrue();
+                     assertThat(context.principal().isService()).isTrue();
+                     assertThat(context.principal().value()).isEqualTo("service:system");
+                     assertThat(context.hasRole(Role.ADMIN)).isTrue();
+                     assertThat(context.hasRole(Role.SERVICE)).isTrue();
                  });
+    }
+
+    @Test
+    void validate_succeeds_forNamedKeyEntry() {
+        var entries = Map.of(
+            VALID_KEY, new ApiKeySecurityValidator.ApiKeyEntry("my-service", Set.of("admin", "service"))
+        );
+        var validator = SecurityValidator.apiKeyValidator(entries);
+        var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
+
+        validator.validate(request, RouteSecurityPolicy.apiKeyRequired())
+                 .onFailureRun(() -> fail("Expected success"))
+                 .onSuccess(context -> {
+                     assertThat(context.isAuthenticated()).isTrue();
+                     assertThat(context.principal().isApiKey()).isTrue();
+                     assertThat(context.principal().value()).isEqualTo("api-key:my-service");
+                     assertThat(context.hasRole(Role.ADMIN)).isTrue();
+                     assertThat(context.hasRole(Role.SERVICE)).isTrue();
+                 });
+    }
+
+    @Test
+    void validate_sameKeyAlwaysProducesSameResult() {
+        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var request1 = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
+        var request2 = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
+
+        var result1 = validator.validate(request1, RouteSecurityPolicy.apiKeyRequired());
+        var result2 = validator.validate(request2, RouteSecurityPolicy.apiKeyRequired());
+
+        result1.onFailureRun(() -> fail("Expected success for request1"))
+               .onSuccess(ctx1 ->
+                   result2.onFailureRun(() -> fail("Expected success for request2"))
+                          .onSuccess(ctx2 -> {
+                              assertThat(ctx1.principal().value()).isEqualTo(ctx2.principal().value());
+                              assertThat(ctx1.roles()).isEqualTo(ctx2.roles());
+                          }));
+    }
+
+    @Test
+    void validate_differentKeysProduceDifferentSecurityContexts() {
+        var key1 = "first-key-value";
+        var key2 = "second-key-value";
+        var entries = Map.of(
+            key1, new ApiKeySecurityValidator.ApiKeyEntry("first-svc", Set.of("admin")),
+            key2, new ApiKeySecurityValidator.ApiKeyEntry("second-svc", Set.of("service"))
+        );
+        var validator = SecurityValidator.apiKeyValidator(entries);
+
+        var request1 = createRequest(Map.of("X-API-Key", List.of(key1)));
+        var request2 = createRequest(Map.of("X-API-Key", List.of(key2)));
+
+        var result1 = validator.validate(request1, RouteSecurityPolicy.apiKeyRequired());
+        var result2 = validator.validate(request2, RouteSecurityPolicy.apiKeyRequired());
+
+        result1.onFailureRun(() -> fail("Expected success for key1"))
+               .onSuccess(ctx1 ->
+                   result2.onFailureRun(() -> fail("Expected success for key2"))
+                          .onSuccess(ctx2 -> {
+                              assertThat(ctx1.principal().value()).isNotEqualTo(ctx2.principal().value());
+                              assertThat(ctx1.principal().value()).isEqualTo("api-key:first-svc");
+                              assertThat(ctx2.principal().value()).isEqualTo("api-key:second-svc");
+                          }));
     }
 
     private HttpRequestContext createRequest(Map<String, List<String>> headers) {

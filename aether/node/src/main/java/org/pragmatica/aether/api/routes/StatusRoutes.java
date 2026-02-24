@@ -2,11 +2,15 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterInfo;
+import org.pragmatica.aether.api.ManagementApiResponses.ComponentHealth;
 import org.pragmatica.aether.api.ManagementApiResponses.HealthResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.LivenessResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.MetricsSummary;
 import org.pragmatica.aether.api.ManagementApiResponses.NodeInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.NodesResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.ReadinessResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StatusResponse;
+import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
@@ -18,21 +22,25 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
-/// Routes for cluster status: health, status, nodes, events.
+/// Routes for cluster status: health, status, nodes, events, liveness and readiness probes.
 public final class StatusRoutes implements RouteSource {
     private final Supplier<AetherNode> nodeSupplier;
+    private final Supplier<AppHttpServer> appHttpServerSupplier;
 
-    private StatusRoutes(Supplier<AetherNode> nodeSupplier) {
+    private StatusRoutes(Supplier<AetherNode> nodeSupplier, Supplier<AppHttpServer> appHttpServerSupplier) {
         this.nodeSupplier = nodeSupplier;
+        this.appHttpServerSupplier = appHttpServerSupplier;
     }
 
-    public static StatusRoutes statusRoutes(Supplier<AetherNode> nodeSupplier) {
-        return new StatusRoutes(nodeSupplier);
+    public static StatusRoutes statusRoutes(Supplier<AetherNode> nodeSupplier,
+                                            Supplier<AppHttpServer> appHttpServerSupplier) {
+        return new StatusRoutes(nodeSupplier, appHttpServerSupplier);
     }
 
     @Override
@@ -43,6 +51,10 @@ public final class StatusRoutes implements RouteSource {
                               .toJson(this::buildNodesResponse),
                          Route.<HealthResponse> get("/api/health")
                               .toJson(this::buildHealthResponse),
+                         Route.<LivenessResponse> get("/health/live")
+                              .toJson(this::buildLivenessResponse),
+                         Route.<ReadinessResponse> get("/health/ready")
+                              .toJson(this::buildReadinessResponse),
                          Route.<List<ClusterEvent>> get("/api/events")
                               .<String> withQuery(QueryParameter.aString("since"))
                               .toValue(this::buildEventsResponse)
@@ -135,5 +147,54 @@ public final class StatusRoutes implements RouteSource {
                      ? "unhealthy"
                      : "healthy";
         return new HealthResponse(status, ready, hasQuorum, totalNodes, connectedNodeCount, metricsNodeCount, sliceCount);
+    }
+
+    /// Build liveness response. Public for direct use from ManagementServer.
+    public LivenessResponse buildLivenessResponse() {
+        var nodeId = nodeSupplier.get()
+                                 .self()
+                                 .id();
+        return new LivenessResponse("UP", nodeId);
+    }
+
+    /// Build readiness response. Public for direct use from ManagementServer (status code control).
+    @SuppressWarnings("JBCT-PAT-01")
+    public ReadinessResponse buildReadinessResponse() {
+        var node = nodeSupplier.get();
+        var nodeId = node.self()
+                         .id();
+        var components = new ArrayList<ComponentHealth>();
+        components.add(buildConsensusHealth(node));
+        components.add(buildRoutesHealth());
+        components.add(buildQuorumHealth(node));
+        var allUp = components.stream()
+                              .allMatch(c -> "UP".equals(c.status()));
+        var status = allUp
+                     ? "UP"
+                     : "DOWN";
+        return new ReadinessResponse(status, nodeId, List.copyOf(components));
+    }
+
+    private static ComponentHealth buildConsensusHealth(AetherNode node) {
+        var consensusReady = node.isReady();
+        return new ComponentHealth("consensus",
+                                   consensusReady ? "UP" : "DOWN",
+                                   consensusReady ? "Cluster active" : "Consensus not established");
+    }
+
+    private ComponentHealth buildRoutesHealth() {
+        var routesReady = appHttpServerSupplier.get()
+                                              .isRouteReady();
+        return new ComponentHealth("routes",
+                                   routesReady ? "UP" : "DOWN",
+                                   routesReady ? "Route sync received" : "Awaiting initial route sync");
+    }
+
+    private static ComponentHealth buildQuorumHealth(AetherNode node) {
+        var connectedCount = node.connectedNodeCount();
+        var hasQuorum = connectedCount + 1 >= 2;
+        return new ComponentHealth("quorum",
+                                   hasQuorum ? "UP" : "DOWN",
+                                   "Connected peers: " + connectedCount);
     }
 }

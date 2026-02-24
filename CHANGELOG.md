@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [0.18.0] - Unreleased
 
 ### Added
+- Liveness probe (`/health/live`) and readiness probe (`/health/ready`) with component-level checks (consensus, routes, quorum) for container orchestrator compatibility
+- RBAC Tier 1: API key authentication for management server, app HTTP server, and WebSocket connections
+- Per-API-key names and roles via config (`[app-http.api-keys.*]` TOML sections or `AETHER_API_KEYS` env)
+- SHA-256 API key hashing — raw keys never stored in memory
+- Audit logging via dedicated `org.pragmatica.aether.audit` logger
+- WebSocket first-message authentication protocol for dashboard, status, and events streams
+- CLI `--api-key` / `-k` flag and `AETHER_API_KEY` environment variable for authenticated access
+- `InvocationContext` principal and origin node propagation via ScopedValues + MDC
+- App HTTP server `/health` endpoint (always 200, for LB health checks on app port)
 
 ### Fixed
 

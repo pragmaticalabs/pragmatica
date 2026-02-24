@@ -26,6 +26,10 @@ Release 0.18.0 delivers three major themes: production-grade DHT (anti-entropy r
 - **KV-Store backed registry** - Runtime reconfiguration via Management API
 - **Full stack** - Annotation processor, manifest generation (envelope v3), deployment wiring, CronExpression parser, ScheduledTaskRegistry, ScheduledTaskManager, REST API, CLI, 29 unit tests
 
+### Security & Health Probes (v0.18.0)
+- **Readiness vs Liveness Probes** — `/health/live` (always 200) and `/health/ready` (200/503 with component checks: consensus, routes, quorum). Container orchestrator compatible. App HTTP `/health` endpoint also added
+- **RBAC for Management API** (Tier 1 — API key authentication, audit logging) — API key auth for management server, app HTTP server, and WebSocket connections. Per-key names/roles via TOML config or env. SHA-256 key hashing. Audit logging via dedicated logger. CLI `--api-key` / `-k` flag. `InvocationContext` principal propagation via ScopedValues + MDC
+
 ### Core Infrastructure
 - **Request ID Propagation** - ScopedValue-based context with ServiceLoader propagation hook in Promise
 - **SliceInvoker Immediate Retry** - Event-driven retry on node departure (matches AppHttpServer pattern)
@@ -254,15 +258,7 @@ Release 0.18.0 delivers three major themes: production-grade DHT (anti-entropy r
     - Integrates with Disruption Budget (#12) — drain respects minimum healthy instances
     - CLI: `aether drain <nodeId>`, `aether undrain <nodeId>`
 
-15. **Readiness vs Liveness Probes**
-    - Split current `/api/health` into two distinct endpoints:
-      - `/api/health/live` — is the process alive? (liveness probe)
-      - `/api/health/ready` — should it receive traffic? (readiness probe)
-    - Node is live but not ready during: slice loading, drain in progress, quorum not yet established
-    - Required for container orchestrators (Kubernetes, Nomad) and cloud load balancer health checks
-    - Small scope — route existing health data to two endpoints with different criteria
-
-16. **Dead Letter Handling**
+15. **Dead Letter Handling**
     - Failed pub-sub messages and failed scheduled task invocations currently logged and lost
     - DLQ storage: KV-Store backed dead letter queue per topic/task
     - Retry policy: configurable max attempts with exponential backoff before dead-lettering
@@ -287,11 +283,11 @@ Release 0.18.0 delivers three major themes: production-grade DHT (anti-entropy r
      - Best-effort updates on membership changes
      - Enables external observability without direct node queries
 
-20. **RBAC for Management API**
-     - Role-based access control for operations
-     - Predefined roles: admin, operator, viewer
-     - Per-endpoint authorization rules
-     - Audit logging for sensitive operations
+20. **RBAC Tier 2 — Per-Endpoint Role Authorization**
+     - Per-endpoint role-based authorization rules (admin, operator, viewer)
+     - Route-level security policy from KV-Store
+     - Auth failure rate limiting
+     - Currently all authenticated keys have equivalent access; Tier 2 differentiates by role
 
 21. **Configurable Rate Limiting per HTTP Route**
      - Per-route rate limiting configuration in blueprint or management API

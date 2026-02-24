@@ -38,7 +38,12 @@ import org.slf4j.MDC;
 /// }```
 public final class InvocationContext {
     private static final ScopedValue<String> REQUEST_ID = ScopedValue.newInstance();
+    private static final ScopedValue<String> PRINCIPAL = ScopedValue.newInstance();
+    private static final ScopedValue<String> ORIGIN_NODE = ScopedValue.newInstance();
+
     private static final String MDC_KEY = "requestId";
+    private static final String MDC_PRINCIPAL = "principal";
+    private static final String MDC_ORIGIN_NODE = "originNode";
 
     private InvocationContext() {}
 
@@ -48,6 +53,24 @@ public final class InvocationContext {
     public static Option<String> currentRequestId() {
         return REQUEST_ID.isBound()
                ? Option.option(REQUEST_ID.get())
+               : Option.empty();
+    }
+
+    /// Get the current principal if set.
+    ///
+    /// @return Option containing the principal, or empty if not in a context with principal
+    public static Option<String> currentPrincipal() {
+        return PRINCIPAL.isBound()
+               ? Option.option(PRINCIPAL.get())
+               : Option.empty();
+    }
+
+    /// Get the current origin node if set.
+    ///
+    /// @return Option containing the origin node, or empty if not in a context with origin node
+    public static Option<String> currentOriginNode() {
+        return ORIGIN_NODE.isBound()
+               ? Option.option(ORIGIN_NODE.get())
                : Option.empty();
     }
 
@@ -93,12 +116,85 @@ public final class InvocationContext {
         }
     }
 
+    /// Run a supplier within a full context scope (requestId + principal + originNode).
+    ///
+    /// @param requestId  the request ID to set for this scope
+    /// @param principal  the principal identity (nullable)
+    /// @param originNode the origin node identifier (nullable)
+    /// @param supplier   the supplier to execute within the scope
+    /// @param <T>        the return type
+    ///
+    /// @return the result of the supplier
+    public static <T> T runWithContext(String requestId,
+                                       String principal,
+                                       String originNode,
+                                       Supplier<T> supplier) {
+        MDC.put(MDC_KEY, requestId);
+        putIfNotNull(MDC_PRINCIPAL, principal);
+        putIfNotNull(MDC_ORIGIN_NODE, originNode);
+        try {
+            var carrier = ScopedValue.where(REQUEST_ID, requestId);
+            if (principal != null) {
+                carrier = carrier.where(PRINCIPAL, principal);
+            }
+            if (originNode != null) {
+                carrier = carrier.where(ORIGIN_NODE, originNode);
+            }
+            return carrier.call(supplier::get);
+        } finally {
+            MDC.remove(MDC_KEY);
+            MDC.remove(MDC_PRINCIPAL);
+            MDC.remove(MDC_ORIGIN_NODE);
+        }
+    }
+
+    /// Run a runnable within a full context scope (requestId + principal + originNode).
+    ///
+    /// @param requestId  the request ID to set for this scope
+    /// @param principal  the principal identity (nullable)
+    /// @param originNode the origin node identifier (nullable)
+    /// @param runnable   the runnable to execute within the scope
+    @SuppressWarnings("JBCT-RET-01") // ScopedValue.run() requires Runnable — void is inherent
+    public static void runWithContext(String requestId,
+                                      String principal,
+                                      String originNode,
+                                      Runnable runnable) {
+        MDC.put(MDC_KEY, requestId);
+        putIfNotNull(MDC_PRINCIPAL, principal);
+        putIfNotNull(MDC_ORIGIN_NODE, originNode);
+        try {
+            var carrier = ScopedValue.where(REQUEST_ID, requestId);
+            if (principal != null) {
+                carrier = carrier.where(PRINCIPAL, principal);
+            }
+            if (originNode != null) {
+                carrier = carrier.where(ORIGIN_NODE, originNode);
+            }
+            carrier.run(runnable);
+        } finally {
+            MDC.remove(MDC_KEY);
+            MDC.remove(MDC_PRINCIPAL);
+            MDC.remove(MDC_ORIGIN_NODE);
+        }
+    }
+
+    @SuppressWarnings("JBCT-RET-01") // Utility method for MDC population
+    private static void putIfNotNull(String key, String value) {
+        if (value != null) {
+            MDC.put(key, value);
+        }
+    }
+
     /// Capture the current context for propagation across async boundaries.
     ///
     /// @return a snapshot that can be used to restore context in another thread
-    @SuppressWarnings("JBCT-RET-03") // Nullable requestId required for ContextSnapshot — null means "no context"
+    @SuppressWarnings("JBCT-RET-03") // Nullable fields required for ContextSnapshot — null means "no context"
     public static ContextSnapshot captureContext() {
-        return new ContextSnapshot(currentRequestId().or((String) null));
+        return new ContextSnapshot(
+            currentRequestId().or((String) null),
+            currentPrincipal().or((String) null),
+            currentOriginNode().or((String) null)
+        );
     }
 
     /// Generate a new request ID using KSUID.
@@ -111,7 +207,7 @@ public final class InvocationContext {
 
     /// A snapshot of the invocation context that can be captured and restored
     /// across thread boundaries for async operations.
-    public record ContextSnapshot(String requestId) {
+    public record ContextSnapshot(String requestId, String principal, String originNode) {
         /// Run a supplier with the captured context restored.
         ///
         /// @param supplier the supplier to execute
@@ -122,7 +218,7 @@ public final class InvocationContext {
             if (requestId == null) {
                 return supplier.get();
             }
-            return runWithRequestId(requestId, supplier);
+            return runWithContext(requestId, principal, originNode, supplier);
         }
 
         /// Run a runnable with the captured context restored.
@@ -134,7 +230,7 @@ public final class InvocationContext {
                 runnable.run();
                 return;
             }
-            runWithRequestId(requestId, runnable);
+            runWithContext(requestId, principal, originNode, runnable);
         }
     }
 }
