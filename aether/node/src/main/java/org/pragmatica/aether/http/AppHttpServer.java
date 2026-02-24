@@ -188,12 +188,7 @@ class AppHttpServerImpl implements AppHttpServer {
         rebuildRouter();
         var serverConfig = buildServerConfig();
         return HttpServer.httpServer(serverConfig, this::handleRequest)
-                         .map(server -> {
-                                  serverRef.set(server);
-                                  log.info("App HTTP server started on port {}",
-                                           server.port());
-                                  return unit();
-                              })
+                         .map(this::registerStartedServer)
                          .onFailure(cause -> log.error("Failed to start App HTTP server on port {}: {}",
                                                        config.port(),
                                                        cause.message()));
@@ -204,6 +199,12 @@ class AppHttpServerImpl implements AppHttpServer {
                                                              config.port())
                                            .withMaxContentLength(MAX_CONTENT_LENGTH);
         return tls.fold(() -> serverConfig, serverConfig::withTls);
+    }
+
+    private Unit registerStartedServer(HttpServer server) {
+        serverRef.set(server);
+        log.info("App HTTP server started on port {}", server.port());
+        return unit();
     }
 
     @Override
@@ -425,15 +426,16 @@ class AppHttpServerImpl implements AppHttpServer {
         log.trace("Handling local route {} {} [{}]", routeKey.httpMethod(), routeKey.pathPrefix(), requestId);
         httpRoutePublisher.flatMap(pub -> pub.findLocalRouter(routeKey.httpMethod(),
                                                               routeKey.pathPrefix()))
-                          .onEmpty(() -> {
-                                       log.error("Local router not found for route {} [{}]", routeKey, requestId);
-                                       sendProblem(response,
-                                                   HttpStatus.INTERNAL_SERVER_ERROR,
-                                                   "Local router not found",
-                                                   request.path(),
-                                                   requestId);
-                                   })
+                          .onEmpty(() -> handleMissingLocalRouter(response, request.path(), routeKey, requestId))
                           .onPresent(router -> invokeLocalRouter(request, response, router, requestId));
+    }
+
+    private void handleMissingLocalRouter(ResponseWriter response,
+                                           String path,
+                                           HttpRouteKey routeKey,
+                                           String requestId) {
+        log.error("Local router not found for route {} [{}]", routeKey, requestId);
+        sendProblem(response, HttpStatus.INTERNAL_SERVER_ERROR, "Local router not found", path, requestId);
     }
 
     private void invokeLocalRouter(RequestContext request,
@@ -443,16 +445,13 @@ class AppHttpServerImpl implements AppHttpServer {
         var context = toHttpRequestContext(request, requestId);
         router.handle(context)
               .onSuccess(responseData -> sendResponse(response, responseData, requestId))
-              .onFailure(cause -> {
-                             log.error("Failed to handle local route [{}]: {}",
-                                       requestId,
-                                       cause.message());
-                             sendProblem(response,
-                                         HttpStatus.INTERNAL_SERVER_ERROR,
-                                         "Request processing failed: " + cause.message(),
-                                         request.path(),
-                                         requestId);
-                         });
+              .onFailure(cause -> handleLocalRouteFailure(response, request.path(), requestId, cause));
+    }
+
+    private void handleLocalRouteFailure(ResponseWriter response, String path, String requestId, Cause cause) {
+        log.error("Failed to handle local route [{}]: {}", requestId, cause.message());
+        sendProblem(response, HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Request processing failed: " + cause.message(), path, requestId);
     }
 
     private HttpRequestContext toHttpRequestContext(RequestContext request, String requestId) {
@@ -568,16 +567,7 @@ class AppHttpServerImpl implements AppHttpServer {
                           retriesRemaining);
                 Promise.<Unit> promise()
                        .timeout(timeSpan(RETRY_DELAY_MS).millis())
-                       .onResult(_ -> {
-                                     var freshNodes = freshCandidatesForRoute(routeKey);
-                                     forwardRequestWithRetry(request,
-                                                             response,
-                                                             freshNodes,
-                                                             Set.of(),
-                                                             routeKey,
-                                                             requestId,
-                                                             retriesRemaining - 1);
-                                 });
+                       .onResult(_ -> retryAfterDelay(request, response, routeKey, requestId, retriesRemaining));
                 return;
             }
             log.error("No more nodes to try for {} {} [{}] after all retries exhausted",
@@ -600,28 +590,37 @@ class AppHttpServerImpl implements AppHttpServer {
                                response,
                                targetNode,
                                requestId,
-                               () -> {
-                                   if (retriesRemaining > 0) {
-                                       log.debug("Retrying request [{}], {} retries remaining, re-querying route",
-                                                 requestId,
-                                                 retriesRemaining);
-                                       var freshNodes = freshCandidatesForRoute(routeKey);
-                                       forwardRequestWithRetry(request,
-                                                               response,
-                                                               freshNodes,
-                                                               newTriedNodes,
-                                                               routeKey,
-                                                               requestId,
-                                                               retriesRemaining - 1);
-                                   } else {
-                                       log.error("All retries exhausted for [{}]", requestId);
-                                       sendProblem(response,
-                                                   HttpStatus.GATEWAY_TIMEOUT,
-                                                   "Request failed after all retries",
-                                                   request.path(),
-                                                   requestId);
-                                   }
-                               });
+                               () -> handleRetryOrExhausted(request, response, newTriedNodes,
+                                                            routeKey, requestId, retriesRemaining));
+    }
+
+    private void retryAfterDelay(RequestContext request,
+                                 ResponseWriter response,
+                                 HttpRouteKey routeKey,
+                                 String requestId,
+                                 int retriesRemaining) {
+        var freshNodes = freshCandidatesForRoute(routeKey);
+        forwardRequestWithRetry(request, response, freshNodes, Set.of(),
+                                routeKey, requestId, retriesRemaining - 1);
+    }
+
+    private void handleRetryOrExhausted(RequestContext request,
+                                        ResponseWriter response,
+                                        Set<NodeId> triedNodes,
+                                        HttpRouteKey routeKey,
+                                        String requestId,
+                                        int retriesRemaining) {
+        if (retriesRemaining > 0) {
+            log.debug("Retrying request [{}], {} retries remaining, re-querying route",
+                      requestId, retriesRemaining);
+            var freshNodes = freshCandidatesForRoute(routeKey);
+            forwardRequestWithRetry(request, response, freshNodes, triedNodes,
+                                    routeKey, requestId, retriesRemaining - 1);
+        } else {
+            log.error("All retries exhausted for [{}]", requestId);
+            sendProblem(response, HttpStatus.GATEWAY_TIMEOUT,
+                        "Request failed after all retries", request.path(), requestId);
+        }
     }
 
     private void forwardRequestInternal(RequestContext request,
@@ -711,11 +710,7 @@ class AppHttpServerImpl implements AppHttpServer {
         var method = context.method();
         var path = context.path();
         var normalizedPath = normalizePath(path);
-        var routerOpt = httpRoutePublisher.flatMap(pub -> {
-                                                       var localRoutes = pub.allLocalRoutes();
-                                                       return findMatchingLocalRoute(localRoutes, method, normalizedPath)
-        .flatMap(key -> pub.findLocalRouter(key.httpMethod(), key.pathPrefix()));
-                                                   });
+        var routerOpt = httpRoutePublisher.flatMap(pub -> findLocalRouterForPath(pub, method, normalizedPath));
         if (routerOpt.isEmpty()) {
             log.warn("No local router for forwarded request {} {} [{}]", method, path, request.requestId());
             sendForwardError(network, request, "Route not found locally");
@@ -728,6 +723,13 @@ class AppHttpServerImpl implements AppHttpServer {
                  .onFailure(cause -> sendForwardError(network,
                                                       request,
                                                       cause.message()));
+    }
+
+    private Option<SliceRouter> findLocalRouterForPath(HttpRoutePublisher pub,
+                                                       String method,
+                                                       String normalizedPath) {
+        return findMatchingLocalRoute(pub.allLocalRoutes(), method, normalizedPath)
+                   .flatMap(key -> pub.findLocalRouter(key.httpMethod(), key.pathPrefix()));
     }
 
     private void sendForwardSuccess(ClusterNetwork network,
@@ -771,16 +773,16 @@ class AppHttpServerImpl implements AppHttpServer {
               .onEmpty(() -> log.warn("[{}] Received forward response for unknown correlationId: {}",
                                       response.requestId(),
                                       response.correlationId()))
-              .onPresent(pending -> {
-                             // Remove from secondary index
-        removeFromNodeIndex(response.correlationId(),
-                            pending.targetNode());
-                             if (response.success()) {
-                                 handleSuccessfulForwardResponse(pending, response);
-                             } else {
-                                 handleFailedForwardResponse(pending, response);
-                             }
-                         });
+              .onPresent(pending -> processForwardResponse(pending, response));
+    }
+
+    private void processForwardResponse(PendingForward pending, HttpForwardResponse response) {
+        removeFromNodeIndex(response.correlationId(), pending.targetNode());
+        if (response.success()) {
+            handleSuccessfulForwardResponse(pending, response);
+        } else {
+            handleFailedForwardResponse(pending, response);
+        }
     }
 
     @Override
@@ -814,15 +816,15 @@ class AppHttpServerImpl implements AppHttpServer {
                   affectedRequestIds);
         for (var correlationId : correlationIds) {
             Option.option(pendingForwards.remove(correlationId))
-                  .onPresent(pending -> {
-                                 log.debug("Triggering retry for request [{}] due to node {} departure",
-                                           pending.requestId(),
-                                           departedNode);
-                                 // Fail the promise to trigger onFailure callback which handles retry
-            pending.promise()
-                   .fail(Causes.cause("Target node " + departedNode + " departed"));
-                             });
+                  .onPresent(pending -> failPendingForwardOnDeparture(pending, departedNode));
         }
+    }
+
+    private void failPendingForwardOnDeparture(PendingForward pending, NodeId departedNode) {
+        log.debug("Triggering retry for request [{}] due to node {} departure",
+                  pending.requestId(), departedNode);
+        pending.promise()
+               .fail(Causes.cause("Target node " + departedNode + " departed"));
     }
 
     private void removePendingForward(String correlationId, NodeId targetNode) {
@@ -832,13 +834,14 @@ class AppHttpServerImpl implements AppHttpServer {
 
     private void removeFromNodeIndex(String correlationId, NodeId targetNode) {
         Option.option(pendingForwardsByNode.get(targetNode))
-              .onPresent(nodeCorrelations -> {
-                             nodeCorrelations.remove(correlationId);
-                             // Clean up empty sets
+              .onPresent(nodeCorrelations -> cleanupNodeCorrelation(nodeCorrelations, correlationId, targetNode));
+    }
+
+    private void cleanupNodeCorrelation(Set<String> nodeCorrelations, String correlationId, NodeId targetNode) {
+        nodeCorrelations.remove(correlationId);
         if (nodeCorrelations.isEmpty()) {
-                                 pendingForwardsByNode.remove(targetNode, nodeCorrelations);
-                             }
-                         });
+            pendingForwardsByNode.remove(targetNode, nodeCorrelations);
+        }
     }
 
     private void handleSuccessfulForwardResponse(PendingForward pending, HttpForwardResponse response) {
@@ -927,12 +930,15 @@ class AppHttpServerImpl implements AppHttpServer {
                                               .write(toServerStatus(status.code()),
                                                      json.getBytes(StandardCharsets.UTF_8),
                                                      CONTENT_TYPE_PROBLEM))
-                   .onFailure(cause -> {
-                                  log.error("[{}] Failed to serialize ProblemDetail: {}",
-                                            requestId,
-                                            cause.message());
-                                  sendPlainError(response, status, requestId);
-                              });
+                   .onFailure(cause -> handleProblemSerializationFailure(response, status, requestId, cause));
+    }
+
+    private void handleProblemSerializationFailure(ResponseWriter response,
+                                                   HttpStatus status,
+                                                   String requestId,
+                                                   Cause cause) {
+        log.error("[{}] Failed to serialize ProblemDetail: {}", requestId, cause.message());
+        sendPlainError(response, status, requestId);
     }
 
     private static final int MAX_WARN_BODY_LENGTH = 200;

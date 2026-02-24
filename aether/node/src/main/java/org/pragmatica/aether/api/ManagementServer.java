@@ -22,8 +22,11 @@ import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
+import org.pragmatica.aether.deployment.DeploymentMap.SliceDeploymentInfo;
+import org.pragmatica.aether.deployment.DeploymentMap.SliceInstanceInfo;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.RouteSource;
@@ -41,6 +44,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -230,80 +234,114 @@ class ManagementServerImpl implements ManagementServer {
                     .replace("\"", "\\\"");
     }
 
+    @SuppressWarnings("JBCT-PAT-01") // Sequencer: gathers node data, delegates to focused helpers
     private static String buildStatusJson(Supplier<AetherNode> nodeSupplier) {
         var node = nodeSupplier.get();
         var leaderId = node.leader()
                            .map(leader -> leader.id())
                            .or("");
-        var sb = new StringBuilder(4096);
-        sb.append("{");
-        // Uptime
-        sb.append("\"uptimeSeconds\":")
-          .append(node.uptimeSeconds());
-        // Node metrics
-        sb.append(",\"nodeMetrics\":[");
         var allMetrics = node.metricsCollector()
                              .allMetrics();
-        boolean firstNode = true;
-        for (var entry : allMetrics.entrySet()) {
-            if (!firstNode) sb.append(",");
-            var nodeId = entry.getKey()
-                              .id();
-            var metrics = entry.getValue();
-            var cpuUsage = metrics.getOrDefault("cpu.usage", 0.0);
-            var heapUsed = metrics.getOrDefault("heap.used", 0.0);
-            var heapMax = metrics.getOrDefault("heap.max", 1.0);
-            sb.append("{\"nodeId\":\"")
-              .append(escapeJson(nodeId))
-              .append("\"");
-            sb.append(",\"isLeader\":")
-              .append(leaderId.equals(nodeId));
-            sb.append(",\"cpuUsage\":")
-              .append(cpuUsage);
-            sb.append(",\"heapUsedMb\":")
-              .append((long)(heapUsed / 1024 / 1024));
-            sb.append(",\"heapMaxMb\":")
-              .append((long)(heapMax / 1024 / 1024));
-            sb.append("}");
-            firstNode = false;
-        }
-        sb.append("]");
-        // Slices from DeploymentMap
-        sb.append(",\"slices\":[");
         var deployments = node.deploymentMap()
                               .allDeployments();
-        boolean firstSlice = true;
-        for (var info : deployments) {
-            if (!firstSlice) sb.append(",");
-            sb.append("{\"artifact\":\"")
-              .append(escapeJson(info.artifact()))
-              .append("\"");
-            sb.append(",\"state\":\"")
-              .append(info.aggregateState()
-                          .name())
-              .append("\"");
-            sb.append(",\"instances\":[");
-            boolean firstInst = true;
-            for (var inst : info.instances()) {
-                if (!firstInst) sb.append(",");
-                sb.append("{\"nodeId\":\"")
-                  .append(escapeJson(inst.nodeId()))
-                  .append("\"");
-                sb.append(",\"state\":\"")
-                  .append(inst.state()
-                              .name())
-                  .append("\"}");
-                firstInst = false;
-            }
-            sb.append("]}");
-            firstSlice = false;
+        var sb = new StringBuilder(4096);
+        sb.append("{\"uptimeSeconds\":")
+          .append(node.uptimeSeconds());
+        appendNodeMetrics(sb, allMetrics, leaderId);
+        appendSlices(sb, deployments);
+        appendClusterInfo(sb, allMetrics, leaderId);
+        sb.append("}");
+        return sb.toString();
+    }
+
+    /// Iteration: appends the `nodeMetrics` JSON array from collected metrics.
+    @SuppressWarnings("JBCT-PAT-01")
+    private static void appendNodeMetrics(StringBuilder sb, Map<NodeId, Map<String, Double>> allMetrics,
+                                          String leaderId) {
+        sb.append(",\"nodeMetrics\":[");
+        boolean first = true;
+        for (var entry : allMetrics.entrySet()) {
+            if (!first) sb.append(",");
+            appendSingleNodeMetric(sb, entry.getKey().id(), entry.getValue(), leaderId);
+            first = false;
         }
         sb.append("]");
-        // Cluster info
+    }
+
+    /// Leaf: appends a single node metric JSON object.
+    private static void appendSingleNodeMetric(StringBuilder sb, String nodeId, Map<String, Double> metrics,
+                                               String leaderId) {
+        var cpuUsage = metrics.getOrDefault("cpu.usage", 0.0);
+        var heapUsed = metrics.getOrDefault("heap.used", 0.0);
+        var heapMax = metrics.getOrDefault("heap.max", 1.0);
+        sb.append("{\"nodeId\":\"")
+          .append(escapeJson(nodeId))
+          .append("\"");
+        sb.append(",\"isLeader\":")
+          .append(leaderId.equals(nodeId));
+        sb.append(",\"cpuUsage\":")
+          .append(cpuUsage);
+        sb.append(",\"heapUsedMb\":")
+          .append((long) (heapUsed / 1024 / 1024));
+        sb.append(",\"heapMaxMb\":")
+          .append((long) (heapMax / 1024 / 1024));
+        sb.append("}");
+    }
+
+    /// Iteration: appends the `slices` JSON array from deployment info.
+    @SuppressWarnings("JBCT-PAT-01")
+    private static void appendSlices(StringBuilder sb, List<SliceDeploymentInfo> deployments) {
+        sb.append(",\"slices\":[");
+        boolean first = true;
+        for (var info : deployments) {
+            if (!first) sb.append(",");
+            appendSingleSlice(sb, info);
+            first = false;
+        }
+        sb.append("]");
+    }
+
+    /// Sequencer: appends a single slice JSON object with its nested instances array.
+    @SuppressWarnings("JBCT-PAT-01")
+    private static void appendSingleSlice(StringBuilder sb, SliceDeploymentInfo info) {
+        sb.append("{\"artifact\":\"")
+          .append(escapeJson(info.artifact()))
+          .append("\"");
+        sb.append(",\"state\":\"")
+          .append(info.aggregateState()
+                      .name())
+          .append("\"");
+        appendSliceInstances(sb, info.instances());
+        sb.append("}");
+    }
+
+    /// Iteration: appends the `instances` JSON array for a slice.
+    @SuppressWarnings("JBCT-PAT-01")
+    private static void appendSliceInstances(StringBuilder sb, List<SliceInstanceInfo> instances) {
+        sb.append(",\"instances\":[");
+        boolean first = true;
+        for (var inst : instances) {
+            if (!first) sb.append(",");
+            sb.append("{\"nodeId\":\"")
+              .append(escapeJson(inst.nodeId()))
+              .append("\"");
+            sb.append(",\"state\":\"")
+              .append(inst.state()
+                          .name())
+              .append("\"}");
+            first = false;
+        }
+        sb.append("]");
+    }
+
+    /// Sequencer: appends the `cluster` JSON object with nodes array and leader info.
+    @SuppressWarnings("JBCT-PAT-01")
+    private static void appendClusterInfo(StringBuilder sb, Map<NodeId, Map<String, Double>> allMetrics,
+                                          String leaderId) {
         sb.append(",\"cluster\":{\"nodes\":[");
-        boolean firstClusterNode = true;
+        boolean first = true;
         for (var entry : allMetrics.entrySet()) {
-            if (!firstClusterNode) sb.append(",");
+            if (!first) sb.append(",");
             var nodeId = entry.getKey()
                               .id();
             sb.append("{\"id\":\"")
@@ -312,15 +350,13 @@ class ManagementServerImpl implements ManagementServer {
             sb.append(",\"isLeader\":")
               .append(leaderId.equals(nodeId));
             sb.append("}");
-            firstClusterNode = false;
+            first = false;
         }
         sb.append("],\"leaderId\":\"");
         sb.append(escapeJson(leaderId));
         sb.append("\",\"nodeCount\":")
           .append(allMetrics.size());
         sb.append("}");
-        sb.append("}");
-        return sb.toString();
     }
 
     @SuppressWarnings("JBCT-PAT-01")
@@ -368,6 +404,7 @@ class ManagementServerImpl implements ManagementServer {
         sb.append("}}");
     }
 
+    @SuppressWarnings("JBCT-PAT-01") // HTTP dispatcher: inherently mixes condition checks and iteration over legacy routes
     private void handleRequest(RequestContext ctx, ResponseWriter response) {
         var path = ctx.path();
         var method = ctx.method();
