@@ -151,7 +151,9 @@ public interface DecisionTreeController extends ClusterController {
                                                                double avgCpu,
                                                                ControllerConfig currentConfig) {
             // Skip CPU rules when CPU weight is zero (e.g. Forge environment)
-            if (currentConfig.scalingConfig().weights().getOrDefault(ScalingMetric.CPU, 0.0) == 0.0) {
+            if (currentConfig.scalingConfig()
+                             .weights()
+                             .getOrDefault(ScalingMetric.CPU, 0.0) == 0.0) {
                 return Option.none();
             }
             // Rule 1: High CPU → scale up

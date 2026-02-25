@@ -550,17 +550,11 @@ public interface AetherNode {
         var depthRegistry = ObservabilityDepthRegistry.observabilityDepthRegistry(clusterNode,
                                                                                   kvStore,
                                                                                   config.observability());
-        // Create unified observability components
+        // Create unified observability components — use no-op interceptor when depth < 0 (disabled)
         var traceStore = InvocationTraceStore.invocationTraceStore();
-        var sampler = AdaptiveSampler.adaptiveSampler(config.observability()
-                                                            .targetTracesPerSec());
-        var observabilityInterceptor = ObservabilityInterceptor.observabilityInterceptor(sampler,
-                                                                                         traceStore,
-                                                                                         config.self()
-                                                                                               .id(),
-                                                                                         (artifact, method) -> depthRegistry.getConfig(artifact,
-                                                                                                                                       method)
-                                                                                                                            .depthThreshold());
+        var observabilityInterceptor = config.observability().depthThreshold() < 0
+                                       ? ObservabilityInterceptor.noOp()
+                                       : createObservabilityInterceptor(config, traceStore, depthRegistry);
         // Create invocation handler BEFORE deployment manager (needed for slice registration)
         // Pass serializer/deserializer, httpRoutePublisher, and shared observability interceptor for HTTP request routing
         var invocationHandler = InvocationHandler.invocationHandler(config.self(),
@@ -1157,6 +1151,20 @@ public interface AetherNode {
     ///
     /// If frameworkJarsPath is configured, creates a FrameworkClassLoader with isolated
     /// framework classes. Otherwise, falls back to Application ClassLoader (no isolation).
+    private static ObservabilityInterceptor createObservabilityInterceptor(AetherNodeConfig config,
+                                                                             InvocationTraceStore traceStore,
+                                                                             ObservabilityDepthRegistry depthRegistry) {
+        var sampler = AdaptiveSampler.adaptiveSampler(config.observability()
+                                                            .targetTracesPerSec());
+        return ObservabilityInterceptor.observabilityInterceptor(sampler,
+                                                                  traceStore,
+                                                                  config.self()
+                                                                        .id(),
+                                                                  (artifact, method) -> depthRegistry.getConfig(artifact,
+                                                                                                                method)
+                                                                                                     .depthThreshold());
+    }
+
     private static SharedLibraryClassLoader createSharedLibraryLoader(AetherNodeConfig config) {
         var log = LoggerFactory.getLogger(AetherNode.class);
         return config.sliceAction()

@@ -2,7 +2,7 @@
 
 ## Current Status (v0.18.0)
 
-Release 0.18.0 delivers four major themes: unified invocation observability (RFC-0010), production-grade DHT (anti-entropy repair, re-replication, per-use-case config), pub-sub messaging infrastructure (RFC-0011), and blueprint-only deployment model. 85 new tests added, 5 E2E tests re-enabled.
+Release 0.18.0 delivers six major themes: unified invocation observability (RFC-0010), production-grade DHT (anti-entropy repair, re-replication, per-use-case config), pub-sub messaging infrastructure (RFC-0011), blueprint-only deployment model, node lifecycle with disruption budget and graceful drain, and pricing-engine multi-slice example with cross-slice invocations.
 
 ## Completed ✅
 
@@ -29,6 +29,13 @@ Release 0.18.0 delivers four major themes: unified invocation observability (RFC
 ### Security & Health Probes (v0.18.0)
 - **Readiness vs Liveness Probes** — `/health/live` (always 200) and `/health/ready` (200/503 with component checks: consensus, routes, quorum). Container orchestrator compatible. App HTTP `/health` endpoint also added
 - **RBAC for Management API** (Tier 1 — API key authentication, audit logging) — API key auth for management server, app HTTP server, and WebSocket connections. Per-key names/roles via TOML config or env. SHA-256 key hashing. Audit logging via dedicated logger. CLI `--api-key` / `-k` flag. `InvocationContext` principal propagation via ScopedValues + MDC
+
+### Node Lifecycle & Reliability (v0.18.0)
+- **Node Lifecycle State Machine** — JOINING → ON_DUTY ↔ DRAINING → DECOMMISSIONED → SHUTTING_DOWN with self-registration on quorum, remote shutdown via KV watch, lifecycle key cleanup on departure
+- **Disruption Budget** — `minAvailable` per slice in blueprint, enforced in scale-down and drain eviction
+- **Graceful Node Drain** — CDM eviction orchestration respecting disruption budget, cancel drain support, automatic DECOMMISSIONED on eviction complete
+- **Management API** — `GET /api/nodes/lifecycle`, `GET /api/node/lifecycle/{nodeId}`, `POST /api/node/drain/{nodeId}`, `POST /api/node/activate/{nodeId}`, `POST /api/node/shutdown/{nodeId}`
+- **CLI** — `node lifecycle`, `node drain`, `node activate`, `node shutdown`
 
 ### Core Infrastructure
 - **Request ID Propagation** - ScopedValue-based context with ServiceLoader propagation hook in Promise
@@ -228,24 +235,11 @@ Release 0.18.0 delivers four major themes: unified invocation observability (RFC
 
 ### MEDIUM PRIORITY - Reliability
 
-11. **Disruption Budget**
-    - Minimum healthy instances during rolling updates and node failures
-    - Configurable per slice or blueprint
-    - Controller respects budget before scaling down or migrating
-    - Prevents cascading failures during maintenance
-
 12. **Placement Hints**
     - Affinity/anti-affinity rules for slice placement
     - Spread: distribute instances across nodes/zones
     - Co-locate: place related slices on same node
     - Zone-aware scheduling for high availability
-
-13. **Graceful Node Drain**
-    - `POST /api/nodes/{id}/drain` — move all slice instances off a node before maintenance
-    - Drain sequence: stop accepting new requests → migrate slices to other nodes → wait for in-flight requests → mark node drained
-    - Use cases: hardware maintenance, kernel upgrades, cloud instance replacement
-    - Integrates with Disruption Budget (#11) — drain respects minimum healthy instances
-    - CLI: `aether drain <nodeId>`, `aether undrain <nodeId>`
 
 15. **Dead Letter Handling**
     - Failed pub-sub messages and failed scheduled task invocations currently logged and lost
