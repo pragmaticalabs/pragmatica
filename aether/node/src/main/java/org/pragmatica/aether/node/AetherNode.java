@@ -552,7 +552,8 @@ public interface AetherNode {
                                                                                   config.observability());
         // Create unified observability components — use no-op interceptor when depth < 0 (disabled)
         var traceStore = InvocationTraceStore.invocationTraceStore();
-        var observabilityInterceptor = config.observability().depthThreshold() < 0
+        var observabilityInterceptor = config.observability()
+                                             .depthThreshold() < 0
                                        ? ObservabilityInterceptor.noOp()
                                        : createObservabilityInterceptor(config, traceStore, depthRegistry);
         // Create invocation handler BEFORE deployment manager (needed for slice registration)
@@ -1152,17 +1153,17 @@ public interface AetherNode {
     /// If frameworkJarsPath is configured, creates a FrameworkClassLoader with isolated
     /// framework classes. Otherwise, falls back to Application ClassLoader (no isolation).
     private static ObservabilityInterceptor createObservabilityInterceptor(AetherNodeConfig config,
-                                                                             InvocationTraceStore traceStore,
-                                                                             ObservabilityDepthRegistry depthRegistry) {
+                                                                           InvocationTraceStore traceStore,
+                                                                           ObservabilityDepthRegistry depthRegistry) {
         var sampler = AdaptiveSampler.adaptiveSampler(config.observability()
                                                             .targetTracesPerSec());
         return ObservabilityInterceptor.observabilityInterceptor(sampler,
-                                                                  traceStore,
-                                                                  config.self()
-                                                                        .id(),
-                                                                  (artifact, method) -> depthRegistry.getConfig(artifact,
-                                                                                                                method)
-                                                                                                     .depthThreshold());
+                                                                 traceStore,
+                                                                 config.self()
+                                                                       .id(),
+                                                                 (artifact, method) -> depthRegistry.getConfig(artifact,
+                                                                                                               method)
+                                                                                                    .depthThreshold());
     }
 
     private static SharedLibraryClassLoader createSharedLibraryLoader(AetherNodeConfig config) {
