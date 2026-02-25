@@ -274,12 +274,9 @@ public interface ClusterDeploymentManager {
                 buildDependencyMap(expanded);
                 for (var slice : expanded.loadOrder()) {
                     var artifact = slice.artifact();
-                    var nodes = allocatableNodes();
-                    var instances = nodes.isEmpty()
-                                    ? Math.min(1, slice.instances())
-                                    : Math.min(slice.instances(), nodes.size());
+                    // Store original requested count — reconcile() handles actual allocation
                     blueprints.put(artifact,
-                                   Blueprint.blueprint(artifact, instances, slice.minAvailable()));
+                                   Blueprint.blueprint(artifact, slice.instances(), slice.minAvailable()));
                 }
             }
 
@@ -652,7 +649,7 @@ public interface ClusterDeploymentManager {
             private void handleAppBlueprintChange(AppBlueprintKey key, AppBlueprintValue value) {
                 var expanded = value.blueprint();
                 var nodes = allocatableNodes();
-                log.info("App blueprint '{}' deployed with {} slices across {} nodes",
+                log.info("App blueprint '{}' deployed with {} slices across {} allocatable nodes",
                          expanded.id()
                                  .asString(),
                          expanded.loadOrder()
@@ -660,22 +657,24 @@ public interface ClusterDeploymentManager {
                          nodes.size());
                 buildDependencyMap(expanded);
                 var allCommands = new ArrayList<KVCommand<AetherKey>>();
-                // Use instance count from blueprint, capped at available nodes
+                // Store the ORIGINAL requested instance count — not capped at available nodes.
+                // Allocation is naturally limited by allocatableNodes(); reconcile() fills the gap
+                // when more nodes register ON_DUTY lifecycle state.
                 for (var slice : expanded.loadOrder()) {
                     var artifact = slice.artifact();
-                    var desiredInstances = Math.min(slice.instances(), nodes.size());
-                    log.info("Scheduling {} with {} instances (requested: {})",
+                    var requestedInstances = slice.instances();
+                    log.info("Scheduling {} with {} requested instances ({} allocatable nodes)",
                              artifact,
-                             desiredInstances,
-                             slice.instances());
+                             requestedInstances,
+                             nodes.size());
                     blueprints.put(artifact,
-                                   Blueprint.blueprint(artifact, desiredInstances, slice.minAvailable()));
+                                   Blueprint.blueprint(artifact, requestedInstances, slice.minAvailable()));
                     // Create SliceTargetKey so rolling updates can find the current version
                     allCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
                                                         SliceTargetValue.sliceTargetValue(artifact.version(),
-                                                                                          desiredInstances,
+                                                                                          requestedInstances,
                                                                                           slice.minAvailable())));
-                    allCommands.addAll(collectAllocationCommands(artifact, desiredInstances));
+                    allCommands.addAll(collectAllocationCommands(artifact, requestedInstances));
                 }
                 submitBatch(allCommands);
             }

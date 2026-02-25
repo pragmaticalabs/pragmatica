@@ -136,7 +136,7 @@ public class FactoryClassGenerator {
         generateCreateMethod(bodyOut, model, allDeps, proxyMethodsCache, importTracker);
         bodyOut.println();
         // createSlice() method
-        generateCreateSliceMethod(bodyOut, model, importTracker);
+        generateCreateSliceMethod(bodyOut, model, proxyMethodsCache, importTracker);
         bodyOut.println("}");
         bodyOut.flush();
         // Phase 2: Assemble output — package, imports, body
@@ -843,7 +843,9 @@ public class FactoryClassGenerator {
         out.println("            }");
     }
 
-    private void generateCreateSliceMethod(PrintWriter out, SliceModel model, ImportTracker importTracker) {
+    private void generateCreateSliceMethod(PrintWriter out, SliceModel model,
+                                              Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
+                                              ImportTracker importTracker) {
         var sliceName = model.simpleName();
         var methodName = lowercaseFirst(sliceName);
         var sliceRecordName = methodName + "Slice";
@@ -896,7 +898,7 @@ public class FactoryClassGenerator {
         out.println("                return resources.releaseAll(\"" + escapeJavaString(sliceArtifactCoordinate) + "\");");
         out.println("            }");
         // Generate serializableClasses() override
-        generateSerializableClassesOverride(out, model, importTracker);
+        generateSerializableClassesOverride(out, model, proxyMethodsCache, importTracker);
         // Generate delegate methods for the slice interface
         for (var method : methods) {
             out.println();
@@ -1045,8 +1047,10 @@ public class FactoryClassGenerator {
 
     /// Generate the serializableClasses() override for the adapter record.
     /// Returns a List.of(...) with all user-defined types that this slice transmits via serialization.
-    private void generateSerializableClassesOverride(PrintWriter out, SliceModel model, ImportTracker importTracker) {
-        var classEntries = collectSerializableClassEntries(model, importTracker);
+    private void generateSerializableClassesOverride(PrintWriter out, SliceModel model,
+                                                        Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
+                                                        ImportTracker importTracker) {
+        var classEntries = collectSerializableClassEntries(model, proxyMethodsCache, importTracker);
         out.println();
         out.println("            @Override");
         out.println("            public List<Class<?>> serializableClasses() {");
@@ -1066,7 +1070,9 @@ public class FactoryClassGenerator {
     /// Collect serializable class entries as ready-to-emit strings (e.g. "MyType.class").
     /// Includes method parameter types, response types, multi-param request records, and publisher message types.
     /// Filters out JDK and Pragmatica framework types.
-    private List<String> collectSerializableClassEntries(SliceModel model, ImportTracker importTracker) {
+    private List<String> collectSerializableClassEntries(SliceModel model,
+                                                            Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
+                                                            ImportTracker importTracker) {
         var seen = new LinkedHashSet<String>();
         var entries = new ArrayList<String>();
         for (var method : model.methods()) {
@@ -1074,6 +1080,7 @@ public class FactoryClassGenerator {
             collectResponseEntry(method, importTracker, seen, entries);
         }
         collectPublisherMessageEntries(model, importTracker, seen, entries);
+        collectDependencyProxyEntries(proxyMethodsCache, importTracker, seen, entries);
         return entries;
     }
 
@@ -1108,6 +1115,19 @@ public class FactoryClassGenerator {
             if (dep.isPublisher()) {
                 dep.publisherMessageType()
                    .onPresent(msgType -> addTypeEntry(msgType, importTracker, seen, entries));
+            }
+        }
+    }
+
+    private void collectDependencyProxyEntries(Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
+                                                  ImportTracker importTracker,
+                                                  Set<String> seen, List<String> entries) {
+        for (var methodList : proxyMethodsCache.values()) {
+            for (var method : methodList) {
+                addTypeEntry(method.responseType(), importTracker, seen, entries);
+                for (var param : method.params()) {
+                    addTypeEntry(param.type(), importTracker, seen, entries);
+                }
             }
         }
     }

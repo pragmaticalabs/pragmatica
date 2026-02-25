@@ -1,5 +1,6 @@
 package org.pragmatica.aether.slice;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -65,7 +66,7 @@ public interface SliceBridge {
     /// @param input Object to serialize (may be from a different classloader)
     /// @return Promise resolving to serialized bytes
     default Promise<byte[]> encode(Object input) {
-        throw new UnsupportedOperationException("Encode not supported by this bridge");
+        return BridgeError.ENCODE_NOT_SUPPORTED.promise();
     }
 
     /// Deserialize bytes using this bridge's deserializer.
@@ -76,7 +77,7 @@ public interface SliceBridge {
     /// @param bytes Serialized bytes to decode
     /// @return Promise resolving to the deserialized object
     default Promise<Object> decode(byte[] bytes) {
-        throw new UnsupportedOperationException("Decode not supported by this bridge");
+        return BridgeError.DECODE_NOT_SUPPORTED.promise();
     }
 
     /// Get the classloader for this slice bridge.
@@ -86,4 +87,17 @@ public interface SliceBridge {
     ///
     /// @return List of method names
     List<String> methodNames();
+
+    enum BridgeError implements Cause {
+        ENCODE_NOT_SUPPORTED("Encode not supported by this bridge"),
+        DECODE_NOT_SUPPORTED("Decode not supported by this bridge");
+        private final String message;
+        BridgeError(String message) {
+            this.message = message;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }

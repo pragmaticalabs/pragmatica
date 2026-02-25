@@ -49,7 +49,7 @@ public final class ObservabilityRoutes implements RouteSource {
                                          QueryParameter.aString("maxDepth"))
                               .toValue(this::handleQueryTraces)
                               .asJson(),
-                         Route.<Object> get("/api/traces/stats")
+                         Route.<TraceStats> get("/api/traces/stats")
                               .toJson(this::handleTraceStats),
                          Route.<Object> get("/api/traces")
                               .withPath(aString())
@@ -61,7 +61,7 @@ public final class ObservabilityRoutes implements RouteSource {
                               .withBody(SetDepthRequest.class)
                               .toJson(this::handleSetDepth),
                          Route.<Object> delete("/api/observability/depth")
-                              .withPath(aString())
+                              .withPath(aString(), aString())
                               .to(this::handleDeleteDepth)
                               .asJson());
     }
@@ -86,8 +86,8 @@ public final class ObservabilityRoutes implements RouteSource {
         return Promise.success(tracesAsJson(traces));
     }
 
-    private Object handleTraceStats() {
-        return statsAsJson(traceStore.stats());
+    private TraceStats handleTraceStats() {
+        return traceStore.stats();
     }
 
     private Object handleGetDepthConfigs() {
@@ -102,16 +102,10 @@ public final class ObservabilityRoutes implements RouteSource {
                                                                      .map(_ -> depthSetResponseAsJson(valid)));
     }
 
-    private Promise<Object> handleDeleteDepth(String key) {
-        if (key.isEmpty()) {
+    private Promise<Object> handleDeleteDepth(String artifact, String method) {
+        if (artifact.isEmpty() || method.isEmpty()) {
             return ObservabilityError.KEY_REQUIRED.promise();
         }
-        var slashIndex = key.indexOf('/');
-        if (slashIndex == - 1) {
-            return ObservabilityError.KEY_REQUIRED.promise();
-        }
-        var artifact = key.substring(0, slashIndex);
-        var method = key.substring(slashIndex + 1);
         return depthRegistry.removeConfig(artifact, method)
                             .map(_ -> depthRemovedResponseAsJson(artifact, method));
     }
@@ -211,12 +205,6 @@ public final class ObservabilityRoutes implements RouteSource {
         sb.append(",\"hops\":")
           .append(node.hops());
         sb.append("}");
-    }
-
-    private static String statsAsJson(TraceStats stats) {
-        return "{\"totalTraces\":" + stats.totalTraces() + ",\"successCount\":" + stats.successCount()
-               + ",\"failureCount\":" + stats.failureCount() + ",\"avgDurationMs\":" + stats.avgDurationMs()
-               + ",\"bufferSize\":" + stats.bufferSize() + ",\"bufferCapacity\":" + stats.bufferCapacity() + "}";
     }
 
     @SuppressWarnings("JBCT-PAT-01")
