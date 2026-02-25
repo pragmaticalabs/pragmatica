@@ -1,0 +1,9 @@
+prefix = "/api/v1/pricing"
+
+[routes]
+calculatePrice = "POST /calculate"
+
+[errors]
+default = 500
+HTTP_400 = ["*Invalid*"]
+HTTP_404 = ["*NotFound*"]

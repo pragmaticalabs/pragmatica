@@ -13,7 +13,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/// JBCT-VO-01: Value objects need factory returning Result<T>.
+/// JBCT-VO-01: Value objects need a factory method (returning T, Option<T>, or Result<T>).
 public class CstValueObjectFactoryRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-VO-01";
 
@@ -34,11 +34,11 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         var sealedInterfaceNames = collectSealedInterfaceNames(root, source);
         // Check records
         return findAll(root, RuleId.RecordDecl.class).stream()
-                      .filter(record -> needsFactoryMethod(record, source, sealedInterfaceNames))
+                      .filter(record -> needsFactoryMethod(root, record, source, sealedInterfaceNames))
                       .map(record -> createDiagnostic(record, source, ctx));
     }
 
-    private boolean needsFactoryMethod(CstNode record, String source, Set<String> sealedInterfaceNames) {
+    private boolean needsFactoryMethod(CstNode root, CstNode record, String source, Set<String> sealedInterfaceNames) {
         var recordName = childByRule(record, RuleId.Identifier.class).map(id -> text(id, source))
                                     .or("");
         if (recordName.isEmpty()) return false;
@@ -48,14 +48,39 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         if (hasNoComponents(record)) return false;
         // Skip records implementing a sealed interface declared in the same file
         if (implementsSealedInterface(record, source, sealedInterfaceNames)) return false;
+        // Skip records implementing their enclosing interface (implementation records, not value objects)
+        if (implementsEnclosingInterface(root, record, source)) return false;
         // Skip builder-pattern records (have with*() methods returning Self)
         if (hasBuilderMethods(record, recordName, source)) return false;
-        // Check if has Result-returning static method
+        // Skip local records defined inside methods (implementation records, not value objects)
+        if (isLocalRecord(root, record)) return false;
+        // Check for factory returning Result<T>, Option<T>, or T
         var recordText = text(record, source);
-        var resultPrefix = "Result<" + recordName;
-        return !recordText.contains(resultPrefix + ">") &&
-        !recordText.contains(resultPrefix + " ") &&
-        !recordText.contains(resultPrefix + "<");
+        var hasResultFactory = recordText.contains("Result<" + recordName + ">")
+                               || recordText.contains("Result<" + recordName + " ")
+                               || recordText.contains("Result<" + recordName + "<");
+        var hasOptionFactory = recordText.contains("Option<" + recordName + ">")
+                               || recordText.contains("Option<" + recordName + " ")
+                               || recordText.contains("Option<" + recordName + "<");
+        var hasPlainFactory = recordText.contains("static " + recordName + " ");
+        return !hasResultFactory && !hasOptionFactory && !hasPlainFactory;
+    }
+
+    private boolean implementsEnclosingInterface(CstNode root, CstNode record, String source) {
+        var implementedNames = childByRule(record, RuleId.ImplementsClause.class)
+                                          .map(clause -> extractImplementedNames(clause, source))
+                                          .or(Set.of());
+        if (implementedNames.isEmpty()) return false;
+        // Find the nearest enclosing InterfaceDecl
+        return findAncestor(root, record, RuleId.InterfaceDecl.class)
+                          .flatMap(iface -> childByRule(iface, RuleId.Identifier.class))
+                          .map(id -> text(id, source))
+                          .map(implementedNames::contains)
+                          .or(false);
+    }
+
+    private boolean isLocalRecord(CstNode root, CstNode record) {
+        return findAncestor(root, record, RuleId.MethodDecl.class).isPresent();
     }
 
     private boolean hasNoComponents(CstNode record) {
@@ -93,22 +118,25 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     }
 
     private Set<String> collectSealedInterfaceNames(CstNode root, String source) {
-        return findAll(root, RuleId.TypeDecl.class).stream()
-                      .filter(td -> isSealedInterfaceDecl(td, source))
-                      .map(td -> extractInterfaceName(td, source))
-                      .flatMap(Optional::stream)
-                      .collect(Collectors.toSet());
+        // Check both top-level TypeDecl and nested ClassMember nodes for sealed interfaces
+        var fromTypeDecls = findAll(root, RuleId.TypeDecl.class).stream()
+                                   .filter(node -> hasSealedModifier(node, source));
+        var fromClassMembers = findAll(root, RuleId.ClassMember.class).stream()
+                                      .filter(node -> hasSealedModifier(node, source));
+        return Stream.concat(fromTypeDecls, fromClassMembers)
+                     .filter(node -> contains(node, RuleId.InterfaceDecl.class))
+                     .map(node -> extractInterfaceName(node, source))
+                     .flatMap(Optional::stream)
+                     .collect(Collectors.toSet());
     }
 
-    private boolean isSealedInterfaceDecl(CstNode typeDecl, String source) {
-        var hasSealedModifier = childrenByRule(typeDecl, RuleId.Modifier.class).stream()
-                                             .anyMatch(mod -> "sealed".equals(text(mod, source).trim()));
-        var hasInterfaceDecl = contains(typeDecl, RuleId.InterfaceDecl.class);
-        return hasSealedModifier && hasInterfaceDecl;
+    private boolean hasSealedModifier(CstNode node, String source) {
+        return childrenByRule(node, RuleId.Modifier.class).stream()
+                            .anyMatch(mod -> "sealed".equals(text(mod, source).trim()));
     }
 
-    private Optional<String> extractInterfaceName(CstNode typeDecl, String source) {
-        return findFirst(typeDecl, RuleId.InterfaceDecl.class)
+    private Optional<String> extractInterfaceName(CstNode node, String source) {
+        return findFirst(node, RuleId.InterfaceDecl.class)
                           .flatMap(iface -> childByRule(iface, RuleId.Identifier.class))
                           .map(id -> text(id, source))
                           .toOptional();
@@ -123,16 +151,23 @@ public class CstValueObjectFactoryRule implements CstLintRule {
                                      ctx.fileName(),
                                      startLine(record),
                                      startColumn(record),
-                                     "Record '" + name + "' should have a factory method returning Result<" + name + ">",
-                                     "JBCT value objects use factory methods for validation.")
+                                     "Record '" + name + "' should have a factory method (returning " + name
+                                     + ", Option<" + name + ">, or Result<" + name + ">)",
+                                     "JBCT value objects use factory methods for construction and validation.")
                          .withExample("""
-            public record %s(...) {
-                public static Result<%s> %s(...) {
-                    // Validate and return
-                    return Result.success(new %s(...));
-                }
+            // Plain factory (no validation needed):
+            public record %1$s(...) {
+                public static %1$s %2$s(...) { return new %1$s(...); }
             }
-            """.formatted(name, name, camelName, name));
+            // Option factory (value may be absent):
+            public record %1$s(...) {
+                public static Option<%1$s> %2$s(...) { return Option.option(...).map(%1$s::new); }
+            }
+            // Result factory (validation required):
+            public record %1$s(...) {
+                public static Result<%1$s> %2$s(...) { return Result.success(new %1$s(...)); }
+            }
+            """.formatted(name, camelName));
     }
 
     private String camelCase(String name) {

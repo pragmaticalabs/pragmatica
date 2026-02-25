@@ -31,9 +31,33 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
         // Find ClassMember nodes with static methods containing local record declarations
         return findAll(root, RuleId.ClassMember.class).stream()
                       .filter(member -> isStaticMember(member, source))
+                      .filter(member -> !isMultiMethodInterface(root, member, source))
                       .flatMap(member -> findFirst(member, RuleId.MethodDecl.class).stream())
-                      .filter(method -> containsLocalRecord(method, source))
+                      .filter(method -> containsSimpleLocalRecord(method, source))
                       .map(method -> createDiagnostic(method, source, ctx));
+    }
+
+    private boolean isMultiMethodInterface(CstNode root, CstNode member, String source) {
+        return findAncestor(root, member, RuleId.TypeDecl.class)
+                          .flatMap(td -> findFirst(td, RuleId.InterfaceDecl.class))
+                          .map(iface -> countAbstractMethods(iface, source) > 1)
+                          .or(false);
+    }
+
+    private int countAbstractMethods(CstNode iface, String source) {
+        // Use ClassBody → direct ClassMember children to avoid counting methods inside nested types
+        return childByRule(iface, RuleId.ClassBody.class)
+                          .map(body -> (int) childrenByRule(body, RuleId.ClassMember.class).stream()
+                                                    .filter(member -> !contains(member, RuleId.TypeKind.class))
+                                                    .filter(member -> contains(member, RuleId.MethodDecl.class))
+                                                    .filter(member -> isAbstractMethod(member, source))
+                                                    .count())
+                          .or(0);
+    }
+
+    private boolean isAbstractMethod(CstNode member, String source) {
+        var memberText = text(member, source);
+        return !memberText.contains("static ") && !memberText.contains("default ");
     }
 
     private boolean isStaticMember(CstNode member, String source) {
@@ -41,13 +65,21 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
         return memberText.contains("static ");
     }
 
-    private boolean containsLocalRecord(CstNode method, String source) {
-        // Look for local record pattern: record Name(...) inside method body
-        var methodText = text(method, source);
-        var bodyStart = methodText.indexOf("{");
-        if (bodyStart < 0) return false;
-        var body = methodText.substring(bodyStart);
-        return body.contains("record ") && body.contains("implements ");
+    private boolean containsSimpleLocalRecord(CstNode method, String source) {
+        // Find local records implementing an interface
+        return findAll(method, RuleId.RecordDecl.class).stream()
+                      .filter(record -> hasImplementsClause(record))
+                      .anyMatch(record -> isSimpleImplementation(record));
+    }
+
+    private boolean hasImplementsClause(CstNode record) {
+        return contains(record, RuleId.ImplementsClause.class);
+    }
+
+    private boolean isSimpleImplementation(CstNode record) {
+        // A simple record has at most 1 method — can be replaced by a lambda.
+        // Complex records (with helper methods) justify the nested record pattern.
+        return count(record, RuleId.MethodDecl.class) <= 1;
     }
 
     private Diagnostic createDiagnostic(CstNode method, String source, LintContext ctx) {

@@ -1,0 +1,7 @@
+prefix = "/api/v1/pricing/analytics"
+
+[routes]
+getHighValueSummary = "GET /high-value"
+
+[errors]
+default = 500

@@ -20,6 +20,7 @@
         <module>url-shortener</module>
         <module>ecommerce</module>
         <module>banking</module>
+        <module>pricing-engine</module>
     </modules>
 
     <build>

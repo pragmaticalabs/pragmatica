@@ -1,0 +1,14 @@
+[database]
+type = "H2"
+name = "pricing-engine"
+host = "localhost"
+port = 0
+database = "pricing"
+
+[database.pool_config]
+min_connections = 2
+max_connections = 10
+idle_timeout = "10m"
+connection_timeout = "30s"
+max_lifetime = "30m"
+leak_detection_timeout = "0s"
