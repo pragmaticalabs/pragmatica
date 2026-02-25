@@ -329,6 +329,46 @@ class CstLinterTest {
                 """);
             assertNoRule(diagnostics, "JBCT-VO-01");
         }
+
+        @Test
+        void allowsZeroComponentRecord() {
+            var diagnostics = lint("""
+                package com.example.domain.test;
+                public record PingRequest() {}
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void allowsRecordImplementingSealedInterface() {
+            var diagnostics = lint("""
+                package com.example.domain.test;
+                public sealed interface RegistrationError {
+                    record EmailAlreadyRegistered(String email) implements RegistrationError {}
+                    record TokenGenerationFailed(String reason) implements RegistrationError {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void allowsBuilderPatternRecordWithWithMethods() {
+            var diagnostics = lint("""
+                package com.example.domain.test;
+                public record ProvisioningContext(String typeToken, String keyExtractor, String extension) {
+                    public ProvisioningContext withTypeToken(String typeToken) {
+                        return new ProvisioningContext(typeToken, keyExtractor, extension);
+                    }
+                    public ProvisioningContext withKeyExtractor(String keyExtractor) {
+                        return new ProvisioningContext(typeToken, keyExtractor, extension);
+                    }
+                    public ProvisioningContext withExtension(String extension) {
+                        return new ProvisioningContext(typeToken, keyExtractor, extension);
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
     }
 
     @Nested

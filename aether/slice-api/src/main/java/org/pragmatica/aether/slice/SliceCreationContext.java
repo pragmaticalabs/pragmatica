@@ -4,6 +4,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 /// Unified context for slice factory methods during slice creation.
@@ -79,7 +80,7 @@ public interface SliceCreationContext {
                                                      String sliceId) {
         return DefaultSliceCreationContext.defaultSliceCreationContext(invoker,
                                                                        resources,
-                                                                       Option.some(sliceId))
+                                                                       some(sliceId))
                                           .unwrap();
     }
 }

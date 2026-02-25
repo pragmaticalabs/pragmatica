@@ -12,6 +12,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
+
 /// Context for resource provisioning, carrying additional type and key information.
 ///
 /// Used to pass extra metadata to {@link ResourceProviderFacade#provide} when
@@ -35,7 +39,7 @@ public record ProvisioningContext(List<TypeToken<?>> typeTokens,
     ///
     /// @return New empty ProvisioningContext
     public static ProvisioningContext provisioningContext() {
-        return new ProvisioningContext(List.of(), Option.none(), Map.of());
+        return new ProvisioningContext(List.of(), none(), Map.of());
     }
 
     /// Add a type token to this context.
@@ -53,7 +57,7 @@ public record ProvisioningContext(List<TypeToken<?>> typeTokens,
     /// @param extractor Key extractor function
     /// @return New ProvisioningContext with the key extractor set
     public ProvisioningContext withKeyExtractor(Fn1<?, ?> extractor) {
-        return new ProvisioningContext(typeTokens, Option.some(extractor), extensions);
+        return new ProvisioningContext(typeTokens, some(extractor), extensions);
     }
 
     /// Retrieve a typed extension from this context.
@@ -62,8 +66,7 @@ public record ProvisioningContext(List<TypeToken<?>> typeTokens,
     /// @return Option containing the extension value, or none if absent
     @SuppressWarnings("unchecked")
     public <T> Result<T> extension(Class<T> type) {
-        return Option.option((T) extensions.get(type))
-                     .toResult(MISSING_EXTENSION.apply(type.getSimpleName()));
+        return option((T) extensions.get(type)).toResult(MISSING_EXTENSION.apply(type.getSimpleName()));
     }
 
     /// Add a typed extension to this context.
