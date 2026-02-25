@@ -43,7 +43,7 @@ public interface FurySerializerFactoryProvider extends SerializerFactoryProvider
         var fury = Fory.builder()
                        .withLanguage(Language.JAVA)
                        .requireClassRegistration(true)
-                       .withCodegen(true)
+                       .withCodegen(false)
                        .withClassLoader(sliceClassLoader)
                        .buildThreadSafeForyPool(coreCount * 2, coreCount * 4);
         // 1. Register core classes (sequential IDs — same Class objects everywhere)
