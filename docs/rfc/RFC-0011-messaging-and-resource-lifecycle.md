@@ -20,7 +20,7 @@ Aether slices consume three distinct resource types:
 
 | Category | Example | Provisioning | Current Status |
 |----------|---------|-------------|----------------|
-| **Regular resources** | `SqlConnector`, `HttpClient` | `@ResourceQualifier` + `SpiResourceProvider` | Implemented ([RFC-0006](RFC-0006-resource-provisioning.md)) |
+| **Regular resources** | `SqlConnector`, `HttpClient` | `@ResourceQualifier` + `SpiResourceProvider` | Implemented ([RFC-0012](RFC-0012-resource-provisioning.md)) |
 | **Aspects** | `@Cached`, `@Logged` | Compile-time wiring + `AspectFactory` | Implemented ([RFC-0008](RFC-0008-aspect-framework.md)) |
 | **Messaging** | `Publisher<T>`, `@Subscribe` | Not yet designed | **This RFC** |
 
@@ -424,7 +424,7 @@ The following are explicitly out of scope for v1:
 ## References
 
 - [RFC-0001: Core Slice Contract](RFC-0001-core-slice-contract.md) — `Slice` interface, `SliceMethod`, factory conventions, manifest format
-- [RFC-0006: Resource Provisioning](RFC-0006-resource-provisioning.md) — `@ResourceQualifier`, `SpiResourceProvider`, `ResourceFactory` SPI
+- [RFC-0012: Resource Provisioning](RFC-0012-resource-provisioning.md) — `@ResourceQualifier`, `SpiResourceProvider`, `ResourceFactory` SPI
 - [RFC-0008: Aspect Framework](RFC-0008-aspect-framework.md) — Compile-time aspect wiring, `@Aspect` annotations
 - [RFC-0010: Unified Invocation Observability](RFC-0010-unified-invocation-observability.md) — Invocation tracing, `InvocationContext`
 - Existing: `aether/slice-api/src/main/java/org/pragmatica/aether/slice/MethodHandle.java`

@@ -8,7 +8,21 @@ This document describes the HTTP Management API for Aether cluster management.
 
 ## Authentication
 
-Currently no authentication is required. TLS can be enabled via `AetherNodeConfig.withTls()`.
+When API keys are configured, all management endpoints require authentication via the `X-API-Key` header:
+
+```
+X-API-Key: your-api-key
+```
+
+**Exceptions (always public, no auth required):**
+- `GET /health/live` — Liveness probe
+- `GET /health/ready` — Readiness probe
+
+**Error responses:**
+- `401 Unauthorized` — Missing `X-API-Key` header. Response includes `WWW-Authenticate: ApiKey realm="Aether"`.
+- `403 Forbidden` — Invalid API key provided.
+
+When no API keys are configured, all endpoints are accessible without authentication (backward compatible).
 
 ---
 
@@ -59,6 +73,42 @@ Get node health status including readiness and quorum.
   "sliceCount": 5
 }
 ```
+
+### GET /health/live
+
+Liveness probe for container orchestrators. Always returns 200 if the process is running.
+No authentication required.
+
+**Response (200 OK):**
+```json
+{
+  "status": "UP",
+  "nodeId": "node-1"
+}
+```
+
+### GET /health/ready
+
+Readiness probe for container orchestrators. Returns 200 when the node is ready to receive traffic, 503 when not ready.
+No authentication required.
+
+**Response (200 OK or 503 Service Unavailable):**
+```json
+{
+  "status": "UP",
+  "nodeId": "node-1",
+  "components": [
+    {"name": "consensus", "status": "UP", "detail": "Cluster active"},
+    {"name": "routes", "status": "UP", "detail": "Route sync received"},
+    {"name": "quorum", "status": "UP", "detail": "Connected peers: 2"}
+  ]
+}
+```
+
+Components checked:
+- **consensus** — Is the node participating in consensus? DOWN during initial cluster formation.
+- **routes** — Has the node received its initial route synchronization from the KV-Store?
+- **quorum** — Does the node have a quorum (at least 2 nodes total)?
 
 ### GET /api/nodes
 
@@ -833,6 +883,152 @@ curl -X DELETE http://localhost:8080/api/aspects/org.example:my-slice:1.0.0/proc
 
 ---
 
+## Traces
+
+### GET /api/traces
+
+List recent invocation traces.
+
+**Query Parameters:**
+- `limit` (int, default 100) -- Maximum traces to return
+- `method` (string) -- Filter by callee method name
+- `status` (string) -- Filter by outcome: `SUCCESS` or `FAILURE`
+- `minDepth` (int) -- Minimum depth filter
+- `maxDepth` (int) -- Maximum depth filter
+
+**Example:**
+```bash
+curl "http://localhost:8080/api/traces?limit=50&method=processOrder"
+```
+
+**Response:**
+```json
+{
+  "traces": [
+    {
+      "requestId": "abc-123",
+      "method": "processOrder",
+      "depth": 2,
+      "durationNs": 15000000,
+      "status": "SUCCESS",
+      "timestamp": 1704067200000
+    }
+  ]
+}
+```
+
+### GET /api/traces/{requestId}
+
+Get all trace nodes for a specific request ID.
+
+**Example:**
+```bash
+curl http://localhost:8080/api/traces/abc-123
+```
+
+**Response:**
+```json
+{
+  "requestId": "abc-123",
+  "nodes": [
+    {
+      "method": "processOrder",
+      "depth": 0,
+      "durationNs": 15000000,
+      "status": "SUCCESS"
+    },
+    {
+      "method": "validateInventory",
+      "depth": 1,
+      "durationNs": 5000000,
+      "status": "SUCCESS"
+    }
+  ]
+}
+```
+
+### GET /api/traces/stats
+
+Get aggregated trace statistics.
+
+**Response:**
+```json
+{
+  "totalTraces": 10000,
+  "avgDepth": 2.3,
+  "avgDurationMs": 15.0,
+  "successRate": 0.995,
+  "methodCounts": {
+    "processOrder": 5000,
+    "validateInventory": 3000
+  }
+}
+```
+
+---
+
+## Observability Depth
+
+### GET /api/observability/depth
+
+List all configured per-method depth overrides.
+
+**Response:**
+```json
+{
+  "overrides": [
+    {
+      "artifact": "org.example:my-slice:1.0.0",
+      "method": "processOrder",
+      "depthThreshold": 3
+    }
+  ]
+}
+```
+
+### POST /api/observability/depth
+
+Set a per-method depth threshold.
+
+**Request:**
+```json
+{
+  "artifact": "org.example:my-slice:1.0.0",
+  "method": "processOrder",
+  "depthThreshold": 3
+}
+```
+
+**Response:**
+```json
+{
+  "status": "depth_set",
+  "artifact": "org.example:my-slice:1.0.0",
+  "method": "processOrder",
+  "depthThreshold": 3
+}
+```
+
+### DELETE /api/observability/depth/{artifact}/{method}
+
+Remove a per-method depth override.
+
+**Example:**
+```bash
+curl -X DELETE http://localhost:8080/api/observability/depth/org.example:my-slice:1.0.0/processOrder
+```
+
+**Response:**
+```json
+{
+  "status": "depth_removed",
+  "artifact": "org.example:my-slice:1.0.0",
+  "method": "processOrder"
+}
+```
+
+---
+
 ## Log Level Management
 
 Runtime log level control with cluster-wide persistence via KV-Store consensus.
@@ -1262,12 +1458,27 @@ ws.onmessage = (event) => {
 
 Messages are only sent when new events have occurred since the previous broadcast. Each message is a JSON array of `ClusterEvent` objects.
 
+## WebSocket Authentication
+
+When API keys are configured, WebSocket connections require first-message authentication:
+
+1. Client connects to WebSocket endpoint
+2. Server sends: `{"type":"AUTH_REQUIRED"}`
+3. Client sends: `{"type":"AUTH","apiKey":"your-api-key"}`
+4. Server responds: `{"type":"AUTH_SUCCESS"}` or `{"type":"AUTH_FAILED","reason":"..."}`
+
+If not authenticated within 5 seconds, the connection is closed.
+
+When no API keys are configured, WebSocket connections are immediately authorized.
+
 ---
 
 ## Endpoint Summary
 
 | Method | Path | Section |
 |--------|------|---------|
+| GET | `/health/live` | Health Probes |
+| GET | `/health/ready` | Health Probes |
 | GET | `/api/status` | Cluster Status |
 | GET | `/api/health` | Cluster Status |
 | GET | `/api/nodes` | Cluster Status |
@@ -1309,6 +1520,12 @@ Messages are only sent when new events have occurred since the previous broadcas
 | GET | `/api/aspects` | Dynamic Aspects |
 | POST | `/api/aspects` | Dynamic Aspects |
 | DELETE | `/api/aspects/{artifact}/{method}` | Dynamic Aspects |
+| GET | `/api/traces` | Traces |
+| GET | `/api/traces/{requestId}` | Traces |
+| GET | `/api/traces/stats` | Traces |
+| GET | `/api/observability/depth` | Observability Depth |
+| POST | `/api/observability/depth` | Observability Depth |
+| DELETE | `/api/observability/depth/{artifact}/{method}` | Observability Depth |
 | GET | `/api/logging/levels` | Log Level Management |
 | POST | `/api/logging/levels` | Log Level Management |
 | DELETE | `/api/logging/levels/{logger}` | Log Level Management |
@@ -1333,8 +1550,103 @@ Messages are only sent when new events have occurred since the previous broadcas
 | WS | `/ws/status` | WebSocket |
 | WS | `/ws/events` | WebSocket |
 
+| GET | `/api/nodes/lifecycle` | Node Lifecycle |
+| GET | `/api/node/lifecycle/{nodeId}` | Node Lifecycle |
+| POST | `/api/node/drain/{nodeId}` | Node Lifecycle |
+| POST | `/api/node/activate/{nodeId}` | Node Lifecycle |
+| POST | `/api/node/shutdown/{nodeId}` | Node Lifecycle |
 | GET | `/api/scheduled-tasks` | Scheduled Tasks |
 | GET | `/api/scheduled-tasks/{configSection}` | Scheduled Tasks |
+
+---
+
+## Node Lifecycle
+
+Manage node lifecycle states for graceful operations (drain, shutdown, activation).
+
+**States:** `JOINING`, `ON_DUTY`, `DRAINING`, `DECOMMISSIONED`, `SHUTTING_DOWN`
+
+**State transitions:**
+```
+JOINING → ON_DUTY ←→ DRAINING → DECOMMISSIONED → SHUTTING_DOWN
+                   ←────────────┘
+         any KV state ──────────→ SHUTTING_DOWN
+```
+
+### GET /api/nodes/lifecycle
+
+Get lifecycle state for all nodes.
+
+**Response:**
+```json
+[
+  {
+    "nodeId": "node-1",
+    "state": "ON_DUTY",
+    "updatedAt": 1704067200000
+  },
+  {
+    "nodeId": "node-2",
+    "state": "DRAINING",
+    "updatedAt": 1704067201000
+  }
+]
+```
+
+### GET /api/node/lifecycle/{nodeId}
+
+Get lifecycle state for a specific node.
+
+**Response:**
+```json
+{
+  "nodeId": "node-1",
+  "state": "ON_DUTY",
+  "updatedAt": 1704067200000
+}
+```
+
+### POST /api/node/drain/{nodeId}
+
+Transition a node from `ON_DUTY` to `DRAINING`. The CDM will evacuate slices respecting the disruption budget.
+
+**Response:**
+```json
+{
+  "success": true,
+  "nodeId": "node-1",
+  "state": "DRAINING",
+  "message": "Node draining initiated"
+}
+```
+
+### POST /api/node/activate/{nodeId}
+
+Transition a node from `DRAINING` or `DECOMMISSIONED` back to `ON_DUTY`.
+
+**Response:**
+```json
+{
+  "success": true,
+  "nodeId": "node-1",
+  "state": "ON_DUTY",
+  "message": "Node activated"
+}
+```
+
+### POST /api/node/shutdown/{nodeId}
+
+Transition a node from any state to `SHUTTING_DOWN`.
+
+**Response:**
+```json
+{
+  "success": true,
+  "nodeId": "node-1",
+  "state": "SHUTTING_DOWN",
+  "message": "Node shutdown initiated"
+}
+```
 
 ---
 
@@ -1388,5 +1700,7 @@ All errors return JSON with an `error` field:
 
 Common HTTP status codes:
 - `400 Bad Request` -- Invalid request format or missing required fields
+- `401 Unauthorized` -- Missing API key (when authentication is configured)
+- `403 Forbidden` -- Invalid API key
 - `404 Not Found` -- Resource not found
 - `500 Internal Server Error` -- Server error

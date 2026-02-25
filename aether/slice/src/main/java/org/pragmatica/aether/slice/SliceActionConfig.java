@@ -30,7 +30,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///                            If provided, creates a FrameworkClassLoader with isolated
 ///                            pragmatica-lite, slice-api, and serialization classes.
 ///                            If empty, uses Application ClassLoader (no isolation).
-@SuppressWarnings({"JBCT-VO-01", "JBCT-SEQ-01"})
+@SuppressWarnings("JBCT-SEQ-01")
 public record SliceActionConfig(TimeSpan loadingTimeout,
                                 TimeSpan activatingTimeout,
                                 TimeSpan deactivatingTimeout,

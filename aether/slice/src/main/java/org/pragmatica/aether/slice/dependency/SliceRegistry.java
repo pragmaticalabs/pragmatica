@@ -24,7 +24,7 @@ import static org.pragmatica.lang.Option.option;
 /// - Lookup by exact artifact
 /// - Lookup by class name with version pattern matching
 /// - Thread-safe concurrent access
-@SuppressWarnings({"JBCT-VO-01", "JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-ZONE-03"})
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-ZONE-03"})
 public interface SliceRegistry {
     /// Create a new empty registry.
     static SliceRegistry sliceRegistry() {

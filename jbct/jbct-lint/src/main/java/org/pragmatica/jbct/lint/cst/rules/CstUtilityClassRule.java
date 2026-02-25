@@ -98,13 +98,13 @@ public class CstUtilityClassRule implements CstLintRule {
         return true;
     }
 
-    private boolean isSealedUtilityInterface(CstNode iface, String source) {
-        var ifaceText = text(iface, source);
-        // Check for sealed interface with static methods
-        if (!ifaceText.contains("sealed ") || !ifaceText.contains("interface ")) {
-            return false;
-        }
-        // Check if it has static methods (utility interface pattern)
+    private boolean isSealedUtilityInterface(CstNode typeDecl, String source) {
+        // Structural check: THIS TypeDecl must have "sealed" modifier (not inherited from nested types)
+        var hasSealedModifier = childrenByRule(typeDecl, RuleId.Modifier.class).stream()
+                                             .anyMatch(mod -> "sealed".equals(text(mod, source).trim()));
+        if (!hasSealedModifier) return false;
+        // Must have static methods (utility interface pattern)
+        var ifaceText = text(typeDecl, source);
         return ifaceText.contains("static ") && ifaceText.contains("(");
     }
 

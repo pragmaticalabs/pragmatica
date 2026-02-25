@@ -172,7 +172,7 @@ Deploy TTM by adding the jar:
 mvn package -pl aether/aether-ttm-onnx -am -DskipTests
 
 # Copy to extensions
-cp aether/aether-ttm-onnx/target/aether-ttm-onnx-0.17.0.jar /app/extensions/
+cp aether/aether-ttm-onnx/target/aether-ttm-onnx-0.18.0.jar /app/extensions/
 cp models/ttm-aether.onnx /app/models/
 ```
 

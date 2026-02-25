@@ -91,7 +91,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // Test artifact paths relative to Maven repository
     // Note: Uses slice artifact IDs (echo-slice-echo-service), not module artifact IDs (echo-slice)
     private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
-    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.17.0");
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.18.0");
     private static final String[] TEST_ARTIFACTS = {
         "echo-slice-echo-service/" + TEST_ARTIFACT_VERSION + "/echo-slice-echo-service-" + TEST_ARTIFACT_VERSION + ".jar"
     };
@@ -877,6 +877,47 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     /// @return response body
     public String invokePost(String path, String body) {
         return post(path, body);
+    }
+
+    // ===== Node Lifecycle API =====
+
+    /// Initiates drain on a node, transitioning it from ON_DUTY to DRAINING.
+    ///
+    /// @param nodeId target node identifier
+    /// @return transition result JSON
+    public String drainNode(String nodeId) {
+        return post("/api/node/drain/" + nodeId, "{}");
+    }
+
+    /// Activates a drained or decommissioned node, returning it to ON_DUTY.
+    ///
+    /// @param nodeId target node identifier
+    /// @return transition result JSON
+    public String activateNode(String nodeId) {
+        return post("/api/node/activate/" + nodeId, "{}");
+    }
+
+    /// Initiates remote shutdown of a node, transitioning it to SHUTTING_DOWN.
+    ///
+    /// @param nodeId target node identifier
+    /// @return transition result JSON
+    public String shutdownNode(String nodeId) {
+        return post("/api/node/shutdown/" + nodeId, "{}");
+    }
+
+    /// Fetches lifecycle state for a specific node.
+    ///
+    /// @param nodeId target node identifier
+    /// @return lifecycle entry JSON
+    public String getNodeLifecycle(String nodeId) {
+        return get("/api/node/lifecycle/" + nodeId);
+    }
+
+    /// Fetches lifecycle states for all nodes in the cluster.
+    ///
+    /// @return lifecycle entries JSON array
+    public String getAllNodeLifecycles() {
+        return get("/api/nodes/lifecycle");
     }
 
     // ===== Routes API =====

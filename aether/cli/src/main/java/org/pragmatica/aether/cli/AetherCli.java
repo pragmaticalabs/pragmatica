@@ -13,6 +13,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
+import java.time.Instant;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -52,7 +53,7 @@ import static org.pragmatica.lang.Option.some;
 /// ```
 @Command(name = "aether",
 mixinStandardHelpOptions = true,
-version = "Aether 0.17.0",
+version = "Aether 0.18.0",
 description = "Command-line interface for Aether cluster management",
 subcommands = {AetherCli.StatusCommand.class,
 AetherCli.NodesCommand.class,
@@ -67,11 +68,13 @@ AetherCli.InvocationMetricsCommand.class,
 AetherCli.ControllerCommand.class,
 AetherCli.AlertsCommand.class,
 AetherCli.ThresholdsCommand.class,
-AetherCli.AspectsCommand.class,
+AetherCli.TracesCommand.class,
+AetherCli.ObservabilityCommand.class,
 AetherCli.LoggingCommand.class,
 AetherCli.ConfigCommand.class,
 AetherCli.ScheduledTasksCommand.class,
-AetherCli.EventsCommand.class})
+AetherCli.EventsCommand.class,
+AetherCli.NodeCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -83,6 +86,10 @@ public class AetherCli implements Runnable {
     @CommandLine.Option(names = {"--config"},
     description = "Path to aether.toml config file")
     private Path configPath;
+
+    @CommandLine.Option(names = {"--api-key", "-k"},
+    description = "API key for authenticated access")
+    private String apiKey;
 
     private final HttpClient httpClient = HttpClient.newHttpClient();
 
@@ -113,7 +120,7 @@ public class AetherCli implements Runnable {
 
     @SuppressWarnings("JBCT-SEQ-01")
     private static boolean isConnectionOption(String arg) {
-        return arg.startsWith("-c") || arg.startsWith("--connect") || arg.startsWith("--config") || arg.equals("-h") || arg.equals("--help") || arg.equals("-V") || arg.equals("--version");
+        return arg.startsWith("-c") || arg.startsWith("--connect") || arg.startsWith("--config") || arg.startsWith("-k") || arg.startsWith("--api-key") || arg.equals("-h") || arg.equals("--help") || arg.equals("-V") || arg.equals("--version");
     }
 
     @SuppressWarnings("JBCT-UTIL-02")
@@ -183,7 +190,7 @@ public class AetherCli implements Runnable {
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-UTIL-02"})
     private void runRepl(CommandLine cmd) {
-        System.out.println("Aether v0.17.0 - Connected to " + nodeAddress);
+        System.out.println("Aether v0.18.0 - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
         System.out.println();
         try (var reader = new BufferedReader(new InputStreamReader(System.in))) {
@@ -228,12 +235,19 @@ public class AetherCli implements Runnable {
         }
     }
 
+    @SuppressWarnings("JBCT-SEQ-01")
     private String[] buildReplArgs(String[] replArgs) {
-        var fullArgs = new String[replArgs.length + 2];
-        fullArgs[0] = "--connect";
-        fullArgs[1] = nodeAddress;
-        System.arraycopy(replArgs, 0, fullArgs, 2, replArgs.length);
-        return fullArgs;
+        var args = new ArrayList<String>();
+        args.add("--connect");
+        args.add(nodeAddress);
+        resolveApiKey().onPresent(key -> {
+            args.add("--api-key");
+            args.add(key);
+        });
+        for (var arg : replArgs) {
+            args.add(arg);
+        }
+        return args.toArray(String[]::new);
     }
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
@@ -284,41 +298,61 @@ public class AetherCli implements Runnable {
         }
     }
 
-    private static HttpRequest buildGetRequest(URI uri) {
-        return HttpRequest.newBuilder()
-                          .uri(uri)
-                          .GET()
-                          .build();
+    private Option<String> resolveApiKey() {
+        return option(apiKey).filter(k -> !k.isBlank())
+                     .orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()));
+    }
+
+    private void attachApiKey(HttpRequest.Builder builder) {
+        resolveApiKey().onPresent(key -> builder.header("X-API-Key", key));
+    }
+
+    private HttpRequest buildGetRequest(URI uri) {
+        var builder = HttpRequest.newBuilder()
+                                 .uri(uri)
+                                 .GET();
+        attachApiKey(builder);
+        return builder.build();
     }
 
     @SuppressWarnings("JBCT-SEQ-01")
-    private static HttpRequest buildPostRequest(URI uri, String body) {
-        return HttpRequest.newBuilder()
-                          .uri(uri)
-                          .header("Content-Type", "application/json")
-                          .POST(HttpRequest.BodyPublishers.ofString(body))
-                          .build();
+    private HttpRequest buildPostRequest(URI uri, String body) {
+        var builder = HttpRequest.newBuilder()
+                                 .uri(uri)
+                                 .header("Content-Type", "application/json")
+                                 .POST(HttpRequest.BodyPublishers.ofString(body));
+        attachApiKey(builder);
+        return builder.build();
     }
 
     @SuppressWarnings("JBCT-SEQ-01")
-    private static HttpRequest buildPutRequest(URI uri, byte[] content, String contentType) {
-        return HttpRequest.newBuilder()
-                          .uri(uri)
-                          .header("Content-Type", contentType)
-                          .PUT(HttpRequest.BodyPublishers.ofByteArray(content))
-                          .build();
+    private HttpRequest buildPutRequest(URI uri, byte[] content, String contentType) {
+        var builder = HttpRequest.newBuilder()
+                                 .uri(uri)
+                                 .header("Content-Type", contentType)
+                                 .PUT(HttpRequest.BodyPublishers.ofByteArray(content));
+        attachApiKey(builder);
+        return builder.build();
     }
 
-    private static HttpRequest buildDeleteRequest(URI uri) {
-        return HttpRequest.newBuilder()
-                          .uri(uri)
-                          .DELETE()
-                          .build();
+    private HttpRequest buildDeleteRequest(URI uri) {
+        var builder = HttpRequest.newBuilder()
+                                 .uri(uri)
+                                 .DELETE();
+        attachApiKey(builder);
+        return builder.build();
     }
 
+    @SuppressWarnings("JBCT-SEQ-01")
     private static String extractResponseBody(HttpResponse<String> response) {
         if (response.statusCode() == 200) {
             return response.body();
+        }
+        if (response.statusCode() == 401) {
+            return "{\"error\":\"Authentication required. Use --api-key or set AETHER_API_KEY environment variable.\"}";
+        }
+        if (response.statusCode() == 403) {
+            return "{\"error\":\"Access denied. The provided API key does not have sufficient permissions.\"}";
         }
         return formatErrorResponse(response);
     }
@@ -1578,165 +1612,165 @@ public class AetherCli implements Runnable {
         }
     }
 
-    // ===== Aspects Commands =====
-    @Command(name = "aspects",
-    description = "Dynamic aspect management",
-    subcommands = {AspectsCommand.ListCommand.class,
-    AspectsCommand.SetCommand.class,
-    AspectsCommand.RemoveCommand.class})
-    static class AspectsCommand implements Runnable {
+    // ===== Traces Commands =====
+    @Command(name = "traces",
+    description = "View distributed invocation traces",
+    subcommands = {TracesCommand.ListCommand.class,
+    TracesCommand.GetCommand.class,
+    TracesCommand.StatsCommand.class})
+    static class TracesCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
 
         @Override
         public void run() {
-            // Default: show all aspects as table
-            var response = parent.fetchFromNode("/api/aspects");
-            printAspectsTable(response);
+            CommandLine.usage(this, System.out);
         }
 
-        @Command(name = "list", description = "List all configured aspects")
+        @Command(name = "list", description = "List recent traces")
         static class ListCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
-            private AspectsCommand aspectsParent;
+            private TracesCommand tracesParent;
+
+            @CommandLine.Option(names = {"-l", "--limit"}, description = "Max traces", defaultValue = "100")
+            private int limit;
+
+            @CommandLine.Option(names = {"-m", "--method"}, description = "Filter by method")
+            private String method;
+
+            @CommandLine.Option(names = {"-s", "--status"}, description = "Filter by status (SUCCESS/FAILURE)")
+            private String status;
 
             @Override
             public Integer call() {
-                var response = aspectsParent.parent.fetchFromNode("/api/aspects");
-                printAspectsTable(response);
-                return 0;
-            }
-        }
-
-        @Command(name = "set", description = "Set aspect mode on a method")
-        static class SetCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private AspectsCommand aspectsParent;
-
-            @Parameters(index = "0", description = "Target (artifact#method)")
-            private String target;
-
-            @Parameters(index = "1", description = "Mode (NONE, LOG, METRICS, LOG_AND_METRICS)")
-            private String mode;
-
-            @Override
-            public Integer call() {
-                var hashIndex = target.indexOf('#');
-                if (hashIndex == - 1) {
-                    System.err.println("Invalid target format. Expected: artifact#method");
-                    return 1;
-                }
-                var artifact = target.substring(0, hashIndex);
-                var method = target.substring(hashIndex + 1);
-                var normalizedMode = mode.toUpperCase();
-                var body = buildAspectSetBody(artifact, method, normalizedMode);
-                var response = aspectsParent.parent.postToNode("/api/aspects", body);
-                System.out.println(formatJson(response));
+                var path = buildTracesListPath();
+                System.out.println(formatJson(tracesParent.parent.fetchFromNode(path)));
                 return 0;
             }
 
-            private static String buildAspectSetBody(String artifact, String method, String normalizedMode) {
-                return "{\"artifact\":\"" + artifact + "\",\"method\":\"" + method + "\",\"mode\":\"" + normalizedMode
-                       + "\"}";
+            @SuppressWarnings("JBCT-UTIL-02")
+            private String buildTracesListPath() {
+                var sb = new StringBuilder("/api/traces?limit=").append(limit);
+                option(method).onPresent(m -> sb.append("&method=")
+                                                .append(m));
+                option(status).onPresent(s -> sb.append("&status=")
+                                                .append(s));
+                return sb.toString();
             }
         }
 
-        @Command(name = "remove", description = "Remove aspect configuration")
-        static class RemoveCommand implements Callable<Integer> {
+        @Command(name = "get", description = "Get traces for a request ID")
+        static class GetCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
-            private AspectsCommand aspectsParent;
+            private TracesCommand tracesParent;
 
-            @Parameters(index = "0", description = "Target (artifact#method)")
-            private String target;
+            @Parameters(index = "0", description = "Request ID")
+            private String requestId;
 
             @Override
             public Integer call() {
-                var hashIndex = target.indexOf('#');
-                if (hashIndex == - 1) {
-                    System.err.println("Invalid target format. Expected: artifact#method");
-                    return 1;
-                }
-                var artifact = target.substring(0, hashIndex);
-                var method = target.substring(hashIndex + 1);
-                var response = aspectsParent.parent.deleteFromNode("/api/aspects/" + artifact + "/" + method);
+                var response = tracesParent.parent.fetchFromNode("/api/traces/" + requestId);
                 System.out.println(formatJson(response));
                 return 0;
             }
         }
 
-        @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"})
-        private static void printAspectsTable(String json) {
-            // Parse JSON map: {"key::mode", ...}
-            var jsonOpt = option(json).map(String::trim)
-                                .filter(s -> !s.equals("{}"))
-                                .filter(s -> !s.contains("\"error\":"));
-            if (jsonOpt.isEmpty()) {
-                printAspectsError(json);
-                return;
+        @Command(name = "stats", description = "Show trace statistics")
+        static class StatsCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private TracesCommand tracesParent;
+
+            @Override
+            public Integer call() {
+                var response = tracesParent.parent.fetchFromNode("/api/traces/stats");
+                System.out.println(formatJson(response));
+                return 0;
             }
-            System.out.printf("%-40s %-20s %s%n", "ARTIFACT", "METHOD", "MODE");
-            System.out.println("\u2500".repeat(75));
-            // Simple JSON map parsing: {"artifactBase/method":"MODE", ...}
-            var content = extractMapContent(jsonOpt.or(""));
-            if (content.trim()
-                       .isEmpty()) {
-                System.out.println("No active aspects");
-                return;
+        }
+    }
+
+    // ===== Observability Commands =====
+    @Command(name = "observability",
+    description = "Manage observability configuration",
+    subcommands = {ObservabilityCommand.DepthListCommand.class,
+    ObservabilityCommand.DepthSetCommand.class,
+    ObservabilityCommand.DepthRemoveCommand.class})
+    static class ObservabilityCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        @Command(name = "depth", description = "List depth overrides")
+        static class DepthListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ObservabilityCommand obsParent;
+
+            @Override
+            public Integer call() {
+                var response = obsParent.parent.fetchFromNode("/api/observability/depth");
+                System.out.println(formatJson(response));
+                return 0;
             }
-            parseAndPrintAspectEntries(content);
         }
 
-        @SuppressWarnings("JBCT-UTIL-02")
-        private static void printAspectsError(String json) {
-            option(json).filter(s -> s.contains("\"error\":"))
-                  .onPresent(s -> System.out.println(formatJson(s)))
-                  .onEmpty(() -> System.out.println("No active aspects"));
-        }
+        @Command(name = "depth-set", description = "Set depth threshold for a method")
+        static class DepthSetCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ObservabilityCommand obsParent;
 
-        private static String extractMapContent(String json) {
-            var content = json.trim();
-            if (content.startsWith("{")) content = content.substring(1);
-            if (content.endsWith("}")) content = content.substring(0, content.length() - 1);
-            return content;
-        }
+            @Parameters(index = "0", description = "Artifact#method (e.g., org.example:my-slice:1.0.0#processOrder)")
+            private String target;
 
-        @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
-        private static void parseAndPrintAspectEntries(String content) {
-            // Parse key-value pairs
-            var inString = false;
-            var tokenStart = - 1;
-            var key = "";
-            var expectValue = false;
-            for (int i = 0; i < content.length(); i++) {
-                var c = content.charAt(i);
-                if (c == '"' && (i == 0 || content.charAt(i - 1) != '\\')) {
-                    if (!inString) {
-                        inString = true;
-                        tokenStart = i + 1;
-                    } else {
-                        inString = false;
-                        var token = content.substring(tokenStart, i);
-                        if (!expectValue) {
-                            key = token;
-                            expectValue = true;
-                        } else {
-                            printAspectEntry(key, token);
-                            expectValue = false;
-                        }
-                    }
+            @Parameters(index = "1", description = "Depth threshold")
+            private int depthThreshold;
+
+            @Override
+            @SuppressWarnings("JBCT-UTIL-02")
+            public Integer call() {
+                var hashIndex = target.indexOf('#');
+                if (hashIndex == - 1) {
+                    System.err.println("Invalid format. Use: artifact#method");
+                    return 1;
                 }
+                var artifact = target.substring(0, hashIndex);
+                var method = target.substring(hashIndex + 1);
+                var body = buildDepthSetBody(artifact, method);
+                var response = obsParent.parent.postToNode("/api/observability/depth", body);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+
+            private String buildDepthSetBody(String artifact, String method) {
+                return "{\"artifact\":\"" + artifact + "\",\"method\":\"" + method + "\",\"depthThreshold\":" + depthThreshold
+                       + "}";
             }
         }
 
-        private static void printAspectEntry(String key, String mode) {
-            var slashIndex = key.indexOf('/');
-            var artifact = slashIndex != - 1
-                           ? key.substring(0, slashIndex)
-                           : key;
-            var method = slashIndex != - 1
-                         ? key.substring(slashIndex + 1)
-                         : "";
-            System.out.printf("%-40s %-20s %s%n", artifact, method, mode);
+        @Command(name = "depth-remove", description = "Remove depth override")
+        static class DepthRemoveCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ObservabilityCommand obsParent;
+
+            @Parameters(index = "0", description = "Artifact#method")
+            private String target;
+
+            @Override
+            public Integer call() {
+                var hashIndex = target.indexOf('#');
+                if (hashIndex == - 1) {
+                    System.err.println("Invalid format. Use: artifact#method");
+                    return 1;
+                }
+                var artifact = target.substring(0, hashIndex);
+                var method = target.substring(hashIndex + 1);
+                var response = obsParent.parent.deleteFromNode("/api/observability/depth/" + artifact + "/" + method);
+                System.out.println(formatJson(response));
+                return 0;
+            }
         }
     }
 
@@ -1981,6 +2015,198 @@ public class AetherCli implements Runnable {
         private String buildEventsPath() {
             return option(since).map(s -> "/api/events?since=" + s)
                          .or("/api/events");
+        }
+    }
+
+    // ===== Node Commands =====
+    @Command(name = "node",
+    description = "Node lifecycle management",
+    subcommands = {NodeCommand.LifecycleCommand.class,
+    NodeCommand.DrainCommand.class,
+    NodeCommand.ActivateCommand.class,
+    NodeCommand.ShutdownCommand.class})
+    static class NodeCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        @Command(name = "lifecycle", description = "Show node lifecycle states")
+        static class LifecycleCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodeCommand nodeParent;
+
+            @Parameters(index = "0", description = "Node ID (omit to list all)", arity = "0..1")
+            private String nodeId;
+
+            @Override
+            public Integer call() {
+                return option(nodeId).map(this::showSingleNodeLifecycle)
+                             .or(() -> showAllLifecycleStates());
+            }
+
+            @SuppressWarnings("JBCT-PAT-01")
+            private Integer showAllLifecycleStates() {
+                var response = nodeParent.parent.fetchFromNode("/api/nodes/lifecycle");
+                if (response.contains("\"error\":")) {
+                    System.out.println("Failed to fetch lifecycle states: " + response);
+                    return 1;
+                }
+                System.out.println("Node Lifecycle States:");
+                var arrayStart = response.indexOf('[');
+                var arrayEnd = response.lastIndexOf(']');
+                if (arrayStart == - 1 || arrayEnd == - 1 || arrayEnd <= arrayStart) {
+                    System.out.println("  (none)");
+                    return 0;
+                }
+                var arrayContent = response.substring(arrayStart + 1, arrayEnd);
+                if (arrayContent.trim()
+                                .isEmpty()) {
+                    System.out.println("  (none)");
+                    return 0;
+                }
+                extractLifecycleObjects(arrayContent).forEach(LifecycleCommand::printLifecycleEntry);
+                return 0;
+            }
+
+            private Integer showSingleNodeLifecycle(String id) {
+                var response = nodeParent.parent.fetchFromNode("/api/node/lifecycle/" + id);
+                if (response.contains("\"error\":")) {
+                    System.out.println("Failed to fetch lifecycle for " + id + ": " + response);
+                    return 1;
+                }
+                printLifecycleEntry(response);
+                return 0;
+            }
+
+            private static void printLifecycleEntry(String json) {
+                var entryNodeId = extractJsonString(json, "nodeId");
+                var state = extractJsonString(json, "state");
+                var updatedAt = extractJsonNumber(json, "updatedAt");
+                var timestamp = formatTimestamp(updatedAt);
+                System.out.println("  " + entryNodeId + ": " + state + " (updated: " + timestamp + ")");
+            }
+
+            private static String formatTimestamp(String epochMs) {
+                return option(epochMs).filter(s -> !s.equals("0"))
+                             .map(Long::parseLong)
+                             .map(ms -> Instant.ofEpochMilli(ms)
+                                               .toString())
+                             .or("unknown");
+            }
+        }
+
+        @Command(name = "drain", description = "Drain a node (ON_DUTY -> DRAINING)")
+        static class DrainCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodeCommand nodeParent;
+
+            @Parameters(index = "0", description = "Node ID")
+            private String nodeId;
+
+            @Override
+            public Integer call() {
+                return executeTransition("drain", nodeId, nodeParent);
+            }
+        }
+
+        @Command(name = "activate", description = "Activate a node (DRAINING/DECOMMISSIONED -> ON_DUTY)")
+        static class ActivateCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodeCommand nodeParent;
+
+            @Parameters(index = "0", description = "Node ID")
+            private String nodeId;
+
+            @Override
+            public Integer call() {
+                return executeTransition("activate", nodeId, nodeParent);
+            }
+        }
+
+        @Command(name = "shutdown", description = "Shutdown a node (any -> SHUTTING_DOWN)")
+        static class ShutdownCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private NodeCommand nodeParent;
+
+            @Parameters(index = "0", description = "Node ID")
+            private String nodeId;
+
+            @Override
+            public Integer call() {
+                return executeTransition("shutdown", nodeId, nodeParent);
+            }
+        }
+
+        @SuppressWarnings("JBCT-UTIL-02")
+        private static Integer executeTransition(String action, String nodeId, NodeCommand nodeParent) {
+            var response = nodeParent.parent.postToNode("/api/node/" + action + "/" + nodeId, "");
+            if (response.contains("\"error\":")) {
+                System.out.println("Failed to " + action + " node " + nodeId + ": " + response);
+                return 1;
+            }
+            return printTransitionResult(response);
+        }
+
+        private static Integer printTransitionResult(String json) {
+            var success = json.contains("\"success\":true");
+            var resultNodeId = extractJsonString(json, "nodeId");
+            var state = extractJsonString(json, "state");
+            var message = extractJsonString(json, "message");
+            var symbol = success
+                         ? "\u2713"
+                         : "\u2717";
+            System.out.println(symbol + " " + resultNodeId + ": " + state + " - " + message);
+            return success
+                   ? 0
+                   : 1;
+        }
+
+        @SuppressWarnings("JBCT-PAT-01")
+        private static List<String> extractLifecycleObjects(String arrayContent) {
+            var objects = new ArrayList<String>();
+            var depth = 0;
+            var start = 0;
+            for (int i = 0; i < arrayContent.length(); i++) {
+                var c = arrayContent.charAt(i);
+                if (c == '{') {
+                    if (depth == 0) start = i;
+                    depth++;
+                } else if (c == '}') {
+                    depth--;
+                    if (depth == 0) {
+                        objects.add(arrayContent.substring(start, i + 1));
+                    }
+                }
+            }
+            return objects;
+        }
+
+        private static String extractJsonString(String json, String key) {
+            var pattern = "\"" + key + "\":\"";
+            var start = json.indexOf(pattern);
+            if (start == - 1) return "";
+            start += pattern.length();
+            var end = json.indexOf("\"", start);
+            if (end == - 1) return "";
+            return json.substring(start, end);
+        }
+
+        @SuppressWarnings("JBCT-PAT-01")
+        private static String extractJsonNumber(String json, String key) {
+            var pattern = "\"" + key + "\":";
+            var start = json.indexOf(pattern);
+            if (start == - 1) return "0";
+            start += pattern.length();
+            var end = start;
+            while (end < json.length() && (Character.isDigit(json.charAt(end)) || json.charAt(end) == '-')) {
+                end++;
+            }
+            if (end == start) return "0";
+            return json.substring(start, end);
         }
     }
 

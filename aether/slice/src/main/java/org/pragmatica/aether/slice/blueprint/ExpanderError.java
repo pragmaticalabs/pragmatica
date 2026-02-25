@@ -4,7 +4,6 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.lang.Cause;
 
 /// Errors that can occur during blueprint expansion.
-@SuppressWarnings("JBCT-VO-01")
 public sealed interface ExpanderError extends Cause {
     /// Artifact mismatch between requested and manifest-declared artifact.
     record ArtifactMismatch(Artifact requested, Artifact declared) implements ExpanderError {

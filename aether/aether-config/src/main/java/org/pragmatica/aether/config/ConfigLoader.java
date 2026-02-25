@@ -8,7 +8,10 @@ import org.pragmatica.lang.parse.Number;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.pragmatica.lang.Result.success;
 
@@ -64,6 +67,7 @@ public final class ConfigLoader {
                           .flatMap(environment -> assembleConfig(doc, overrides, environment));
     }
 
+    @SuppressWarnings("JBCT-UTIL-01")
     private static Result<AetherConfig> assembleConfig(TomlDocument doc,
                                                        Map<String, String> overrides,
                                                        Environment environment) {
@@ -87,6 +91,7 @@ public final class ConfigLoader {
         populateKubernetesConfig(doc, builder, environment);
         populateTtmConfig(doc, builder);
         populateSliceConfig(doc, builder);
+        populateAppHttpConfig(doc, builder);
         return builder;
     }
 
@@ -206,6 +211,89 @@ public final class ConfigLoader {
            .map(repos -> SliceConfig.sliceConfigFromNames(repos))
            .flatMap(Result::option)
            .onPresent(builder::sliceConfig);
+    }
+
+    @SuppressWarnings("JBCT-STY-05")
+    private static void populateAppHttpConfig(TomlDocument doc, AetherConfig.Builder builder) {
+        var enabled = doc.getString("app-http", "enabled")
+                         .map(ConfigLoader::toBooleanValue)
+                         .or(false);
+        var port = doc.getInt("app-http", "port")
+                      .or(AppHttpConfig.DEFAULT_APP_HTTP_PORT);
+        var forwardTimeoutMs = doc.getLong("app-http", "forward_timeout_ms")
+                                  .or(AppHttpConfig.DEFAULT_FORWARD_TIMEOUT_MS);
+        var forwardMaxRetries = doc.getInt("app-http", "forward_max_retries")
+                                   .or(AppHttpConfig.DEFAULT_FORWARD_MAX_RETRIES);
+        var apiKeys = resolveApiKeys(doc);
+        if (enabled || !apiKeys.isEmpty()) {
+            builder.appHttp(AppHttpConfig.appHttpConfig(enabled, port, apiKeys, forwardTimeoutMs, forwardMaxRetries)
+                                         .unwrap());
+        }
+    }
+
+    private static Map<String, ApiKeyEntry> resolveApiKeys(TomlDocument doc) {
+        // 1. Environment variable has highest priority
+        var envKeys = System.getenv("AETHER_API_KEYS");
+        if (envKeys != null && !envKeys.isBlank()) {
+            return parseEnvApiKeys(envKeys);
+        }
+        // 2. Rich TOML sections: [app-http.api-keys.<keyvalue>]
+        var richKeys = parseRichApiKeys(doc);
+        if (!richKeys.isEmpty()) {
+            return richKeys;
+        }
+        // 3. Simple string list: app-http.api_keys = ["key1", "key2"]
+        return doc.getStringList("app-http", "api_keys")
+                  .map(ConfigLoader::wrapSimpleKeyList)
+                  .or(Map.of());
+    }
+
+    /// Parse env format: "key1:name1:role1,role2;key2:name2:role3"
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Map<String, ApiKeyEntry> parseEnvApiKeys(String envValue) {
+        var result = new HashMap<String, ApiKeyEntry>();
+        for (var segment : envValue.split(";")) {
+            var parts = segment.trim()
+                               .split(":", 3);
+            if (parts.length >= 1 && !parts[0].isBlank()) {
+                var keyValue = parts[0].trim();
+                var name = parts.length >= 2
+                           ? parts[1].trim()
+                           : ApiKeyEntry.defaultEntry(keyValue)
+                                        .name();
+                var roles = parts.length >= 3
+                            ? Set.of(parts[2].trim()
+                                          .split(","))
+                            : Set.of("service");
+                result.put(keyValue, ApiKeyEntry.apiKeyEntry(name, roles));
+            }
+        }
+        return Map.copyOf(result);
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private static Map<String, ApiKeyEntry> parseRichApiKeys(TomlDocument doc) {
+        var prefix = "app-http.api-keys.";
+        var result = new HashMap<String, ApiKeyEntry>();
+        for (var sectionName : doc.sectionNames()) {
+            if (sectionName.startsWith(prefix)) {
+                var keyValue = sectionName.substring(prefix.length());
+                var name = doc.getString(sectionName, "name")
+                              .or(ApiKeyEntry.defaultEntry(keyValue)
+                                             .name());
+                var roles = doc.getStringList(sectionName, "roles")
+                               .map(Set::copyOf)
+                               .or(Set.of("service"));
+                result.put(keyValue, ApiKeyEntry.apiKeyEntry(name, roles));
+            }
+        }
+        return Map.copyOf(result);
+    }
+
+    private static Map<String, ApiKeyEntry> wrapSimpleKeyList(List<String> keys) {
+        var result = new HashMap<String, ApiKeyEntry>();
+        keys.forEach(key -> result.put(key, ApiKeyEntry.defaultEntry(key)));
+        return Map.copyOf(result);
     }
 
     private static void mergeCliOverrides(Map<String, String> overrides, AetherConfig.Builder builder) {

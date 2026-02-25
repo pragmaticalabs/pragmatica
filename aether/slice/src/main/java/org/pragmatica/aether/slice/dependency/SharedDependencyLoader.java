@@ -20,7 +20,7 @@ import static org.pragmatica.lang.Unit.unit;
 
 /// Handles loading of shared dependencies into SharedLibraryClassLoader
 /// and creates SliceClassLoader with appropriate parent and conflict overrides.
-@SuppressWarnings({"JBCT-VO-01", "JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-ZONE-02"})
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-ZONE-02"})
 public interface SharedDependencyLoader {
     Logger log = LoggerFactory.getLogger(SharedDependencyLoader.class);
 

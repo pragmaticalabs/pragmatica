@@ -105,7 +105,15 @@ public interface BlueprintParser {
                                                       : 1;
                                   return Artifact.artifact(artifactStr)
                                                  .mapError(_ -> INVALID_ARTIFACT.apply(artifactStr))
-                                                 .flatMap(artifact -> SliceSpec.sliceSpec(artifact, instanceCount));
+                                                 .flatMap(artifact -> parseMinAvailable(entry, instanceCount)
+        .flatMap(minAvail -> SliceSpec.sliceSpec(artifact, instanceCount, minAvail)));
                               });
+    }
+
+    private static Result<Integer> parseMinAvailable(Map<String, Object> entry, int instanceCount) {
+        if (entry.get("minAvailable") instanceof Number n) {
+            return success(n.intValue());
+        }
+        return success(Math.ceilDiv(instanceCount, 2));
     }
 }

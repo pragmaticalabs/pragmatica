@@ -76,11 +76,10 @@ public class DependencyVersionResolver {
         if (interfacePackage == null || interfacePackage.isEmpty()) {
             return dependency.withResolved("unknown:unknown", "UNRESOLVED");
         }
-        // Check if this is a same-module dependency (shares base package)
-        if (baseGroupId != null && baseArtifactId != null) {
-            // Compute base package: groupId + artifactId (with dashes removed)
-            var basePackage = baseGroupId + "." + baseArtifactId.replace("-", "");
-            if (interfacePackage.startsWith(basePackage + ".")) {
+        // Check if this is a same-module dependency (sibling slice under common parent package)
+        if (currentSlicePackage != null && baseGroupId != null && baseArtifactId != null) {
+            var parentPackage = parentPackage(currentSlicePackage);
+            if (parentPackage != null && interfacePackage.startsWith(parentPackage + ".")) {
                 // Same-module dependency - use base artifact + slice name in kebab-case
                 var sliceName = dependency.interfaceSimpleName();
                 var kebabName = toKebabCase(sliceName);
@@ -101,6 +100,11 @@ public class DependencyVersionResolver {
         var groupId = String.join(".", java.util.Arrays.copyOf(parts, parts.length - 1));
         var artifactId = parts[parts.length - 1];
         return dependency.withResolved(groupId + ":" + artifactId, "UNRESOLVED");
+    }
+
+    private static String parentPackage(String pkg) {
+        var lastDot = pkg.lastIndexOf('.');
+        return lastDot > 0 ? pkg.substring(0, lastDot) : null;
     }
 
     private static String toKebabCase(String camelCase) {

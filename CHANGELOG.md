@@ -4,6 +4,58 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.18.0] - Unreleased
+
+### Added
+- **Unified Invocation Observability (RFC-0010)** — sampling-based distributed tracing with depth-to-SLF4J bridge
+  - `InvocationNode` trace record with requestId, depth, caller/callee, duration, outcome, hops
+  - `AdaptiveSampler` — per-node throughput-aware sampling (auto-adjusts: 100% at low load, ~1% at 50K/sec)
+  - `InvocationTraceStore` — thread-safe ring buffer (50K capacity) for recent traces
+  - `ObservabilityInterceptor` — replaces `DynamicAspectInterceptor` with sampling + depth-based SLF4J logging
+  - `ObservabilityDepthRegistry` — per-method depth config via KV-store consensus with cluster notifications
+  - `ObservabilityConfig` — depth threshold + sampling target configuration
+  - Wire protocol: `InvokeRequest` extended with `depth`, `hops`, `sampled` fields
+  - `InvocationContext` — ScopedValue-based `DEPTH` and `SAMPLED` propagation across invocation chains
+  - REST API: `GET /api/traces`, `GET /api/traces/{requestId}`, `GET /api/traces/stats`, `GET/POST/DELETE /api/observability/depth`
+  - CLI: `traces list|get|stats`, `observability depth|depth-set|depth-remove`
+  - Forge proxy routes for trace and depth endpoints
+- Liveness probe (`/health/live`) and readiness probe (`/health/ready`) with component-level checks (consensus, routes, quorum) for container orchestrator compatibility
+- RBAC Tier 1: API key authentication for management server, app HTTP server, and WebSocket connections
+- Per-API-key names and roles via config (`[app-http.api-keys.*]` TOML sections or `AETHER_API_KEYS` env)
+- SHA-256 API key hashing — raw keys never stored in memory
+- Audit logging via dedicated `org.pragmatica.aether.audit` logger
+- WebSocket first-message authentication protocol for dashboard, status, and events streams
+- CLI `--api-key` / `-k` flag and `AETHER_API_KEY` environment variable for authenticated access
+- `InvocationContext` principal and origin node propagation via ScopedValues + MDC
+- App HTTP server `/health` endpoint (always 200, for LB health checks on app port)
+- Node lifecycle state machine (JOINING → ON_DUTY ↔ DRAINING → DECOMMISSIONED → SHUTTING_DOWN) with self-registration on quorum, remote shutdown via KV watch, lifecycle key cleanup on departure
+- Disruption budget (`minAvailable`) for slice deployments — enforced in scale-down and drain eviction
+- Graceful node drain with CDM eviction orchestration respecting disruption budget, cancel drain support, automatic DECOMMISSIONED on eviction complete
+- Management API endpoints for node lifecycle operations (`GET /api/nodes/lifecycle`, `GET /api/node/lifecycle/{nodeId}`, `POST /api/node/drain/{nodeId}`, `POST /api/node/activate/{nodeId}`, `POST /api/node/shutdown/{nodeId}`)
+- CLI commands for node lifecycle management (`node lifecycle`, `node drain`, `node activate`, `node shutdown`)
+- **Class-ID-based serialization for cross-classloader slice invocations** — deterministic hash-based Fury class IDs eliminate `ClassCastException` across slice classloaders
+  - `Slice.serializableClasses()` — compile-time declaration of all serializable types per slice
+  - `SliceCoreClasses` — sequential ID registration for core framework types (Option, Result, Unit)
+  - `FurySerializerFactoryProvider` rewritten with `requireClassRegistration(true)`, hash-based IDs [10000-30000), recursive type expansion, collision detection
+  - Envelope format version bumped to v4
+
+### Fixed
+- **Fury → Fory migration** — upgraded from `org.apache.fury:fury-core:0.10.3` to `org.apache.fory:fory-core:0.16.0-SNAPSHOT` (patched fork with cross-classloader fixes)
+- Removed speculative `HttpRequestContext` decode from `InvocationHandler` — eliminated `ArrayIndexOutOfBoundsException` during cross-node slice invocations
+- Removed debug logging from consensus `Decoder` and `Handler` (InvokeMessage trace noise)
+- Removed SLF4J dependency from `slice-processor` annotation processor — eliminated "No SLF4J providers" warning during compilation
+- Configurable observability depth threshold via `forge.toml` `[observability] depth_threshold` — set to -1 to suppress trace logging during local development
+- `InvocationContext.runWithContext()` signature alignment in `AppHttpServer` and `InvocationContextPrincipalTest` (missing `depth`/`sampled` params)
+
+### Changed
+- `examples/url-shortener` upgraded from standalone 0.17.0 to reactor-integrated 0.18.0 (inherits parent POM, managed versions, installable for forge artifact resolution)
+- `InvocationMetricsTest` forge integration test: deploys url-shortener multi-slice (UrlShortener + Analytics), generates 1K round-trip requests, validates invocation metrics, Prometheus, and traces across 5-node cluster
+- **BREAKING:** Removed `DynamicAspectMode`, `DynamicAspectInterceptor`, `DynamicAspectRegistry`, `DynamicAspectRoutes`, `AspectProxyRoutes` — superseded by Unified Observability
+- **BREAKING:** Removed `/api/aspects` REST endpoints and `aspects` CLI command — use `/api/observability/depth` and `observability` command instead
+- Removed `DynamicAspectKey`/`DynamicAspectValue` from KV-store types — replaced by `ObservabilityDepthKey`/`ObservabilityDepthValue`
+- **BREAKING:** `SerializerFactoryProvider.createFactory()` signature changed from `List<TypeToken<?>>` to `(List<Class<?>>, ClassLoader)` for class-ID-based registration
+- Removed `CrossClassLoaderCodec`, `decodeForClassLoader()`, deprecated `sliceBridgeImpl()`/`sliceBridge()` factory methods
+
 ## [0.17.0] - 2026-02-23
 
 ### Added

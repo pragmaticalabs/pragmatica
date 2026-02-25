@@ -21,8 +21,8 @@ import org.pragmatica.serialization.Deserializer;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufInputStream;
-import org.apache.fury.ThreadSafeFury;
-import org.apache.fury.io.FuryInputStream;
+import org.apache.fory.ThreadSafeFory;
+import org.apache.fory.io.ForyInputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,13 +33,21 @@ public interface FuryDeserializer extends Deserializer {
     /// @param registrators class registrators to apply
     /// @return a thread-safe Fury deserializer
     static FuryDeserializer furyDeserializer(ClassRegistrator... registrators) {
-        record furyDeserializer(ThreadSafeFury fury) implements FuryDeserializer {
+        return furyDeserializer(FuryFactory.fury(registrators));
+    }
+
+    /// Create a Fury deserializer from a pre-built ThreadSafeFory instance.
+    ///
+    /// @param fury pre-configured Fury instance
+    /// @return a thread-safe Fury deserializer
+    static FuryDeserializer furyDeserializer(ThreadSafeFory fury) {
+        record furyDeserializer(ThreadSafeFory fury) implements FuryDeserializer {
             private static final Logger log = LoggerFactory.getLogger(FuryDeserializer.class);
 
             @SuppressWarnings("unchecked")
             @Override
             public <T> T read(ByteBuf byteBuf) {
-                try (var stream = new FuryInputStream(new ByteBufInputStream(byteBuf))) {
+                try (var stream = new ForyInputStream(new ByteBufInputStream(byteBuf))) {
                     return (T) fury.deserialize(stream);
                 } catch (Exception e) {
                     log.error("Error deserializing object", e);
@@ -47,6 +55,6 @@ public interface FuryDeserializer extends Deserializer {
                 }
             }
         }
-        return new furyDeserializer(FuryFactory.fury(registrators));
+        return new furyDeserializer(fury);
     }
 }

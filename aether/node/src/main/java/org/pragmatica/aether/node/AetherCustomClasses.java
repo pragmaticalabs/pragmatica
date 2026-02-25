@@ -57,6 +57,7 @@ public interface AetherCustomClasses extends ClassRegistrator {
                   Version.class,
                   // Slice types
         SliceState.class,
+                  AetherValue.NodeLifecycleState.class,
                   MethodName.class,
                   // Blueprint types
         BlueprintId.class,

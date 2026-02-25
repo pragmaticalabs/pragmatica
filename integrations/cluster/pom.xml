@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>integrations</artifactId>
-        <version>0.17.0</version>
+        <version>0.18.0</version>
     </parent>
 
     <artifactId>cluster</artifactId>
@@ -44,8 +44,8 @@
             <artifactId>serialization-kryo</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.apache.fury</groupId>
-            <artifactId>fury-core</artifactId>
+            <groupId>org.apache.fory</groupId>
+            <artifactId>fory-core</artifactId>
         </dependency>
 
         <!-- Logging -->

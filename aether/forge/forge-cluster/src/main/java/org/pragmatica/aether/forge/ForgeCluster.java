@@ -2,6 +2,7 @@ package org.pragmatica.aether.forge;
 
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
+import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.environment.AutoHealConfig;
@@ -94,6 +95,9 @@ public final class ForgeCluster {
     // Configuration provider for nodes
     private final Option<ConfigurationProvider> configProvider;
 
+    // Observability configuration for nodes
+    private final ObservabilityConfig observability;
+
     // Environment integration for auto-healing (CDM provisions replacements via compute facet)
     private final EnvironmentIntegration forgeEnvironment;
 
@@ -139,7 +143,8 @@ public final class ForgeCluster {
                          int baseMgmtPort,
                          int baseAppHttpPort,
                          String nodeIdPrefix,
-                         Option<ConfigurationProvider> configProvider) {
+                         Option<ConfigurationProvider> configProvider,
+                         ObservabilityConfig observability) {
         this.initialClusterSize = initialClusterSize;
         this.basePort = basePort;
         this.baseMgmtPort = baseMgmtPort;
@@ -148,6 +153,7 @@ public final class ForgeCluster {
         this.targetClusterSize = initialClusterSize;
         this.effectiveSize = new AtomicInteger(initialClusterSize);
         this.configProvider = configProvider;
+        this.observability = observability;
         this.forgeEnvironment = EnvironmentIntegration.withCompute(new ForgeComputeProvider());
     }
 
@@ -161,7 +167,8 @@ public final class ForgeCluster {
                                 DEFAULT_BASE_MGMT_PORT,
                                 DEFAULT_BASE_APP_HTTP_PORT,
                                 "node",
-                                Option.empty());
+                                Option.empty(),
+                                ObservabilityConfig.DEFAULT);
     }
 
     /// Create a ForgeCluster with custom port ranges.
@@ -171,7 +178,13 @@ public final class ForgeCluster {
     /// @param basePort     Base port for cluster communication (each node uses basePort + nodeIndex)
     /// @param baseMgmtPort Base port for management HTTP API (each node uses baseMgmtPort + nodeIndex)
     public static ForgeCluster forgeCluster(int initialSize, int basePort, int baseMgmtPort) {
-        return new ForgeCluster(initialSize, basePort, baseMgmtPort, DEFAULT_BASE_APP_HTTP_PORT, "node", Option.empty());
+        return new ForgeCluster(initialSize,
+                                basePort,
+                                baseMgmtPort,
+                                DEFAULT_BASE_APP_HTTP_PORT,
+                                "node",
+                                Option.empty(),
+                                ObservabilityConfig.DEFAULT);
     }
 
     /// Create a ForgeCluster with custom port ranges and node ID prefix.
@@ -187,7 +200,8 @@ public final class ForgeCluster {
                                 baseMgmtPort,
                                 DEFAULT_BASE_APP_HTTP_PORT,
                                 nodeIdPrefix,
-                                Option.empty());
+                                Option.empty(),
+                                ObservabilityConfig.DEFAULT);
     }
 
     /// Create a ForgeCluster with custom port ranges including app HTTP.
@@ -202,7 +216,13 @@ public final class ForgeCluster {
                                             int baseMgmtPort,
                                             int baseAppHttpPort,
                                             String nodeIdPrefix) {
-        return forgeCluster(initialSize, basePort, baseMgmtPort, baseAppHttpPort, nodeIdPrefix, Option.empty());
+        return forgeCluster(initialSize,
+                            basePort,
+                            baseMgmtPort,
+                            baseAppHttpPort,
+                            nodeIdPrefix,
+                            Option.empty(),
+                            ObservabilityConfig.DEFAULT);
     }
 
     /// Create a ForgeCluster with ConfigurationProvider for node configuration.
@@ -219,7 +239,38 @@ public final class ForgeCluster {
                                             int baseAppHttpPort,
                                             String nodeIdPrefix,
                                             Option<ConfigurationProvider> configProvider) {
-        return new ForgeCluster(initialSize, basePort, baseMgmtPort, baseAppHttpPort, nodeIdPrefix, configProvider);
+        return forgeCluster(initialSize,
+                            basePort,
+                            baseMgmtPort,
+                            baseAppHttpPort,
+                            nodeIdPrefix,
+                            configProvider,
+                            ObservabilityConfig.DEFAULT);
+    }
+
+    /// Create a ForgeCluster with ConfigurationProvider and ObservabilityConfig.
+    ///
+    /// @param initialSize        Number of nodes to start with
+    /// @param basePort           Base port for cluster communication
+    /// @param baseMgmtPort       Base port for management HTTP API
+    /// @param baseAppHttpPort    Base port for application HTTP API (slice endpoints)
+    /// @param nodeIdPrefix       Prefix for node IDs
+    /// @param configProvider     Configuration provider for all nodes (shared)
+    /// @param observability      Observability configuration for all nodes
+    public static ForgeCluster forgeCluster(int initialSize,
+                                            int basePort,
+                                            int baseMgmtPort,
+                                            int baseAppHttpPort,
+                                            String nodeIdPrefix,
+                                            Option<ConfigurationProvider> configProvider,
+                                            ObservabilityConfig observability) {
+        return new ForgeCluster(initialSize,
+                                basePort,
+                                baseMgmtPort,
+                                baseAppHttpPort,
+                                nodeIdPrefix,
+                                configProvider,
+                                observability);
     }
 
     /// Start the initial cluster with configured number of nodes.
@@ -544,7 +595,8 @@ public final class ForgeCluster {
                                           ControllerConfig.forgeDefaults(),
                                           configProvider,
                                           Option.some(forgeEnvironment),
-                                          AutoHealConfig.DEFAULT);
+                                          AutoHealConfig.DEFAULT,
+                                          observability);
         return AetherNode.aetherNode(config)
                          .unwrap();
     }

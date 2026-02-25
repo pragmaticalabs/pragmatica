@@ -38,9 +38,9 @@ class RollingUpdateTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String OLD_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.16.0";
-    private static final String NEW_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.17.0";
+    private static final String NEW_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.18.0";
     private static final String ARTIFACT_BASE = "org.pragmatica-lite.aether.test:echo-slice-echo-service";
-    private static final String NEW_VERSION_NUMBER = "0.17.0";
+    private static final String NEW_VERSION_NUMBER = "0.18.0";
     private static final String BLUEPRINT_ID = "forge.test:rolling-update:1.0.0";
 
     private ForgeCluster cluster;

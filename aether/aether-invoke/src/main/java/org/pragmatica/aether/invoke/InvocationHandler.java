@@ -2,11 +2,9 @@ package org.pragmatica.aether.invoke;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.http.HttpRoutePublisher;
-import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
-import org.pragmatica.aether.slice.DynamicAspectMode;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
@@ -17,7 +15,6 @@ import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
-import org.pragmatica.lang.Functions.Fn2;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -56,18 +53,17 @@ public interface InvocationHandler {
     /// @return Option containing the SliceBridge if registered
     Option<SliceBridge> localSlice(Artifact artifact);
 
+    /// Find the bridge for a given classloader.
+    /// Used by SliceInvoker to find the sender's bridge for serialization.
+    ///
+    /// @param classLoader The classloader to look up
+    /// @return Option containing the SliceBridge if found
+    Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader);
+
     /// Get the metrics collector if configured.
     ///
     /// @return Option containing the metrics collector
     Option<InvocationMetricsCollector> metricsCollector();
-
-    /// Get the dynamic aspect mode for a specific artifact method.
-    /// Returns NONE if no aspect manager is configured or no aspect is set.
-    ///
-    /// @param artifactBase The artifact base (groupId:artifactId)
-    /// @param methodName The method name
-    /// @return The current aspect mode
-    DynamicAspectMode getAspectMode(String artifactBase, String methodName);
 
     /// Default invocation timeout (5 minutes).
     /// Long timeout to allow operations that may trigger rebalance/node launch.
@@ -82,7 +78,7 @@ public interface InvocationHandler {
                                          Option.none(),
                                          Option.none(),
                                          Option.none(),
-                                         DynamicAspectInterceptor.noOp());
+                                         ObservabilityInterceptor.noOp());
     }
 
     /// Create a new InvocationHandler with metrics collection.
@@ -98,7 +94,7 @@ public interface InvocationHandler {
                                          Option.none(),
                                          Option.none(),
                                          Option.none(),
-                                         DynamicAspectInterceptor.noOp());
+                                         ObservabilityInterceptor.noOp());
     }
 
     /// Create a new InvocationHandler with metrics collection, serialization, and HTTP routing.
@@ -120,7 +116,7 @@ public interface InvocationHandler {
                                          Option.option(serializer),
                                          Option.option(deserializer),
                                          Option.option(httpRoutePublisher),
-                                         DynamicAspectInterceptor.noOp());
+                                         ObservabilityInterceptor.noOp());
     }
 
     /// Create a new InvocationHandler with metrics collection and custom timeout.
@@ -138,28 +134,10 @@ public interface InvocationHandler {
                                          Option.none(),
                                          Option.none(),
                                          Option.none(),
-                                         DynamicAspectInterceptor.noOp());
+                                         ObservabilityInterceptor.noOp());
     }
 
-    /// Create a new InvocationHandler with metrics, serialization, HTTP routing, and dynamic aspects.
-    static InvocationHandler invocationHandler(NodeId self,
-                                               ClusterNetwork network,
-                                               InvocationMetricsCollector metricsCollector,
-                                               Serializer serializer,
-                                               Deserializer deserializer,
-                                               HttpRoutePublisher httpRoutePublisher,
-                                               Fn2<DynamicAspectMode, String, String> aspectLookup) {
-        return new InvocationHandlerImpl(self,
-                                         network,
-                                         Option.option(metricsCollector),
-                                         DEFAULT_INVOCATION_TIMEOUT,
-                                         Option.option(serializer),
-                                         Option.option(deserializer),
-                                         Option.option(httpRoutePublisher),
-                                         DynamicAspectInterceptor.dynamicAspectInterceptor(aspectLookup));
-    }
-
-    /// Create a new InvocationHandler with metrics, serialization, HTTP routing, and a pre-built interceptor.
+    /// Create a new InvocationHandler with metrics, serialization, HTTP routing, and observability interceptor.
     /// Use this when the same interceptor should be shared with SliceInvoker.
     static InvocationHandler invocationHandler(NodeId self,
                                                ClusterNetwork network,
@@ -167,7 +145,7 @@ public interface InvocationHandler {
                                                Serializer serializer,
                                                Deserializer deserializer,
                                                HttpRoutePublisher httpRoutePublisher,
-                                               DynamicAspectInterceptor aspectInterceptor) {
+                                               ObservabilityInterceptor observabilityInterceptor) {
         return new InvocationHandlerImpl(self,
                                          network,
                                          Option.option(metricsCollector),
@@ -175,7 +153,7 @@ public interface InvocationHandler {
                                          Option.option(serializer),
                                          Option.option(deserializer),
                                          Option.option(httpRoutePublisher),
-                                         aspectInterceptor);
+                                         observabilityInterceptor);
     }
 }
 
@@ -189,10 +167,11 @@ class InvocationHandlerImpl implements InvocationHandler {
     private final Option<Serializer> serializer;
     private final Option<Deserializer> deserializer;
     private final Option<HttpRoutePublisher> httpRoutePublisher;
-    private final DynamicAspectInterceptor aspectInterceptor;
+    private final ObservabilityInterceptor observabilityInterceptor;
 
     // Local slice bridges available for invocation
     private final Map<Artifact, SliceBridge> localSlices = new ConcurrentHashMap<>();
+    private final Map<ClassLoader, SliceBridge> classLoaderBridges = new ConcurrentHashMap<>();
 
     InvocationHandlerImpl(NodeId self,
                           ClusterNetwork network,
@@ -201,7 +180,7 @@ class InvocationHandlerImpl implements InvocationHandler {
                           Option<Serializer> serializer,
                           Option<Deserializer> deserializer,
                           Option<HttpRoutePublisher> httpRoutePublisher,
-                          DynamicAspectInterceptor aspectInterceptor) {
+                          ObservabilityInterceptor observabilityInterceptor) {
         this.self = self;
         this.network = network;
         this.metricsCollector = metricsCollector;
@@ -209,20 +188,24 @@ class InvocationHandlerImpl implements InvocationHandler {
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.httpRoutePublisher = httpRoutePublisher;
-        this.aspectInterceptor = aspectInterceptor;
+        this.observabilityInterceptor = observabilityInterceptor;
     }
 
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void registerSlice(Artifact artifact, SliceBridge bridge) {
         localSlices.put(artifact, bridge);
+        classLoaderBridges.put(bridge.classLoader(), bridge);
         log.debug("Registered slice for invocation: {}", artifact);
     }
 
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void unregisterSlice(Artifact artifact) {
-        localSlices.remove(artifact);
+        var bridge = localSlices.remove(artifact);
+        if (bridge != null) {
+            classLoaderBridges.remove(bridge.classLoader());
+        }
         log.debug("Unregistered slice from invocation: {}", artifact);
     }
 
@@ -232,17 +215,13 @@ class InvocationHandlerImpl implements InvocationHandler {
     }
 
     @Override
-    public Option<InvocationMetricsCollector> metricsCollector() {
-        return metricsCollector;
+    public Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader) {
+        return Option.option(classLoaderBridges.get(classLoader));
     }
 
     @Override
-    public DynamicAspectMode getAspectMode(String artifactBase, String methodName) {
-        return DynamicAspectMode.NONE;
-    }
-
-    DynamicAspectInterceptor aspectInterceptor() {
-        return aspectInterceptor;
+    public Option<InvocationMetricsCollector> metricsCollector() {
+        return metricsCollector;
     }
 
     @Override
@@ -255,8 +234,13 @@ class InvocationHandlerImpl implements InvocationHandler {
                       request.targetSlice(),
                       request.method());
         }
-        // Run within request ID scope for chain propagation
-        InvocationContext.runWithRequestId(request.requestId(), () -> processInvokeRequest(request));
+        // Run within full invocation context scope for chain propagation
+        InvocationContext.runWithContext(request.requestId(),
+                                         null,
+                                         null,
+                                         request.depth(),
+                                         request.sampled(),
+                                         () -> processInvokeRequest(request));
     }
 
     private void processInvokeRequest(InvokeRequest request) {
@@ -277,49 +261,24 @@ class InvocationHandlerImpl implements InvocationHandler {
         var requestBytes = request.payload().length;
         // Record invocation start for active invocation tracking
         metricsCollector.onPresent(mc -> mc.recordStart(request.targetSlice(), request.method()));
-        // Delegate aspect logging to interceptor, then handle response/metrics
-        aspectInterceptor.intercept(request.targetSlice(),
-                                    request.method(),
-                                    request.requestId(),
-                                    () -> invokeWithHttpRouting(request, bridge))
-                         .timeout(invocationTimeout)
-                         .onSuccess(data -> handleInvocationSuccess(request, data, startTime, requestBytes))
-                         .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
+        // Delegate observability to interceptor, then handle response/metrics
+        observabilityInterceptor.intercept(request.targetSlice(),
+                                           request.method(),
+                                           request.requestId(),
+                                           request.depth(),
+                                           true,
+                                           // local=true for server-side handler
+        () -> invokeWithHttpRouting(request, bridge))
+                                .timeout(invocationTimeout)
+                                .onSuccess(data -> handleInvocationSuccess(request, data, startTime, requestBytes))
+                                .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
     }
 
-    /// Attempt to route HTTP requests through SliceRouter if available.
-    /// Falls back to direct SliceBridge invocation for non-HTTP requests or when SliceRouter is unavailable.
+    /// Invoke a method on the target slice via its bridge.
+    ///
+    /// HTTP forwarding between nodes uses the dedicated HttpForwardMessage mechanism
+    /// (AppHttpServer), so this method delegates directly to the SliceBridge.
     private Promise<byte[]> invokeWithHttpRouting(InvokeRequest request, SliceBridge bridge) {
-        // Check if we have the necessary components for HTTP routing
-        if (deserializer.isEmpty() || serializer.isEmpty() || httpRoutePublisher.isEmpty()) {
-            return bridge.invoke(request.method()
-                                        .name(),
-                                 request.payload());
-        }
-        // Try to deserialize and check if it's an HttpRequestContext
-        var des = deserializer.unwrap();
-        var ser = serializer.unwrap();
-        var routePublisher = httpRoutePublisher.unwrap();
-        try{
-            Object payload = des.decode(request.payload());
-            if (payload instanceof HttpRequestContext httpContext) {
-                // Check if we have a SliceRouter for this artifact
-                var sliceRouterOpt = routePublisher.getSliceRouter(request.targetSlice());
-                if (sliceRouterOpt.isPresent()) {
-                    log.debug("[requestId={}] Routing HTTP request through SliceRouter for {}",
-                              request.requestId(),
-                              request.targetSlice());
-                    return sliceRouterOpt.unwrap()
-                                         .handle(httpContext)
-                                         .map(ser::encode);
-                }
-            }
-        } catch (Exception e) {
-            log.debug("[requestId={}] Payload is not HttpRequestContext, using direct invocation: {}",
-                      request.requestId(),
-                      e.getMessage());
-        }
-        // Fall back to direct SliceBridge invocation
         return bridge.invoke(request.method()
                                     .name(),
                              request.payload());

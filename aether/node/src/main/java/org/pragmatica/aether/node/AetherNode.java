@@ -3,7 +3,6 @@ package org.pragmatica.aether.node;
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.api.ClusterEventAggregatorConfig;
-import org.pragmatica.aether.api.DynamicAspectRegistry;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.DynamicConfigManager;
@@ -25,12 +24,16 @@ import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.HttpRouteRegistry;
+import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.resource.SpiResourceProvider;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
-import org.pragmatica.aether.invoke.DynamicAspectInterceptor;
+import org.pragmatica.aether.api.ObservabilityDepthRegistry;
+import org.pragmatica.aether.invoke.AdaptiveSampler;
 import org.pragmatica.aether.invoke.InvocationHandler;
+import org.pragmatica.aether.invoke.InvocationTraceStore;
+import org.pragmatica.aether.invoke.ObservabilityInterceptor;
 import org.pragmatica.aether.invoke.InvocationMessage;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
@@ -106,7 +109,7 @@ import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 /// Assembles all components: consensus, KV-store, slice management, deployment managers.
 @SuppressWarnings("JBCT-RET-01")
 public interface AetherNode {
-    String VERSION = "0.17.0";
+    String VERSION = "0.18.0";
     NodeId self();
 
     Promise<Unit> start();
@@ -149,8 +152,11 @@ public interface AetherNode {
     /// Get the alert manager for threshold management.
     AlertManager alertManager();
 
-    /// Get the dynamic aspect registry for runtime-togglable logging/metrics.
-    DynamicAspectRegistry dynamicAspectRegistry();
+    /// Get the observability depth registry for per-method depth configuration.
+    ObservabilityDepthRegistry observabilityDepthRegistry();
+
+    /// Get the invocation trace store for distributed tracing queries.
+    InvocationTraceStore traceStore();
 
     /// Get the log level registry for runtime log level management.
     LogLevelRegistry logLevelRegistry();
@@ -331,7 +337,8 @@ public interface AetherNode {
                           DecisionTreeController controller,
                           RollingUpdateManager rollingUpdateManager,
                           AlertManager alertManager,
-                          DynamicAspectRegistry dynamicAspectRegistry,
+                          ObservabilityDepthRegistry observabilityDepthRegistry,
+                          InvocationTraceStore traceStore,
                           LogLevelRegistry logLevelRegistry,
                           Option<DynamicConfigManager> dynamicConfigManager,
                           AppHttpServer appHttpServer,
@@ -537,21 +544,27 @@ public interface AetherNode {
         var httpRoutePublisher = HttpRoutePublisher.httpRoutePublisher(config.self(), clusterNode, kvStore);
         // Create invocation metrics collector
         var invocationMetrics = InvocationMetricsCollector.invocationMetricsCollector();
-        // Create dynamic aspect registry with KV-Store persistence (needed by InvocationHandler + SliceInvoker)
-        var aspectRegistry = DynamicAspectRegistry.dynamicAspectRegistry(clusterNode, kvStore);
         // Create log level registry with KV-Store persistence
         var logLevelRegistry = LogLevelRegistry.logLevelRegistry(clusterNode, kvStore);
-        // Create shared interceptor for both InvocationHandler and SliceInvoker
-        var aspectInterceptor = DynamicAspectInterceptor.dynamicAspectInterceptor(aspectRegistry::getAspectMode);
+        // Create observability depth registry with KV-Store persistence
+        var depthRegistry = ObservabilityDepthRegistry.observabilityDepthRegistry(clusterNode,
+                                                                                  kvStore,
+                                                                                  config.observability());
+        // Create unified observability components — use no-op interceptor when depth < 0 (disabled)
+        var traceStore = InvocationTraceStore.invocationTraceStore();
+        var observabilityInterceptor = config.observability()
+                                             .depthThreshold() < 0
+                                       ? ObservabilityInterceptor.noOp()
+                                       : createObservabilityInterceptor(config, traceStore, depthRegistry);
         // Create invocation handler BEFORE deployment manager (needed for slice registration)
-        // Pass serializer/deserializer, httpRoutePublisher, and shared aspect interceptor for HTTP request routing
+        // Pass serializer/deserializer, httpRoutePublisher, and shared observability interceptor for HTTP request routing
         var invocationHandler = InvocationHandler.invocationHandler(config.self(),
                                                                     clusterNode.network(),
                                                                     invocationMetrics,
                                                                     serializer,
                                                                     deserializer,
                                                                     httpRoutePublisher,
-                                                                    aspectInterceptor);
+                                                                    observabilityInterceptor);
         // Create deployment metrics components
         var deploymentMetricsCollector = DeploymentMetricsCollector.deploymentMetricsCollector(config.self(),
                                                                                                clusterNode.network());
@@ -663,7 +676,7 @@ public interface AetherNode {
                                                      serializer,
                                                      deserializer,
                                                      rollingUpdateManager,
-                                                     aspectInterceptor);
+                                                     observabilityInterceptor);
         // Wire the deferred invoker facade to the actual SliceInvoker
         deferredInvoker.setDelegate(sliceInvoker);
         // Create scheduled task manager (needs sliceInvoker for method execution)
@@ -712,7 +725,7 @@ public interface AetherNode {
                                                 sliceInvoker,
                                                 invocationHandler,
                                                 alertManager,
-                                                aspectRegistry,
+                                                depthRegistry,
                                                 logLevelRegistry,
                                                 dynamicConfigManager,
                                                 ttmManager,
@@ -799,7 +812,8 @@ public interface AetherNode {
                                   controller,
                                   rollingUpdateManager,
                                   alertManager,
-                                  aspectRegistry,
+                                  depthRegistry,
+                                  traceStore,
                                   logLevelRegistry,
                                   dynamicConfigManager,
                                   appHttpServer,
@@ -813,20 +827,31 @@ public interface AetherNode {
                                   eventLoopMetricsCollector,
                                   Option.empty(),
                                   startTimeMs);
+        // Wire remote shutdown: when SHUTTING_DOWN lifecycle is received, stop the node
+        nodeDeploymentManager.setShutdownCallback(node::stop);
         // Build and wire ImmutableRouter, then create final node
         return RabiaNode.buildAndWireRouter(delegateRouter, allEntries)
                         .map(_ -> {
                                  // Create management server if enabled
         if (config.managementPort() > 0) {
+                                     var mgmtSecurityEnabled = config.appHttp()
+                                                                     .securityEnabled();
+                                     var mgmtSecurityValidator = mgmtSecurityEnabled
+                                                                 ? SecurityValidator.apiKeyValidator(config.appHttp()
+                                                                                                           .apiKeyValues())
+                                                                 : SecurityValidator.noOpValidator();
                                      var managementServer = ManagementServer.managementServer(config.managementPort(),
                                                                                               () -> node,
                                                                                               alertManager,
-                                                                                              aspectRegistry,
+                                                                                              depthRegistry,
+                                                                                              traceStore,
                                                                                               logLevelRegistry,
                                                                                               dynamicConfigManager,
                                                                                               scheduledTaskRegistry,
                                                                                               scheduledTaskManager,
-                                                                                              config.tls());
+                                                                                              config.tls(),
+                                                                                              mgmtSecurityValidator,
+                                                                                              mgmtSecurityEnabled);
                                      return new aetherNode(config,
                                                            delegateRouter,
                                                            kvStore,
@@ -851,7 +876,8 @@ public interface AetherNode {
                                                            controller,
                                                            rollingUpdateManager,
                                                            alertManager,
-                                                           aspectRegistry,
+                                                           depthRegistry,
+                                                           traceStore,
                                                            logLevelRegistry,
                                                            dynamicConfigManager,
                                                            appHttpServer,
@@ -886,7 +912,7 @@ public interface AetherNode {
                                                                     SliceInvoker sliceInvoker,
                                                                     InvocationHandler invocationHandler,
                                                                     AlertManager alertManager,
-                                                                    DynamicAspectRegistry aspectRegistry,
+                                                                    ObservabilityDepthRegistry depthRegistry,
                                                                     LogLevelRegistry logLevelRegistry,
                                                                     Option<DynamicConfigManager> dynamicConfigManager,
                                                                     TTMManager ttmManager,
@@ -946,9 +972,10 @@ public interface AetherNode {
                                                          alertManager::onAlertThresholdPut)
                                                   .onRemove(AetherKey.AlertThresholdKey.class,
                                                             alertManager::onAlertThresholdRemove)
-                                                  .onPut(AetherKey.DynamicAspectKey.class, aspectRegistry::onAspectPut)
-                                                  .onRemove(AetherKey.DynamicAspectKey.class,
-                                                            aspectRegistry::onAspectRemove)
+                                                  .onPut(AetherKey.ObservabilityDepthKey.class,
+                                                         depthRegistry::onDepthPut)
+                                                  .onRemove(AetherKey.ObservabilityDepthKey.class,
+                                                            depthRegistry::onDepthRemove)
                                                   .onPut(AetherKey.LogLevelKey.class, logLevelRegistry::onLogLevelPut)
                                                   .onRemove(AetherKey.LogLevelKey.class,
                                                             logLevelRegistry::onLogLevelRemove)
@@ -965,7 +992,11 @@ public interface AetherNode {
                                                   .onPut(AetherKey.ScheduledTaskKey.class,
                                                          scheduledTaskRegistry::onScheduledTaskPut)
                                                   .onRemove(AetherKey.ScheduledTaskKey.class,
-                                                            scheduledTaskRegistry::onScheduledTaskRemove);
+                                                            scheduledTaskRegistry::onScheduledTaskRemove)
+                                                  .onPut(AetherKey.NodeLifecycleKey.class,
+                                                         nodeDeploymentManager::onNodeLifecyclePut)
+                                                  .onPut(AetherKey.NodeLifecycleKey.class,
+                                                         clusterDeploymentManager::onNodeLifecyclePut);
         // Dynamic config manager (optional)
         dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
                                                              .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
@@ -1121,6 +1152,20 @@ public interface AetherNode {
     ///
     /// If frameworkJarsPath is configured, creates a FrameworkClassLoader with isolated
     /// framework classes. Otherwise, falls back to Application ClassLoader (no isolation).
+    private static ObservabilityInterceptor createObservabilityInterceptor(AetherNodeConfig config,
+                                                                           InvocationTraceStore traceStore,
+                                                                           ObservabilityDepthRegistry depthRegistry) {
+        var sampler = AdaptiveSampler.adaptiveSampler(config.observability()
+                                                            .targetTracesPerSec());
+        return ObservabilityInterceptor.observabilityInterceptor(sampler,
+                                                                 traceStore,
+                                                                 config.self()
+                                                                       .id(),
+                                                                 (artifact, method) -> depthRegistry.getConfig(artifact,
+                                                                                                               method)
+                                                                                                    .depthThreshold());
+    }
+
     private static SharedLibraryClassLoader createSharedLibraryLoader(AetherNodeConfig config) {
         var log = LoggerFactory.getLogger(AetherNode.class);
         return config.sliceAction()

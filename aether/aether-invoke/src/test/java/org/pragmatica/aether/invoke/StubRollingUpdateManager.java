@@ -14,7 +14,7 @@ import org.pragmatica.lang.Promise;
 import java.util.List;
 
 /// Minimal stub for RollingUpdateManager used in unit tests.
-@SuppressWarnings({"JBCT-RET-01", "JBCT-STY-04"})
+@SuppressWarnings("JBCT-RET-01")
 class StubRollingUpdateManager implements RollingUpdateManager {
     @Override
     public Promise<RollingUpdate> startUpdate(ArtifactBase artifactBase,

@@ -37,18 +37,41 @@ public class CstChainLengthRule implements CstLintRule {
 
     private int countChainedCalls(CstNode stmt, String source) {
         var stmtText = text(stmt, source);
-        // Count occurrences of .methodName( pattern
         int count = 0;
-        int idx = 0;
-        while ((idx = stmtText.indexOf(".", idx)) != - 1) {
-            // Check if followed by method call pattern
-            int nextParen = stmtText.indexOf("(", idx);
-            if (nextParen > idx && nextParen - idx < 50) {
-                count++;
+        int depth = 0;
+        boolean inString = false;
+        boolean inChar = false;
+        for (int i = 0; i < stmtText.length(); i++) {
+            char c = stmtText.charAt(i);
+            if (c == '"' && !inChar && (i == 0 || stmtText.charAt(i - 1) != '\\')) {
+                inString = !inString;
+                continue;
             }
-            idx++;
+            if (c == '\'' && !inString && (i == 0 || stmtText.charAt(i - 1) != '\\')) {
+                inChar = !inChar;
+                continue;
+            }
+            if (inString || inChar) continue;
+            if (c == '(' || c == '[') {
+                depth++;
+            } else if (c == ')' || c == ']') {
+                depth--;
+            } else if (c == '.' && depth == 0) {
+                if (isFollowedByMethodCall(stmtText, i)) {
+                    count++;
+                }
+            }
         }
         return count;
+    }
+
+    private boolean isFollowedByMethodCall(String text, int dotIndex) {
+        int j = dotIndex + 1;
+        while (j < text.length() && Character.isWhitespace(text.charAt(j))) j++;
+        if (j >= text.length() || !Character.isJavaIdentifierStart(text.charAt(j))) return false;
+        while (j < text.length() && Character.isJavaIdentifierPart(text.charAt(j))) j++;
+        while (j < text.length() && Character.isWhitespace(text.charAt(j))) j++;
+        return j < text.length() && text.charAt(j) == '(';
     }
 
     private Diagnostic createDiagnostic(CstNode stmt, String source, LintContext ctx) {

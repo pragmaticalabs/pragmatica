@@ -1,5 +1,6 @@
 package org.pragmatica.aether.slice;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -56,8 +57,47 @@ public interface SliceBridge {
     /// @return Promise resolving when slice is stopped
     Promise<Unit> stop();
 
+    /// Serialize an object using this bridge's serializer.
+    ///
+    /// Used by SliceInvoker for local invocations: the bridge's serializer
+    /// handles cross-classloader type resolution correctly, unlike the node-level
+    /// serializer which only knows infrastructure types.
+    ///
+    /// @param input Object to serialize (may be from a different classloader)
+    /// @return Promise resolving to serialized bytes
+    default Promise<byte[]> encode(Object input) {
+        return BridgeError.ENCODE_NOT_SUPPORTED.promise();
+    }
+
+    /// Deserialize bytes using this bridge's deserializer.
+    ///
+    /// Resolves class names using the target slice's classloader, producing
+    /// objects compatible with the caller's type expectations.
+    ///
+    /// @param bytes Serialized bytes to decode
+    /// @return Promise resolving to the deserialized object
+    default Promise<Object> decode(byte[] bytes) {
+        return BridgeError.DECODE_NOT_SUPPORTED.promise();
+    }
+
+    /// Get the classloader for this slice bridge.
+    ClassLoader classLoader();
+
     /// Get the list of method names exposed by this slice.
     ///
     /// @return List of method names
     List<String> methodNames();
+
+    enum BridgeError implements Cause {
+        ENCODE_NOT_SUPPORTED("Encode not supported by this bridge"),
+        DECODE_NOT_SUPPORTED("Decode not supported by this bridge");
+        private final String message;
+        BridgeError(String message) {
+            this.message = message;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 }

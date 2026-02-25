@@ -4,98 +4,204 @@ Visual diagrams for understanding Aether's distributed runtime architecture.
 
 ---
 
-## 1. Runtime Topology (5-Node Cluster)
+## 1. Cluster Topology
 
 ```mermaid
 graph TB
     subgraph External["External Access"]
         CLI["aether CLI"]
-        API["Management API<br/>/api/v1/*"]
         Agent["AI Agent"]
+        Client["HTTP Clients"]
     end
 
-    subgraph Cluster["Aether Cluster"]
-        subgraph Node1["Node 1 (LEADER)"]
-            CDM1["ClusterDeploymentManager<br/>⚡ ACTIVE"]
-            NDM1["NodeDeploymentManager"]
-            MC1["MetricsCollector"]
-            MA["MetricsAggregator"]
-            CC["Cluster Controller"]
-            ER1["EndpointRegistry"]
-            S1A["Slice A"]
-            S1B["Slice B"]
-        end
-
-        subgraph Node2["Node 2"]
-            CDM2["ClusterDeploymentManager<br/>💤 DORMANT"]
-            NDM2["NodeDeploymentManager"]
-            MC2["MetricsCollector"]
-            ER2["EndpointRegistry"]
-            S2A["Slice A"]
-            S2C["Slice C"]
-        end
-
-        subgraph Node3["Node 3"]
-            CDM3["ClusterDeploymentManager<br/>💤 DORMANT"]
-            NDM3["NodeDeploymentManager"]
-            MC3["MetricsCollector"]
-            ER3["EndpointRegistry"]
-            S3B["Slice B"]
-            S3C["Slice C"]
-        end
-
-        subgraph Node4["Node 4"]
-            CDM4["ClusterDeploymentManager<br/>💤 DORMANT"]
-            NDM4["NodeDeploymentManager"]
-            MC4["MetricsCollector"]
-            ER4["EndpointRegistry"]
-            S4A["Slice A"]
-            S4C["Slice C"]
-        end
-
-        subgraph Node5["Node 5"]
-            CDM5["ClusterDeploymentManager<br/>💤 DORMANT"]
-            NDM5["NodeDeploymentManager"]
-            MC5["MetricsCollector"]
-            ER5["EndpointRegistry"]
-            S5B["Slice B"]
-        end
-
-        KV[("Consensus KV-Store<br/>(Rabia Protocol)<br/>Blueprints, State, Endpoints")]
+    subgraph Cluster["Aether Cluster (Rabia Consensus)"]
+        N1["Node 1 &bull; LEADER<br/>Slices: A, B<br/>:8080 mgmt &bull; :8081 app &bull; :8090 cluster"]
+        N2["Node 2<br/>Slices: A, C<br/>:8080 mgmt &bull; :8081 app &bull; :8090 cluster"]
+        N3["Node 3<br/>Slices: B, C<br/>:8080 mgmt &bull; :8081 app &bull; :8090 cluster"]
     end
 
-    CLI --> API
-    Agent --> API
-    API --> Node1
+    CLI -->|Management API| N1
+    Agent -->|Management API| N1
+    Client -->|App HTTP| N1
+    Client -->|App HTTP| N2
+    Client -->|App HTTP| N3
 
-    MC2 -.->|MetricsPong| MA
-    MC3 -.->|MetricsPong| MA
-    MC4 -.->|MetricsPong| MA
-    MC5 -.->|MetricsPong| MA
-    MA -.->|MetricsPing| MC2
-    MA -.->|MetricsPing| MC3
-    MA -.->|MetricsPing| MC4
-    MA -.->|MetricsPing| MC5
+    N1 <-->|Consensus + Gossip| N2
+    N2 <-->|Consensus + Gossip| N3
+    N1 <-->|Consensus + Gossip| N3
 
-    Node1 <--> KV
-    Node2 <--> KV
-    Node3 <--> KV
-    Node4 <--> KV
-    Node5 <--> KV
-
-    style Node1 fill:#e1f5fe
-    style CC fill:#ffeb3b
-    style MA fill:#ffeb3b
-    style CDM1 fill:#4caf50,color:#fff
-    style KV fill:#f3e5f5
+    style N1 fill:#e1f5fe,stroke:#0288d1
+    style N2 fill:#f5f5f5,stroke:#616161
+    style N3 fill:#f5f5f5,stroke:#616161
 ```
 
-**Key Points:**
-- **Leader node** runs active ClusterDeploymentManager, MetricsAggregator, and Cluster Controller
-- **All nodes** run NodeDeploymentManager, MetricsCollector, EndpointRegistry
-- **Consensus KV-Store** holds persistent state (blueprints, slice states, endpoints)
-- **Metrics flow via MessageRouter** (dotted lines) - zero consensus I/O for metrics
-- **Slices distributed** across nodes based on blueprint requirements
+**Key points:**
+- Every node runs the same components; **leader** additionally activates ClusterDeploymentManager, MetricsAggregator, and ControlLoop
+- Consensus (Rabia) replicates KV-Store state across all nodes
+- Metrics flow via gossip (push-based, 1s interval) -- zero consensus I/O
+- Any node can receive HTTP traffic; requests are routed or forwarded to the node hosting the target slice
+- Leader re-election is instant on departure
+
+---
+
+## 2. Node Components
+
+```mermaid
+graph TB
+    subgraph Ports["Network Interfaces"]
+        P_APP[":8081 App HTTP"]
+        P_MGMT[":8080 Management"]
+        P_CLUSTER[":8090 Cluster"]
+    end
+
+    subgraph HTTP["HTTP Layer"]
+        AHS["AppHttpServer<br/>Route matching, forwarding,<br/>security validation"]
+        MS["ManagementServer<br/>60+ REST endpoints<br/>WebSocket: dashboard, status, events"]
+    end
+
+    subgraph Invoke["Invocation"]
+        SI["SliceInvoker<br/>Local/remote dispatch,<br/>load balancing, retry"]
+        IH["InvocationHandler<br/>Incoming remote calls"]
+        IC["InvocationContext<br/>ScopedValue: requestId,<br/>depth, sampled, principal"]
+        DAI["DynamicAspectInterceptor<br/>Runtime LOG/METRICS toggle"]
+    end
+
+    subgraph Slices["Slice Container"]
+        SS["SliceStore<br/>Classloader isolation,<br/>state machine"]
+        SR["SliceRegistry<br/>Deployed slice definitions"]
+        SCL["SliceClassLoader<br/>Child-first per-slice"]
+        SA["Slice A"]
+        SB["Slice B"]
+    end
+
+    subgraph Deploy["Deployment"]
+        CDM["ClusterDeploymentManager<br/>LEADER ONLY<br/>Blueprint allocation,<br/>auto-healing"]
+        NDM["NodeDeploymentManager<br/>Local lifecycle execution"]
+        RUM["RollingUpdateManager<br/>Version traffic shifting,<br/>health guardrails"]
+        RBM["RollbackManager<br/>Auto-rollback on failure"]
+    end
+
+    subgraph State["Consensus State"]
+        KV[("KV-Store<br/>(Rabia)<br/>Blueprints, SliceState,<br/>Routes, Endpoints,<br/>Aspects, Alerts,<br/>Subscriptions, Config")]
+        KNR["KVNotificationRouter<br/>Change event dispatch"]
+        LM["LeaderManager<br/>Election, failover"]
+    end
+
+    subgraph Network["Cluster Network"]
+        CN["ClusterNetwork<br/>Netty TCP, TLS optional"]
+        TM["TopologyManager<br/>Node discovery, quorum"]
+        MR["MessageRouter<br/>Consensus, invocation,<br/>metrics, DHT, forwarding"]
+    end
+
+    subgraph DHT_["Distributed Hash Table"]
+        DHT["DHTNode<br/>Consistent hash ring<br/>1024 partitions, 150 vnodes"]
+        AS["ArtifactStore<br/>Maven-compatible repository"]
+        DC["DHTCacheBackend<br/>Distributed cache"]
+        AE["DHTAntiEntropy<br/>Digest exchange, repair"]
+        RB["DHTRebalancer<br/>Re-replicate on departure"]
+    end
+
+    subgraph Observe["Observability"]
+        MC["MetricsCollector<br/>CPU, heap, GC, invocations"]
+        MAG["MetricsAggregator<br/>LEADER ONLY<br/>Cluster-wide aggregation"]
+        AM["AlertManager<br/>Thresholds, active alerts"]
+        CEA["ClusterEventAggregator<br/>Ring buffer, 11 event types"]
+    end
+
+    subgraph Scaling["Auto-Scaling"]
+        CL["ControlLoop<br/>1s evaluation cycle"]
+        DTC["DecisionTreeController<br/>CPU/latency thresholds"]
+        TTM["TTMManager<br/>ONNX predictive scaling<br/>(optional)"]
+    end
+
+    subgraph Messaging["Pub-Sub & Scheduling"]
+        TSR["TopicSubscriptionRegistry<br/>Subscriber discovery"]
+        TP["TopicPublisher<br/>Fan-out via SliceInvoker"]
+        STM["ScheduledTaskManager<br/>Interval + cron execution"]
+    end
+
+    subgraph Resources["Resource Provisioning (SPI)"]
+        RP["ResourceProvider<br/>DB, HTTP client,<br/>interceptors, config"]
+    end
+
+    %% Port connections
+    P_APP --> AHS
+    P_MGMT --> MS
+    P_CLUSTER --> CN
+
+    %% HTTP to invocation
+    AHS --> SI
+    AHS -->|Forward| MR
+    IH --> SI
+    SI --> DAI --> SS
+    SS --> SA & SB
+
+    %% Management to subsystems
+    MS --> CDM & NDM & MC & AM & CEA & CL
+
+    %% Deployment flow
+    CDM --> KV
+    KV --> KNR --> NDM
+    NDM --> SS
+    NDM --> RUM
+    RUM --> RBM
+
+    %% Consensus and network
+    CN --> MR
+    MR --> KV & IH & MC & DHT
+    TM --> LM
+
+    %% DHT
+    DHT --> AS & DC
+    DHT --> AE & RB
+
+    %% Metrics and scaling
+    MC -.->|Gossip| MAG
+    MAG --> CL
+    CL --> DTC
+    DTC -.-> TTM
+    CL -->|Scale command| CDM
+
+    %% Messaging
+    TSR --> TP --> SI
+    STM --> SI
+
+    %% Resources
+    RP --> SS
+
+    %% Styling
+    style CDM fill:#4caf50,color:#fff
+    style MAG fill:#ffeb3b
+    style KV fill:#f3e5f5
+    style SA fill:#e8f5e9
+    style SB fill:#e8f5e9
+    style P_APP fill:#bbdefb
+    style P_MGMT fill:#bbdefb
+    style P_CLUSTER fill:#bbdefb
+```
+
+**Component categories:**
+
+| Category | Leader-only | Every node |
+|----------|------------|------------|
+| **Deployment** | ClusterDeploymentManager | NodeDeploymentManager, RollingUpdateManager, RollbackManager |
+| **Metrics** | MetricsAggregator | MetricsCollector, AlertManager, ClusterEventAggregator |
+| **Scaling** | ControlLoop (executes) | ControlLoop (evaluates), DecisionTreeController, TTMManager |
+| **State** | -- | KV-Store (Rabia), LeaderManager, KVNotificationRouter |
+| **Network** | -- | ClusterNetwork, TopologyManager, MessageRouter |
+| **HTTP** | -- | AppHttpServer, ManagementServer |
+| **Invocation** | -- | SliceInvoker, InvocationHandler, DynamicAspectInterceptor |
+| **Storage** | -- | DHTNode, ArtifactStore, DHTCacheBackend, AntiEntropy, Rebalancer |
+| **Messaging** | -- | TopicSubscriptionRegistry, TopicPublisher, ScheduledTaskManager |
+| **Container** | -- | SliceStore, SliceRegistry, per-slice ClassLoaders |
+| **Resources** | -- | SPI-based: DB, HTTP client, interceptors, config |
+
+**Communication paths:**
+- **Consensus** (Rabia via ClusterNetwork) -- KV-Store replication, strong consistency
+- **Gossip** (MetricsPing/Pong via MessageRouter) -- metrics collection, no consensus overhead
+- **HTTP forwarding** (via MessageRouter) -- cross-node request routing
+- **DHT** (via MessageRouter) -- artifact storage and cache, quorum R/W
+- **KV notifications** (local, via KVNotificationRouter) -- state change reactions
 
 ---
 

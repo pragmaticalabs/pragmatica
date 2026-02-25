@@ -31,7 +31,6 @@ public class DashboardMetricsPublisher {
 
     private final Supplier<AetherNode> nodeSupplier;
     private final AlertManager alertManager;
-    private final DynamicAspectRegistry aspectManager;
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
@@ -44,11 +43,9 @@ public class DashboardMetricsPublisher {
     private double emaAvgLatencyMs = 0.0;
 
     public DashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier,
-                                     AlertManager alertManager,
-                                     DynamicAspectRegistry aspectManager) {
+                                     AlertManager alertManager) {
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
-        this.aspectManager = aspectManager;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
                                                                         var thread = new Thread(r, "dashboard-publisher");
                                                                         thread.setDaemon(true);
@@ -213,10 +210,6 @@ public class DashboardMetricsPublisher {
         appendDeployments(sb,
                           node.deploymentMap()
                               .allDeployments());
-        sb.append(",");
-        // Dynamic aspects
-        sb.append("\"aspects\":")
-          .append(aspectManager.aspectsAsJson());
         sb.append(",\"aggregates\":")
           .append(buildAggregates());
         sb.append("}");

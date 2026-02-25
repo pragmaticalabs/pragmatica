@@ -7,6 +7,8 @@ import org.pragmatica.aether.forge.load.LoadConfigLoader;
 import org.pragmatica.aether.forge.simulator.EntryPointMetrics;
 import org.pragmatica.aether.api.StatusWebSocketHandler;
 import org.pragmatica.aether.api.StatusWebSocketPublisher;
+import org.pragmatica.aether.api.WebSocketAuthenticator;
+import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.forge.api.StatusRoutes;
 import org.pragmatica.http.routing.JsonCodec;
 import org.pragmatica.http.routing.JsonCodecAdapter;
@@ -76,7 +78,8 @@ public final class ForgeServer {
     private volatile Option<HttpServer> httpServer = Option.empty();
     private volatile Option<ScheduledExecutorService> metricsScheduler = Option.empty();
     private volatile Option<StatusWebSocketPublisher> wsPublisher = Option.empty();
-    private final StatusWebSocketHandler wsHandler = new StatusWebSocketHandler();
+    private final StatusWebSocketHandler wsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
+                                                                                                                              false));
     private final long startTime = System.currentTimeMillis();
 
     private ForgeServer(StartupConfig startupConfig, ForgeConfig forgeConfig) {
@@ -178,7 +181,8 @@ public final class ForgeServer {
                                                         forgeConfig.managementPort(),
                                                         forgeConfig.appHttpPort(),
                                                         "node",
-                                                        configProvider);
+                                                        configProvider,
+                                                        forgeConfig.observability());
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
         var configurableLoadRunnerInstance = ConfigurableLoadRunner.configurableLoadRunner(clusterInstance::getAvailableAppHttpPorts,
                                                                                            metricsInstance,

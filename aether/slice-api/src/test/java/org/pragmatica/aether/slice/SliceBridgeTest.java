@@ -115,6 +115,11 @@ class SliceBridgeTest {
             public List<String> methodNames() {
                 return List.of("alpha", "beta");
             }
+
+            @Override
+            public ClassLoader classLoader() {
+                return Thread.currentThread().getContextClassLoader();
+            }
         };
     }
 
@@ -139,6 +144,11 @@ class SliceBridgeTest {
             @Override
             public List<String> methodNames() {
                 return List.of();
+            }
+
+            @Override
+            public ClassLoader classLoader() {
+                return Thread.currentThread().getContextClassLoader();
             }
         };
     }

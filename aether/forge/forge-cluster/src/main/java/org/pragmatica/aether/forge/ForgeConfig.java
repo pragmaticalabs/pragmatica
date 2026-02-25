@@ -1,5 +1,6 @@
 package org.pragmatica.aether.forge;
 
+import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -20,7 +21,8 @@ public record ForgeConfig(int nodes,
                           int managementPort,
                           int dashboardPort,
                           int appHttpPort,
-                          ForgeH2Config h2Config) {
+                          ForgeH2Config h2Config,
+                          ObservabilityConfig observability) {
     public static final int DEFAULT_NODES = 5;
     public static final int DEFAULT_MANAGEMENT_PORT = 5150;
     public static final int DEFAULT_DASHBOARD_PORT = 8888;
@@ -32,16 +34,27 @@ public record ForgeConfig(int nodes,
                                                               DEFAULT_MANAGEMENT_PORT,
                                                               DEFAULT_DASHBOARD_PORT,
                                                               DEFAULT_APP_HTTP_PORT,
-                                                              ForgeH2Config.disabled());
+                                                              ForgeH2Config.disabled(),
+                                                              ObservabilityConfig.DEFAULT);
 
     /// Create configuration with specified values and validation.
     public static Result<ForgeConfig> forgeConfig(int nodes, int managementPort, int dashboardPort) {
-        return forgeConfig(nodes, managementPort, dashboardPort, DEFAULT_APP_HTTP_PORT, ForgeH2Config.disabled());
+        return forgeConfig(nodes,
+                           managementPort,
+                           dashboardPort,
+                           DEFAULT_APP_HTTP_PORT,
+                           ForgeH2Config.disabled(),
+                           ObservabilityConfig.DEFAULT);
     }
 
     /// Create configuration with specified values and validation.
     public static Result<ForgeConfig> forgeConfig(int nodes, int managementPort, int dashboardPort, int appHttpPort) {
-        return forgeConfig(nodes, managementPort, dashboardPort, appHttpPort, ForgeH2Config.disabled());
+        return forgeConfig(nodes,
+                           managementPort,
+                           dashboardPort,
+                           appHttpPort,
+                           ForgeH2Config.disabled(),
+                           ObservabilityConfig.DEFAULT);
     }
 
     /// Create configuration with specified values and validation.
@@ -50,6 +63,16 @@ public record ForgeConfig(int nodes,
                                                   int dashboardPort,
                                                   int appHttpPort,
                                                   ForgeH2Config h2Config) {
+        return forgeConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config, ObservabilityConfig.DEFAULT);
+    }
+
+    /// Create configuration with specified values and validation.
+    public static Result<ForgeConfig> forgeConfig(int nodes,
+                                                  int managementPort,
+                                                  int dashboardPort,
+                                                  int appHttpPort,
+                                                  ForgeH2Config h2Config,
+                                                  ObservabilityConfig observability) {
         if (nodes < 1) {
             return ForgeConfigError.invalidValue("nodes", nodes, "must be at least 1")
                                    .result();
@@ -74,7 +97,7 @@ public record ForgeConfig(int nodes,
             return ForgeConfigError.portConflict(managementPort)
                                    .result();
         }
-        return Result.success(new ForgeConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config));
+        return Result.success(new ForgeConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config, observability));
     }
 
     /// Load configuration from file path.
@@ -110,7 +133,16 @@ public record ForgeConfig(int nodes,
         int appHttpPort = doc.getInt("cluster", "app_http_port")
                              .or(DEFAULT_APP_HTTP_PORT);
         var h2Config = parseH2Config(doc, baseDir);
-        return forgeConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config);
+        var observability = parseObservabilityConfig(doc);
+        return forgeConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config, observability);
+    }
+
+    private static ObservabilityConfig parseObservabilityConfig(org.pragmatica.config.toml.TomlDocument doc) {
+        int depthThreshold = doc.getInt("observability", "depth_threshold")
+                                .or(ObservabilityConfig.DEFAULT.depthThreshold());
+        int targetTracesPerSec = doc.getInt("observability", "target_traces_per_sec")
+                                    .or(ObservabilityConfig.DEFAULT.targetTracesPerSec());
+        return ObservabilityConfig.observabilityConfig(depthThreshold, targetTracesPerSec);
     }
 
     private static ForgeH2Config parseH2Config(org.pragmatica.config.toml.TomlDocument doc, Option<Path> baseDir) {

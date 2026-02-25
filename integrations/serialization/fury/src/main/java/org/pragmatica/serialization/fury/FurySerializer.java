@@ -21,7 +21,7 @@ import org.pragmatica.serialization.Serializer;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufOutputStream;
-import org.apache.fury.ThreadSafeFury;
+import org.apache.fory.ThreadSafeFory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,7 +36,15 @@ public interface FurySerializer extends Serializer {
     /// @param registrators class registrators to apply
     /// @return a thread-safe Fury serializer
     static FurySerializer furySerializer(ClassRegistrator... registrators) {
-        record furySerializer(ThreadSafeFury fury) implements FurySerializer {
+        return furySerializer(FuryFactory.fury(registrators));
+    }
+
+    /// Create a Fury serializer from a pre-built ThreadSafeFory instance.
+    ///
+    /// @param fury pre-configured Fury instance
+    /// @return a thread-safe Fury serializer
+    static FurySerializer furySerializer(ThreadSafeFory fury) {
+        record furySerializer(ThreadSafeFory fury) implements FurySerializer {
             private static final Logger log = LoggerFactory.getLogger(FurySerializer.class);
 
             @Override
@@ -49,6 +57,6 @@ public interface FurySerializer extends Serializer {
                 }
             }
         }
-        return new furySerializer(FuryFactory.fury(registrators));
+        return new furySerializer(fury);
     }
 }

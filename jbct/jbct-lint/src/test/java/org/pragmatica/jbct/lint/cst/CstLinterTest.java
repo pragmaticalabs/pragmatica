@@ -300,18 +300,13 @@ class CstLinterTest {
 
     // ========== JBCT-VO-* Value Object Rules ==========
     @Nested
-    @DisplayName("JBCT-VO-01: Value objects should have factory returning Result")
+    @DisplayName("JBCT-VO-01: Value objects should have factory method")
     class ValueObjectFactoryTests {
         @Test
-        void detectsRecordWithoutResultFactory() {
+        void detectsRecordWithoutFactory() {
             var diagnostics = lint("""
                 package com.example.domain.test;
-                import org.pragmatica.lang.Result;
-                public record Email(String value) {
-                    public static Email email(String value) {
-                        return new Email(value);
-                    }
-                }
+                public record Email(String value) {}
                 """);
             assertHasRule(diagnostics, "JBCT-VO-01");
         }
@@ -324,6 +319,93 @@ class CstLinterTest {
                 public record Email(String value) {
                     public static Result<Email> email(String value) {
                         return Result.success(new Email(value));
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void allowsRecordWithOptionFactory() {
+            var diagnostics = lint("""
+                package com.example.domain.test;
+                import org.pragmatica.lang.Option;
+                public record Nickname(String value) {
+                    public static Option<Nickname> nickname(String value) {
+                        return Option.option(value).map(Nickname::new);
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void allowsRecordWithPlainFactory() {
+            var diagnostics = lint("""
+                package com.example.domain.test;
+                public record Email(String value) {
+                    public static Email email(String value) {
+                        return new Email(value);
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void allowsZeroComponentRecord() {
+            var diagnostics = lint("""
+                package com.example.domain.test;
+                public record PingRequest() {}
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void allowsRecordImplementingSealedInterface() {
+            var diagnostics = lint("""
+                package com.example.domain.test;
+                public sealed interface RegistrationError {
+                    record EmailAlreadyRegistered(String email) implements RegistrationError {}
+                    record TokenGenerationFailed(String reason) implements RegistrationError {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void allowsBuilderPatternRecordWithWithMethods() {
+            var diagnostics = lint("""
+                package com.example.domain.test;
+                public record ProvisioningContext(String typeToken, String keyExtractor, String extension) {
+                    public ProvisioningContext withTypeToken(String typeToken) {
+                        return new ProvisioningContext(typeToken, keyExtractor, extension);
+                    }
+                    public ProvisioningContext withKeyExtractor(String keyExtractor) {
+                        return new ProvisioningContext(typeToken, keyExtractor, extension);
+                    }
+                    public ProvisioningContext withExtension(String extension) {
+                        return new ProvisioningContext(typeToken, keyExtractor, extension);
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-VO-01");
+        }
+
+        @Test
+        void allowsLocalRecordInFactoryMethod() {
+            var diagnostics = lint("""
+                package com.example.slice.test;
+                import org.pragmatica.lang.Result;
+                public interface MyService {
+                    Result<String> execute(String input);
+                    static MyService myService(Object dep) {
+                        record myService(Object dep) implements MyService {
+                            public Result<String> execute(String input) {
+                                return Result.success(input);
+                            }
+                        }
+                        return new myService(dep);
                     }
                 }
                 """);
@@ -719,6 +801,31 @@ class CstLinterTest {
                 """);
             assertNoRule(diagnostics, "JBCT-UC-01");
         }
+
+        @Test
+        void allowsMultiMethodInterfaceWithNestedRecord() {
+            var diagnostics = lint("""
+                package com.example.slice.test;
+                import org.pragmatica.lang.Result;
+                import org.pragmatica.lang.Promise;
+                public interface CatalogSlice {
+                    Result<String> calculate(String input);
+                    Promise<String> fetch(String id);
+                    static CatalogSlice catalogSlice(Object db) {
+                        record catalogSlice(Object db) implements CatalogSlice {
+                            public Result<String> calculate(String input) {
+                                return Result.success(input);
+                            }
+                            public Promise<String> fetch(String id) {
+                                return Promise.success(id);
+                            }
+                        }
+                        return new catalogSlice(db);
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-UC-01");
+        }
     }
 
     // ========== JBCT-PAT-* Pattern Rules ==========
@@ -824,6 +931,22 @@ class CstLinterTest {
                         return input
                             .map(String::trim)
                             .map(String::toUpperCase);
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-SEQ-01");
+        }
+
+        @Test
+        void doesNotCountNestedLambdaDots() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                import org.pragmatica.lang.Result;
+                public class Test {
+                    public Result<String> process(Result<String> input) {
+                        return input
+                            .map(s -> s.trim().toUpperCase().toLowerCase())
+                            .map(s -> s.strip());
                     }
                 }
                 """);
@@ -1567,6 +1690,40 @@ class CstLinterTest {
                     private Service() {}
                     public Result<String> process(String input) {
                         return Result.success(input);
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-STY-04");
+        }
+
+        @Test
+        void allowsSealedErrorHierarchyWithNoStaticMethods() {
+            // Sealed interface with only records (no static methods) is NOT a utility interface
+            var diagnostics = lint("""
+                package com.example.slice.test;
+                interface Cause { String message(); }
+                public sealed interface PricingError extends Cause {
+                    record ProductNotFound(String productId) implements PricingError {
+                        public String message() { return "Not found: " + productId; }
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-STY-04");
+        }
+
+        @Test
+        void allowsNonSealedInterfaceContainingNestedSealed() {
+            // Outer interface is NOT sealed — nested sealed should not trigger
+            var diagnostics = lint("""
+                package com.example.slice.test;
+                import org.pragmatica.lang.Result;
+                public interface CatalogSlice {
+                    Result<String> calculate(String input);
+                    sealed interface PricingError {
+                        record NotFound(String id) implements PricingError {}
+                    }
+                    static CatalogSlice catalogSlice(Object db) {
+                        return null;
                     }
                 }
                 """);

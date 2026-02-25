@@ -5,7 +5,7 @@
     <parent>
         <artifactId>serialization</artifactId>
         <groupId>org.pragmatica-lite</groupId>
-        <version>0.17.0</version>
+        <version>0.18.0</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -20,8 +20,8 @@
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.apache.fury</groupId>
-            <artifactId>fury-core</artifactId>
+            <groupId>org.apache.fory</groupId>
+            <artifactId>fory-core</artifactId>
         </dependency>
         <dependency>
             <groupId>io.netty</groupId>

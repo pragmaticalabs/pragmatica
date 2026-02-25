@@ -11,7 +11,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.invoke.InvocationHandler;
-import org.pragmatica.aether.slice.DynamicAspectMode;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.*;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.*;
@@ -241,16 +240,18 @@ class NodeDeploymentManagerTest {
         var key = new SliceNodeKey(artifact, self);
 
         manager.onQuorumStateChange(QuorumStateNotification.established());
+        // First command is lifecycle ON_DUTY registration
+        var sliceCommandOffset = clusterNode.appliedCommands.size();
         sendValuePut(key, SliceState.LOAD);
 
-        // Now writes LOADING first, then LOADED after success
-        assertThat(clusterNode.appliedCommands).hasSize(2);
+        // Now writes LOADING first, then LOADED after success (after lifecycle command)
+        assertThat(clusterNode.appliedCommands).hasSize(sliceCommandOffset + 2);
 
-        var loadingCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(0);
+        var loadingCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset);
         assertThat(loadingCommand.key()).isEqualTo(key);
         assertThat(loadingCommand.value()).isEqualTo(new SliceNodeValue(SliceState.LOADING));
 
-        var loadedCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(1);
+        var loadedCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset + 1);
         assertThat(loadedCommand.key()).isEqualTo(key);
         assertThat(loadedCommand.value()).isEqualTo(new SliceNodeValue(SliceState.LOADED));
     }
@@ -264,12 +265,14 @@ class NodeDeploymentManagerTest {
         sliceStore.markAsLoadedWithSlice(artifact);
 
         manager.onQuorumStateChange(QuorumStateNotification.established());
+        // First command is lifecycle ON_DUTY registration
+        var sliceCommandOffset = clusterNode.appliedCommands.size();
         sendValuePut(key, SliceState.ACTIVATE);
 
-        // Now writes ACTIVATING first, then ACTIVE after success (plus endpoint publish commands)
-        assertThat(clusterNode.appliedCommands).hasSizeGreaterThanOrEqualTo(2);
+        // Now writes ACTIVATING first, then ACTIVE after success (plus endpoint publish commands, after lifecycle command)
+        assertThat(clusterNode.appliedCommands).hasSizeGreaterThanOrEqualTo(sliceCommandOffset + 2);
 
-        var activatingCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(0);
+        var activatingCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset);
         assertThat(activatingCommand.key()).isEqualTo(key);
         assertThat(activatingCommand.value()).isEqualTo(new SliceNodeValue(SliceState.ACTIVATING));
 
@@ -289,10 +292,12 @@ class NodeDeploymentManagerTest {
         var key = new SliceNodeKey(artifact, self);
 
         manager.onQuorumStateChange(QuorumStateNotification.established());
+        // First command is lifecycle ON_DUTY registration
+        var sliceCommandOffset = clusterNode.appliedCommands.size();
         sendValuePut(key, SliceState.DEACTIVATE);
 
-        assertThat(clusterNode.appliedCommands).hasSize(1);
-        var putCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.getFirst();
+        assertThat(clusterNode.appliedCommands).hasSize(sliceCommandOffset + 1);
+        var putCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset);
         assertThat(putCommand.value()).isEqualTo(new SliceNodeValue(SliceState.LOADED));
     }
 
@@ -304,15 +309,17 @@ class NodeDeploymentManagerTest {
         sliceStore.failNextLoad = true;
 
         manager.onQuorumStateChange(QuorumStateNotification.established());
+        // First command is lifecycle ON_DUTY registration
+        var sliceCommandOffset = clusterNode.appliedCommands.size();
         sendValuePut(key, SliceState.LOAD);
 
-        // Now writes LOADING first, then FAILED after failure
-        assertThat(clusterNode.appliedCommands).hasSize(2);
+        // Now writes LOADING first, then FAILED after failure (after lifecycle command)
+        assertThat(clusterNode.appliedCommands).hasSize(sliceCommandOffset + 2);
 
-        var loadingCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(0);
+        var loadingCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset);
         assertThat(loadingCommand.value()).isEqualTo(new SliceNodeValue(SliceState.LOADING));
 
-        var failedCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(1);
+        var failedCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset + 1);
         assertThat(failedCommand.value()).isEqualTo(new SliceNodeValue(SliceState.FAILED));
     }
 
@@ -552,8 +559,8 @@ class NodeDeploymentManagerTest {
         }
 
         @Override
-        public DynamicAspectMode getAspectMode(String artifactBase, String methodName) {
-            return DynamicAspectMode.NONE;
+        public Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader) {
+            return Option.none();
         }
     }
 

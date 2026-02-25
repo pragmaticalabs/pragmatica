@@ -207,7 +207,12 @@ public sealed interface LoadConfigLoader {
         if (value == null) {
             sb.append("null");
         } else if (value instanceof String s) {
-            appendQuoted(sb, escapeJson(s));
+            if (isNumericPattern(s)) {
+                // Numeric patterns (e.g., ${range:1-20}) produce integers — emit unquoted
+                sb.append(s);
+            } else {
+                appendQuoted(sb, escapeJson(s));
+            }
         } else if (value instanceof Number || value instanceof Boolean) {
             sb.append(value);
         } else if (value instanceof Map) {
@@ -217,6 +222,10 @@ public sealed interface LoadConfigLoader {
         } else {
             appendQuoted(sb, escapeJson(value.toString()));
         }
+    }
+
+    private static boolean isNumericPattern(String value) {
+        return value.startsWith("${range:") && value.endsWith("}") && value.indexOf('}') == value.length() - 1;
     }
 
     private static void appendQuoted(StringBuilder sb, String text) {

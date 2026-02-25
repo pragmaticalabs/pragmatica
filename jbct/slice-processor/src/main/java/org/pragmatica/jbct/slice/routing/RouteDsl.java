@@ -144,6 +144,14 @@ public record RouteDsl(String method,
         return hasPathParams() || hasQueryParams();
     }
 
+    /// Returns the path prefix up to the first path parameter placeholder.
+    /// E.g., "/{shortCode}" becomes "/", "/{id}/items/{itemId}" becomes "/".
+    /// For paths without parameters, returns the full path template.
+    public String basePath() {
+        var idx = pathTemplate.indexOf('{');
+        return idx >= 0 ? pathTemplate.substring(0, idx) : pathTemplate;
+    }
+
     /// Returns the path template with type annotations stripped from path parameters.
     /// E.g., "/{id:Long}/items/{itemId:Integer}" becomes "/{id}/items/{itemId}".
     public String cleanPath() {

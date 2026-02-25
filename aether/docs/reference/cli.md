@@ -52,10 +52,28 @@ Interactive CLI for managing Aether clusters.
 |--------|-------------|---------|
 | `-c, --connect <host:port>` | Node address to connect to | `localhost:8080` |
 | `--config <path>` | Path to aether.toml config file | |
+| `-k, --api-key <key>` | API key for authenticated access | `AETHER_API_KEY` env |
 | `-h, --help` | Show help | |
 | `-V, --version` | Show version | |
 
 When `--config` is specified, the CLI reads the management port from the config file. The `--connect` option takes precedence if both are provided.
+
+### Authentication
+
+When connecting to a secured cluster, provide an API key:
+
+```bash
+# Via command-line flag
+aether --api-key mykey123 status
+
+# Via environment variable
+export AETHER_API_KEY=mykey123
+aether status
+```
+
+The CLI will display user-friendly error messages for authentication failures:
+- `Authentication required` (401) — API key not provided
+- `Access denied` (403) — Invalid API key
 
 ### Commands
 
@@ -414,6 +432,48 @@ aether aspects remove org.example:my-slice:1.0.0#processOrder
 
 Available modes: `NONE`, `LOG`, `METRICS`, `LOG_AND_METRICS`
 
+#### traces
+
+View distributed invocation traces:
+
+```bash
+# List recent traces
+aether traces list [--limit N] [--method METHOD] [--status SUCCESS|FAILURE]
+
+# Get traces for a specific request
+aether traces get <requestId>
+
+# Show trace statistics
+aether traces stats
+```
+
+#### observability
+
+Manage observability depth configuration:
+
+```bash
+# List all depth overrides
+aether observability depth
+
+# Set depth threshold for a method
+aether observability depth-set <artifact#method> <threshold>
+
+# Remove depth override
+aether observability depth-remove <artifact#method>
+```
+
+Example:
+```bash
+# Set depth threshold to 3 for a specific method
+aether observability depth-set org.example:order-processor:1.0.0#processOrder 3
+
+# Check configured overrides
+aether observability depth
+
+# Remove override
+aether observability depth-remove org.example:order-processor:1.0.0#processOrder
+```
+
 #### config
 
 Manage dynamic configuration overrides:
@@ -474,7 +534,7 @@ Start interactive mode by omitting the command:
 ```bash
 ./script/aether.sh --connect localhost:8080
 
-Aether v0.17.0 - Connected to localhost:8080
+Aether v0.18.0 - Connected to localhost:8080
 Type 'help' for available commands, 'exit' to quit.
 
 aether> status
@@ -657,6 +717,45 @@ curl -X POST http://localhost:8888/api/chaos/kill-node/node-3
 
 # Set load rate
 curl -X POST http://localhost:8888/api/load/rate/500
+```
+
+#### node lifecycle
+
+Manage node lifecycle states:
+
+```bash
+# List all node lifecycle states
+aether node lifecycle
+
+# Get lifecycle state for a specific node
+aether node lifecycle <nodeId>
+
+# Drain a node (ON_DUTY → DRAINING, CDM evacuates slices respecting budget)
+aether node drain <nodeId>
+
+# Activate a node (DRAINING/DECOMMISSIONED → ON_DUTY)
+aether node activate <nodeId>
+
+# Shut down a node (any → SHUTTING_DOWN)
+aether node shutdown <nodeId>
+```
+
+Example workflow:
+```bash
+# Check current lifecycle states
+aether node lifecycle
+
+# Drain a node before maintenance
+aether node drain node-2
+
+# Verify it's draining
+aether node lifecycle node-2
+
+# Cancel drain and return to active duty
+aether node activate node-2
+
+# Initiate shutdown
+aether node shutdown node-3
 ```
 
 #### scheduled-tasks

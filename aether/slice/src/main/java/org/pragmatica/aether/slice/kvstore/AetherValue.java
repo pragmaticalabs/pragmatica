@@ -14,7 +14,7 @@ import java.util.Set;
 import static org.pragmatica.lang.Option.none;
 
 /// Value type stored in the consensus KVStore
-@SuppressWarnings({"JBCT-VO-01", "JBCT-NAM-01", "JBCT-STY-04"})
+@SuppressWarnings("JBCT-NAM-01")
 public sealed interface AetherValue {
     /// Slice target stores runtime scaling configuration for a slice.
     /// This is the "desired state" for how many instances should run and which version.
@@ -37,6 +37,11 @@ public sealed interface AetherValue {
         /// Creates a standalone slice target (not part of any app blueprint).
         public static SliceTargetValue sliceTargetValue(Version version, int instances) {
             return new SliceTargetValue(version, instances, instances, none(), System.currentTimeMillis());
+        }
+
+        /// Creates a standalone slice target with explicit minInstances.
+        public static SliceTargetValue sliceTargetValue(Version version, int instances, int minInstances) {
+            return new SliceTargetValue(version, instances, minInstances, none(), System.currentTimeMillis());
         }
 
         /// Returns the effective minimum instances (handles backward-compat where minInstances == 0).
@@ -309,20 +314,22 @@ public sealed interface AetherValue {
         }
     }
 
-    /// Dynamic aspect configuration stored in consensus.
-    /// Stores per-method aspect mode (logging/metrics) for runtime toggling.
+    /// Observability depth configuration stored in consensus.
+    /// Stores per-method depth threshold and sampling configuration.
     ///
-    /// @param artifactBase the artifact this aspect applies to (groupId:artifactId, version-agnostic)
-    /// @param methodName the method this aspect applies to
-    /// @param mode the aspect mode (NONE, LOG, METRICS, LOG_AND_METRICS)
+    /// @param artifactBase the artifact this config applies to (groupId:artifactId, version-agnostic)
+    /// @param methodName the method this config applies to
+    /// @param depthThreshold depth threshold for SLF4J logging verbosity
     /// @param updatedAt timestamp of last update
-    record DynamicAspectValue(String artifactBase,
-                              String methodName,
-                              String mode,
-                              long updatedAt) implements AetherValue {
-        /// Creates a new dynamic aspect value with current timestamp.
-        public static DynamicAspectValue dynamicAspectValue(String artifactBase, String methodName, String mode) {
-            return new DynamicAspectValue(artifactBase, methodName, mode, System.currentTimeMillis());
+    record ObservabilityDepthValue(String artifactBase,
+                                   String methodName,
+                                   int depthThreshold,
+                                   long updatedAt) implements AetherValue {
+        /// Creates a new observability depth value with current timestamp.
+        public static ObservabilityDepthValue observabilityDepthValue(String artifactBase,
+                                                                      String methodName,
+                                                                      int depthThreshold) {
+            return new ObservabilityDepthValue(artifactBase, methodName, depthThreshold, System.currentTimeMillis());
         }
     }
 
@@ -336,6 +343,45 @@ public sealed interface AetherValue {
         /// Creates a new config value with current timestamp.
         public static ConfigValue configValue(String key, String value) {
             return new ConfigValue(key, value, System.currentTimeMillis());
+        }
+    }
+
+    /// Node lifecycle states for the state machine.
+    ///
+    /// State machine:
+    /// ```
+    /// JOINING → ON_DUTY ←→ DRAINING → DECOMMISSIONED → SHUTTING_DOWN
+    ///                    ←────────────┘
+    ///           any KV state ──────────→ SHUTTING_DOWN
+    /// ```
+    enum NodeLifecycleState {
+        JOINING,
+        ON_DUTY,
+        DRAINING,
+        DECOMMISSIONED,
+        SHUTTING_DOWN
+    }
+
+    /// Node lifecycle value tracks the current lifecycle state of a cluster node.
+    /// Written to KV when node first establishes quorum (ON_DUTY), updated during
+    /// drain/decommission/shutdown operations.
+    ///
+    /// @param state the current lifecycle state
+    /// @param updatedAt timestamp of last state transition
+    record NodeLifecycleValue(NodeLifecycleState state, long updatedAt) implements AetherValue {
+        /// Creates a new lifecycle value with current timestamp.
+        public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state) {
+            return new NodeLifecycleValue(state, System.currentTimeMillis());
+        }
+
+        /// Creates a new lifecycle value with explicit timestamp.
+        public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, long updatedAt) {
+            return new NodeLifecycleValue(state, updatedAt);
+        }
+
+        /// Returns a new value with updated state and current timestamp.
+        public NodeLifecycleValue withState(NodeLifecycleState newState) {
+            return new NodeLifecycleValue(newState, System.currentTimeMillis());
         }
     }
 }

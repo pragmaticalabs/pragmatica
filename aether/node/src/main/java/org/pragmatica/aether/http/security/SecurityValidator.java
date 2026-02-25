@@ -1,10 +1,14 @@
 package org.pragmatica.aether.http.security;
 
+import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
+import org.pragmatica.aether.http.handler.security.Principal;
+import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.lang.Result;
 
+import java.util.Map;
 import java.util.Set;
 
 /// Validates request security based on route policy.
@@ -24,13 +28,27 @@ public interface SecurityValidator {
     /// @param validKeys set of valid API key values
     /// @return SecurityValidator for API key authentication
     static SecurityValidator apiKeyValidator(Set<String> validKeys) {
-        return new ApiKeySecurityValidator(validKeys);
+        return new ApiKeySecurityValidator(ApiKeySecurityValidator.fromKeySet(validKeys));
+    }
+
+    /// Create API key validator with named key entries.
+    ///
+    /// @param keyEntries map of raw API key to entry metadata
+    /// @return SecurityValidator for API key authentication with custom roles
+    static SecurityValidator apiKeyValidator(Map<String, ApiKeyEntry> keyEntries) {
+        return new ApiKeySecurityValidator(keyEntries);
     }
 
     /// Create a no-op validator that allows all requests (for disabled security).
+    /// Returns a system principal with full access — used when security is disabled.
     ///
-    /// @return SecurityValidator that always returns anonymous context
+    /// @return SecurityValidator that always returns system context
     static SecurityValidator noOpValidator() {
-        return (_, _) -> Result.success(SecurityContext.securityContext());
+        var systemContext = SecurityContext.securityContext(Principal.principal("system",
+                                                                                Principal.PrincipalType.SERVICE)
+                                                                     .unwrap(),
+                                                            Set.of(Role.ADMIN, Role.SERVICE),
+                                                            Map.of());
+        return (_, _) -> Result.success(systemContext);
     }
 }

@@ -5,6 +5,7 @@ import org.pragmatica.http.websocket.WebSocketMessage;
 import org.pragmatica.http.websocket.WebSocketSession;
 
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,11 +19,16 @@ import org.slf4j.LoggerFactory;
 public class DashboardWebSocketHandler implements WebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(DashboardWebSocketHandler.class);
     private static final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
+    private static final AtomicReference<WebSocketAuthenticator> authenticatorRef = new AtomicReference<>();
 
     private final DashboardMetricsPublisher metricsPublisher;
+    private final WebSocketAuthenticator authenticator;
 
-    public DashboardWebSocketHandler(DashboardMetricsPublisher metricsPublisher) {
+    public DashboardWebSocketHandler(DashboardMetricsPublisher metricsPublisher,
+                                     WebSocketAuthenticator authenticator) {
         this.metricsPublisher = metricsPublisher;
+        this.authenticator = authenticator;
+        authenticatorRef.set(authenticator);
     }
 
     @Override
@@ -38,37 +44,47 @@ public class DashboardWebSocketHandler implements WebSocketHandler {
     private void onOpen(WebSocketSession session) {
         sessions.put(session.id(), session);
         log.info("Dashboard client connected: {}", session.id());
-        // Send initial state snapshot
-        var initialState = metricsPublisher.buildInitialState();
-        session.send(initialState);
+        if (authenticator.onOpen(session)) {
+            session.send(metricsPublisher.buildInitialState());
+        }
     }
 
     private void onText(WebSocketSession session, String message) {
+        if (authenticator.onMessage(session, message)) {
+            return;
+        }
         log.debug("Received from dashboard client {}: {}", session.id(), message);
-        // Parse client messages (subscribe, set threshold, get history)
+        handleClientMessage(session, message);
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private void handleClientMessage(WebSocketSession session, String message) {
         if (message.contains("\"type\":\"SUBSCRIBE\"")) {
             log.debug("Client {} subscribed to streams", session.id());
         } else if (message.contains("\"type\":\"SET_THRESHOLD\"")) {
             metricsPublisher.handleSetThreshold(message);
         } else if (message.contains("\"type\":\"GET_HISTORY\"")) {
-            var history = metricsPublisher.buildHistoryResponse(message);
-            session.send(history);
+            session.send(metricsPublisher.buildHistoryResponse(message));
         }
     }
 
     private void onClose(WebSocketSession session) {
+        authenticator.onClose(session);
         sessions.remove(session.id());
         log.info("Dashboard client disconnected: {}", session.id());
     }
 
-    /// Broadcast a message to all connected dashboard clients.
+    /// Broadcast a message to all connected and authenticated dashboard clients.
     public static void broadcast(String message) {
+        var auth = authenticatorRef.get();
         sessions.values()
-                .forEach(session -> {
-                    if (session.isOpen()) {
-                        session.send(message);
-                    }
-                });
+                .forEach(session -> sendIfAuthenticated(session, message, auth));
+    }
+
+    private static void sendIfAuthenticated(WebSocketSession session, String message, WebSocketAuthenticator auth) {
+        if (session.isOpen() && (auth == null || auth.isAuthenticated(session.id()))) {
+            session.send(message);
+        }
     }
 
     /// Get the number of connected dashboard clients.

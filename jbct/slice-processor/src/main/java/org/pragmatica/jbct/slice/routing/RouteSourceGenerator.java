@@ -310,9 +310,12 @@ public class RouteSourceGenerator {
                                RouteDsl routeDsl,
                                MethodModel method,
                                boolean hasMore) {
+        var routePath = routeDsl.hasPathParams()
+                       ? routeDsl.basePath()
+                       : routeDsl.cleanPath();
         var rawPath = prefix.isEmpty()
-                      ? routeDsl.cleanPath()
-                      : prefix + routeDsl.cleanPath();
+                      ? routePath
+                      : prefix + routePath;
         var fullPath = escapeJavaString(rawPath);
         var httpMethod = routeDsl.method()
                                  .toLowerCase();
