@@ -7,6 +7,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
 import java.time.Instant;
+import java.util.function.BiFunction;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,14 +47,16 @@ public interface ObservabilityInterceptor {
 
     /// Create an interceptor with adaptive sampling, trace recording, and depth-based logging.
     ///
-    /// @param sampler    Adaptive sampler for throughput-aware trace sampling
-    /// @param traceStore Ring buffer store for trace nodes
-    /// @param nodeId     Identifier of the current node (for trace topology)
+    /// @param sampler     Adaptive sampler for throughput-aware trace sampling
+    /// @param traceStore  Ring buffer store for trace nodes
+    /// @param nodeId      Identifier of the current node (for trace topology)
+    /// @param depthLookup Lookup function: (artifactBase, methodName) -> depth threshold
     /// @return a new observability interceptor
     static ObservabilityInterceptor observabilityInterceptor(AdaptiveSampler sampler,
                                                              InvocationTraceStore traceStore,
-                                                             String nodeId) {
-        return new ObservabilityInterceptorImpl(sampler, traceStore, nodeId);
+                                                             String nodeId,
+                                                             BiFunction<String, String, Integer> depthLookup) {
+        return new ObservabilityInterceptorImpl(sampler, traceStore, nodeId, depthLookup);
     }
 
     /// Create a no-op interceptor that always passes through without any observability logic.
@@ -70,11 +73,16 @@ class ObservabilityInterceptorImpl implements ObservabilityInterceptor {
     private final AdaptiveSampler sampler;
     private final InvocationTraceStore traceStore;
     private final String nodeId;
+    private final BiFunction<String, String, Integer> depthLookup;
 
-    ObservabilityInterceptorImpl(AdaptiveSampler sampler, InvocationTraceStore traceStore, String nodeId) {
+    ObservabilityInterceptorImpl(AdaptiveSampler sampler,
+                                 InvocationTraceStore traceStore,
+                                 String nodeId,
+                                 BiFunction<String, String, Integer> depthLookup) {
         this.sampler = sampler;
         this.traceStore = traceStore;
         this.nodeId = nodeId;
+        this.depthLookup = depthLookup;
     }
 
     @Override
@@ -162,7 +170,7 @@ class ObservabilityInterceptorImpl implements ObservabilityInterceptor {
                                   local,
                                   0);
         traceStore.record(node);
-        logAtDepth(depth, node);
+        logAtDepth(depth, slice, method, node);
     }
 
     @SuppressWarnings("JBCT-RET-01") // Fire-and-forget trace recording + logging
@@ -201,14 +209,17 @@ class ObservabilityInterceptorImpl implements ObservabilityInterceptor {
     }
 
     @SuppressWarnings("JBCT-RET-01") // Fire-and-forget logging
-    private static void logAtDepth(int depth, InvocationNode node) {
-        if (depth <= 1) {
+    private void logAtDepth(int depth, Artifact slice, MethodName method, InvocationNode node) {
+        var threshold = depthLookup.apply(slice.base()
+                                               .asString(),
+                                          method.name());
+        if (depth <= threshold) {
             traceLog.info("[trace] [requestId={}] {} depth={} duration={}ms",
                           node.requestId(),
                           node.callee(),
                           node.depth(),
                           node.durationMs());
-        } else if (depth <= 3) {
+        } else if (depth <= threshold + 2) {
             traceLog.debug("[trace] [requestId={}] {} depth={} duration={}ms",
                            node.requestId(),
                            node.callee(),

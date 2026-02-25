@@ -106,7 +106,7 @@ public interface BlueprintParser {
                                   return Artifact.artifact(artifactStr)
                                                  .mapError(_ -> INVALID_ARTIFACT.apply(artifactStr))
                                                  .flatMap(artifact -> parseMinAvailable(entry, instanceCount)
-                                                                      .flatMap(minAvail -> SliceSpec.sliceSpec(artifact, instanceCount, minAvail)));
+        .flatMap(minAvail -> SliceSpec.sliceSpec(artifact, instanceCount, minAvail)));
                               });
     }
 

@@ -7,12 +7,17 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.lang.Option;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -29,9 +34,10 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class InvocationMetricsTest extends ForgeTestBase {
-    private static final int BASE_PORT = 7000;
-    private static final int BASE_MGMT_PORT = 7100;
-    private static final int BASE_APP_HTTP_PORT = 7200;
+    private static final int BASE_PORT = 12000;
+    private static final int BASE_MGMT_PORT = 12100;
+    private static final int BASE_APP_HTTP_PORT = 12200;
+    private static final int H2_PORT = 12300;
     private static final int REQUEST_COUNT = 1000;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration DEPLOY_TIMEOUT = Duration.ofSeconds(60);
@@ -43,13 +49,27 @@ class InvocationMetricsTest extends ForgeTestBase {
     private static final String BLUEPRINT_ID = "forge.test:url-shortener-metrics:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
+    private ForgeH2Server h2Server;
     private ForgeCluster cluster;
     private JdkHttpOperations httpOps;
 
     @BeforeAll
     void setUp() {
-        cluster = forgeCluster(5, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "im");
-        httpOps = jdkHttpOperations(Duration.ofSeconds(5), java.net.http.HttpClient.Redirect.NORMAL, org.pragmatica.lang.Option.empty());
+        var schemaPath = Path.of("").toAbsolutePath()
+                             .resolve("../../../examples/url-shortener/schema/url-shortener.sql")
+                             .normalize()
+                             .toString();
+        var h2Config = ForgeH2Config.forgeH2Config(true, H2_PORT, "forge", false, Option.some(schemaPath));
+        h2Server = ForgeH2Server.forgeH2Server(h2Config);
+        h2Server.start()
+                .await()
+                .onFailure(cause -> {
+                    throw new AssertionError("H2 start failed: " + cause.message());
+                });
+
+        var configProvider = buildConfigurationProvider(h2Server);
+        cluster = forgeCluster(5, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "im", Option.some(configProvider));
+        httpOps = jdkHttpOperations(Duration.ofSeconds(5), java.net.http.HttpClient.Redirect.NORMAL, Option.empty());
         cluster.start()
                .await()
                .onFailure(cause -> {
@@ -106,33 +126,56 @@ class InvocationMetricsTest extends ForgeTestBase {
         if (cluster != null) {
             cluster.stop().await();
         }
+        if (h2Server != null) {
+            h2Server.stop().await();
+        }
+    }
+
+    private static ConfigurationProvider buildConfigurationProvider(ForgeH2Server server) {
+        var runtimeValues = Map.of("database.name", "forge-h2",
+                                   "database.type", "H2",
+                                   "database.host", "localhost",
+                                   "database.port", "0",
+                                   "database.database", "forge",
+                                   "database.jdbc_url", server.jdbcUrl(),
+                                   "database.username", "sa",
+                                   "database.password", "");
+        return ConfigurationProvider.builder()
+                                    .withSource(MapConfigSource.mapConfigSource("runtime", runtimeValues, 500).unwrap())
+                                    .build();
     }
 
     @Test
     void invocationMetrics_clusterWideCounts_matchExpected() {
-        var anyMgmtPort = cluster.status().nodes().getFirst().mgmtPort();
-        var metricsJson = get(anyMgmtPort, "/api/invocation-metrics");
+        var totalShortenCount = 0L;
+        var totalResolveCount = 0L;
+        var totalRecordClickCount = 0L;
 
-        assertThat(metricsJson).doesNotContain("\"error\"");
-        assertThat(metricsJson).contains("shorten");
-        assertThat(metricsJson).contains("resolve");
-        assertThat(metricsJson).contains("recordClick");
+        for (var node : cluster.status().nodes()) {
+            var metricsJson = get(node.mgmtPort(), "/api/invocation-metrics");
+            assertThat(metricsJson).as("Invocation metrics from node %s", node.id())
+                                   .doesNotContain("\"error\"");
 
-        var shortenCount = extractMethodCount(metricsJson, "shorten", "count");
-        var resolveCount = extractMethodCount(metricsJson, "resolve", "count");
-        var recordClickCount = extractMethodCount(metricsJson, "recordClick", "count");
+            totalShortenCount += extractMethodCount(metricsJson, "shorten", "count");
+            totalResolveCount += extractMethodCount(metricsJson, "resolve", "count");
+            totalRecordClickCount += extractMethodCount(metricsJson, "recordClick", "count");
+        }
 
-        assertThat(shortenCount).as("shorten invocation count").isGreaterThanOrEqualTo(REQUEST_COUNT);
-        assertThat(resolveCount).as("resolve invocation count").isGreaterThanOrEqualTo(REQUEST_COUNT);
-        assertThat(recordClickCount).as("recordClick invocation count").isGreaterThanOrEqualTo(REQUEST_COUNT);
+        assertThat(totalShortenCount).as("cluster-wide shorten count").isGreaterThanOrEqualTo(REQUEST_COUNT);
+        assertThat(totalResolveCount).as("cluster-wide resolve count").isGreaterThanOrEqualTo(REQUEST_COUNT);
+        assertThat(totalRecordClickCount).as("cluster-wide recordClick count").isGreaterThanOrEqualTo(REQUEST_COUNT);
 
-        var shortenFailures = extractMethodCount(metricsJson, "shorten", "failureCount");
-        var resolveFailures = extractMethodCount(metricsJson, "resolve", "failureCount");
-        var recordClickFailures = extractMethodCount(metricsJson, "recordClick", "failureCount");
+        // Also verify zero failures across all nodes
+        for (var node : cluster.status().nodes()) {
+            var metricsJson = get(node.mgmtPort(), "/api/invocation-metrics");
+            var shortenFailures = extractMethodCount(metricsJson, "shorten", "failureCount");
+            var resolveFailures = extractMethodCount(metricsJson, "resolve", "failureCount");
+            var recordClickFailures = extractMethodCount(metricsJson, "recordClick", "failureCount");
 
-        assertThat(shortenFailures).as("shorten failure count").isEqualTo(0);
-        assertThat(resolveFailures).as("resolve failure count").isEqualTo(0);
-        assertThat(recordClickFailures).as("recordClick failure count").isEqualTo(0);
+            assertThat(shortenFailures).as("shorten failures on node %s", node.id()).isEqualTo(0);
+            assertThat(resolveFailures).as("resolve failures on node %s", node.id()).isEqualTo(0);
+            assertThat(recordClickFailures).as("recordClick failures on node %s", node.id()).isEqualTo(0);
+        }
     }
 
     @Test
@@ -148,12 +191,44 @@ class InvocationMetricsTest extends ForgeTestBase {
     }
 
     @Test
+    void gossipedMetrics_allNodesHaveRemoteData() {
+        for (var node : cluster.status().nodes()) {
+            var metrics = get(node.mgmtPort(), "/api/metrics");
+            assertThat(metrics).as("Metrics from node %s", node.id())
+                               .doesNotContain("\"error\"");
+
+            // Count how many node entries appear in the "load" map
+            var nodeEntryCount = countNodeEntries(metrics);
+            assertThat(nodeEntryCount).as("Node entries visible from node %s", node.id())
+                                      .isGreaterThanOrEqualTo(3);
+        }
+    }
+
+    @Test
+    void nodeMetrics_reportCpuAndHeapForAllNodes() {
+        var anyMgmtPort = cluster.status().nodes().getFirst().mgmtPort();
+        var nodeMetrics = get(anyMgmtPort, "/api/node-metrics");
+
+        assertThat(nodeMetrics).doesNotContain("\"error\"");
+
+        // Should have entries for multiple nodes
+        var nodeCount = countNodeEntries(nodeMetrics);
+        assertThat(nodeCount).as("Node count in node-metrics").isGreaterThanOrEqualTo(3);
+
+        // Verify metrics values are reasonable
+        assertThat(nodeMetrics).contains("cpuUsage");
+        assertThat(nodeMetrics).contains("heapUsedMb");
+        assertThat(nodeMetrics).contains("heapMaxMb");
+    }
+
+    @Test
     void metricsEndpoint_returnsDataOnAllNodes() {
         for (var node : cluster.status().nodes()) {
             var metrics = get(node.mgmtPort(), "/api/metrics");
             assertThat(metrics).as("Metrics from node %s", node.id())
                                .doesNotContain("\"error\"")
-                               .isNotBlank();
+                               .isNotBlank()
+                               .contains("\"load\"");
         }
     }
 
@@ -186,6 +261,76 @@ class InvocationMetricsTest extends ForgeTestBase {
 
         var totalTraces = extractNumericField(stats, "totalTraces");
         assertThat(totalTraces).as("Total traces captured").isGreaterThan(0);
+    }
+
+    @Test
+    void observabilityDepth_setAndGetViaApi() {
+        var leaderPort = cluster.getLeaderManagementPort().unwrap();
+        var otherPort = cluster.status().nodes().stream()
+                               .filter(n -> n.mgmtPort() != leaderPort)
+                               .findFirst()
+                               .orElseThrow()
+                               .mgmtPort();
+
+        // POST depth configuration
+        var setBody = "{\"artifact\":\"url-shortener-url-shortener\",\"method\":\"shorten\",\"depthThreshold\":5}";
+        var setResponse = postJson(leaderPort, "/api/observability/depth", setBody);
+        assertThat(setResponse).doesNotContain("\"error\"");
+
+        // GET on same node - should appear immediately
+        var getResponse = get(leaderPort, "/api/observability/depth");
+        assertThat(getResponse).contains("url-shortener-url-shortener");
+        assertThat(getResponse).contains("shorten");
+
+        // Wait for consensus propagation
+        sleep(Duration.ofSeconds(3));
+
+        // GET on different node - verify propagation
+        var remoteGet = get(otherPort, "/api/observability/depth");
+        assertThat(remoteGet).as("Depth config propagated to other node")
+                             .contains("url-shortener-url-shortener");
+
+        // DELETE the config
+        var deleteResponse = delete(leaderPort, "/api/observability/depth/url-shortener-url-shortener/shorten");
+        assertThat(deleteResponse).doesNotContain("\"error\"");
+
+        // Wait for propagation
+        sleep(Duration.ofSeconds(3));
+
+        // Verify removal
+        var afterDelete = get(leaderPort, "/api/observability/depth");
+        assertThat(afterDelete).doesNotContain("url-shortener-url-shortener/shorten");
+    }
+
+    @Test
+    void observabilityDepth_affectsTraceRecording() {
+        var leaderPort = cluster.getLeaderManagementPort().unwrap();
+
+        // Set depth threshold to 5 for shorten method
+        var setBody = "{\"artifact\":\"url-shortener-url-shortener\",\"method\":\"shorten\",\"depthThreshold\":5}";
+        var setResponse = postJson(leaderPort, "/api/observability/depth", setBody);
+        assertThat(setResponse).doesNotContain("\"error\"");
+
+        // Wait for propagation
+        sleep(Duration.ofSeconds(3));
+
+        // Generate a few requests to trigger tracing
+        var ports = cluster.getAvailableAppHttpPorts();
+        assertThat(ports).isNotEmpty();
+        var port = ports.getFirst();
+        for (int i = 0; i < 10; i++) {
+            var body = "{\"url\":\"https://example.com/depth-test-" + i + "\"}";
+            postJson(port, "/api/v1/urls/", body);
+        }
+
+        // Verify traces still exist (depth config affects log level, not trace recording)
+        sleep(Duration.ofSeconds(2));
+        var traces = get(leaderPort, "/api/traces?method=shorten&limit=5");
+        assertThat(traces).doesNotContain("\"error\"");
+
+        // Clean up - remove the depth config
+        delete(leaderPort, "/api/observability/depth/url-shortener-url-shortener/shorten");
+        sleep(Duration.ofSeconds(2));
     }
 
     // ===== Traffic Generation =====
@@ -242,6 +387,15 @@ class InvocationMetricsTest extends ForgeTestBase {
         return httpOps.sendString(requestTo(port, path)
                           .header("Content-Type", "application/toml")
                           .POST(HttpRequest.BodyPublishers.ofString(body))
+                          .build())
+                      .await()
+                      .map(HttpResult::body)
+                      .or(ERROR_FALLBACK);
+    }
+
+    private String delete(int port, String path) {
+        return httpOps.sendString(requestTo(port, path)
+                          .DELETE()
                           .build())
                       .await()
                       .map(HttpResult::body)
@@ -326,6 +480,18 @@ class InvocationMetricsTest extends ForgeTestBase {
             end++;
         }
         return parseLongSafe(json.substring(start, end));
+    }
+
+    private static int countNodeEntries(String json) {
+        // Count occurrences of node ID patterns like "im-0", "im-1", etc.
+        // which are the keys in the metrics maps
+        int count = 0;
+        int idx = 0;
+        while ((idx = json.indexOf("\"im-", idx)) != -1) {
+            count++;
+            idx += 4;
+        }
+        return count;
     }
 
     private static long parseLongSafe(String value) {

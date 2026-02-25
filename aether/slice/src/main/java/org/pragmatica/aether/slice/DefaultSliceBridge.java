@@ -72,26 +72,28 @@ public record DefaultSliceBridge(Artifact artifact,
         return new DefaultSliceBridge(artifact, slice, Map.copyOf(methodMap), serializerFactory);
     }
 
-    /// @deprecated Use {@link #defaultSliceBridge(Artifact, Slice, SerializerFactory)} instead.
-    @Deprecated
-    public static DefaultSliceBridge sliceBridgeImpl(Artifact artifact,
-                                                     Slice slice,
-                                                     SerializerFactory serializerFactory) {
-        return defaultSliceBridge(artifact, slice, serializerFactory);
-    }
-
-    /// @deprecated Use {@link #defaultSliceBridge(Artifact, Slice, SerializerFactory)} instead.
-    @Deprecated
-    public static DefaultSliceBridge sliceBridge(Artifact artifact,
-                                                 Slice slice,
-                                                 SerializerFactory serializerFactory) {
-        return defaultSliceBridge(artifact, slice, serializerFactory);
-    }
-
     @Override
     public Promise<byte[]> invoke(String methodName, byte[] input) {
         return lookupMethod(methodName).async()
                            .flatMap(method -> invokeWithSerialization(method, input));
+    }
+
+    @Override
+    public Promise<byte[]> encode(Object input) {
+        return serializerFactory.serializer()
+                                .map(serializer -> serializer.encode(input));
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public Promise<Object> decode(byte[] bytes) {
+        return serializerFactory.deserializer()
+                                .map(deserializer -> (Object) deserializer.decode(bytes));
+    }
+
+    @Override
+    public ClassLoader classLoader() {
+        return slice.getClass().getClassLoader();
     }
 
     private Promise<byte[]> invokeWithSerialization(InternalMethod method, byte[] input) {

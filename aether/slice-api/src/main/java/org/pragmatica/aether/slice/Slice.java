@@ -15,4 +15,8 @@ public interface Slice {
     }
 
     List<SliceMethod<?, ?>> methods();
+
+    default List<Class<?>> serializableClasses() {
+        return List.of();
+    }
 }

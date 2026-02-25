@@ -42,8 +42,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
 
@@ -53,11 +53,11 @@ import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 @SuppressWarnings("JBCT-RET-01") // MessageReceiver callbacks — void required by messaging framework
 public interface NodeDeploymentManager {
@@ -339,13 +339,8 @@ public interface NodeDeploymentManager {
 
             private Unit registerSliceBridge(Artifact artifact, Slice slice) {
                 var serializerProvider = resolveSerializerProvider();
-                var typeTokens = slice.methods()
-                                      .stream()
-                                      .flatMap(m -> Stream.of(m.parameterType(),
-                                                              m.returnType()))
-                                      .collect(Collectors.toList());
-                typeTokens.addAll(readPublishMessageTypes(slice));
-                var serializerFactory = serializerProvider.createFactory(typeTokens);
+                var sliceClassLoader = slice.getClass().getClassLoader();
+                var serializerFactory = serializerProvider.createFactory(slice.serializableClasses(), sliceClassLoader);
                 var sliceBridge = DefaultSliceBridge.defaultSliceBridge(artifact, slice, serializerFactory);
                 invocationHandler.registerSlice(artifact, sliceBridge);
                 log.debug("Registered slice {} for invocation", artifact);
@@ -355,54 +350,6 @@ public interface NodeDeploymentManager {
             private SerializerFactoryProvider resolveSerializerProvider() {
                 return Option.option(configuration.serializerProvider())
                              .or(() -> FurySerializerFactoryProvider.furySerializerFactoryProvider());
-            }
-
-            @SuppressWarnings("JBCT-EX-01")
-            private List<TypeToken<?>> readPublishMessageTypes(Slice slice) {
-                var result = new ArrayList<TypeToken<?>>();
-                var classLoader = slice.getClass()
-                                       .getClassLoader();
-                for (var iface : slice.getClass()
-                                      .getInterfaces()) {
-                    if (iface == Slice.class) {
-                        continue;
-                    }
-                    var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
-                    readPublishClassesFromManifest(classLoader, manifestPath, result);
-                }
-                return result;
-            }
-
-            @SuppressWarnings("JBCT-EX-01")
-            private void readPublishClassesFromManifest(ClassLoader classLoader,
-                                                        String manifestPath,
-                                                        List<TypeToken<?>> result) {
-                try (var is = classLoader.getResourceAsStream(manifestPath)) {
-                    if (is == null) {
-                        return;
-                    }
-                    var props = new Properties();
-                    props.load(is);
-                    var publishClasses = props.getProperty("publish.message.classes", "");
-                    if (publishClasses.isEmpty()) {
-                        return;
-                    }
-                    for (var className : publishClasses.split(",")) {
-                        loadPublishMessageType(classLoader, className.trim(), result);
-                    }
-                } catch (Exception e) {
-                    log.debug("Could not read manifest {}: {}", manifestPath, e.getMessage());
-                }
-            }
-
-            @SuppressWarnings("JBCT-EX-01")
-            private void loadPublishMessageType(ClassLoader classLoader, String className, List<TypeToken<?>> result) {
-                try{
-                    var clazz = classLoader.loadClass(className);
-                    result.add(TypeToken.typeToken(clazz));
-                } catch (ClassNotFoundException e) {
-                    log.warn("Could not load publish message class: {}", className);
-                }
             }
 
             private void unregisterSliceFromInvocation(SliceNodeKey sliceKey) {
@@ -1120,18 +1067,41 @@ public interface NodeDeploymentManager {
                 }
             }
 
+            private static final int MAX_LIFECYCLE_RETRIES = 10;
+
             private void registerLifecycleOnDuty() {
                 var lifecycleKey = AetherKey.NodeLifecycleKey.nodeLifecycleKey(self());
                 // Check if key already exists (preserve DECOMMISSIONED state on restart)
                 kvStore().get(lifecycleKey)
-                         .onEmpty(() -> writeLifecycleOnDuty(lifecycleKey));
+                       .onEmpty(() -> writeLifecycleOnDuty(lifecycleKey, 1));
             }
 
-            private void writeLifecycleOnDuty(AetherKey.NodeLifecycleKey lifecycleKey) {
+            private void writeLifecycleOnDuty(AetherKey.NodeLifecycleKey lifecycleKey, int attempt) {
                 var value = AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY);
                 cluster().apply(List.of(new KVCommand.Put<>(lifecycleKey, value)))
-                         .onSuccess(_ -> log.info("Node {} registered lifecycle state: ON_DUTY", self().id()))
-                         .onFailure(cause -> log.warn("Failed to register lifecycle ON_DUTY: {}", cause.message()));
+                       .onSuccess(_ -> log.info("Node {} registered lifecycle state: ON_DUTY",
+                                                self().id()))
+                       .onFailure(cause -> retryLifecycleOnDuty(lifecycleKey, attempt, cause));
+            }
+
+            private void retryLifecycleOnDuty(AetherKey.NodeLifecycleKey lifecycleKey, int attempt, Cause cause) {
+                if (attempt >= MAX_LIFECYCLE_RETRIES) {
+                    log.error("Node {} failed to register lifecycle ON_DUTY after {} attempts: {}",
+                              self().id(),
+                              attempt,
+                              cause.message());
+                    return;
+                }
+                if (!isActive()) {
+                    log.debug("Node {} skipping ON_DUTY retry — no longer active", self().id());
+                    return;
+                }
+                log.warn("Node {} failed to register lifecycle ON_DUTY (attempt {}/{}): {} — retrying in 1s",
+                         self().id(),
+                         attempt,
+                         MAX_LIFECYCLE_RETRIES,
+                         cause.message());
+                SharedScheduler.schedule(() -> writeLifecycleOnDuty(lifecycleKey, attempt + 1), timeSpan(1).seconds());
             }
 
             @Override
@@ -1141,10 +1111,13 @@ public interface NodeDeploymentManager {
 
             @Override
             public void onNodeLifecyclePut(ValuePut<AetherKey.NodeLifecycleKey, AetherValue.NodeLifecycleValue> valuePut) {
-                var key = valuePut.cause().key();
-                var value = valuePut.cause().value();
+                var key = valuePut.cause()
+                                  .key();
+                var value = valuePut.cause()
+                                    .value();
                 // Only watch our own lifecycle key
-                if (key.nodeId().equals(self()) && value.state() == AetherValue.NodeLifecycleState.SHUTTING_DOWN) {
+                if (key.nodeId()
+                       .equals(self()) && value.state() == AetherValue.NodeLifecycleState.SHUTTING_DOWN) {
                     log.warn("Node {} received SHUTTING_DOWN lifecycle state — initiating shutdown", self().id());
                     Option.option(shutdownCallback().get())
                           .onPresent(Runnable::run);

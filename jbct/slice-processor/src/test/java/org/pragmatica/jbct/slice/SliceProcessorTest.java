@@ -65,6 +65,7 @@ class SliceProcessorTest {
                 default Promise<Unit> start() { return null; }
                 default Promise<Unit> stop() { return null; }
                 List<SliceMethod<?, ?>> methods();
+                default List<Class<?>> serializableClasses() { return List.of(); }
             }
             """);
 

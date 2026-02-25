@@ -1,28 +1,109 @@
 package org.pragmatica.aether.slice.serialization;
 
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
-import org.pragmatica.serialization.ClassRegistrator;
 import org.pragmatica.serialization.fury.FuryDeserializer;
 import org.pragmatica.serialization.fury.FurySerializer;
 
+import java.util.ArrayDeque;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
-/// Fury-based serializer factory provider using singleton pattern.
+import org.apache.fury.Fury;
+import org.apache.fury.config.Language;
+
+/// Fury-based serializer factory provider with class-ID-based registration.
 ///
-/// Uses Apache Fury's ThreadSafeFury which is thread-safe and can be safely
-/// shared across concurrent method invocations. No pooling required.
+/// Uses {@code requireClassRegistration(true)} with explicit hash-based IDs for
+/// slice classes and sequential IDs for core framework classes. This ensures
+/// cross-slice serialization compatibility: hash IDs derived from class FQN
+/// produce the same ID regardless of which bridge serializes/deserializes.
+///
+/// Core classes (Option, Result, Unit) from FrameworkClassLoader get sequential
+/// IDs since they're the same Class objects in every bridge.
+///
+/// Slice classes get deterministic hash-based IDs in range [10000, 30000) to
+/// avoid overlap with Fury built-in types (0-255) and core sequential IDs (256+).
 @SuppressWarnings({"JBCT-VO-01", "JBCT-UC-01", "JBCT-LAM-01", "JBCT-LAM-02"})
 public interface FurySerializerFactoryProvider extends SerializerFactoryProvider {
-    static FurySerializerFactoryProvider furySerializerFactoryProvider(ClassRegistrator... registrators) {
-        return typeTokens -> {
-            // Create singleton serializer and deserializer (ThreadSafeFury is thread-safe)
-            Serializer serializer = FurySerializer.furySerializer(registrators);
-            Deserializer deserializer = FuryDeserializer.furyDeserializer(registrators);
+    static FurySerializerFactoryProvider furySerializerFactoryProvider() {
+        return (serializableClasses, sliceClassLoader) -> {
+            org.apache.fury.logging.LoggerFactory.useSlf4jLogging(true);
+            int coreCount = Runtime.getRuntime().availableProcessors();
+            var fury = Fury.builder()
+                           .withLanguage(Language.JAVA)
+                           .requireClassRegistration(true)
+                           .withClassLoader(sliceClassLoader)
+                           .buildThreadSafeFuryPool(coreCount * 2, coreCount * 4);
+
+            // 1. Register core classes (sequential IDs — same Class objects everywhere)
+            SliceCoreClasses.INSTANCE.classesToRegister().forEach(fury::register);
+
+            // 2. Expand slice classes recursively (record fields may reference other types)
+            var expanded = expandRecursively(serializableClasses);
+
+            // 3. Register slice classes with deterministic hash-based IDs
+            var idToClass = new HashMap<Integer, Class<?>>();
+            for (var clazz : expanded) {
+                var id = deterministicId(clazz.getName());
+                var existing = idToClass.put(id, clazz);
+                if (existing != null && !existing.equals(clazz)) {
+                    throw new IllegalStateException(
+                        "Hash collision: " + clazz.getName() + " and " + existing.getName()
+                        + " both map to ID " + id);
+                }
+                fury.register(clazz, (short) id);
+            }
+
+            Serializer serializer = FurySerializer.furySerializer(fury);
+            Deserializer deserializer = FuryDeserializer.furyDeserializer(fury);
             return singletonFactory(serializer, deserializer);
         };
+    }
+
+    /// Recursively expand classes to include user-defined field types.
+    /// Records' components and class fields may reference types that also
+    /// need registration with requireClassRegistration(true).
+    private static Set<Class<?>> expandRecursively(List<Class<?>> roots) {
+        var result = new LinkedHashSet<Class<?>>();
+        var queue = new ArrayDeque<>(roots);
+        while (!queue.isEmpty()) {
+            var clazz = queue.poll();
+            if (!result.add(clazz)) {
+                continue;
+            }
+            if (clazz.isRecord()) {
+                for (var component : clazz.getRecordComponents()) {
+                    addIfUserDefined(component.getType(), queue, result);
+                }
+            }
+            for (var field : clazz.getDeclaredFields()) {
+                addIfUserDefined(field.getType(), queue, result);
+            }
+        }
+        return result;
+    }
+
+    private static void addIfUserDefined(Class<?> type, ArrayDeque<Class<?>> queue, Set<Class<?>> seen) {
+        if (type.isPrimitive() || type.isArray()) {
+            return;
+        }
+        var name = type.getName();
+        if (name.startsWith("java.") || name.startsWith("org.pragmatica.lang.")) {
+            return;
+        }
+        if (!seen.contains(type)) {
+            queue.add(type);
+        }
+    }
+
+    /// Deterministic ID from class name. Range [10000, 30000) avoids overlap with
+    /// Fury built-ins (0-255) and core sequential IDs (256+).
+    private static int deterministicId(String className) {
+        return (className.hashCode() & 0x7FFFFFFF) % 20000 + 10000;
     }
 
     private static SerializerFactory singletonFactory(Serializer serializer, Deserializer deserializer) {

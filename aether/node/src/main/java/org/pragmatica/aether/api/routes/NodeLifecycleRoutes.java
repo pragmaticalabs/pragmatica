@@ -41,25 +41,24 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     @Override
     public Stream<Route<?>> routes() {
-        return Stream.of(
-            Route.<List<LifecycleEntry>> get("/api/nodes/lifecycle")
-                 .toJson(this::getAllLifecycleStates),
-            Route.<LifecycleEntry> get("/api/node/lifecycle")
-                 .withPath(aString())
-                 .to(this::getNodeLifecycle)
-                 .asJson(),
-            Route.<TransitionResult> post("/api/node/drain")
-                 .withPath(aString())
-                 .to(this::drainNode)
-                 .asJson(),
-            Route.<TransitionResult> post("/api/node/activate")
-                 .withPath(aString())
-                 .to(this::activateNode)
-                 .asJson(),
-            Route.<TransitionResult> post("/api/node/shutdown")
-                 .withPath(aString())
-                 .to(this::shutdownNode)
-                 .asJson());
+        return Stream.of(Route.<List<LifecycleEntry>> get("/api/nodes/lifecycle")
+                              .toJson(this::getAllLifecycleStates),
+                         Route.<LifecycleEntry> get("/api/node/lifecycle")
+                              .withPath(aString())
+                              .to(this::getNodeLifecycle)
+                              .asJson(),
+                         Route.<TransitionResult> post("/api/node/drain")
+                              .withPath(aString())
+                              .to(this::drainNode)
+                              .asJson(),
+                         Route.<TransitionResult> post("/api/node/activate")
+                              .withPath(aString())
+                              .to(this::activateNode)
+                              .asJson(),
+                         Route.<TransitionResult> post("/api/node/shutdown")
+                              .withPath(aString())
+                              .to(this::shutdownNode)
+                              .asJson());
     }
 
     private List<LifecycleEntry> getAllLifecycleStates() {
@@ -73,12 +72,19 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private static LifecycleEntry toLifecycleEntry(NodeLifecycleKey key, NodeLifecycleValue value) {
-        return new LifecycleEntry(key.nodeId().id(), value.state().name(), value.updatedAt());
+        return new LifecycleEntry(key.nodeId()
+                                     .id(),
+                                  value.state()
+                                       .name(),
+                                  value.updatedAt());
     }
 
     private Promise<LifecycleEntry> getNodeLifecycle(String nodeIdStr) {
         return resolveNodeLifecycle(nodeIdStr)
-                   .map(value -> new LifecycleEntry(nodeIdStr, value.state().name(), value.updatedAt()));
+        .map(value -> new LifecycleEntry(nodeIdStr,
+                                         value.state()
+                                              .name(),
+                                         value.updatedAt()));
     }
 
     private Promise<TransitionResult> drainNode(String nodeIdStr) {
@@ -87,23 +93,25 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     @SuppressWarnings("JBCT-PAT-01")
     private Promise<TransitionResult> activateNode(String nodeIdStr) {
-        return resolveNodeLifecycle(nodeIdStr)
-                   .flatMap(current -> activateFromState(nodeIdStr, current));
+        return resolveNodeLifecycle(nodeIdStr).flatMap(current -> activateFromState(nodeIdStr, current));
     }
 
     private Promise<TransitionResult> activateFromState(String nodeIdStr, NodeLifecycleValue current) {
         if (current.state() == NodeLifecycleState.DRAINING || current.state() == NodeLifecycleState.DECOMMISSIONED) {
             return writeLifecycleState(nodeIdStr, NodeLifecycleState.ON_DUTY);
         }
-        return Promise.success(
-            new TransitionResult(false, nodeIdStr, current.state().name(),
-                                 "Cannot activate from " + current.state() + " (must be DRAINING or DECOMMISSIONED)"));
+        return Promise.success(new TransitionResult(false,
+                                                    nodeIdStr,
+                                                    current.state()
+                                                           .name(),
+                                                    "Cannot activate from " + current.state()
+                                                    + " (must be DRAINING or DECOMMISSIONED)"));
     }
 
     private Promise<TransitionResult> shutdownNode(String nodeIdStr) {
         return NodeId.nodeId(nodeIdStr)
-                   .async()
-                   .flatMap(_ -> writeLifecycleState(nodeIdStr, NodeLifecycleState.SHUTTING_DOWN));
+                     .async()
+                     .flatMap(_ -> writeLifecycleState(nodeIdStr, NodeLifecycleState.SHUTTING_DOWN));
     }
 
     private Promise<TransitionResult> transitionLifecycle(String nodeIdStr,
@@ -111,7 +119,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                           NodeLifecycleState targetState,
                                                           String operationName) {
         return resolveNodeLifecycle(nodeIdStr)
-                   .flatMap(current -> guardStateTransition(nodeIdStr, current, requiredState, targetState, operationName));
+        .flatMap(current -> guardStateTransition(nodeIdStr, current, requiredState, targetState, operationName));
     }
 
     private Promise<TransitionResult> guardStateTransition(String nodeIdStr,
@@ -120,18 +128,20 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                            NodeLifecycleState targetState,
                                                            String operationName) {
         if (current.state() != requiredState) {
-            return Promise.success(
-                new TransitionResult(false, nodeIdStr, current.state().name(),
-                                     "Cannot " + operationName + " from " + current.state()
-                                     + " (must be " + requiredState + ")"));
+            return Promise.success(new TransitionResult(false,
+                                                        nodeIdStr,
+                                                        current.state()
+                                                               .name(),
+                                                        "Cannot " + operationName + " from " + current.state()
+                                                        + " (must be " + requiredState + ")"));
         }
         return writeLifecycleState(nodeIdStr, targetState);
     }
 
     private Promise<NodeLifecycleValue> resolveNodeLifecycle(String nodeIdStr) {
         return NodeId.nodeId(nodeIdStr)
-                   .async()
-                   .flatMap(this::lookupLifecycleValue);
+                     .async()
+                     .flatMap(this::lookupLifecycleValue);
     }
 
     private Promise<NodeLifecycleValue> lookupLifecycleValue(NodeId nodeId) {
@@ -146,10 +156,12 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     private Promise<TransitionResult> writeLifecycleState(String nodeIdStr, NodeLifecycleState newState) {
         return NodeId.nodeId(nodeIdStr)
-                   .async()
-                   .flatMap(nodeId -> applyLifecycleCommand(nodeId, newState))
-                   .map(_ -> new TransitionResult(true, nodeIdStr, newState.name(),
-                                                  "Transition to " + newState + " initiated"));
+                     .async()
+                     .flatMap(nodeId -> applyLifecycleCommand(nodeId, newState))
+                     .map(_ -> new TransitionResult(true,
+                                                    nodeIdStr,
+                                                    newState.name(),
+                                                    "Transition to " + newState + " initiated"));
     }
 
     private Promise<List<Long>> applyLifecycleCommand(NodeId nodeId,
@@ -157,6 +169,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
         var key = NodeLifecycleKey.nodeLifecycleKey(nodeId);
         AetherValue value = NodeLifecycleValue.nodeLifecycleValue(newState);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
-        return nodeSupplier.get().apply(List.of(command));
+        return nodeSupplier.get()
+                           .apply(List.of(command));
     }
 }

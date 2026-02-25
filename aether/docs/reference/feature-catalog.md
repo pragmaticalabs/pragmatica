@@ -19,7 +19,8 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 3 | Rolling updates | Battle-tested | Zero-downtime version deployments with traffic shifting (new:old ratio), health thresholds, auto-progression, rollback, and cleanup policies |
 | 4 | Auto-healing | Battle-tested | Automatic reconciliation of desired vs. actual state on node departure. Leader-only with failover |
 | 5 | Classloader isolation | Complete | Per-slice classloader prevents dependency conflicts between slices |
-| 6 | Manifest versioning | Complete | Envelope format versioning (v1, v2, v3) for backward-compatible manifest evolution |
+| 6 | Manifest versioning | Complete | Envelope format versioning (v1-v4) for backward-compatible manifest evolution |
+| 66 | Class-ID-based serialization | Complete | Deterministic hash-based Fury class IDs for cross-slice invocations with classloader isolation. Core types get sequential IDs; user types get hash-based IDs [10000-30000). Slice declares `serializableClasses()` at compile time |
 
 ## Scaling & Control
 
@@ -173,10 +174,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 21 |
-| Complete | 42 |
+| Complete | 43 |
 | Partial | 2 |
 | Planned | 11 |
-| Total | 76 |
+| Total | 77 |
 
 **Battle-tested features (21):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint
 
@@ -205,4 +206,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-02-24 (v0.18.0)*
+*Last updated: 2026-02-25 (v0.18.0)*

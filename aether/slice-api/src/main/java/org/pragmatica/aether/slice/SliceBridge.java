@@ -56,6 +56,32 @@ public interface SliceBridge {
     /// @return Promise resolving when slice is stopped
     Promise<Unit> stop();
 
+    /// Serialize an object using this bridge's serializer.
+    ///
+    /// Used by SliceInvoker for local invocations: the bridge's serializer
+    /// handles cross-classloader type resolution correctly, unlike the node-level
+    /// serializer which only knows infrastructure types.
+    ///
+    /// @param input Object to serialize (may be from a different classloader)
+    /// @return Promise resolving to serialized bytes
+    default Promise<byte[]> encode(Object input) {
+        throw new UnsupportedOperationException("Encode not supported by this bridge");
+    }
+
+    /// Deserialize bytes using this bridge's deserializer.
+    ///
+    /// Resolves class names using the target slice's classloader, producing
+    /// objects compatible with the caller's type expectations.
+    ///
+    /// @param bytes Serialized bytes to decode
+    /// @return Promise resolving to the deserialized object
+    default Promise<Object> decode(byte[] bytes) {
+        throw new UnsupportedOperationException("Decode not supported by this bridge");
+    }
+
+    /// Get the classloader for this slice bridge.
+    ClassLoader classLoader();
+
     /// Get the list of method names exposed by this slice.
     ///
     /// @return List of method names

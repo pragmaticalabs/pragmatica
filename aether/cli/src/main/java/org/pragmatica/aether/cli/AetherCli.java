@@ -2058,12 +2058,13 @@ public class AetherCli implements Runnable {
                 System.out.println("Node Lifecycle States:");
                 var arrayStart = response.indexOf('[');
                 var arrayEnd = response.lastIndexOf(']');
-                if (arrayStart == -1 || arrayEnd == -1 || arrayEnd <= arrayStart) {
+                if (arrayStart == - 1 || arrayEnd == - 1 || arrayEnd <= arrayStart) {
                     System.out.println("  (none)");
                     return 0;
                 }
                 var arrayContent = response.substring(arrayStart + 1, arrayEnd);
-                if (arrayContent.trim().isEmpty()) {
+                if (arrayContent.trim()
+                                .isEmpty()) {
                     System.out.println("  (none)");
                     return 0;
                 }
@@ -2092,7 +2093,8 @@ public class AetherCli implements Runnable {
             private static String formatTimestamp(String epochMs) {
                 return option(epochMs).filter(s -> !s.equals("0"))
                              .map(Long::parseLong)
-                             .map(ms -> Instant.ofEpochMilli(ms).toString())
+                             .map(ms -> Instant.ofEpochMilli(ms)
+                                               .toString())
                              .or("unknown");
             }
         }
@@ -2154,9 +2156,13 @@ public class AetherCli implements Runnable {
             var resultNodeId = extractJsonString(json, "nodeId");
             var state = extractJsonString(json, "state");
             var message = extractJsonString(json, "message");
-            var symbol = success ? "\u2713" : "\u2717";
+            var symbol = success
+                         ? "\u2713"
+                         : "\u2717";
             System.out.println(symbol + " " + resultNodeId + ": " + state + " - " + message);
-            return success ? 0 : 1;
+            return success
+                   ? 0
+                   : 1;
         }
 
         @SuppressWarnings("JBCT-PAT-01")
@@ -2182,10 +2188,10 @@ public class AetherCli implements Runnable {
         private static String extractJsonString(String json, String key) {
             var pattern = "\"" + key + "\":\"";
             var start = json.indexOf(pattern);
-            if (start == -1) return "";
+            if (start == - 1) return "";
             start += pattern.length();
             var end = json.indexOf("\"", start);
-            if (end == -1) return "";
+            if (end == - 1) return "";
             return json.substring(start, end);
         }
 
@@ -2193,7 +2199,7 @@ public class AetherCli implements Runnable {
         private static String extractJsonNumber(String json, String key) {
             var pattern = "\"" + key + "\":";
             var start = json.indexOf(pattern);
-            if (start == -1) return "0";
+            if (start == - 1) return "0";
             start += pattern.length();
             var end = start;
             while (end < json.length() && (Character.isDigit(json.charAt(end)) || json.charAt(end) == '-')) {

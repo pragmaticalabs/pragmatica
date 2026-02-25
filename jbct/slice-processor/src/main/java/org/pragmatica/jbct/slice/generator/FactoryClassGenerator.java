@@ -895,6 +895,8 @@ public class FactoryClassGenerator {
         out.println("            public Promise<Unit> stop() {");
         out.println("                return resources.releaseAll(\"" + escapeJavaString(sliceArtifactCoordinate) + "\");");
         out.println("            }");
+        // Generate serializableClasses() override
+        generateSerializableClassesOverride(out, model, importTracker);
         // Generate delegate methods for the slice interface
         for (var method : methods) {
             out.println();
@@ -1039,6 +1041,101 @@ public class FactoryClassGenerator {
                                          + qualifier.resourceTypeSimpleName()
                                          + ".class, \"" + escapeJavaString(qualifier.configSection()) + "\")")
                        .or("ctx.resources().provide(Object.class, \"unknown\")");
+    }
+
+    /// Generate the serializableClasses() override for the adapter record.
+    /// Returns a List.of(...) with all user-defined types that this slice transmits via serialization.
+    private void generateSerializableClassesOverride(PrintWriter out, SliceModel model, ImportTracker importTracker) {
+        var classEntries = collectSerializableClassEntries(model, importTracker);
+        out.println();
+        out.println("            @Override");
+        out.println("            public List<Class<?>> serializableClasses() {");
+        if (classEntries.isEmpty()) {
+            out.println("                return List.of();");
+        } else {
+            out.println("                return List.of(");
+            for (int i = 0; i < classEntries.size(); i++) {
+                var comma = (i < classEntries.size() - 1) ? "," : "";
+                out.println("                    " + classEntries.get(i) + comma);
+            }
+            out.println("                );");
+        }
+        out.println("            }");
+    }
+
+    /// Collect serializable class entries as ready-to-emit strings (e.g. "MyType.class").
+    /// Includes method parameter types, response types, multi-param request records, and publisher message types.
+    /// Filters out JDK and Pragmatica framework types.
+    private List<String> collectSerializableClassEntries(SliceModel model, ImportTracker importTracker) {
+        var seen = new LinkedHashSet<String>();
+        var entries = new ArrayList<String>();
+        for (var method : model.methods()) {
+            collectParameterEntries(method, importTracker, seen, entries);
+            collectResponseEntry(method, importTracker, seen, entries);
+        }
+        collectPublisherMessageEntries(model, importTracker, seen, entries);
+        return entries;
+    }
+
+    private void collectParameterEntries(MethodModel method, ImportTracker importTracker,
+                                          Set<String> seen, List<String> entries) {
+        if (method.hasNoParams()) {
+            return;
+        }
+        if (method.hasSingleParam()) {
+            addTypeEntry(getQualifiedTypeName(method.parameters().getFirst().type()), importTracker, seen, entries);
+        } else {
+            // Multi-param: include the generated request record (inner class of Factory, visible by simple name)
+            var requestRecordName = capitalize(method.name()) + "Request";
+            if (seen.add(requestRecordName)) {
+                entries.add(requestRecordName + ".class");
+            }
+            // Also include individual user-defined parameter types
+            for (var param : method.parameters()) {
+                addTypeEntry(getQualifiedTypeName(param.type()), importTracker, seen, entries);
+            }
+        }
+    }
+
+    private void collectResponseEntry(MethodModel method, ImportTracker importTracker,
+                                       Set<String> seen, List<String> entries) {
+        addTypeEntry(getQualifiedTypeName(method.responseType()), importTracker, seen, entries);
+    }
+
+    private void collectPublisherMessageEntries(SliceModel model, ImportTracker importTracker,
+                                                 Set<String> seen, List<String> entries) {
+        for (var dep : model.dependencies()) {
+            if (dep.isPublisher()) {
+                dep.publisherMessageType()
+                   .onPresent(msgType -> addTypeEntry(msgType, importTracker, seen, entries));
+            }
+        }
+    }
+
+    private void addTypeEntry(String qualifiedName, ImportTracker importTracker,
+                               Set<String> seen, List<String> entries) {
+        if (!isFrameworkOrJdkType(qualifiedName) && seen.add(qualifiedName)) {
+            entries.add(importTracker.use(qualifiedName) + ".class");
+        }
+    }
+
+    private String getQualifiedTypeName(TypeMirror type) {
+        if (type instanceof DeclaredType dt) {
+            return dt.asElement().toString();
+        }
+        return type.toString();
+    }
+
+    private boolean isFrameworkOrJdkType(String typeName) {
+        return typeName.startsWith("java.lang.")
+               || typeName.startsWith("java.util.")
+               || typeName.startsWith("org.pragmatica.lang.")
+               || typeName.equals("void")
+               || typeName.equals("int")
+               || typeName.equals("long")
+               || typeName.equals("boolean")
+               || typeName.equals("double")
+               || typeName.equals("float");
     }
 
     /// Tracks imports during two-phase code generation.

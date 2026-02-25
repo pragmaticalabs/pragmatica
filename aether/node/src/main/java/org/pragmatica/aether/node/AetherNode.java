@@ -555,7 +555,10 @@ public interface AetherNode {
         var observabilityInterceptor = ObservabilityInterceptor.observabilityInterceptor(sampler,
                                                                                          traceStore,
                                                                                          config.self()
-                                                                                               .id());
+                                                                                               .id(),
+                                                                                         (artifact, method) -> depthRegistry.getConfig(artifact,
+                                                                                                                                       method)
+                                                                                                                            .depthThreshold());
         // Create invocation handler BEFORE deployment manager (needed for slice registration)
         // Pass serializer/deserializer, httpRoutePublisher, and shared observability interceptor for HTTP request routing
         var invocationHandler = InvocationHandler.invocationHandler(config.self(),

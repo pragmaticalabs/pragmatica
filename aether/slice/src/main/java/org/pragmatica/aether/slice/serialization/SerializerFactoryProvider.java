@@ -1,30 +1,29 @@
 package org.pragmatica.aether.slice.serialization;
 
-import org.pragmatica.lang.type.TypeToken;
-
 import java.util.List;
 
 /// Provider that creates SerializerFactory instances for loaded slices.
 ///
 /// This is the "factory of factories" configured at runtime. During slice loading,
-/// the runtime collects all TypeTokens from the slice's method declarations and
+/// the runtime collects all serializable classes declared by the slice and
 /// invokes this provider exactly once to create a per-slice SerializerFactory.
 ///
 /// The created factory is then used for all method invocations on that slice instance.
 @FunctionalInterface
 public interface SerializerFactoryProvider {
-    /// Creates a SerializerFactory for a slice based on the types used in its methods.
+    /// Creates a SerializerFactory for a slice based on its serializable classes.
     ///
-    /// Called exactly once during slice loading with all TypeTokens collected from
-    /// parameter types and return types of all methods exposed by the slice.
+    /// Called exactly once during slice loading with all classes declared by the
+    /// slice's {@code serializableClasses()} method.
     ///
-    /// The implementation may use this type information to:
+    /// The implementation may use this class information to:
     /// - Pre-register classes with the underlying serializer
-    /// - Optimize serialization for known types
+    /// - Assign deterministic IDs for cross-slice compatibility
     /// - Configure type-specific serialization strategies
     ///
-    /// @param typeTokens All TypeTokens from slice method parameters and return types
+    /// @param serializableClasses All classes declared by the slice for serialization
+    /// @param sliceClassLoader    The classloader for the slice
     ///
     /// @return A SerializerFactory instance for this slice
-    SerializerFactory createFactory(List<TypeToken<?>> typeTokens);
+    SerializerFactory createFactory(List<Class<?>> serializableClasses, ClassLoader sliceClassLoader);
 }

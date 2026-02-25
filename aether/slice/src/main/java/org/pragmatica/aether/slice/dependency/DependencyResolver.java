@@ -16,7 +16,6 @@ import org.pragmatica.aether.slice.SliceManifest;
 import org.pragmatica.aether.slice.SliceManifest.SliceManifestInfo;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
-import org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider;
 import org.pragmatica.aether.slice.serialization.SerializerFactory;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -358,24 +357,6 @@ public interface DependencyResolver {
                                               SerializerFactory serializerFactory) {
         return resolve(artifact, repository, registry, sharedLibraryLoader, invokerFacade)
         .map(slice -> DefaultSliceBridge.defaultSliceBridge(artifact, slice, serializerFactory));
-    }
-
-    /// Resolve a slice and return a SliceBridge using default Fury serialization.
-    ///
-    /// @param artifact            The slice artifact to resolve
-    /// @param repository          Repository to locate artifacts
-    /// @param registry            Registry to track loaded slices
-    /// @param sharedLibraryLoader ClassLoader for shared dependencies
-    /// @param invokerFacade       Facade for inter-slice invocations
-    /// @return Promise of resolved SliceBridge
-    static Promise<SliceBridge> resolveBridge(Artifact artifact,
-                                              Repository repository,
-                                              SliceRegistry registry,
-                                              SharedLibraryClassLoader sharedLibraryLoader,
-                                              SliceInvokerFacade invokerFacade) {
-        var serializerFactory = FurySerializerFactoryProvider.furySerializerFactoryProvider()
-                                                             .createFactory(List.of());
-        return resolveBridge(artifact, repository, registry, sharedLibraryLoader, invokerFacade, serializerFactory);
     }
 
     private static Promise<Slice> resolveWithSharedLoader(Artifact artifact,

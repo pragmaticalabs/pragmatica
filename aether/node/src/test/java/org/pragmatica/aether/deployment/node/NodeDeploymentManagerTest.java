@@ -557,6 +557,11 @@ class NodeDeploymentManagerTest {
         public Option<org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector> metricsCollector() {
             return Option.none();
         }
+
+        @Override
+        public Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader) {
+            return Option.none();
+        }
     }
 
     static class TestKVStore extends KVStore<AetherKey, AetherValue> {

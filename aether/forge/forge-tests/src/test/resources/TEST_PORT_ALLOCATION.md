@@ -24,6 +24,7 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | TtmTest                       | 10500     | 10600          | 35         | 3 nodes |
 | GracefulShutdownTest          | 11000     | 11100          | 60         | 3 nodes |
 | ForgeClusterIntegrationTest   | 11500     | 11600          | 15         | 3 nodes |
+| InvocationMetricsTest         | 12000     | 12100          | 0          | 5 nodes (shared cluster, `@BeforeAll`) |
 
 ## Per-Method Offset Pattern
 
@@ -65,4 +66,4 @@ When adding a new test class:
 
 ## Reserved Ranges
 
-- 12000+ / 12100+: Reserved for future tests
+- 12500+ / 12600+: Reserved for future tests

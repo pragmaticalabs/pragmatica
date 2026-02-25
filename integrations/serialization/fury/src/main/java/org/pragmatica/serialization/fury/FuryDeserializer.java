@@ -33,6 +33,14 @@ public interface FuryDeserializer extends Deserializer {
     /// @param registrators class registrators to apply
     /// @return a thread-safe Fury deserializer
     static FuryDeserializer furyDeserializer(ClassRegistrator... registrators) {
+        return furyDeserializer(FuryFactory.fury(registrators));
+    }
+
+    /// Create a Fury deserializer from a pre-built ThreadSafeFury instance.
+    ///
+    /// @param fury pre-configured Fury instance
+    /// @return a thread-safe Fury deserializer
+    static FuryDeserializer furyDeserializer(ThreadSafeFury fury) {
         record furyDeserializer(ThreadSafeFury fury) implements FuryDeserializer {
             private static final Logger log = LoggerFactory.getLogger(FuryDeserializer.class);
 
@@ -47,6 +55,6 @@ public interface FuryDeserializer extends Deserializer {
                 }
             }
         }
-        return new furyDeserializer(FuryFactory.fury(registrators));
+        return new furyDeserializer(fury);
     }
 }

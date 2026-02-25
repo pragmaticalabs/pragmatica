@@ -54,6 +54,13 @@ public interface InvocationHandler {
     /// @return Option containing the SliceBridge if registered
     Option<SliceBridge> localSlice(Artifact artifact);
 
+    /// Find the bridge for a given classloader.
+    /// Used by SliceInvoker to find the sender's bridge for serialization.
+    ///
+    /// @param classLoader The classloader to look up
+    /// @return Option containing the SliceBridge if found
+    Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader);
+
     /// Get the metrics collector if configured.
     ///
     /// @return Option containing the metrics collector
@@ -165,6 +172,7 @@ class InvocationHandlerImpl implements InvocationHandler {
 
     // Local slice bridges available for invocation
     private final Map<Artifact, SliceBridge> localSlices = new ConcurrentHashMap<>();
+    private final Map<ClassLoader, SliceBridge> classLoaderBridges = new ConcurrentHashMap<>();
 
     InvocationHandlerImpl(NodeId self,
                           ClusterNetwork network,
@@ -188,19 +196,28 @@ class InvocationHandlerImpl implements InvocationHandler {
     @SuppressWarnings("JBCT-RET-01")
     public void registerSlice(Artifact artifact, SliceBridge bridge) {
         localSlices.put(artifact, bridge);
+        classLoaderBridges.put(bridge.classLoader(), bridge);
         log.debug("Registered slice for invocation: {}", artifact);
     }
 
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void unregisterSlice(Artifact artifact) {
-        localSlices.remove(artifact);
+        var bridge = localSlices.remove(artifact);
+        if (bridge != null) {
+            classLoaderBridges.remove(bridge.classLoader());
+        }
         log.debug("Unregistered slice from invocation: {}", artifact);
     }
 
     @Override
     public Option<SliceBridge> localSlice(Artifact artifact) {
         return Option.option(localSlices.get(artifact));
+    }
+
+    @Override
+    public Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader) {
+        return Option.option(classLoaderBridges.get(classLoader));
     }
 
     @Override

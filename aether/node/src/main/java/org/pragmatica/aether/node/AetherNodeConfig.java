@@ -62,7 +62,7 @@ public record AetherNodeConfig(TopologyConfig topology,
     public static final int MANAGEMENT_DISABLED = 0;
 
     public static SliceActionConfig defaultSliceActionConfig() {
-        return SliceActionConfig.sliceActionConfig(furySerializerFactoryProvider(AetherCustomClasses.INSTANCE));
+        return SliceActionConfig.sliceActionConfig(furySerializerFactoryProvider());
     }
 
     public static AetherNodeConfig aetherNodeConfig(NodeId self,

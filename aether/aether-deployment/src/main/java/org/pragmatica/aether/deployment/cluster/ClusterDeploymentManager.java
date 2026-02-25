@@ -278,7 +278,8 @@ public interface ClusterDeploymentManager {
                     var instances = nodes.isEmpty()
                                     ? Math.min(1, slice.instances())
                                     : Math.min(slice.instances(), nodes.size());
-                    blueprints.put(artifact, Blueprint.blueprint(artifact, instances, slice.minAvailable()));
+                    blueprints.put(artifact,
+                                   Blueprint.blueprint(artifact, instances, slice.minAvailable()));
                 }
             }
 
@@ -433,7 +434,10 @@ public interface ClusterDeploymentManager {
             private void handleNodeLifecycleChange(NodeId nodeId, NodeLifecycleState state) {
                 switch (state) {
                     case DRAINING -> startDrainEviction(nodeId);
-                    case ON_DUTY -> cancelDrainEviction(nodeId);
+                    case ON_DUTY -> {
+                        cancelDrainEviction(nodeId);
+                        reconcile();
+                    }
                     default -> {}
                 }
             }
@@ -483,8 +487,8 @@ public interface ClusterDeploymentManager {
                 var artifact = originalKey.artifact();
                 var drainingNode = originalKey.nodeId();
                 var targetNodes = allocatableNodes().stream()
-                                                    .filter(n -> !n.equals(drainingNode))
-                                                    .collect(Collectors.toSet());
+                                                  .filter(n -> !n.equals(drainingNode))
+                                                  .collect(Collectors.toSet());
                 var commands = collectAllocationsForNodes(artifact, 1, targetNodes);
                 if (commands.isEmpty()) {
                     log.warn("Drain eviction: no allocatable node for replacement of {} (will retry)", artifact);
@@ -507,11 +511,11 @@ public interface ClusterDeploymentManager {
                 var hasActiveReplacement = sliceStates.entrySet()
                                                       .stream()
                                                       .filter(e -> e.getKey()
-                                                                     .artifact()
-                                                                     .equals(artifact))
+                                                                    .artifact()
+                                                                    .equals(artifact))
                                                       .filter(e -> !e.getKey()
-                                                                      .nodeId()
-                                                                      .equals(drainingNode))
+                                                                     .nodeId()
+                                                                     .equals(drainingNode))
                                                       .anyMatch(e -> e.getValue() == SliceState.ACTIVE);
                 if (hasActiveReplacement) {
                     log.info("Drain eviction: replacement ACTIVE for {}, unloading from {}", artifact, drainingNode);
@@ -527,9 +531,8 @@ public interface ClusterDeploymentManager {
             private void completeDrain(NodeId drainingNode) {
                 drainingNodes.remove(drainingNode);
                 log.info("Drain complete for node {}, writing DECOMMISSIONED state", drainingNode);
-                var command = new KVCommand.Put<AetherKey, AetherValue>(
-                    NodeLifecycleKey.nodeLifecycleKey(drainingNode),
-                    NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED));
+                var command = new KVCommand.Put<AetherKey, AetherValue>(NodeLifecycleKey.nodeLifecycleKey(drainingNode),
+                                                                        NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DECOMMISSIONED));
                 cluster.apply(List.of(command))
                        .onFailure(cause -> log.error("Failed to write DECOMMISSIONED for {}: {}",
                                                      drainingNode,
@@ -637,7 +640,10 @@ public interface ClusterDeploymentManager {
                     }
                 }
                 var minInstances = value.effectiveMinInstances();
-                log.info("Slice target changed for {}: {} instances (min: {})", newArtifact, desiredInstances, minInstances);
+                log.info("Slice target changed for {}: {} instances (min: {})",
+                         newArtifact,
+                         desiredInstances,
+                         minInstances);
                 blueprints.put(newArtifact, Blueprint.blueprint(newArtifact, desiredInstances, minInstances));
                 allCommands.addAll(collectAllocationCommands(newArtifact, desiredInstances));
                 submitBatch(allCommands);
@@ -662,7 +668,8 @@ public interface ClusterDeploymentManager {
                              artifact,
                              desiredInstances,
                              slice.instances());
-                    blueprints.put(artifact, Blueprint.blueprint(artifact, desiredInstances, slice.minAvailable()));
+                    blueprints.put(artifact,
+                                   Blueprint.blueprint(artifact, desiredInstances, slice.minAvailable()));
                     // Create SliceTargetKey so rolling updates can find the current version
                     allCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
                                                         SliceTargetValue.sliceTargetValue(artifact.version(),
@@ -1146,8 +1153,8 @@ public interface ClusterDeploymentManager {
                                                    .map(SliceNodeKey::nodeId)
                                                    .collect(Collectors.toSet());
                 return allocatableNodes().stream()
-                                         .filter(node -> !nodesWithAnySlice.contains(node))
-                                         .collect(Collectors.toSet());
+                                       .filter(node -> !nodesWithAnySlice.contains(node))
+                                       .collect(Collectors.toSet());
             }
 
             /// Collect allocation commands for a specific set of nodes.
@@ -1222,14 +1229,20 @@ public interface ClusterDeploymentManager {
                                                                         int toRemove,
                                                                         List<SliceNodeKey> existingInstances) {
                 var blueprint = blueprints.get(artifact);
-                var minInstances = blueprint != null ? blueprint.minInstances() : 1;
+                var minInstances = blueprint != null
+                                   ? blueprint.minInstances()
+                                   : 1;
                 var activeCount = existingInstances.size();
                 // Enforce budget: do not scale below minInstances
                 var maxRemovable = Math.max(0, activeCount - minInstances);
                 var actualRemove = Math.min(toRemove, maxRemovable);
                 if (actualRemove < toRemove) {
                     log.info("Budget enforcement: capping scale-down of {} from {} to {} (min: {}, active: {})",
-                             artifact, toRemove, actualRemove, minInstances, activeCount);
+                             artifact,
+                             toRemove,
+                             actualRemove,
+                             minInstances,
+                             activeCount);
                 }
                 if (actualRemove == 0) {
                     return List.of();
