@@ -80,11 +80,7 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- Logging -->
-        <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-api</artifactId>
-        </dependency>
+        <!-- Logging (test only) -->
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>test-logging</artifactId>

@@ -13,9 +13,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 /// Loader for route configuration from TOML files.
 ///
 /// Supports loading configuration from:
@@ -44,7 +41,6 @@ public final class RouteConfigLoader {
     public static final String CONFIG_FILE = "routes.toml";
     public static final String BASE_CONFIG_FILE = "routes-base.toml";
 
-    private static final Logger log = LoggerFactory.getLogger(RouteConfigLoader.class);
     private static final Cause FILE_NOT_FOUND = Causes.cause("Route configuration file not found");
     private static final Cause PARSE_ERROR = Causes.cause("Failed to parse route configuration");
 
@@ -149,10 +145,7 @@ public final class RouteConfigLoader {
         var explicitSection = toml.getSection("errors.explicit");
         for (var entry : explicitSection.entrySet()) {
             var typeName = entry.getKey();
-            parseStatusCodeSafely(entry.getValue()).onPresent(statusCode -> mappings.put(typeName, statusCode))
-                                 .onEmpty(() -> log.warn("Invalid status code for type '{}': {}",
-                                                         typeName,
-                                                         entry.getValue()));
+            parseStatusCodeSafely(entry.getValue()).onPresent(statusCode -> mappings.put(typeName, statusCode));
         }
         return Map.copyOf(mappings);
     }

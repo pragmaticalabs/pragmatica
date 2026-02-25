@@ -418,9 +418,9 @@
             </dependency>
 
             <dependency>
-                <groupId>org.apache.fury</groupId>
-                <artifactId>fury-core</artifactId>
-                <version>${fury-core.version}</version>
+                <groupId>org.apache.fory</groupId>
+                <artifactId>fory-core</artifactId>
+                <version>${fory-core.version}</version>
             </dependency>
 
             <!-- CLI -->

@@ -181,7 +181,8 @@ public final class ForgeServer {
                                                         forgeConfig.managementPort(),
                                                         forgeConfig.appHttpPort(),
                                                         "node",
-                                                        configProvider);
+                                                        configProvider,
+                                                        forgeConfig.observability());
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
         var configurableLoadRunnerInstance = ConfigurableLoadRunner.configurableLoadRunner(clusterInstance::getAvailableAppHttpPorts,
                                                                                            metricsInstance,

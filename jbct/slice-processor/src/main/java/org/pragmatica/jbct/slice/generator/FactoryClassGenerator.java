@@ -108,7 +108,7 @@ public class FactoryClassGenerator {
         importTracker.use("org.pragmatica.lang.Unit");
         importTracker.use("org.pragmatica.lang.type.TypeToken");
         importTracker.use("org.pragmatica.aether.slice.ResourceProviderFacade");
-        if (model.hasMethodInterceptors()) {
+        if (model.hasMethodInterceptors() || model.dependencies().stream().anyMatch(DependencyModel::isPublisher)) {
             importTracker.use("org.pragmatica.aether.slice.ProvisioningContext");
             importTracker.use("org.pragmatica.lang.Functions.Fn1");
         }
@@ -1037,11 +1037,18 @@ public class FactoryClassGenerator {
     }
 
     /// Generate resource provisioning call: ctx.resources().provide(Type.class, "config.section")
+    /// Publisher resources require ProvisioningContext for runtime extensions (TopicSubscriptionRegistry, SliceInvoker).
     private String generateResourceProvideCall(DependencyModel resource) {
         return resource.resourceQualifier()
-                       .map(qualifier -> "ctx.resources().provide("
-                                         + qualifier.resourceTypeSimpleName()
-                                         + ".class, \"" + escapeJavaString(qualifier.configSection()) + "\")")
+                       .map(qualifier -> {
+                           var typeName = qualifier.resourceTypeSimpleName();
+                           var configSection = escapeJavaString(qualifier.configSection());
+                           if (resource.isPublisher()) {
+                               return "ctx.resources().provide(" + typeName + ".class, \""
+                                      + configSection + "\", ProvisioningContext.provisioningContext())";
+                           }
+                           return "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\")";
+                       })
                        .or("ctx.resources().provide(Object.class, \"unknown\")");
     }
 

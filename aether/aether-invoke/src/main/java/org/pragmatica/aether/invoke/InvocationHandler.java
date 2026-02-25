@@ -2,7 +2,6 @@ package org.pragmatica.aether.invoke;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.http.HttpRoutePublisher;
-import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
@@ -275,39 +274,11 @@ class InvocationHandlerImpl implements InvocationHandler {
                                 .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
     }
 
-    /// Attempt to route HTTP requests through SliceRouter if available.
-    /// Falls back to direct SliceBridge invocation for non-HTTP requests or when SliceRouter is unavailable.
+    /// Invoke a method on the target slice via its bridge.
+    ///
+    /// HTTP forwarding between nodes uses the dedicated HttpForwardMessage mechanism
+    /// (AppHttpServer), so this method delegates directly to the SliceBridge.
     private Promise<byte[]> invokeWithHttpRouting(InvokeRequest request, SliceBridge bridge) {
-        // Check if we have the necessary components for HTTP routing
-        if (deserializer.isEmpty() || serializer.isEmpty() || httpRoutePublisher.isEmpty()) {
-            return bridge.invoke(request.method()
-                                        .name(),
-                                 request.payload());
-        }
-        // Try to deserialize and check if it's an HttpRequestContext
-        var des = deserializer.unwrap();
-        var ser = serializer.unwrap();
-        var routePublisher = httpRoutePublisher.unwrap();
-        try{
-            Object payload = des.decode(request.payload());
-            if (payload instanceof HttpRequestContext httpContext) {
-                // Check if we have a SliceRouter for this artifact
-                var sliceRouterOpt = routePublisher.getSliceRouter(request.targetSlice());
-                if (sliceRouterOpt.isPresent()) {
-                    log.debug("[requestId={}] Routing HTTP request through SliceRouter for {}",
-                              request.requestId(),
-                              request.targetSlice());
-                    return sliceRouterOpt.unwrap()
-                                         .handle(httpContext)
-                                         .map(ser::encode);
-                }
-            }
-        } catch (Exception e) {
-            log.debug("[requestId={}] Payload is not HttpRequestContext, using direct invocation: {}",
-                      request.requestId(),
-                      e.getMessage());
-        }
-        // Fall back to direct SliceBridge invocation
         return bridge.invoke(request.method()
                                     .name(),
                              request.payload());

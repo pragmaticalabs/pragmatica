@@ -1,3 +1,6 @@
+[messaging.high-value-orders]
+topic_name = "high-value-order-events"
+
 [database]
 type = "H2"
 name = "pricing-engine"

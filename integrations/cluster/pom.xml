@@ -44,8 +44,8 @@
             <artifactId>serialization-kryo</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.apache.fury</groupId>
-            <artifactId>fury-core</artifactId>
+            <groupId>org.apache.fory</groupId>
+            <artifactId>fory-core</artifactId>
         </dependency>
 
         <!-- Logging -->

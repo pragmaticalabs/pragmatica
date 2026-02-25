@@ -43,5 +43,6 @@ echo ""
 
 exec java -jar "$FORGE_JAR" \
     --config "$SCRIPT_DIR/forge.toml" \
+    --blueprint "$SCRIPT_DIR/target/blueprint.toml" \
     --load-config "$SCRIPT_DIR/load-config.toml" \
     --auto-start

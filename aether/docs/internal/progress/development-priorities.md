@@ -464,6 +464,16 @@ Part of Cloud Integration (#1). Per-provider status:
     - Automatic retry, timeout, and dead-letter handling
     - Visualization of in-flight sagas and their states
 
+29. **Compile-Time Serde Code Generation**
+    - Replace Fory/Kryo with generated serializer/deserializer code emitted by the slice-processor
+    - Eliminates external serialization dependency and all classloader-related issues
+    - **Supported types:** records, primitives, String, enums, List, Set, Map, nested records
+    - **Enforced at compile time:** unsupported field types produce annotation processor errors
+    - **Deterministic wire format:** class ID + fields in declaration order, no runtime reflection
+    - **Benefits:** zero runtime reflection, no classloader introspection, compile-time validation, no external dependencies
+    - **Scope:** slice boundary serialization only (cross-slice invocations, pub-sub messages)
+    - Inspired by Fory's approach but tailored to the constrained slice boundary type system
+
 ---
 
 ## Infra Development

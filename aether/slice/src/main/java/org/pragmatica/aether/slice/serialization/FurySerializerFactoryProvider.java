@@ -15,8 +15,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
-import org.apache.fury.Fury;
-import org.apache.fury.config.Language;
+import org.apache.fory.Fory;
+import org.apache.fory.config.Language;
 
 /// Fury-based serializer factory provider with class-ID-based registration.
 ///
@@ -37,14 +37,15 @@ public interface FurySerializerFactoryProvider extends SerializerFactoryProvider
 
     private static Result<SerializerFactory> buildFactory(List<Class<?>> serializableClasses,
                                                           ClassLoader sliceClassLoader) {
-        org.apache.fury.logging.LoggerFactory.useSlf4jLogging(true);
+        org.apache.fory.logging.LoggerFactory.useSlf4jLogging(true);
         int coreCount = Runtime.getRuntime()
                                .availableProcessors();
-        var fury = Fury.builder()
+        var fury = Fory.builder()
                        .withLanguage(Language.JAVA)
                        .requireClassRegistration(true)
+                       .withCodegen(true)
                        .withClassLoader(sliceClassLoader)
-                       .buildThreadSafeFuryPool(coreCount * 2, coreCount * 4);
+                       .buildThreadSafeForyPool(coreCount * 2, coreCount * 4);
         // 1. Register core classes (sequential IDs — same Class objects everywhere)
         SliceCoreClasses.INSTANCE.classesToRegister()
                         .forEach(fury::register);
@@ -55,7 +56,7 @@ public interface FurySerializerFactoryProvider extends SerializerFactoryProvider
         .map(_ -> singletonFactory(FurySerializer.furySerializer(fury), FuryDeserializer.furyDeserializer(fury)));
     }
 
-    private static Result<Unit> registerWithDeterministicIds(org.apache.fury.ThreadSafeFury fury,
+    private static Result<Unit> registerWithDeterministicIds(org.apache.fory.ThreadSafeFory fury,
                                                              Set<Class<?>> expanded) {
         var idToClass = new HashMap<Integer, Class<?>>();
         for (var clazz : expanded) {

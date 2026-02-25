@@ -33,18 +33,28 @@ public class ObservabilityDepthRegistry {
     private final RabiaNode<KVCommand<AetherKey>> clusterNode;
     private final KVStore<AetherKey, AetherValue> kvStore;
 
+    private final ObservabilityConfig defaultConfig;
     private final Map<String, ObservabilityConfig> registry = new ConcurrentHashMap<>();
 
     private ObservabilityDepthRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                       KVStore<AetherKey, AetherValue> kvStore) {
+                                       KVStore<AetherKey, AetherValue> kvStore,
+                                       ObservabilityConfig defaultConfig) {
         this.clusterNode = clusterNode;
         this.kvStore = kvStore;
+        this.defaultConfig = defaultConfig;
     }
 
     /// Factory method following JBCT naming convention.
     public static ObservabilityDepthRegistry observabilityDepthRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                                         KVStore<AetherKey, AetherValue> kvStore) {
-        var registry = new ObservabilityDepthRegistry(clusterNode, kvStore);
+        return observabilityDepthRegistry(clusterNode, kvStore, ObservabilityConfig.DEFAULT);
+    }
+
+    /// Factory method with custom default configuration.
+    public static ObservabilityDepthRegistry observabilityDepthRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                                                        KVStore<AetherKey, AetherValue> kvStore,
+                                                                        ObservabilityConfig defaultConfig) {
+        var registry = new ObservabilityDepthRegistry(clusterNode, kvStore, defaultConfig);
         registry.loadFromKvStore();
         return registry;
     }
@@ -97,9 +107,9 @@ public class ObservabilityDepthRegistry {
     }
 
     /// Fast local lookup of the observability config for a given artifact method.
-    /// Returns {@link ObservabilityConfig#DEFAULT} if no override is configured.
+    /// Returns the node's configured default if no per-method override is set.
     public ObservabilityConfig getConfig(String artifactBase, String methodName) {
-        return registry.getOrDefault(artifactBase + "/" + methodName, ObservabilityConfig.DEFAULT);
+        return registry.getOrDefault(artifactBase + "/" + methodName, defaultConfig);
     }
 
     /// Returns an immutable copy of all configured observability depth overrides.

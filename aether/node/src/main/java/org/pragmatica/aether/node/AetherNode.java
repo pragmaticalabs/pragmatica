@@ -33,7 +33,6 @@ import org.pragmatica.aether.api.ObservabilityDepthRegistry;
 import org.pragmatica.aether.invoke.AdaptiveSampler;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
-import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.aether.invoke.ObservabilityInterceptor;
 import org.pragmatica.aether.invoke.InvocationMessage;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
@@ -548,10 +547,13 @@ public interface AetherNode {
         // Create log level registry with KV-Store persistence
         var logLevelRegistry = LogLevelRegistry.logLevelRegistry(clusterNode, kvStore);
         // Create observability depth registry with KV-Store persistence
-        var depthRegistry = ObservabilityDepthRegistry.observabilityDepthRegistry(clusterNode, kvStore);
+        var depthRegistry = ObservabilityDepthRegistry.observabilityDepthRegistry(clusterNode,
+                                                                                  kvStore,
+                                                                                  config.observability());
         // Create unified observability components
         var traceStore = InvocationTraceStore.invocationTraceStore();
-        var sampler = AdaptiveSampler.adaptiveSampler(ObservabilityConfig.DEFAULT.targetTracesPerSec());
+        var sampler = AdaptiveSampler.adaptiveSampler(config.observability()
+                                                            .targetTracesPerSec());
         var observabilityInterceptor = ObservabilityInterceptor.observabilityInterceptor(sampler,
                                                                                          traceStore,
                                                                                          config.self()

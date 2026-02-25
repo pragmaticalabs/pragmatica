@@ -5,7 +5,7 @@ rate = "5000/s"
 duration = "2h"
 
 [load.body]
-productId = "${random:choice:WIDGET-A,WIDGET-B,WIDGET-C,WIDGET-D,WIDGET-E,WIDGET-F,WIDGET-G,WIDGET-H,WIDGET-I,WIDGET-J}"
-quantity = "${random:int:1:20}"
-regionCode = "${random:choice:US-CA,US-NY,US-TX,US-OR,US-MT,GB,JP,DE,DE-FREE}"
-couponCode = "${random:choice:SAVE10,SAVE20,VIP50,WELCOME,,,}"
+productId = "${choice:WIDGET-A,WIDGET-B,WIDGET-C,WIDGET-D,WIDGET-E,WIDGET-F,WIDGET-G,WIDGET-H,WIDGET-I,WIDGET-J}"
+quantity = "${range:1-20}"
+regionCode = "${choice:US-CA,US-NY,US-TX,US-OR,US-MT,GB,JP,DE,DE-FREE}"
+couponCode = "${choice:SAVE10,SAVE20,VIP50,WELCOME,,,}"

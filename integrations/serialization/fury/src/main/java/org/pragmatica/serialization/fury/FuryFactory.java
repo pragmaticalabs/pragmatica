@@ -20,10 +20,10 @@ import org.pragmatica.serialization.ClassRegistrator;
 
 import java.util.stream.Stream;
 
-import org.apache.fury.Fury;
-import org.apache.fury.ThreadSafeFury;
-import org.apache.fury.config.Language;
-import org.apache.fury.logging.LoggerFactory;
+import org.apache.fory.Fory;
+import org.apache.fory.ThreadSafeFory;
+import org.apache.fory.config.Language;
+import org.apache.fory.logging.LoggerFactory;
 
 /// Factory for creating thread-safe Fury instances.
 public sealed interface FuryFactory {
@@ -36,13 +36,13 @@ public sealed interface FuryFactory {
     ///
     /// @param registrators class registrators to apply
     /// @return a thread-safe Fury instance
-    static ThreadSafeFury fury(ClassRegistrator... registrators) {
+    static ThreadSafeFory fury(ClassRegistrator... registrators) {
         configureLogging();
         int coreCount = Runtime.getRuntime()
                                .availableProcessors();
-        var fury = Fury.builder()
+        var fury = Fory.builder()
                        .withLanguage(Language.JAVA)
-                       .buildThreadSafeFuryPool(coreCount * 2, coreCount * 4);
+                       .buildThreadSafeForyPool(coreCount * 2, coreCount * 4);
         Stream.of(registrators)
               .flatMap(registrator -> registrator.classesToRegister().stream())
               .forEach(fury::register);
