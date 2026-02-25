@@ -1,8 +1,8 @@
 # Development Priorities
 
-## Current Status (v0.18.0)
+## Current Status (v0.19.0)
 
-Release 0.18.0 delivers six major themes: unified invocation observability (RFC-0010), production-grade DHT (anti-entropy repair, re-replication, per-use-case config), pub-sub messaging infrastructure (RFC-0011), blueprint-only deployment model, node lifecycle with disruption budget and graceful drain, and pricing-engine multi-slice example with cross-slice invocations.
+Release 0.18.0 delivered six major themes: unified invocation observability (RFC-0010), production-grade DHT (anti-entropy repair, re-replication, per-use-case config), pub-sub messaging infrastructure (RFC-0011), blueprint-only deployment model, node lifecycle with disruption budget and graceful drain, and pricing-engine multi-slice example with cross-slice invocations.
 
 ## Completed ✅
 
