@@ -427,8 +427,12 @@ class SliceInvokerImpl implements SliceInvoker {
                            .flatMap(payload -> sendFireAndForgetPayload(endpoint, slice, method, payload));
     }
 
-    private Promise<Unit> sendFireAndForgetPayload(Endpoint endpoint, Artifact slice, MethodName method, byte[] payload) {
-        var correlationId = KSUID.ksuid().toString();
+    private Promise<Unit> sendFireAndForgetPayload(Endpoint endpoint,
+                                                   Artifact slice,
+                                                   MethodName method,
+                                                   byte[] payload) {
+        var correlationId = KSUID.ksuid()
+                                 .toString();
         var requestId = InvocationContext.getOrGenerateRequestId();
         var invokeRequest = InvokeRequest.invokeRequest(self,
                                                         correlationId,
@@ -473,11 +477,12 @@ class SliceInvokerImpl implements SliceInvoker {
 
     @SuppressWarnings("unchecked")
     private <R> Promise<R> sendAndAwaitResponse(Endpoint endpoint,
-                                                 Artifact slice,
-                                                 MethodName method,
-                                                 byte[] payload,
-                                                 SliceBridge senderBridge) {
-        var correlationId = KSUID.ksuid().toString();
+                                                Artifact slice,
+                                                MethodName method,
+                                                byte[] payload,
+                                                SliceBridge senderBridge) {
+        var correlationId = KSUID.ksuid()
+                                 .toString();
         return Promise.promise(pendingPromise -> setupPendingInvocation((Promise<Object>)(Promise<?>) pendingPromise,
                                                                         correlationId,
                                                                         endpoint,
@@ -496,7 +501,11 @@ class SliceInvokerImpl implements SliceInvoker {
                                         SliceBridge senderBridge) {
         var requestId = InvocationContext.getOrGenerateRequestId();
         var targetNode = endpoint.nodeId();
-        var pending = new PendingInvocation(pendingPromise, System.currentTimeMillis(), requestId, targetNode, senderBridge);
+        var pending = new PendingInvocation(pendingPromise,
+                                            System.currentTimeMillis(),
+                                            requestId,
+                                            targetNode,
+                                            senderBridge);
         pendingInvocations.put(correlationId, pending);
         pendingInvocationsByNode.computeIfAbsent(targetNode,
                                                  _ -> ConcurrentHashMap.newKeySet())
@@ -642,13 +651,18 @@ class SliceInvokerImpl implements SliceInvoker {
 
     @SuppressWarnings("unchecked")
     private <R> void sendFailoverPayload(Promise<R> promise,
-                                          FailoverContext<R> ctx,
-                                          NodeId targetNode,
-                                          byte[] payload,
-                                          SliceBridge senderBridge) {
-        var correlationId = KSUID.ksuid().toString();
+                                         FailoverContext<R> ctx,
+                                         NodeId targetNode,
+                                         byte[] payload,
+                                         SliceBridge senderBridge) {
+        var correlationId = KSUID.ksuid()
+                                 .toString();
         var pendingPromise = Promise.<Object>promise();
-        var pending = new PendingInvocation(pendingPromise, System.currentTimeMillis(), ctx.requestId, targetNode, senderBridge);
+        var pending = new PendingInvocation(pendingPromise,
+                                            System.currentTimeMillis(),
+                                            ctx.requestId,
+                                            targetNode,
+                                            senderBridge);
         pendingInvocations.put(correlationId, pending);
         pendingInvocationsByNode.computeIfAbsent(targetNode,
                                                  _ -> ConcurrentHashMap.newKeySet())
@@ -802,13 +816,15 @@ class SliceInvokerImpl implements SliceInvoker {
     private <R> Promise<R> invokeViaBridge(SliceBridge targetBridge, MethodName method, Object request) {
         var senderBridge = findSenderBridge(request);
         return senderBridge.encode(request)
-                           .flatMap(inputBytes -> targetBridge.invoke(method.name(), inputBytes))
+                           .flatMap(inputBytes -> targetBridge.invoke(method.name(),
+                                                                      inputBytes))
                            .flatMap(responseBytes -> senderBridge.decode(responseBytes))
                            .map(result -> (R) result);
     }
 
     private SliceBridge findSenderBridge(Object request) {
-        return invocationHandler.findBridgeByClassLoader(request.getClass().getClassLoader())
+        return invocationHandler.findBridgeByClassLoader(request.getClass()
+                                                                .getClassLoader())
                                 .unwrap();
     }
 
@@ -890,9 +906,16 @@ class SliceInvokerImpl implements SliceInvoker {
         var promise = pending.promise();
         var requestId = pending.requestId();
         if (response.success()) {
-            pending.senderBridge().decode(response.payload())
-                   .onSuccess(result -> handleDecodeSuccess(promise, result, requestId, response.correlationId()))
-                   .onFailure(cause -> handleDecodeFailure(promise, cause, requestId, response.correlationId()));
+            pending.senderBridge()
+                   .decode(response.payload())
+                   .onSuccess(result -> handleDecodeSuccess(promise,
+                                                            result,
+                                                            requestId,
+                                                            response.correlationId()))
+                   .onFailure(cause -> handleDecodeFailure(promise,
+                                                           cause,
+                                                           requestId,
+                                                           response.correlationId()));
         } else {
             var errorMessage = new String(response.payload());
             promise.resolve(new SliceInvokerError.RemoteInvocationError(errorMessage).result());
@@ -914,8 +937,7 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private void handleDecodeFailure(Promise<Object> promise, Cause cause, String requestId, String correlationId) {
         promise.resolve(cause.result());
-        log.error("[requestId={}] Failed to deserialize response [{}]: {}",
-                  requestId, correlationId, cause.message());
+        log.error("[requestId={}] Failed to deserialize response [{}]: {}", requestId, correlationId, cause.message());
     }
 
     private Promise<Endpoint> selectEndpoint(Artifact slice, MethodName method) {

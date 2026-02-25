@@ -61,7 +61,8 @@ public final class ObservabilityRoutes implements RouteSource {
                               .withBody(SetDepthRequest.class)
                               .toJson(this::handleSetDepth),
                          Route.<Object> delete("/api/observability/depth")
-                              .withPath(aString(), aString())
+                              .withPath(aString(),
+                                        aString())
                               .to(this::handleDeleteDepth)
                               .asJson());
     }

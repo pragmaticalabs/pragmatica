@@ -6,7 +6,6 @@ import java.time.Instant;
 
 /// Single trace node representing one invocation in the call tree.
 /// Captures timing, topology, and outcome for distributed tracing.
-@SuppressWarnings("JBCT-VO-01") // Record with many fields — represents a single trace event, splitting would lose cohesion
 public record InvocationNode(String requestId,
                              int depth,
                              Instant timestamp,

@@ -26,7 +26,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 ///
 /// This test class uses a shared cluster with ordered tests.
-@SuppressWarnings({"JBCT-VO-01", "JBCT-NAM-01"})
+@SuppressWarnings("JBCT-NAM-01")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Execution(ExecutionMode.SAME_THREAD)
 class NodeDrainE2ETest {

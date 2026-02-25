@@ -18,7 +18,7 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 /// Aether KV-Store structured keys for cluster state management
-@SuppressWarnings({"JBCT-VO-01", "JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-NAM-01", "JBCT-STY-04"})
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-NAM-01"})
 public sealed interface AetherKey extends StructuredKey {
     /// String representation of the key
     String asString();

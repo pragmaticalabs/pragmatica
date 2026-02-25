@@ -15,7 +15,7 @@ import java.util.Set;
 import static org.pragmatica.lang.Unit.unit;
 
 /// Minimal stub for ClusterNetwork used in unit tests.
-@SuppressWarnings({"JBCT-RET-01", "JBCT-STY-04"})
+@SuppressWarnings("JBCT-RET-01")
 class StubClusterNetwork implements ClusterNetwork {
     @Override
     public <M extends ProtocolMessage> Unit broadcast(M message) {

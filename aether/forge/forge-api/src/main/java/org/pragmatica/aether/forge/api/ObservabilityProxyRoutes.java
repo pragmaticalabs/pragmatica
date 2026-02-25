@@ -88,7 +88,8 @@ public sealed interface ObservabilityProxyRoutes {
     private static Route<DepthDeleteResponse> deleteDepthRoute(ForgeCluster cluster,
                                                                JdkHttpOperations http) {
         return Route.<DepthDeleteResponse> delete("/depth")
-                    .withPath(aString(), aString())
+                    .withPath(aString(),
+                              aString())
                     .to((artifact, method) -> proxyDeleteDepth(cluster, http, artifact + "/" + method))
                     .asJson();
     }

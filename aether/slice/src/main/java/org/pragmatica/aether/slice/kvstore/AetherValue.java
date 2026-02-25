@@ -14,7 +14,7 @@ import java.util.Set;
 import static org.pragmatica.lang.Option.none;
 
 /// Value type stored in the consensus KVStore
-@SuppressWarnings({"JBCT-VO-01", "JBCT-NAM-01", "JBCT-STY-04"})
+@SuppressWarnings("JBCT-NAM-01")
 public sealed interface AetherValue {
     /// Slice target stores runtime scaling configuration for a slice.
     /// This is the "desired state" for how many instances should run and which version.

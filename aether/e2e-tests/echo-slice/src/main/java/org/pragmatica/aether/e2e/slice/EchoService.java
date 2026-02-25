@@ -19,7 +19,6 @@ import static org.pragmatica.lang.Result.success;
 /// No external dependencies, no infrastructure, no provisioning.
 /// Supports: echo, ping, transform, and controlled failure operations.
 @Slice
-@SuppressWarnings("JBCT-STY-04")
 public interface EchoService {
     // === Requests ===
     record EchoRequest(String message) {
@@ -40,7 +39,6 @@ public interface EchoService {
         }
     }
 
-    @SuppressWarnings("JBCT-VO-01")
     record PingRequest() {
         public static PingRequest pingRequest() {
             return new PingRequest();

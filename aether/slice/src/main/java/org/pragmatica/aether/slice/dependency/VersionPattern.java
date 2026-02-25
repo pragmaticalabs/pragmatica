@@ -16,7 +16,7 @@ import static org.pragmatica.lang.Result.success;
 /// - Comparison: ">=1.5.0", ">1.0.0", "<=2.0.0", "<3.0.0"
 /// - Tilde: "~1.2.3" (patch-level: >=1.2.3, <1.3.0)
 /// - Caret: "^1.2.3" (minor-level: >=1.2.3, <2.0.0)
-@SuppressWarnings({"JBCT-VO-01", "JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-UTIL-02"})
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-NEST-01", "JBCT-UTIL-02"})
 public sealed interface VersionPattern {
     boolean matches(Version version);
 

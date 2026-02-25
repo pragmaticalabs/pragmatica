@@ -25,7 +25,7 @@ import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 ///
 /// Validates that nodes register ON_DUTY lifecycle state after quorum,
 /// and that drain/activate/shutdown transitions work correctly via the management API.
-@SuppressWarnings({"JBCT-VO-01", "JBCT-NAM-01"})
+@SuppressWarnings("JBCT-NAM-01")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class NodeLifecycleTest {

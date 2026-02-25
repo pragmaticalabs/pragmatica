@@ -15,7 +15,6 @@ import static org.pragmatica.lang.Option.some;
 /// @param startScript    Path to the start script (if applicable)
 /// @param stopScript     Path to the stop script (if applicable)
 /// @param instructions   Human-readable instructions for next steps
-@SuppressWarnings("JBCT-VO-01")
 public record GeneratorOutput(Path outputDir,
                               List<Path> generatedFiles,
                               Option<Path> startScript,

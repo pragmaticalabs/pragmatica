@@ -43,7 +43,7 @@ import static org.pragmatica.lang.Option.option;
 ///
 /// @see SliceBridge
 /// @see Slice
-@SuppressWarnings({"JBCT-VO-01", "JBCT-NAM-01"})
+@SuppressWarnings("JBCT-NAM-01")
 public record DefaultSliceBridge(Artifact artifact,
                                  Slice slice,
                                  Map<String, InternalMethod> methodMap,
@@ -93,7 +93,8 @@ public record DefaultSliceBridge(Artifact artifact,
 
     @Override
     public ClassLoader classLoader() {
-        return slice.getClass().getClassLoader();
+        return slice.getClass()
+                    .getClassLoader();
     }
 
     private Promise<byte[]> invokeWithSerialization(InternalMethod method, byte[] input) {

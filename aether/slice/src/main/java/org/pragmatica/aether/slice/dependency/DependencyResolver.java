@@ -49,7 +49,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// 9. Register in registry
 ///
 /// Thread-safe: Uses SliceRegistry for synchronization.
-@SuppressWarnings({"JBCT-VO-01", "JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"})
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-02", "JBCT-ZONE-03"})
 public interface DependencyResolver {
     Logger log = LoggerFactory.getLogger(DependencyResolver.class);
 

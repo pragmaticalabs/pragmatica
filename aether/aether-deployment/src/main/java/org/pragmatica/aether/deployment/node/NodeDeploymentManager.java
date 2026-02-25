@@ -330,21 +330,27 @@ public interface NodeDeploymentManager {
             private Promise<Unit> registerSliceForInvocation(SliceNodeKey sliceKey) {
                 var artifact = sliceKey.artifact();
                 return findLoadedSlice(artifact).toResult(SLICE_NOT_LOADED_FOR_REGISTRATION.apply(artifact.asString()))
-                                      .map(ls -> registerSliceBridge(artifact,
-                                                                     ls.slice()))
+                                      .flatMap(ls -> registerSliceBridge(artifact,
+                                                                         ls.slice()))
                                       .async();
             }
 
             private static final Fn1<Cause, String> SLICE_NOT_LOADED_FOR_REGISTRATION = Causes.forOneValue("Slice not loaded for registration: {}");
 
-            private Unit registerSliceBridge(Artifact artifact, Slice slice) {
+            private Result<Unit> registerSliceBridge(Artifact artifact, Slice slice) {
                 var serializerProvider = resolveSerializerProvider();
-                var sliceClassLoader = slice.getClass().getClassLoader();
-                var serializerFactory = serializerProvider.createFactory(slice.serializableClasses(), sliceClassLoader);
-                var sliceBridge = DefaultSliceBridge.defaultSliceBridge(artifact, slice, serializerFactory);
-                invocationHandler.registerSlice(artifact, sliceBridge);
-                log.debug("Registered slice {} for invocation", artifact);
-                return Unit.unit();
+                var sliceClassLoader = slice.getClass()
+                                            .getClassLoader();
+                return serializerProvider.createFactory(slice.serializableClasses(),
+                                                        sliceClassLoader)
+                                         .map(serializerFactory -> {
+                                                  var sliceBridge = DefaultSliceBridge.defaultSliceBridge(artifact,
+                                                                                                          slice,
+                                                                                                          serializerFactory);
+                                                  invocationHandler.registerSlice(artifact, sliceBridge);
+                                                  log.debug("Registered slice {} for invocation", artifact);
+                                                  return Unit.unit();
+                                              });
             }
 
             private SerializerFactoryProvider resolveSerializerProvider() {

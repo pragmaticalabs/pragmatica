@@ -18,7 +18,6 @@ import static org.pragmatica.lang.Result.success;
 /// Pure function test slice for E2E testing - VERSION 2.
 /// Responses include version field to distinguish from v1.
 @Slice
-@SuppressWarnings("JBCT-STY-04")
 public interface EchoService {
     String VERSION = "2.0";
 
@@ -41,7 +40,6 @@ public interface EchoService {
         }
     }
 
-    @SuppressWarnings("JBCT-VO-01")
     record PingRequest() {
         public static PingRequest pingRequest() {
             return new PingRequest();

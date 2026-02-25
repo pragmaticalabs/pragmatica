@@ -14,7 +14,6 @@ import static org.pragmatica.utility.HierarchyScanner.concreteSubtypes;
 ///
 /// These classes are loaded by FrameworkClassLoader and are the same Class objects
 /// in every slice bridge. Sequential ID registration ensures consistent IDs.
-@SuppressWarnings("JBCT-VO-01")
 public interface SliceCoreClasses extends ClassRegistrator {
     SliceCoreClasses INSTANCE = new SliceCoreClasses() {};
 

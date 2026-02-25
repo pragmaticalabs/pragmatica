@@ -1,5 +1,7 @@
 package org.pragmatica.aether.slice.serialization;
 
+import org.pragmatica.lang.Result;
+
 import java.util.List;
 
 /// Provider that creates SerializerFactory instances for loaded slices.
@@ -24,6 +26,6 @@ public interface SerializerFactoryProvider {
     /// @param serializableClasses All classes declared by the slice for serialization
     /// @param sliceClassLoader    The classloader for the slice
     ///
-    /// @return A SerializerFactory instance for this slice
-    SerializerFactory createFactory(List<Class<?>> serializableClasses, ClassLoader sliceClassLoader);
+    /// @return A SerializerFactory instance for this slice, or failure on configuration error
+    Result<SerializerFactory> createFactory(List<Class<?>> serializableClasses, ClassLoader sliceClassLoader);
 }
