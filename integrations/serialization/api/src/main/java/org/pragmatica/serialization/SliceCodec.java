@@ -17,8 +17,10 @@
 package org.pragmatica.serialization;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufUtil;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -49,6 +51,10 @@ public interface SliceCodec extends Serializer, Deserializer {
     int TAG_ARRAY = 18;
     int TAG_TUPLE = 19;
     int TAG_MAP = 20;
+
+    // --- Tag space ---
+
+    int TAG_SPACE_SIZE = 16384;
 
     // --- Stream header ---
 
@@ -87,7 +93,7 @@ public interface SliceCodec extends Serializer, Deserializer {
     }
 
     /// Maps a value to its wire tag. For most types, returns the constant tag.
-    /// For variant types (e.g. Boolean → TAG_TRUE/TAG_FALSE), returns a tag based on the value.
+    /// For variant types (e.g. Boolean -> TAG_TRUE/TAG_FALSE), returns a tag based on the value.
     @FunctionalInterface
     interface TagMapper<T> {
         int tagFor(T value);
@@ -136,16 +142,16 @@ public interface SliceCodec extends Serializer, Deserializer {
     // --- String helpers ---
 
     static void writeString(ByteBuf buf, String value) {
-        var bytes = value.getBytes(StandardCharsets.UTF_8);
-        writeCompact(buf, bytes.length);
-        buf.writeBytes(bytes);
+        int utf8Bytes = ByteBufUtil.utf8Bytes(value);
+        writeCompact(buf, utf8Bytes);
+        ByteBufUtil.writeUtf8(buf, value);
     }
 
     static String readString(ByteBuf buf) {
         var len = readCompact(buf);
-        var bytes = new byte[len];
-        buf.readBytes(bytes);
-        return new String(bytes, StandardCharsets.UTF_8);
+        var value = buf.toString(buf.readerIndex(), len, StandardCharsets.UTF_8);
+        buf.skipBytes(len);
+        return value;
     }
 
     // --- Body helpers for generated code ---
@@ -176,43 +182,89 @@ public interface SliceCodec extends Serializer, Deserializer {
 
     static SliceCodec sliceCodec(SliceCodec parent, List<TypeCodec<?>> codecs) {
         var byClass = new HashMap<Class<?>, TypeCodec<?>>();
-        var byTag = new HashMap<Integer, TypeCodec<?>>();
+        var tagArray = new TypeCodec<?>[TAG_SPACE_SIZE];
 
         if (parent instanceof CodecHolder holder) {
             byClass.putAll(holder.byClass());
-            byTag.putAll(holder.byTag());
+            copyTagArray(holder.tagArray(), tagArray);
         }
 
         for (var codec : codecs) {
             byClass.put(codec.type(), codec);
-            byTag.put(codec.tag(), codec);
+            validateAndSetTag(tagArray, codec);
         }
 
-        return new CodecHolder(Map.copyOf(byClass), Map.copyOf(byTag));
+        return new CodecHolder(Map.copyOf(byClass), tagArray);
+    }
+
+    private static void copyTagArray(TypeCodec<?>[] source, TypeCodec<?>[] target) {
+        System.arraycopy(source, 0, target, 0, source.length);
+    }
+
+    private static void validateAndSetTag(TypeCodec<?>[] tagArray, TypeCodec<?> codec) {
+        int tag = codec.tag();
+
+        if (tag < 0 || tag >= TAG_SPACE_SIZE) {
+            throw new IllegalArgumentException("Tag %d for %s is out of range [0, %d)"
+                .formatted(tag, codec.type().getName(), TAG_SPACE_SIZE));
+        }
+
+        var existing = tagArray[tag];
+
+        if (existing != null && !existing.type().equals(codec.type())) {
+            throw new IllegalArgumentException("Tag collision: tag %d claimed by both %s and %s"
+                .formatted(tag, existing.type().getName(), codec.type().getName()));
+        }
+
+        tagArray[tag] = codec;
     }
 
 }
 
-record CodecHolder(
-    Map<Class<?>, SliceCodec.TypeCodec<?>> byClass,
-    Map<Integer, SliceCodec.TypeCodec<?>> byTag,
-    ConcurrentHashMap<Class<?>, SliceCodec.TypeCodec<?>> classCache
-) implements SliceCodec {
+final class CodecHolder implements SliceCodec {
+
+    private final Map<Class<?>, SliceCodec.TypeCodec<?>> byClass;
+    private final SliceCodec.TypeCodec<?>[] tagArray;
+    private final ConcurrentHashMap<Class<?>, SliceCodec.TypeCodec<?>> classCache;
+    private volatile SliceCodec.TypeCodec<?> lastLookup;
 
     CodecHolder(Map<Class<?>, SliceCodec.TypeCodec<?>> byClass,
-                Map<Integer, SliceCodec.TypeCodec<?>> byTag) {
-        this(byClass, byTag, new ConcurrentHashMap<>(byClass));
+                SliceCodec.TypeCodec<?>[] tagArray) {
+        this.byClass = byClass;
+        this.tagArray = tagArray;
+        this.classCache = new ConcurrentHashMap<>(byClass);
+    }
+
+    Map<Class<?>, SliceCodec.TypeCodec<?>> byClass() {
+        return byClass;
+    }
+
+    SliceCodec.TypeCodec<?>[] tagArray() {
+        return tagArray;
     }
 
     @Override
     public SliceCodec.TypeCodec<?> lookupByClass(Class<?> type) {
+        var cached = lastLookup;
+
+        if (cached != null && cached.type() == type) {
+            return cached;
+        }
+
         var codec = classCache.get(type);
 
         if (codec != null) {
+            lastLookup = codec;
             return codec;
         }
 
-        // Supertype fallback — handles collection implementations (e.g. ImmutableCollections$ListN → List)
+        // Supertype fallback -- handles collection implementations (e.g. ImmutableCollections$ListN -> List)
+        codec = findBySupertype(type);
+        lastLookup = codec;
+        return codec;
+    }
+
+    private SliceCodec.TypeCodec<?> findBySupertype(Class<?> type) {
         for (var entry : byClass.entrySet()) {
             if (entry.getKey().isAssignableFrom(type)) {
                 classCache.put(type, entry.getValue());
@@ -225,7 +277,11 @@ record CodecHolder(
 
     @Override
     public SliceCodec.TypeCodec<?> lookupByTag(int tag) {
-        var codec = byTag.get(tag);
+        if (tag < 0 || tag >= tagArray.length) {
+            throw new IllegalArgumentException("No codec registered for tag: " + tag);
+        }
+
+        var codec = tagArray[tag];
 
         if (codec == null) {
             throw new IllegalArgumentException("No codec registered for tag: " + tag);
@@ -254,5 +310,28 @@ record CodecHolder(
         var tag = SliceCodec.readCompact(byteBuf);
         var codec = (TypeCodec<T>) lookupByTag(tag);
         return codec.reader().readBody(this, byteBuf);
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        }
+
+        if (!(obj instanceof CodecHolder other)) {
+            return false;
+        }
+
+        return byClass.equals(other.byClass) && Arrays.equals(tagArray, other.tagArray);
+    }
+
+    @Override
+    public int hashCode() {
+        return 31 * byClass.hashCode() + Arrays.hashCode(tagArray);
+    }
+
+    @Override
+    public String toString() {
+        return "CodecHolder[byClass=%s, tagCount=%d]".formatted(byClass.keySet(), classCache.size());
     }
 }
