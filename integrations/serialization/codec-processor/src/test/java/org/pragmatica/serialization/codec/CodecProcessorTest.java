@@ -32,10 +32,10 @@ class CodecProcessorTest {
                                    .contains("TypeCodec<Point> CODEC");
             assertThat(compilation).generatedSourceFile("com.example.PointCodec")
                                    .contentsAsUtf8String()
-                                   .contains("codec.write(buf, value.x());");
+                                   .contains("buf.writeInt(value.x());");
             assertThat(compilation).generatedSourceFile("com.example.PointCodec")
                                    .contentsAsUtf8String()
-                                   .contains("codec.write(buf, value.y());");
+                                   .contains("buf.writeInt(value.y());");
             assertThat(compilation).generatedSourceFile("com.example.PointCodec")
                                    .contentsAsUtf8String()
                                    .contains("return new Point(x, y);");

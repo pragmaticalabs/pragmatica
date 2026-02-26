@@ -17,19 +17,19 @@ public interface AnalyticsSlice {
     // === Requests / Responses ===
     record EmptyRequest() {}
 
-    record HourlyBucket(int hour, int orderCount, int revenueCents) {
-        static HourlyBucket hourlyBucket(int hour, int orderCount, int revenueCents) {
+    record HourlyBucket(int hour, int orderCount, long revenueCents) {
+        static HourlyBucket hourlyBucket(int hour, int orderCount, long revenueCents) {
             return new HourlyBucket(hour, orderCount, revenueCents);
         }
     }
 
-    record HighValueSummary(int totalOrders, int totalRevenueCents, List<HourlyBucket> hourlyDistribution) {
+    record HighValueSummary(int totalOrders, long totalRevenueCents, List<HourlyBucket> hourlyDistribution) {
         public HighValueSummary {
             hourlyDistribution = List.copyOf(hourlyDistribution);
         }
 
         static HighValueSummary highValueSummary(int totalOrders,
-                                                 int totalRevenueCents,
+                                                 long totalRevenueCents,
                                                  List<HourlyBucket> hourlyDistribution) {
             return new HighValueSummary(totalOrders, totalRevenueCents, hourlyDistribution);
         }
@@ -49,14 +49,15 @@ public interface AnalyticsSlice {
             private static final String INSERT_ORDER = "INSERT INTO high_value_orders (product_id, quantity, total_cents, region_code) VALUES (?, ?, ?, ?)";
 
             private static final String SELECT_HOURLY = "SELECT HOUR(created_at) AS hr, COUNT(*) AS order_count, SUM(total_cents) AS revenue"
-                                                       + " FROM high_value_orders GROUP BY HOUR(created_at) ORDER BY hr";
+                                                       + " FROM high_value_orders WHERE created_at >= CURRENT_DATE"
+                                                       + " GROUP BY HOUR(created_at) ORDER BY hr";
 
             private static final RowMapper<HourlyBucket> BUCKET_MAPPER = analyticsSlice::mapBucket;
 
             private static Result<HourlyBucket> mapBucket(RowMapper.RowAccessor row) {
                 return Result.all(row.getInt("hr"),
                                   row.getInt("order_count"),
-                                  row.getInt("revenue"))
+                                  row.getLong("revenue"))
                              .map(HourlyBucket::new);
             }
 
@@ -81,7 +82,7 @@ public interface AnalyticsSlice {
                                          .mapToInt(HourlyBucket::orderCount)
                                          .sum();
                 var totalRevenue = buckets.stream()
-                                          .mapToInt(HourlyBucket::revenueCents)
+                                          .mapToLong(HourlyBucket::revenueCents)
                                           .sum();
                 return new HighValueSummary(totalOrders, totalRevenue, buckets);
             }

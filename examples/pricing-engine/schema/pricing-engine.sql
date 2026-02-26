@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS high_value_orders (
 );
 
 CREATE INDEX IF NOT EXISTS idx_hvo_created_at ON high_value_orders(created_at);
+CREATE INDEX IF NOT EXISTS idx_hvo_region ON high_value_orders(region_code, created_at);
 
 -- Seed data (MERGE = upsert, safe on restart with persistent DB)
 MERGE INTO products (product_id, price_cents) VALUES

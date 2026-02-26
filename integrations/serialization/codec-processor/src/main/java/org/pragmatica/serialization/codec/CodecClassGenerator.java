@@ -3,8 +3,8 @@ package org.pragmatica.serialization.codec;
 import javax.annotation.processing.Filer;
 import javax.lang.model.element.RecordComponentElement;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeKind;
-import javax.lang.model.type.TypeVariable;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 import java.io.IOException;
@@ -16,6 +16,13 @@ public class CodecClassGenerator {
     private final Filer filer;
     private final Elements elements;
     private final Types types;
+
+    private enum FieldKind {
+        BYTE, SHORT, CHAR, INT, LONG, FLOAT, DOUBLE, BOOLEAN,
+        STRING, CODEC_TYPE, DISPATCHED
+    }
+
+    private record ClassifiedField(RecordComponentElement component, FieldKind kind, String codecRef) {}
 
     CodecClassGenerator(Filer filer, Elements elements, Types types) {
         this.filer = filer;
@@ -34,21 +41,23 @@ public class CodecClassGenerator {
         var components = recordElement.getRecordComponents();
         var tagExpression = tagExpression(tag, qualifiedTypeName);
         var hasTypeVars = !recordElement.getTypeParameters().isEmpty();
+        var classified = classifyComponents(components, packageName);
+        var hasDispatch = classified.stream().anyMatch(f -> f.kind() == FieldKind.DISPATCHED);
 
         try {
             var sourceFile = filer.createSourceFile(qualifiedName, recordElement);
             try (var writer = new PrintWriter(sourceFile.openWriter())) {
                 writePackageAndImports(writer, packageName);
-                if (hasTypeVars) {
+                if (hasTypeVars || hasDispatch) {
                     writer.println("@SuppressWarnings({\"unchecked\", \"rawtypes\"})");
                 }
                 writer.println("public interface " + codecName + " {");
                 writeTagConstant(writer, tagExpression);
                 writeCodecField(writer, typeRef, codecName);
                 writer.println();
-                writeRecordWriteBody(writer, typeRef, codecName, components);
+                writeRecordWriteBody(writer, typeRef, classified);
                 writer.println();
-                writeRecordReadBody(writer, typeRef, codecName, components);
+                writeRecordReadBody(writer, typeRef, classified);
                 writer.println("}");
             }
             return true;
@@ -75,9 +84,9 @@ public class CodecClassGenerator {
                 writeTagConstant(writer, tagExpression);
                 writeCodecField(writer, typeRef, codecName);
                 writer.println();
-                writeEnumWriteBody(writer, typeRef, codecName);
+                writeEnumWriteBody(writer, typeRef);
                 writer.println();
-                writeEnumReadBody(writer, typeRef, codecName);
+                writeEnumReadBody(writer, typeRef);
                 writer.println("}");
             }
             return true;
@@ -118,6 +127,88 @@ public class CodecClassGenerator {
         }
     }
 
+    // --- Field classification ---
+
+    private List<ClassifiedField> classifyComponents(List<? extends RecordComponentElement> components,
+                                                     String currentPackage) {
+        return components.stream()
+                         .map(c -> classifyField(c, currentPackage))
+                         .toList();
+    }
+
+    private ClassifiedField classifyField(RecordComponentElement component, String currentPackage) {
+        var typeMirror = component.asType();
+
+        return switch (typeMirror.getKind()) {
+            case BYTE -> new ClassifiedField(component, FieldKind.BYTE, null);
+            case SHORT -> new ClassifiedField(component, FieldKind.SHORT, null);
+            case CHAR -> new ClassifiedField(component, FieldKind.CHAR, null);
+            case INT -> new ClassifiedField(component, FieldKind.INT, null);
+            case LONG -> new ClassifiedField(component, FieldKind.LONG, null);
+            case FLOAT -> new ClassifiedField(component, FieldKind.FLOAT, null);
+            case DOUBLE -> new ClassifiedField(component, FieldKind.DOUBLE, null);
+            case BOOLEAN -> new ClassifiedField(component, FieldKind.BOOLEAN, null);
+            case DECLARED -> classifyDeclaredField(component, (DeclaredType) typeMirror, currentPackage);
+            default -> new ClassifiedField(component, FieldKind.DISPATCHED, null);
+        };
+    }
+
+    private ClassifiedField classifyDeclaredField(RecordComponentElement component, DeclaredType declared,
+                                                  String currentPackage) {
+        if (containsTypeVariable(declared)) {
+            return new ClassifiedField(component, FieldKind.DISPATCHED, null);
+        }
+
+        var element = (TypeElement) declared.asElement();
+        var qualifiedName = element.getQualifiedName().toString();
+
+        if ("java.lang.String".equals(qualifiedName)) {
+            return new ClassifiedField(component, FieldKind.STRING, null);
+        }
+
+        // Check for @Codec annotation (same compilation round)
+        if (hasCodecAnnotation(element)) {
+            var codecFqn = computeCodecFqn(element);
+            return new ClassifiedField(component, FieldKind.CODEC_TYPE, codecReference(codecFqn, currentPackage));
+        }
+
+        // Check for companion codec class (cross-module dependency)
+        var codecFqn = computeCodecFqn(element);
+
+        if (elements.getTypeElement(codecFqn) != null) {
+            return new ClassifiedField(component, FieldKind.CODEC_TYPE, codecReference(codecFqn, currentPackage));
+        }
+
+        return new ClassifiedField(component, FieldKind.DISPATCHED, null);
+    }
+
+    private static boolean hasCodecAnnotation(TypeElement element) {
+        for (var mirror : element.getAnnotationMirrors()) {
+            if ("org.pragmatica.serialization.Codec".equals(mirror.getAnnotationType().toString())) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private String computeCodecFqn(TypeElement element) {
+        var packageName = elements.getPackageOf(element).getQualifiedName().toString();
+        return packageName + "." + nestedPrefix(element, packageName) + element.getSimpleName() + "Codec";
+    }
+
+    private static String codecReference(String codecFqn, String currentPackage) {
+        var prefix = currentPackage + ".";
+
+        if (codecFqn.startsWith(prefix) && codecFqn.indexOf('.', prefix.length()) < 0) {
+            return codecFqn.substring(prefix.length());
+        }
+
+        return codecFqn;
+    }
+
+    // --- Source generation helpers ---
+
     private static void writePackageAndImports(PrintWriter writer, String packageName) {
         writer.println("package " + packageName + ";");
         writer.println();
@@ -136,49 +227,147 @@ public class CodecClassGenerator {
         writer.println("        " + codecName + "::writeBody, " + codecName + "::readBody);");
     }
 
-    private static void writeRecordWriteBody(PrintWriter writer, String typeRef, String codecName,
-                                             List<? extends RecordComponentElement> components) {
+    // --- Record codec generation with field-level inlining ---
+
+    private static void writeRecordWriteBody(PrintWriter writer, String typeRef,
+                                             List<ClassifiedField> fields) {
         writer.println("    static void writeBody(SliceCodec codec, ByteBuf buf, " + typeRef + " value) {");
-        for (var component : components) {
-            writer.println("        codec.write(buf, value." + component.getSimpleName() + "());");
+
+        for (var field : fields) {
+            var accessor = "value." + field.component().getSimpleName() + "()";
+
+            switch (field.kind()) {
+                case BYTE -> {
+                    writer.println("        buf.writeByte(SliceCodec.TAG_BYTE);");
+                    writer.println("        buf.writeByte(" + accessor + ");");
+                }
+                case SHORT -> {
+                    writer.println("        buf.writeByte(SliceCodec.TAG_SHORT);");
+                    writer.println("        buf.writeShort(" + accessor + ");");
+                }
+                case CHAR -> {
+                    writer.println("        buf.writeByte(SliceCodec.TAG_CHAR);");
+                    writer.println("        buf.writeChar(" + accessor + ");");
+                }
+                case INT -> {
+                    writer.println("        buf.writeByte(SliceCodec.TAG_INT);");
+                    writer.println("        buf.writeInt(" + accessor + ");");
+                }
+                case LONG -> {
+                    writer.println("        buf.writeByte(SliceCodec.TAG_LONG);");
+                    writer.println("        buf.writeLong(" + accessor + ");");
+                }
+                case FLOAT -> {
+                    writer.println("        buf.writeByte(SliceCodec.TAG_FLOAT);");
+                    writer.println("        buf.writeFloat(" + accessor + ");");
+                }
+                case DOUBLE -> {
+                    writer.println("        buf.writeByte(SliceCodec.TAG_DOUBLE);");
+                    writer.println("        buf.writeDouble(" + accessor + ");");
+                }
+                case BOOLEAN -> writer.println("        buf.writeByte(" + accessor
+                    + " ? SliceCodec.TAG_TRUE : SliceCodec.TAG_FALSE);");
+                case STRING -> {
+                    writer.println("        buf.writeByte(SliceCodec.TAG_STRING);");
+                    writer.println("        SliceCodec.writeString(buf, " + accessor + ");");
+                }
+                case CODEC_TYPE -> {
+                    writer.println("        SliceCodec.writeCompact(buf, " + field.codecRef() + ".TAG);");
+                    writer.println("        " + field.codecRef() + ".writeBody(codec, buf, " + accessor + ");");
+                }
+                case DISPATCHED -> writer.println("        codec.write(buf, " + accessor + ");");
+            }
         }
+
         writer.println("    }");
     }
 
-    private void writeRecordReadBody(PrintWriter writer, String typeRef, String codecName,
-                                      List<? extends RecordComponentElement> components) {
+    private void writeRecordReadBody(PrintWriter writer, String typeRef,
+                                     List<ClassifiedField> fields) {
         writer.println("    static " + typeRef + " readBody(SliceCodec codec, ByteBuf buf) {");
-        for (var component : components) {
-            var typeName = erasedTypeName(component);
-            writer.println("        var " + component.getSimpleName() + " = (" + typeName + ") codec.read(buf);");
+
+        for (var field : fields) {
+            var name = field.component().getSimpleName().toString();
+
+            switch (field.kind()) {
+                case BYTE -> {
+                    writer.println("        buf.readByte();");
+                    writer.println("        var " + name + " = buf.readByte();");
+                }
+                case SHORT -> {
+                    writer.println("        buf.readByte();");
+                    writer.println("        var " + name + " = buf.readShort();");
+                }
+                case CHAR -> {
+                    writer.println("        buf.readByte();");
+                    writer.println("        var " + name + " = buf.readChar();");
+                }
+                case INT -> {
+                    writer.println("        buf.readByte();");
+                    writer.println("        var " + name + " = buf.readInt();");
+                }
+                case LONG -> {
+                    writer.println("        buf.readByte();");
+                    writer.println("        var " + name + " = buf.readLong();");
+                }
+                case FLOAT -> {
+                    writer.println("        buf.readByte();");
+                    writer.println("        var " + name + " = buf.readFloat();");
+                }
+                case DOUBLE -> {
+                    writer.println("        buf.readByte();");
+                    writer.println("        var " + name + " = buf.readDouble();");
+                }
+                case BOOLEAN -> writer.println("        var " + name + " = buf.readByte() == SliceCodec.TAG_TRUE;");
+                case STRING -> {
+                    writer.println("        buf.readByte();");
+                    writer.println("        var " + name + " = SliceCodec.readString(buf);");
+                }
+                case CODEC_TYPE -> {
+                    writer.println("        SliceCodec.readCompact(buf);");
+                    writer.println("        var " + name + " = " + field.codecRef() + ".readBody(codec, buf);");
+                }
+                case DISPATCHED -> {
+                    var typeName = erasedTypeName(field.component());
+                    writer.println("        var " + name + " = (" + typeName + ") codec.read(buf);");
+                }
+            }
         }
+
         writer.print("        return new " + typeRef + "(");
-        for (int i = 0; i < components.size(); i++) {
+
+        for (int i = 0; i < fields.size(); i++) {
             if (i > 0) {
                 writer.print(", ");
             }
-            writer.print(components.get(i).getSimpleName());
+            writer.print(fields.get(i).component().getSimpleName());
         }
+
         writer.println(");");
         writer.println("    }");
     }
 
-    private static void writeEnumWriteBody(PrintWriter writer, String typeRef, String codecName) {
+    // --- Enum codec generation ---
+
+    private static void writeEnumWriteBody(PrintWriter writer, String typeRef) {
         writer.println("    static void writeBody(SliceCodec codec, ByteBuf buf, " + typeRef + " value) {");
         writer.println("        SliceCodec.writeCompact(buf, value.ordinal());");
         writer.println("    }");
     }
 
-    private static void writeEnumReadBody(PrintWriter writer, String typeRef, String codecName) {
+    private static void writeEnumReadBody(PrintWriter writer, String typeRef) {
         writer.println("    static " + typeRef + " readBody(SliceCodec codec, ByteBuf buf) {");
         writer.println("        return " + typeRef + ".values()[SliceCodec.readCompact(buf)];");
         writer.println("    }");
     }
 
+    // --- Utility methods ---
+
     private static String tagExpression(int tag, String qualifiedTypeName) {
         if (tag >= 0) {
             return String.valueOf(tag);
         }
+
         return "SliceCodec.deterministicTag(\"" + qualifiedTypeName + "\")";
     }
 
@@ -222,7 +411,7 @@ public class CodecClassGenerator {
             return true;
         }
 
-        if (type instanceof javax.lang.model.type.DeclaredType declared) {
+        if (type instanceof DeclaredType declared) {
             for (var arg : declared.getTypeArguments()) {
                 if (containsTypeVariable(arg)) {
                     return true;

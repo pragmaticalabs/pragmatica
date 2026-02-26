@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit;
 public class SliceCodecBenchmark {
 
     private SliceCodec codec;
+    private SliceCodec resolved;
     private Fory fory;
 
     private SimpleRecord simpleRecord;
@@ -37,6 +38,11 @@ public class SliceCodecBenchmark {
     private byte[] complexLargeSliceBytes;
     private byte[] mixedRecordSliceBytes;
 
+    private byte[] simpleRecordResolvedBytes;
+    private byte[] complexSmallResolvedBytes;
+    private byte[] complexLargeResolvedBytes;
+    private byte[] mixedRecordResolvedBytes;
+
     private byte[] simpleRecordForyBytes;
     private byte[] complexSmallForyBytes;
     private byte[] complexLargeForyBytes;
@@ -46,6 +52,7 @@ public class SliceCodecBenchmark {
     public void setup() {
         // --- SliceCodec setup ---
         codec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), BenchmarkTypes.ALL_CODECS);
+        resolved = ResolvedCodecs.resolvedCodec();
 
         // --- Fory setup ---
         fory = Fory.builder()
@@ -77,6 +84,11 @@ public class SliceCodecBenchmark {
         complexSmallSliceBytes = codec.encode(complexSmall);
         complexLargeSliceBytes = codec.encode(complexLarge);
         mixedRecordSliceBytes = codec.encode(mixedRecord);
+
+        simpleRecordResolvedBytes = resolved.encode(simpleRecord);
+        complexSmallResolvedBytes = resolved.encode(complexSmall);
+        complexLargeResolvedBytes = resolved.encode(complexLarge);
+        mixedRecordResolvedBytes = resolved.encode(mixedRecord);
 
         simpleRecordForyBytes = fory.serialize(simpleRecord);
         complexSmallForyBytes = fory.serialize(complexSmall);
@@ -184,6 +196,50 @@ public class SliceCodecBenchmark {
     }
 
     // =====================================================
+    // Resolved (pre-resolved codecs) benchmarks
+    // =====================================================
+
+    @Benchmark
+    public byte[] simpleRecord_serialize_resolved() {
+        return resolved.encode(simpleRecord);
+    }
+
+    @Benchmark
+    public SimpleRecord simpleRecord_deserialize_resolved() {
+        return resolved.decode(simpleRecordResolvedBytes);
+    }
+
+    @Benchmark
+    public byte[] mixedRecord_serialize_resolved() {
+        return resolved.encode(mixedRecord);
+    }
+
+    @Benchmark
+    public MixedRecord mixedRecord_deserialize_resolved() {
+        return resolved.decode(mixedRecordResolvedBytes);
+    }
+
+    @Benchmark
+    public byte[] complexSmall_serialize_resolved() {
+        return resolved.encode(complexSmall);
+    }
+
+    @Benchmark
+    public ComplexRecord complexSmall_deserialize_resolved() {
+        return resolved.decode(complexSmallResolvedBytes);
+    }
+
+    @Benchmark
+    public byte[] complexLarge_serialize_resolved() {
+        return resolved.encode(complexLarge);
+    }
+
+    @Benchmark
+    public ComplexRecord complexLarge_deserialize_resolved() {
+        return resolved.decode(complexLargeResolvedBytes);
+    }
+
+    // =====================================================
     // Round-trip benchmarks
     // =====================================================
 
@@ -203,7 +259,17 @@ public class SliceCodecBenchmark {
     }
 
     @Benchmark
+    public SimpleRecord simpleRecord_roundTrip_resolved() {
+        return resolved.decode(resolved.encode(simpleRecord));
+    }
+
+    @Benchmark
     public ComplexRecord complexLarge_roundTrip_fory() {
         return (ComplexRecord) fory.deserialize(fory.serialize(complexLarge));
+    }
+
+    @Benchmark
+    public ComplexRecord complexLarge_roundTrip_resolved() {
+        return resolved.decode(resolved.encode(complexLarge));
     }
 }

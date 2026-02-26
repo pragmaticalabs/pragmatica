@@ -1,9 +1,10 @@
 #!/bin/bash
-# Run Pricing Engine in Aether Forge with load generation
+# Run Pricing Engine in Aether Forge (no load generator — use k6 scripts instead)
 #
 # Usage:
-#   ./run-forge.sh              Build + start Forge with load generator
-#   ./run-forge.sh --skip-build Start Forge without rebuilding
+#   ./run-forge.sh              Build + start Forge cluster
+#   ./run-forge.sh --skip-build Start without rebuilding
+#   ./run-forge.sh --with-load  Start with built-in load generator
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,10 +12,19 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 FORGE_JAR="$PROJECT_ROOT/aether/forge/forge-core/target/aether-forge.jar"
 
-# Build unless --skip-build
-if [ "$1" != "--skip-build" ]; then
+WITH_LOAD=false
+SKIP_BUILD=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --skip-build) SKIP_BUILD=true ;;
+        --with-load)  WITH_LOAD=true ;;
+    esac
+done
+
+if [ "$SKIP_BUILD" = false ]; then
     echo "Building pricing-engine slice..."
-    mvn -f "$PROJECT_ROOT/pom.xml" install -DskipTests -pl examples/pricing-engine -q
+    mvn -f "$PROJECT_ROOT/pom.xml" install -DskipTests -pl examples/pricing-engine -am -q
 
     if [ ! -f "$FORGE_JAR" ]; then
         echo "Building Forge..."
@@ -30,19 +40,30 @@ fi
 
 echo ""
 echo "Starting Aether Forge with Pricing Engine..."
-echo "  Dashboard: http://localhost:8888"
-echo "  App HTTP:  http://localhost:8070"
+echo "  Dashboard:  http://localhost:8888"
+echo "  App HTTP:   http://localhost:8070 (nodes: 8070-8076)"
+echo "  Management: http://localhost:5150"
 echo ""
-echo "Test endpoints:"
-echo "  curl -X POST http://localhost:8070/api/v1/pricing/calculate \\"
+echo "Test:"
+echo "  curl -s -X POST http://localhost:8070/api/v1/pricing/calculate \\"
 echo "    -H 'Content-Type: application/json' \\"
-echo "    -d '{\"productId\":\"WIDGET-D\",\"quantity\":3,\"regionCode\":\"US-CA\",\"couponCode\":\"SAVE20\"}'"
+echo "    -d '{\"productId\":\"WIDGET-D\",\"quantity\":3,\"regionCode\":\"US-CA\",\"couponCode\":\"SAVE20\"}' | jq"
 echo ""
-echo "  curl http://localhost:8070/api/v1/pricing/analytics/high-value"
+echo "Load test (k6):"
+echo "  k6 run k6/load-test.js                # Steady-state 500 req/s"
+echo "  k6 run k6/ramp-up.js                  # Find saturation point"
+echo "  k6 run k6/per-node.js                 # Per-node comparison"
+echo "  k6 run k6/spike.js                    # Spike recovery"
 echo ""
 
-exec java -jar "$FORGE_JAR" \
-    --config "$SCRIPT_DIR/forge.toml" \
-    --blueprint "$SCRIPT_DIR/target/blueprint.toml" \
-    --load-config "$SCRIPT_DIR/load-config.toml" \
-    --auto-start
+FORGE_ARGS=(
+    --config "$SCRIPT_DIR/forge.toml"
+    --blueprint "$SCRIPT_DIR/target/blueprint.toml"
+)
+
+if [ "$WITH_LOAD" = true ]; then
+    FORGE_ARGS+=(--load-config "$SCRIPT_DIR/load-config.toml" --auto-start)
+    echo "(Built-in load generator enabled)"
+fi
+
+exec java -jar "$FORGE_JAR" "${FORGE_ARGS[@]}"
