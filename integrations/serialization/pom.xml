@@ -19,4 +19,13 @@
         <module>api</module>
         <module>codec-processor</module>
     </modules>
+
+    <profiles>
+        <profile>
+            <id>benchmark</id>
+            <modules>
+                <module>benchmark</module>
+            </modules>
+        </profile>
+    </profiles>
 </project>
