@@ -15,7 +15,11 @@
  */
 
 package org.pragmatica.consensus.rabia;
+
+import org.pragmatica.serialization.Codec;
+
 /// Represents the state values defined in the Rabia protocol (v0, v1, v?).
+@Codec
 public enum StateValue {
     /// Negative vote (no agreement).
     V0,

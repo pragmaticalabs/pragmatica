@@ -20,8 +20,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.Command;
+import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -39,8 +41,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.MessageRouter.MutableRouter;
 import org.pragmatica.net.tcp.NodeAddress;
-import org.pragmatica.serialization.fury.FuryDeserializer;
-import org.pragmatica.serialization.fury.FurySerializer;
+import org.pragmatica.net.tcp.TcpCodecs;
+import org.pragmatica.serialization.SliceCodec;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -51,6 +53,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.pragmatica.serialization.FrameworkCodecs.frameworkCodecs;
 
 /// Performance tests for Rabia consensus using real TCP networking.
 /// All nodes run in the same process but communicate over localhost TCP.
@@ -222,8 +225,7 @@ class RabiaNetworkPerformanceTest {
         final NodeId nodeId;
         private final List<NodeInfo> allNodes;
         private final Runnable onDecision;
-        private final FurySerializer serializer;
-        private final FuryDeserializer deserializer;
+        private final SliceCodec codec;
         private final MutableRouter router;
         private RabiaEngine<TestCommand> engine;
         private NettyClusterNetwork network;
@@ -233,37 +235,24 @@ class RabiaNetworkPerformanceTest {
             this.nodeId = nodeId;
             this.allNodes = allNodes;
             this.onDecision = onDecision;
-            this.serializer = FurySerializer.furySerializer(this::classesToRegister);
-            this.deserializer = FuryDeserializer.furyDeserializer(this::classesToRegister);
+            this.codec = buildTestCodec();
             this.router = MessageRouter.mutable();
         }
 
-        private List<Class<?>> classesToRegister() {
-            return List.of(
-                RabiaProtocolMessage.Synchronous.Propose.class,
-                RabiaProtocolMessage.Synchronous.VoteRound1.class,
-                RabiaProtocolMessage.Synchronous.VoteRound2.class,
-                RabiaProtocolMessage.Synchronous.Decision.class,
-                RabiaProtocolMessage.Synchronous.SyncResponse.class,
-                RabiaProtocolMessage.Asynchronous.SyncRequest.class,
-                RabiaProtocolMessage.Asynchronous.NewBatch.class,
-                NetworkMessage.Hello.class,
-                NetworkMessage.Ping.class,
-                NetworkMessage.Pong.class,
-                NetworkMessage.DiscoverNodes.class,
-                NetworkMessage.DiscoveredNodes.class,
-                NodeInfo.class,
-                NodeAddress.class,
-                SavedState.class,
-                Batch.class,
-                BatchId.class,
-                CorrelationId.class,
-                Phase.class,
-                StateValue.class,
-                NodeId.class,
-                TestCommand.class,
-                ArrayList.class
+        private static SliceCodec buildTestCodec() {
+            var tag = SliceCodec.deterministicTag(TestCommand.class.getName());
+            var testCommandCodec = new SliceCodec.TypeCodec<>(
+                TestCommand.class, tag,
+                (codec, buf, value) -> codec.write(buf, value.id()),
+                (codec, buf) -> new TestCommand((Integer) codec.read(buf))
             );
+            var codecs = new ArrayList<SliceCodec.TypeCodec<?>>();
+            codecs.addAll(ConsensusCodecs.CODECS);
+            codecs.addAll(RabiaCodecs.CODECS);
+            codecs.addAll(NetCodecs.CODECS);
+            codecs.addAll(TcpCodecs.CODECS);
+            codecs.add(testCommandCodec);
+            return SliceCodec.sliceCodec(frameworkCodecs(), codecs);
         }
 
         @SuppressWarnings("unchecked")
@@ -291,7 +280,7 @@ class RabiaNetworkPerformanceTest {
             router.addRoute(NetworkServiceMessage.ConnectionFailed.class, topologyManager::handleConnectionFailed);
 
             // Create network
-            network = new NettyClusterNetwork(topologyManager, serializer, deserializer, router);
+            network = new NettyClusterNetwork(topologyManager, codec, codec, router);
 
             // Wire up network message routes
             router.addRoute(NetworkServiceMessage.ConnectNode.class, network::connect);

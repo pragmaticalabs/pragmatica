@@ -33,7 +33,7 @@ import java.util.List;
 ///
 /// **Wire Format:**
 ///
-///   - Input/output bytes use Fury serialization
+///   - Input/output bytes use SliceCodec serialization
 ///   - Serialization/deserialization happens within the slice's classloader
 ///   - Only primitive byte arrays cross the boundary
 ///
@@ -43,8 +43,8 @@ public interface SliceBridge {
     /// Invoke a method on the slice with serialized input.
     ///
     /// @param methodName Name of the method to invoke
-    /// @param input      Serialized input parameter (Fury format)
-    /// @return Promise resolving to serialized response (Fury format)
+    /// @param input      Serialized input parameter
+    /// @return Promise resolving to serialized response
     Promise<byte[]> invoke(String methodName, byte[] input);
 
     /// Start the slice lifecycle.

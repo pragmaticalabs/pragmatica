@@ -1,7 +1,6 @@
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.slice.serialization.SerializerFactory;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -10,8 +9,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.serialization.Deserializer;
-import org.pragmatica.serialization.Serializer;
+import org.pragmatica.serialization.SliceCodec;
 
 import java.util.List;
 import java.util.Map;
@@ -47,7 +45,7 @@ import static org.pragmatica.lang.Option.option;
 public record DefaultSliceBridge(Artifact artifact,
                                  Slice slice,
                                  Map<String, InternalMethod> methodMap,
-                                 SerializerFactory serializerFactory) implements SliceBridge {
+                                 SliceCodec codec) implements SliceBridge {
     /// Internal method descriptor containing type information for serialization.
     public record InternalMethod(SliceMethod<?, ?> method,
                                  TypeToken<?> parameterType,
@@ -55,13 +53,13 @@ public record DefaultSliceBridge(Artifact artifact,
 
     /// Create a DefaultSliceBridge from a Slice instance.
     ///
-    /// @param artifact          The slice artifact coordinates
-    /// @param slice             The slice instance
-    /// @param serializerFactory Factory for serialization
+    /// @param artifact The slice artifact coordinates
+    /// @param slice    The slice instance
+    /// @param codec    SliceCodec for serialization/deserialization
     /// @return DefaultSliceBridge wrapping the slice
     public static DefaultSliceBridge defaultSliceBridge(Artifact artifact,
                                                         Slice slice,
-                                                        SerializerFactory serializerFactory) {
+                                                        SliceCodec codec) {
         var methodMap = slice.methods()
                              .stream()
                              .collect(Collectors.toMap(m -> m.name()
@@ -69,7 +67,7 @@ public record DefaultSliceBridge(Artifact artifact,
                                                        m -> new InternalMethod(m,
                                                                                m.parameterType(),
                                                                                m.returnType())));
-        return new DefaultSliceBridge(artifact, slice, Map.copyOf(methodMap), serializerFactory);
+        return new DefaultSliceBridge(artifact, slice, Map.copyOf(methodMap), codec);
     }
 
     @Override
@@ -80,15 +78,13 @@ public record DefaultSliceBridge(Artifact artifact,
 
     @Override
     public Promise<byte[]> encode(Object input) {
-        return serializerFactory.serializer()
-                                .map(serializer -> serializer.encode(input));
+        return Promise.lift(Causes::fromThrowable, () -> codec.encode(input));
     }
 
     @Override
     @SuppressWarnings("unchecked")
     public Promise<Object> decode(byte[] bytes) {
-        return serializerFactory.deserializer()
-                                .map(deserializer -> (Object) deserializer.decode(bytes));
+        return Promise.lift(Causes::fromThrowable, () -> (Object) codec.decode(bytes));
     }
 
     @Override
@@ -98,16 +94,11 @@ public record DefaultSliceBridge(Artifact artifact,
     }
 
     private Promise<byte[]> invokeWithSerialization(InternalMethod method, byte[] input) {
-        return acquireSerializationPair().flatMap(pair -> executeInvocation(pair, method, input));
+        return deserializeInput(input).flatMap(parameter -> invokeAndSerialize(method.method(), parameter));
     }
 
-    private Promise<byte[]> executeInvocation(SerializationPair pair, InternalMethod method, byte[] input) {
-        return deserializeInput(pair.deserializer(), input, method.parameterType())
-        .flatMap(parameter -> invokeAndSerialize(pair.serializer(), method.method(), parameter));
-    }
-
-    private <T> Promise<byte[]> invokeAndSerialize(Serializer serializer, SliceMethod<?, ?> method, T parameter) {
-        return invokeMethod(method, parameter).flatMap(response -> serializeResponse(serializer, response));
+    private <T> Promise<byte[]> invokeAndSerialize(SliceMethod<?, ?> method, T parameter) {
+        return invokeMethod(method, parameter).flatMap(this::serializeResponse);
     }
 
     @Override
@@ -129,17 +120,9 @@ public record DefaultSliceBridge(Artifact artifact,
         return option(methodMap.get(methodName)).toResult(METHOD_NOT_FOUND.apply(methodName));
     }
 
-    private Promise<SerializationPair> acquireSerializationPair() {
-        return Promise.all(serializerFactory.serializer(),
-                           serializerFactory.deserializer())
-                      .map(SerializationPair::new);
-    }
-
-    private record SerializationPair(Serializer serializer, Deserializer deserializer) {}
-
     @SuppressWarnings("unchecked")
-    private <T> Promise<T> deserializeInput(Deserializer deserializer, byte[] input, TypeToken<T> typeToken) {
-        return Promise.lift(Causes::fromThrowable, () -> (T) deserializer.decode(input));
+    private <T> Promise<T> deserializeInput(byte[] input) {
+        return Promise.lift(Causes::fromThrowable, () -> (T) codec.decode(input));
     }
 
     @SuppressWarnings("unchecked")
@@ -149,8 +132,8 @@ public record DefaultSliceBridge(Artifact artifact,
                       .flatMap(promise -> promise);
     }
 
-    private <R> Promise<byte[]> serializeResponse(Serializer serializer, R response) {
-        return Promise.lift(Causes::fromThrowable, () -> serializer.encode(response));
+    private <R> Promise<byte[]> serializeResponse(R response) {
+        return Promise.lift(Causes::fromThrowable, () -> codec.encode(response));
     }
 
     // Error constants

@@ -24,11 +24,12 @@
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
-            <artifactId>serialization-kryo</artifactId>
+            <artifactId>serialization-api</artifactId>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
-            <artifactId>serialization-fury</artifactId>
+            <artifactId>serialization-codec-processor</artifactId>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>

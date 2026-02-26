@@ -18,9 +18,11 @@ package org.pragmatica.consensus.rabia;
 
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
+import org.pragmatica.serialization.Codec;
 import org.pragmatica.utility.IdGenerator;
 
 /// Unique identifier for a command batch.
+@Codec
 public record BatchId(String id) {
     public static Result<BatchId> batchId(String id) {
         return Verify.ensure(id, Verify.Is::notBlank)

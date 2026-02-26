@@ -94,6 +94,8 @@ import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 
 import java.util.ArrayList;
@@ -101,9 +103,6 @@ import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import static org.pragmatica.serialization.fury.FuryDeserializer.furyDeserializer;
-import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 
 /// Main entry point for an Aether cluster node.
 /// Assembles all components: consensus, KV-store, slice management, deployment managers.
@@ -220,23 +219,23 @@ public interface AetherNode {
 
     static Result<AetherNode> aetherNode(AetherNodeConfig config) {
         var delegateRouter = MessageRouter.DelegateRouter.delegate();
-        var serializer = furySerializer(AetherCustomClasses.INSTANCE);
-        var deserializer = furyDeserializer(AetherCustomClasses.INSTANCE);
-        return aetherNode(config, delegateRouter, serializer, deserializer);
+        var nodeCodec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
+        return aetherNode(config, delegateRouter, nodeCodec);
     }
 
     static Result<AetherNode> aetherNode(AetherNodeConfig config,
                                          MessageRouter.DelegateRouter delegateRouter,
-                                         Serializer serializer,
-                                         Deserializer deserializer) {
+                                         SliceCodec nodeCodec) {
         return config.validate()
-                     .flatMap(_ -> createNode(config, delegateRouter, serializer, deserializer));
+                     .flatMap(_ -> createNode(config, delegateRouter, nodeCodec));
     }
 
     private static Result<AetherNode> createNode(AetherNodeConfig config,
                                                  MessageRouter.DelegateRouter delegateRouter,
-                                                 Serializer serializer,
-                                                 Deserializer deserializer) {
+                                                 SliceCodec nodeCodec) {
+        // SliceCodec implements both Serializer and Deserializer
+        Serializer serializer = nodeCodec;
+        Deserializer deserializer = nodeCodec;
         // Create KVStore (state machine for consensus)
         var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter, serializer, deserializer);
         // Create DHT node (local storage engine + hash ring)
@@ -276,6 +275,7 @@ public interface AetherNode {
                                                              networkMetricsHandler,
                                                              serializer,
                                                              deserializer,
+                                                             nodeCodec,
                                                              dhtNode));
     }
 
@@ -289,6 +289,7 @@ public interface AetherNode {
                                                    NetworkMetricsHandler networkMetricsHandler,
                                                    Serializer serializer,
                                                    Deserializer deserializer,
+                                                   SliceCodec nodeCodec,
                                                    DHTNode dhtNode) {
         // Create distributed DHT client with quorum-based reads/writes via ClusterNetwork
         var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode, clusterNode.network(), config.artifactRepo());
@@ -697,6 +698,7 @@ public interface AetherNode {
                                                                                 kvStore,
                                                                                 invocationHandler,
                                                                                 config.sliceAction(),
+                                                                                nodeCodec,
                                                                                 Option.some(httpRoutePublisher),
                                                                                 Option.some(sliceInvoker));
         // Create application HTTP server for slice-provided routes (with HTTP forwarding support)

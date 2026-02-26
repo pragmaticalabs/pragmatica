@@ -8,8 +8,7 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.DefaultSliceBridge;
-import org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider;
-import org.pragmatica.aether.slice.serialization.SerializerFactoryProvider;
+import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
@@ -101,6 +100,7 @@ public interface NodeDeploymentManager {
         record ActiveNodeDeploymentState(NodeId self,
                                          SliceStore sliceStore,
                                          SliceActionConfig configuration,
+                                         SliceCodec nodeCodec,
                                          ClusterNode<KVCommand<AetherKey>> cluster,
                                          KVStore<AetherKey, AetherValue> kvStore,
                                          InvocationHandler invocationHandler,
@@ -338,24 +338,11 @@ public interface NodeDeploymentManager {
             private static final Fn1<Cause, String> SLICE_NOT_LOADED_FOR_REGISTRATION = Causes.forOneValue("Slice not loaded for registration: {}");
 
             private Result<Unit> registerSliceBridge(Artifact artifact, Slice slice) {
-                var serializerProvider = resolveSerializerProvider();
-                var sliceClassLoader = slice.getClass()
-                                            .getClassLoader();
-                return serializerProvider.createFactory(slice.serializableClasses(),
-                                                        sliceClassLoader)
-                                         .map(serializerFactory -> {
-                                                  var sliceBridge = DefaultSliceBridge.defaultSliceBridge(artifact,
-                                                                                                          slice,
-                                                                                                          serializerFactory);
-                                                  invocationHandler.registerSlice(artifact, sliceBridge);
-                                                  log.debug("Registered slice {} for invocation", artifact);
-                                                  return Unit.unit();
-                                              });
-            }
-
-            private SerializerFactoryProvider resolveSerializerProvider() {
-                return Option.option(configuration.serializerProvider())
-                             .or(() -> FurySerializerFactoryProvider.furySerializerFactoryProvider());
+                var sliceCodec = slice.codec(nodeCodec);
+                var sliceBridge = DefaultSliceBridge.defaultSliceBridge(artifact, slice, sliceCodec);
+                invocationHandler.registerSlice(artifact, sliceBridge);
+                log.debug("Registered slice {} for invocation", artifact);
+                return Result.unitResult();
             }
 
             private void unregisterSliceFromInvocation(SliceNodeKey sliceKey) {
@@ -962,24 +949,7 @@ public interface NodeDeploymentManager {
                                      kvStore,
                                      invocationHandler,
                                      SliceActionConfig.sliceActionConfig(),
-                                     Option.none(),
-                                     Option.none());
-    }
-
-    static NodeDeploymentManager nodeDeploymentManager(NodeId self,
-                                                       MessageRouter router,
-                                                       SliceStore sliceStore,
-                                                       ClusterNode<KVCommand<AetherKey>> cluster,
-                                                       KVStore<AetherKey, AetherValue> kvStore,
-                                                       InvocationHandler invocationHandler,
-                                                       SliceActionConfig configuration) {
-        return nodeDeploymentManager(self,
-                                     router,
-                                     sliceStore,
-                                     cluster,
-                                     kvStore,
-                                     invocationHandler,
-                                     configuration,
+                                     SliceCodec.sliceCodec(List.of()),
                                      Option.none(),
                                      Option.none());
     }
@@ -991,6 +961,7 @@ public interface NodeDeploymentManager {
                                                        KVStore<AetherKey, AetherValue> kvStore,
                                                        InvocationHandler invocationHandler,
                                                        SliceActionConfig configuration,
+                                                       SliceCodec nodeCodec,
                                                        Option<HttpRoutePublisher> httpRoutePublisher,
                                                        Option<SliceInvokerFacade> sliceInvokerFacade) {
         record deploymentManager(NodeId self,
@@ -999,6 +970,7 @@ public interface NodeDeploymentManager {
                                  KVStore<AetherKey, AetherValue> kvStore,
                                  InvocationHandler invocationHandler,
                                  SliceActionConfig configuration,
+                                 SliceCodec nodeCodec,
                                  MessageRouter router,
                                  AtomicReference<NodeDeploymentState> state,
                                  AtomicLong quorumSequence,
@@ -1035,6 +1007,7 @@ public interface NodeDeploymentManager {
                             var activeState = new NodeDeploymentState.ActiveNodeDeploymentState(self(),
                                                                                                 sliceStore(),
                                                                                                 configuration(),
+                                                                                                nodeCodec(),
                                                                                                 cluster(),
                                                                                                 kvStore(),
                                                                                                 invocationHandler(),
@@ -1141,6 +1114,7 @@ public interface NodeDeploymentManager {
                                      kvStore,
                                      invocationHandler,
                                      configuration,
+                                     nodeCodec,
                                      router,
                                      new AtomicReference<>(new NodeDeploymentState.DormantNodeDeploymentState()),
                                      new AtomicLong(0),

@@ -52,6 +52,29 @@ class SliceProcessorTest {
             }
             """);
 
+    private static final JavaFileObject SLICE_CODEC = JavaFileObjects.forSourceString(
+            "org.pragmatica.serialization.SliceCodec",
+            """
+            package org.pragmatica.serialization;
+
+            import java.util.List;
+
+            public interface SliceCodec {
+                static int deterministicTag(String className) {
+                    return (className.hashCode() & 0x7FFFFFFF) % 16256 + 128;
+                }
+                static void writeCompact(Object buf, int value) {}
+                static int readCompact(Object buf) { return 0; }
+                static SliceCodec sliceCodec(SliceCodec parent, List<TypeCodec<?>> codecs) { return parent; }
+                record TypeCodec<T>(Class<T> type, int tag, TypeWriter<T> writer, TypeReader<T> reader) {}
+                interface TypeWriter<T> { void writeBody(SliceCodec codec, Object buf, T value); }
+                interface TypeReader<T> { T readBody(SliceCodec codec, Object buf); }
+                default <T> void write(Object buf, T obj) {}
+                @SuppressWarnings("unchecked")
+                default <T> T read(Object buf) { return null; }
+            }
+            """);
+
     private static final JavaFileObject SLICE = JavaFileObjects.forSourceString(
             "org.pragmatica.aether.slice.Slice",
             """
@@ -59,13 +82,14 @@ class SliceProcessorTest {
 
             import org.pragmatica.lang.Promise;
             import org.pragmatica.lang.Unit;
+            import org.pragmatica.serialization.SliceCodec;
             import java.util.List;
 
             public interface Slice {
                 default Promise<Unit> start() { return null; }
                 default Promise<Unit> stop() { return null; }
                 List<SliceMethod<?, ?>> methods();
-                default List<Class<?>> serializableClasses() { return List.of(); }
+                default SliceCodec codec(SliceCodec parent) { return parent; }
             }
             """);
 
@@ -228,7 +252,7 @@ class SliceProcessorTest {
     private List<JavaFileObject> commonSources() {
         return new ArrayList<>(List.of(
                 SLICE_ANNOTATION,
-                ASPECT, SLICE, SLICE_METHOD, METHOD_NAME, METHOD_HANDLE, INVOKER_FACADE,
+                ASPECT, SLICE_CODEC, SLICE, SLICE_METHOD, METHOD_NAME, METHOD_HANDLE, INVOKER_FACADE,
                 METHOD_INTERCEPTOR, PROVISIONING_CONTEXT,
                 RESOURCE_PROVIDER_FACADE, SLICE_CREATION_CONTEXT, RESOURCE_QUALIFIER,
                 KEY_ANNOTATION, UNIT

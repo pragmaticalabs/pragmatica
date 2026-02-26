@@ -151,7 +151,7 @@ class LeaderManagerTest {
                 localRouter.route(nodeAdded(nodeId, topology));
             }
 
-            // Establish quorum - first election uses INITIAL_ELECTION_DELAY (10s) for Fury warmup
+            // Establish quorum - first election uses INITIAL_ELECTION_DELAY (10s) for serializer warmup
             localRouter.route(QuorumStateNotification.established());
 
             // Wait for scheduled proposal (10s initial delay + margin)

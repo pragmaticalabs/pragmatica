@@ -19,9 +19,11 @@ package org.pragmatica.dht;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.serialization.Codec;
 
 /// A partition identifier in the DHT consistent hash ring.
 /// Partitions are numbered 0 to MAX_PARTITIONS-1 (default 1024 partitions).
+@Codec
 public record Partition(int value) implements Comparable<Partition> {
     public static final int MAX_PARTITIONS = 1024;
 

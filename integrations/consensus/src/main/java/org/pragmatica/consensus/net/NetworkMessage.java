@@ -18,7 +18,9 @@ package org.pragmatica.consensus.net;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.Message;
+import org.pragmatica.serialization.Codec;
 
+@Codec
 public sealed interface NetworkMessage extends Message.Wired {
     /// Hello - connection handshake, sent by both sides on channel activation
     record Hello(NodeId sender) implements NetworkMessage {}

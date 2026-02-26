@@ -6,6 +6,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.serialization.Codec;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -17,6 +18,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 // Note: Enum timeouts are default values. SliceActionConfig is the single source of truth
 // for actual timeout configuration and can override these defaults.
+@Codec
 @SuppressWarnings("JBCT-SEQ-01")
 public enum SliceState {
     LOAD,

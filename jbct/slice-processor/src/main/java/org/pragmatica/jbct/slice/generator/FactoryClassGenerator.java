@@ -16,6 +16,7 @@ import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
+import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
@@ -108,6 +109,7 @@ public class FactoryClassGenerator {
         importTracker.use("org.pragmatica.lang.Unit");
         importTracker.use("org.pragmatica.lang.type.TypeToken");
         importTracker.use("org.pragmatica.aether.slice.ResourceProviderFacade");
+        importTracker.use("org.pragmatica.serialization.SliceCodec");
         if (model.hasMethodInterceptors() || model.dependencies().stream().anyMatch(DependencyModel::isPublisher)) {
             importTracker.use("org.pragmatica.aether.slice.ProvisioningContext");
             importTracker.use("org.pragmatica.lang.Functions.Fn1");
@@ -897,8 +899,8 @@ public class FactoryClassGenerator {
         out.println("            public Promise<Unit> stop() {");
         out.println("                return resources.releaseAll(\"" + escapeJavaString(sliceArtifactCoordinate) + "\");");
         out.println("            }");
-        // Generate serializableClasses() override
-        generateSerializableClassesOverride(out, model, proxyMethodsCache, importTracker);
+        // Generate codec() override
+        generateCodecOverride(out, model, proxyMethodsCache, importTracker);
         // Generate delegate methods for the slice interface
         for (var method : methods) {
             out.println();
@@ -1052,98 +1054,217 @@ public class FactoryClassGenerator {
                        .or("ctx.resources().provide(Object.class, \"unknown\")");
     }
 
-    /// Generate the serializableClasses() override for the adapter record.
-    /// Returns a List.of(...) with all user-defined types that this slice transmits via serialization.
-    private void generateSerializableClassesOverride(PrintWriter out, SliceModel model,
-                                                        Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
-                                                        ImportTracker importTracker) {
-        var classEntries = collectSerializableClassEntries(model, proxyMethodsCache, importTracker);
+    /// Holds info needed to generate a TypeCodec entry for a single serializable type.
+    private record CodecTypeEntry(String qualifiedName, String simpleName, CodecTypeKind kind,
+                                   List<ComponentInfo> components) {
+
+        static CodecTypeEntry record(String qualifiedName, String simpleName, List<ComponentInfo> components) {
+            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.RECORD, components);
+        }
+
+        static CodecTypeEntry enumType(String qualifiedName, String simpleName) {
+            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.ENUM, List.of());
+        }
+
+        static CodecTypeEntry opaque(String qualifiedName, String simpleName) {
+            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.OPAQUE, List.of());
+        }
+    }
+
+    private enum CodecTypeKind { RECORD, ENUM, OPAQUE }
+
+    private record ComponentInfo(String name, String typeName) {}
+
+    /// Generate the codec() override for the adapter record.
+    /// Returns a SliceCodec composed from TypeCodec entries for all user-defined types this slice transmits.
+    private void generateCodecOverride(PrintWriter out, SliceModel model,
+                                        Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
+                                        ImportTracker importTracker) {
+        var codecEntries = collectCodecTypeEntries(model, proxyMethodsCache, importTracker);
         out.println();
         out.println("            @Override");
-        out.println("            public List<Class<?>> serializableClasses() {");
-        if (classEntries.isEmpty()) {
-            out.println("                return List.of();");
+        out.println("            public SliceCodec codec(SliceCodec parent) {");
+        if (codecEntries.isEmpty()) {
+            out.println("                return parent;");
         } else {
-            out.println("                return List.of(");
-            for (int i = 0; i < classEntries.size(); i++) {
-                var comma = (i < classEntries.size() - 1) ? "," : "";
-                out.println("                    " + classEntries.get(i) + comma);
+            out.println("                return SliceCodec.sliceCodec(parent, List.of(");
+            for (int i = 0; i < codecEntries.size(); i++) {
+                var comma = (i < codecEntries.size() - 1) ? "," : "";
+                generateTypeCodecEntry(out, codecEntries.get(i), comma);
             }
-            out.println("                );");
+            out.println("                ));");
         }
         out.println("            }");
     }
 
-    /// Collect serializable class entries as ready-to-emit strings (e.g. "MyType.class").
+    private void generateTypeCodecEntry(PrintWriter out, CodecTypeEntry entry, String comma) {
+        var name = entry.simpleName();
+        var fqn = entry.qualifiedName();
+        switch (entry.kind()) {
+            case RECORD -> generateRecordTypeCodec(out, entry, comma);
+            case ENUM -> {
+                out.println("                    new SliceCodec.TypeCodec<" + name + ">(" + name + ".class,");
+                out.println("                        SliceCodec.deterministicTag(\"" + escapeJavaString(fqn) + "\"),");
+                out.println("                        (codec, buf, val) -> SliceCodec.writeCompact(buf, val.ordinal()),");
+                out.println("                        (codec, buf) -> " + name + ".values()[SliceCodec.readCompact(buf)])" + comma);
+            }
+            case OPAQUE -> {
+                out.println("                    new SliceCodec.TypeCodec<" + name + ">(" + name + ".class,");
+                out.println("                        SliceCodec.deterministicTag(\"" + escapeJavaString(fqn) + "\"),");
+                out.println("                        (codec, buf, val) -> codec.write(buf, val),");
+                out.println("                        (codec, buf) -> (" + name + ") codec.read(buf))" + comma);
+            }
+        }
+    }
+
+    private void generateRecordTypeCodec(PrintWriter out, CodecTypeEntry entry, String comma) {
+        var name = entry.simpleName();
+        var fqn = entry.qualifiedName();
+        var components = entry.components();
+        out.println("                    new SliceCodec.TypeCodec<" + name + ">(" + name + ".class,");
+        out.println("                        SliceCodec.deterministicTag(\"" + escapeJavaString(fqn) + "\"),");
+        // Writer lambda
+        out.print("                        (codec, buf, val) -> {");
+        if (components.size() == 1) {
+            out.println(" codec.write(buf, val." + components.getFirst().name() + "()); },");
+        } else {
+            out.println();
+            for (var comp : components) {
+                out.println("                            codec.write(buf, val." + comp.name() + "());");
+            }
+            out.println("                        },");
+        }
+        // Reader lambda
+        out.println("                        (codec, buf) -> {");
+        for (var comp : components) {
+            out.println("                            var " + comp.name() + " = (" + comp.typeName() + ") codec.read(buf);");
+        }
+        var ctorArgs = components.stream()
+                                 .map(ComponentInfo::name)
+                                 .collect(Collectors.joining(", "));
+        out.println("                            return new " + name + "(" + ctorArgs + ");");
+        out.println("                        })" + comma);
+    }
+
+    /// Collect TypeCodec entries for all serializable types in this slice.
     /// Includes method parameter types, response types, multi-param request records, and publisher message types.
     /// Filters out JDK and Pragmatica framework types.
-    private List<String> collectSerializableClassEntries(SliceModel model,
-                                                            Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
-                                                            ImportTracker importTracker) {
+    private List<CodecTypeEntry> collectCodecTypeEntries(SliceModel model,
+                                                          Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
+                                                          ImportTracker importTracker) {
         var seen = new LinkedHashSet<String>();
-        var entries = new ArrayList<String>();
+        var entries = new ArrayList<CodecTypeEntry>();
         for (var method : model.methods()) {
-            collectParameterEntries(method, importTracker, seen, entries);
-            collectResponseEntry(method, importTracker, seen, entries);
+            collectParameterCodecEntries(method, model, importTracker, seen, entries);
+            collectResponseCodecEntry(method, importTracker, seen, entries);
         }
-        collectPublisherMessageEntries(model, importTracker, seen, entries);
-        collectDependencyProxyEntries(proxyMethodsCache, importTracker, seen, entries);
+        collectPublisherMessageCodecEntries(model, importTracker, seen, entries);
+        collectDependencyProxyCodecEntries(proxyMethodsCache, importTracker, seen, entries);
         return entries;
     }
 
-    private void collectParameterEntries(MethodModel method, ImportTracker importTracker,
-                                          Set<String> seen, List<String> entries) {
+    private void collectParameterCodecEntries(MethodModel method, SliceModel model, ImportTracker importTracker,
+                                                Set<String> seen, List<CodecTypeEntry> entries) {
         if (method.hasNoParams()) {
             return;
         }
         if (method.hasSingleParam()) {
-            addTypeEntry(getQualifiedTypeName(method.parameters().getFirst().type()), importTracker, seen, entries);
+            addCodecEntry(method.parameters().getFirst().type(), importTracker, seen, entries);
         } else {
-            // Multi-param: include the generated request record (inner class of Factory, visible by simple name)
+            // Multi-param: the generated request record — we know its components from the method parameters
             var requestRecordName = capitalize(method.name()) + "Request";
-            if (seen.add(requestRecordName)) {
-                entries.add(requestRecordName + ".class");
+            var fqn = model.packageName() + "." + model.simpleName() + "Factory." + requestRecordName;
+            if (seen.add(fqn)) {
+                var components = method.parameters()
+                                       .stream()
+                                       .map(p -> new ComponentInfo(p.name(), importTracker.use(getQualifiedTypeName(p.type()))))
+                                       .toList();
+                entries.add(CodecTypeEntry.record(fqn, requestRecordName, components));
             }
             // Also include individual user-defined parameter types
             for (var param : method.parameters()) {
-                addTypeEntry(getQualifiedTypeName(param.type()), importTracker, seen, entries);
+                addCodecEntry(param.type(), importTracker, seen, entries);
             }
         }
     }
 
-    private void collectResponseEntry(MethodModel method, ImportTracker importTracker,
-                                       Set<String> seen, List<String> entries) {
-        addTypeEntry(getQualifiedTypeName(method.responseType()), importTracker, seen, entries);
+    private void collectResponseCodecEntry(MethodModel method, ImportTracker importTracker,
+                                             Set<String> seen, List<CodecTypeEntry> entries) {
+        addCodecEntry(method.responseType(), importTracker, seen, entries);
     }
 
-    private void collectPublisherMessageEntries(SliceModel model, ImportTracker importTracker,
-                                                 Set<String> seen, List<String> entries) {
+    private void collectPublisherMessageCodecEntries(SliceModel model, ImportTracker importTracker,
+                                                       Set<String> seen, List<CodecTypeEntry> entries) {
         for (var dep : model.dependencies()) {
             if (dep.isPublisher()) {
                 dep.publisherMessageType()
-                   .onPresent(msgType -> addTypeEntry(msgType, importTracker, seen, entries));
+                   .onPresent(msgType -> addCodecEntryByName(msgType, importTracker, seen, entries));
             }
         }
     }
 
-    private void collectDependencyProxyEntries(Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
-                                                  ImportTracker importTracker,
-                                                  Set<String> seen, List<String> entries) {
+    private void collectDependencyProxyCodecEntries(Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
+                                                      ImportTracker importTracker,
+                                                      Set<String> seen, List<CodecTypeEntry> entries) {
         for (var methodList : proxyMethodsCache.values()) {
             for (var method : methodList) {
-                addTypeEntry(method.responseType(), importTracker, seen, entries);
+                addCodecEntryByName(method.responseType(), importTracker, seen, entries);
                 for (var param : method.params()) {
-                    addTypeEntry(param.type(), importTracker, seen, entries);
+                    addCodecEntryByName(param.type(), importTracker, seen, entries);
                 }
             }
         }
     }
 
-    private void addTypeEntry(String qualifiedName, ImportTracker importTracker,
-                               Set<String> seen, List<String> entries) {
-        if (!isFrameworkOrJdkType(qualifiedName) && seen.add(qualifiedName)) {
-            entries.add(importTracker.use(qualifiedName) + ".class");
+    /// Add a codec entry from a TypeMirror — can inspect the actual TypeElement for record/enum info.
+    private void addCodecEntry(TypeMirror type, ImportTracker importTracker,
+                                Set<String> seen, List<CodecTypeEntry> entries) {
+        var qualifiedName = getQualifiedTypeName(type);
+        if (isFrameworkOrJdkType(qualifiedName) || !seen.add(qualifiedName)) {
+            return;
         }
+        var simpleName = importTracker.use(qualifiedName);
+        if (type instanceof DeclaredType dt) {
+            var element = dt.asElement();
+            if (element instanceof TypeElement te) {
+                entries.add(buildCodecEntryFromElement(te, qualifiedName, simpleName, importTracker));
+                return;
+            }
+        }
+        entries.add(CodecTypeEntry.opaque(qualifiedName, simpleName));
+    }
+
+    /// Add a codec entry from a qualified name string — looks up the TypeElement via elements utility.
+    private void addCodecEntryByName(String qualifiedName, ImportTracker importTracker,
+                                      Set<String> seen, List<CodecTypeEntry> entries) {
+        if (isFrameworkOrJdkType(qualifiedName) || !seen.add(qualifiedName)) {
+            return;
+        }
+        var simpleName = importTracker.use(qualifiedName);
+        var te = elements.getTypeElement(qualifiedName);
+        if (te != null) {
+            entries.add(buildCodecEntryFromElement(te, qualifiedName, simpleName, importTracker));
+        } else {
+            entries.add(CodecTypeEntry.opaque(qualifiedName, simpleName));
+        }
+    }
+
+    private CodecTypeEntry buildCodecEntryFromElement(TypeElement te,
+                                                        String qualifiedName, String simpleName,
+                                                        ImportTracker importTracker) {
+        if (te.getKind() == ElementKind.ENUM) {
+            return CodecTypeEntry.enumType(qualifiedName, simpleName);
+        }
+        if (te.getKind() == ElementKind.RECORD) {
+            var components = te.getRecordComponents()
+                               .stream()
+                               .map(rc -> new ComponentInfo(
+                                   rc.getSimpleName().toString(),
+                                   importTracker.use(getQualifiedTypeName(rc.asType()))))
+                               .toList();
+            return CodecTypeEntry.record(qualifiedName, simpleName, components);
+        }
+        return CodecTypeEntry.opaque(qualifiedName, simpleName);
     }
 
     private String getQualifiedTypeName(TypeMirror type) {

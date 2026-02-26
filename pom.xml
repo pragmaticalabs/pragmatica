@@ -65,8 +65,6 @@
         <mockito.version>5.21.0</mockito.version>
         <awaitility.version>4.3.0</awaitility.version>
         <log4j2.version>2.24.3</log4j2.version>
-        <kryo.version>5.6.2</kryo.version>
-        <fory-core.version>0.16.0-SNAPSHOT</fory-core.version>
         <picocli.version>4.7.7</picocli.version>
         <asm.version>9.9.1</asm.version>
         <micrometer.version>1.16.1</micrometer.version>
@@ -195,12 +193,7 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
-                <artifactId>serialization-kryo</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite</groupId>
-                <artifactId>serialization-fury</artifactId>
+                <artifactId>serialization-codec-processor</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -360,18 +353,6 @@
                 <groupId>io.netty</groupId>
                 <artifactId>netty-all</artifactId>
                 <version>${netty.version}</version>
-            </dependency>
-
-            <!-- Serialization -->
-            <dependency>
-                <groupId>com.esotericsoftware</groupId>
-                <artifactId>kryo</artifactId>
-                <version>${kryo.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.apache.fory</groupId>
-                <artifactId>fory-core</artifactId>
-                <version>${fory-core.version}</version>
             </dependency>
 
             <!-- CLI -->

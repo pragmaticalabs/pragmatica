@@ -18,8 +18,10 @@ package org.pragmatica.consensus.net;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.net.tcp.NodeAddress;
+import org.pragmatica.serialization.Codec;
 
 /// Node information: ID and address.
+@Codec
 public record NodeInfo(NodeId id, NodeAddress address) {
     /// Factory method for creating NodeInfo.
     public static NodeInfo nodeInfo(NodeId id, NodeAddress address) {

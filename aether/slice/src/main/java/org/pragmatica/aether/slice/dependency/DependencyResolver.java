@@ -16,7 +16,7 @@ import org.pragmatica.aether.slice.SliceManifest;
 import org.pragmatica.aether.slice.SliceManifest.SliceManifestInfo;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
-import org.pragmatica.aether.slice.serialization.SerializerFactory;
+import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -347,16 +347,16 @@ public interface DependencyResolver {
     /// @param registry            Registry to track loaded slices
     /// @param sharedLibraryLoader ClassLoader for shared dependencies
     /// @param invokerFacade       Facade for inter-slice invocations
-    /// @param serializerFactory   Factory for serialization
+    /// @param codec               SliceCodec for serialization/deserialization
     /// @return Promise of resolved SliceBridge
     static Promise<SliceBridge> resolveBridge(Artifact artifact,
                                               Repository repository,
                                               SliceRegistry registry,
                                               SharedLibraryClassLoader sharedLibraryLoader,
                                               SliceInvokerFacade invokerFacade,
-                                              SerializerFactory serializerFactory) {
+                                              SliceCodec codec) {
         return resolve(artifact, repository, registry, sharedLibraryLoader, invokerFacade)
-        .map(slice -> DefaultSliceBridge.defaultSliceBridge(artifact, slice, serializerFactory));
+        .map(slice -> DefaultSliceBridge.defaultSliceBridge(artifact, slice, slice.codec(codec)));
     }
 
     private static Promise<Slice> resolveWithSharedLoader(Artifact artifact,

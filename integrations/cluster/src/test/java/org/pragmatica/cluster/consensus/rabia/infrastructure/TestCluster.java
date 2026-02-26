@@ -1,19 +1,25 @@
 package org.pragmatica.consensus.rabia.infrastructure;
 
-import org.pragmatica.consensus.rabia.ProtocolConfig;
-import org.pragmatica.consensus.rabia.RabiaEngine;
-import org.pragmatica.consensus.rabia.RabiaProtocolMessage;
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.cluster.metrics.MetricsCodecs;
 import org.pragmatica.cluster.net.local.LocalNetwork;
 import org.pragmatica.cluster.net.local.LocalNetwork.FaultInjector;
-import org.pragmatica.cluster.node.rabia.CustomClasses;
-import org.pragmatica.consensus.Command;
 import org.pragmatica.cluster.state.kvstore.*;
+import org.pragmatica.cluster.state.kvstore.KvstoreCodecs;
+import org.pragmatica.consensus.Command;
+import org.pragmatica.consensus.ConsensusCodecs;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetCodecs;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.rabia.ProtocolConfig;
+import org.pragmatica.consensus.rabia.RabiaCodecs;
+import org.pragmatica.consensus.rabia.RabiaEngine;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage;
+import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.MessageRouter;
-import org.pragmatica.serialization.Deserializer;
-import org.pragmatica.serialization.Serializer;
+import org.pragmatica.net.tcp.TcpCodecs;
+import org.pragmatica.serialization.Codec;
+import org.pragmatica.serialization.SliceCodec;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -22,27 +28,19 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.serialization.FrameworkCodecs.frameworkCodecs;
+import static org.pragmatica.consensus.NodeId.randomNodeId;
 import static org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous;
 import static org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous;
-import static org.pragmatica.consensus.NodeId.randomNodeId;
-import org.pragmatica.consensus.net.NodeInfo;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
-import static org.pragmatica.serialization.fury.FuryDeserializer.furyDeserializer;
-import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 
 /// Holds a small Rabia cluster wired over a single LocalNetwork.
 public class TestCluster {
+    @Codec
     public record StringKey(String key) implements StructuredKey {
-        private static final List<Class<?>> CLASSES = List.of(StringKey.class);
-        private static final org.pragmatica.serialization.ClassRegistrator REGISTRATOR = () -> CLASSES;
-
         public static StringKey key(String key) {
             return new StringKey(key);
-        }
-
-        public static org.pragmatica.serialization.ClassRegistrator registrator() {
-            return REGISTRATOR;
         }
     }
 
@@ -51,9 +49,20 @@ public class TestCluster {
     private final Map<NodeId, RabiaEngine<KVCommand<StringKey>>> engines = new LinkedHashMap<>();
     private final Map<NodeId, KVStore<StringKey, String>> stores = new LinkedHashMap<>();
     private final Map<NodeId, MessageRouter.MutableRouter> routers = new LinkedHashMap<>();
-    private final Serializer serializer = furySerializer(CustomClasses.INSTANCE, StringKey.registrator());
-    private final Deserializer deserializer = furyDeserializer(CustomClasses.INSTANCE, StringKey.registrator());
+    private final SliceCodec codec = buildTestCodec();
     private final int size;
+
+    private static SliceCodec buildTestCodec() {
+        var codecs = new ArrayList<SliceCodec.TypeCodec<?>>();
+        codecs.addAll(ConsensusCodecs.CODECS);
+        codecs.addAll(RabiaCodecs.CODECS);
+        codecs.addAll(NetCodecs.CODECS);
+        codecs.addAll(TcpCodecs.CODECS);
+        codecs.addAll(KvstoreCodecs.CODECS);
+        codecs.addAll(MetricsCodecs.CODECS);
+        codecs.addAll(InfrastructureCodecs.CODECS);
+        return SliceCodec.sliceCodec(frameworkCodecs(), codecs);
+    }
 
     public TestCluster(int size) {
         this.size = size;
@@ -99,7 +108,7 @@ public class TestCluster {
 
     public void addNewNode(NodeId id) {
         var router = MessageRouter.mutable();
-        var store = new KVStore<StringKey, String>(router, serializer, deserializer);
+        var store = new KVStore<StringKey, String>(router, codec, codec);
         var topologyManager = new TestTopologyManager(size, new NodeInfo(id, nodeAddress("localhost", 8090).unwrap()));
         var engine = new RabiaEngine<>(topologyManager, network, store, ProtocolConfig.testConfig());
 

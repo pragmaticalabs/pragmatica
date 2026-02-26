@@ -2,6 +2,7 @@ package org.pragmatica.aether.http.forward;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.serialization.Codec;
 
 /// Messages for HTTP request forwarding between nodes.
 ///
@@ -18,6 +19,7 @@ import org.pragmatica.consensus.ProtocolMessage;
 ///   - Node B processes request, sends HttpForwardResponse back
 ///   - Node A returns response to original HTTP client
 /// </ol>
+@Codec
 public sealed interface HttpForwardMessage extends ProtocolMessage {
     /// Request to forward an HTTP request to another node.
     ///

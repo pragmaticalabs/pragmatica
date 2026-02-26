@@ -139,16 +139,6 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
-                <artifactId>serialization-kryo</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite</groupId>
-                <artifactId>serialization-fury</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite</groupId>
                 <artifactId>micrometer</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -408,19 +398,6 @@
                 <groupId>io.netty</groupId>
                 <artifactId>netty-all</artifactId>
                 <version>${netty.version}</version>
-            </dependency>
-
-            <!-- Serialization -->
-            <dependency>
-                <groupId>com.esotericsoftware</groupId>
-                <artifactId>kryo</artifactId>
-                <version>${kryo.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.apache.fory</groupId>
-                <artifactId>fory-core</artifactId>
-                <version>${fory-core.version}</version>
             </dependency>
 
             <!-- CLI -->

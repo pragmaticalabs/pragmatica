@@ -10,7 +10,6 @@ import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.aether.slice.SliceActionConfig;
-import org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.rabia.ProtocolConfig;
@@ -24,7 +23,6 @@ import org.pragmatica.net.tcp.TlsConfig;
 
 import java.util.List;
 
-import static org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider.furySerializerFactoryProvider;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Configuration for an Aether cluster node.
@@ -65,7 +63,7 @@ public record AetherNodeConfig(TopologyConfig topology,
     public static final int MANAGEMENT_DISABLED = 0;
 
     public static SliceActionConfig defaultSliceActionConfig() {
-        return SliceActionConfig.sliceActionConfig(furySerializerFactoryProvider());
+        return SliceActionConfig.sliceActionConfig();
     }
 
     public static AetherNodeConfig aetherNodeConfig(NodeId self,

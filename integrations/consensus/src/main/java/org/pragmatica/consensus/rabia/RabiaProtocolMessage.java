@@ -20,8 +20,10 @@ import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
+import org.pragmatica.serialization.Codec;
 
 /// Message types for the Rabia consensus protocol.
+@Codec
 public sealed interface RabiaProtocolMessage extends ProtocolMessage {
     /// Synchronous protocol messages (part of the consensus rounds).
     sealed interface Synchronous extends RabiaProtocolMessage {

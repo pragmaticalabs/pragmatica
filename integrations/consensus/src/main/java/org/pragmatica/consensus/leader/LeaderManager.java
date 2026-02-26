@@ -155,7 +155,7 @@ public interface LeaderManager {
     TimeSpan PROPOSAL_RETRY_DELAY = timeSpan(500).millis();
 
     /// Initial delay before first leader election attempt.
-    /// This allows all nodes time to complete synchronization (Fury codec compilation, state sync)
+    /// This allows all nodes time to complete synchronization (codec warmup, state sync)
     /// before leader proposals are submitted. Without this delay, early nodes submit proposals
     /// that are ignored by dormant nodes, causing leader election to stall.
     TimeSpan INITIAL_ELECTION_DELAY = timeSpan(3).seconds();

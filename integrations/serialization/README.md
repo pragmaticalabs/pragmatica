@@ -1,46 +1,33 @@
 # Serialization Module
 
-Binary serialization integrations for Pragmatica Lite.
+Binary serialization for Pragmatica Lite.
 
 ## Overview
 
-Provides pluggable binary serialization with core interfaces (`Serializer`, `Deserializer`, `ClassRegistrator`) and two implementations: Kryo (fast, compact binary format) and Apache Fury (extremely fast, JIT optimized). Both are thread-safe and use pooling for optimal performance.
+Provides compile-time generated binary codecs via `SliceCodec` and the `@Codec` annotation processor. Types annotated with `@Codec` get efficient, zero-reflection serialization at compile time.
 
-| Aspect | Kryo | Fury |
-|--------|------|------|
-| Performance | Fast | Very fast (JIT optimized) |
-| Compatibility | Wide ecosystem | Newer, less adoption |
-| Memory | Low | Lower (native memory) |
-| Cross-language | No | Yes (multiple languages) |
+## Modules
+
+- **api** - Core interfaces (`Serializer`, `Deserializer`, `SliceCodec`, `FrameworkCodecs`) and the `@Codec` annotation
+- **codec-processor** - Annotation processor that generates `TypeCodec` implementations for `@Codec`-annotated records
 
 ## Usage
 
 ```java
-// Kryo
-var serializer = KryoSerializer.kryoSerializer();
-var deserializer = KryoDeserializer.kryoDeserializer();
+// Annotate your types
+@Codec
+public record User(String name, int age) {}
 
-// Fury
-var serializer = FurySerializer.furySerializer();
-var deserializer = FuryDeserializer.furyDeserializer();
+// Generated codecs are collected into per-package registries (e.g. UserCodec, MyPackageCodecs)
+// Build a SliceCodec with framework codecs + your generated codecs
+var codec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), MyPackageCodecs.CODECS);
 
-// Serialize/deserialize
-byte[] bytes = serializer.encode(myObject);
-MyObject result = deserializer.decode(bytes);
-
-// Class registration (recommended for performance)
-ClassRegistrator registrator = consumer -> {
-    consumer.accept(User.class);
-    consumer.accept(Order.class);
-};
-var serializer = KryoSerializer.kryoSerializer(registrator);
-
-// ByteBuf integration (Netty)
-serializer.write(buffer, myObject);
-MyObject result = deserializer.read(buffer);
+// Serialize/deserialize via ByteBuf (Netty)
+codec.write(buffer, myObject);
+MyObject result = codec.read(buffer);
 ```
 
 ## Dependencies
 
-- Kryo or Apache Fury (depending on chosen implementation)
 - `pragmatica-lite-core`
+- Netty (for ByteBuf)

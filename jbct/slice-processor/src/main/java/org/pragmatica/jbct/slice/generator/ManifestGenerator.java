@@ -21,7 +21,7 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 public class ManifestGenerator {
-    static final int ENVELOPE_FORMAT_VERSION = 4;
+    static final int ENVELOPE_FORMAT_VERSION = 5;
 
     private final Filer filer;
     private final DependencyVersionResolver versionResolver;

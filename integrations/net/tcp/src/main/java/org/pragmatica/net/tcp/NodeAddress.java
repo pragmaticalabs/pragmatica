@@ -21,11 +21,13 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.serialization.Codec;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 
 /// Network node address (host and port).
+@Codec
 public record NodeAddress(String host, int port) {
     private static final Cause BLANK_HOST = Causes.cause("Host must not be blank");
     private static final Cause INVALID_PORT = Causes.cause("Port must be between 1 and 65535");

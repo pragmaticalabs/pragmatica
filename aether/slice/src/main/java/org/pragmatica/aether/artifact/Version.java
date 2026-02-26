@@ -7,6 +7,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify.Is;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.serialization.Codec;
 
 import java.util.regex.Pattern;
 
@@ -15,6 +16,7 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Verify.ensure;
 
+@Codec
 @SuppressWarnings({"JBCT-NAM-01", "JBCT-UTIL-02"})
 public record Version(int major, int minor, int patch, String qualifier) {
     public static Result<Version> version(String versionString) {

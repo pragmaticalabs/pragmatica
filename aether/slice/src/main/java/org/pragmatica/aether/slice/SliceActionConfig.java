@@ -1,7 +1,6 @@
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.aether.slice.repository.Repository;
-import org.pragmatica.aether.slice.serialization.SerializerFactoryProvider;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -25,7 +24,6 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param unloadingTimeout    Timeout for slice unloading
 /// @param startStopTimeout    Timeout for start/stop operations
 /// @param repositories        List of repositories to search for slices
-/// @param serializerProvider  Provider for serialization (Fury or Kryo)
 /// @param frameworkJarsPath   Optional path to framework JARs for classloader isolation.
 ///                            If provided, creates a FrameworkClassLoader with isolated
 ///                            pragmatica-lite, slice-api, and serialization classes.
@@ -37,38 +35,28 @@ public record SliceActionConfig(TimeSpan loadingTimeout,
                                 TimeSpan unloadingTimeout,
                                 TimeSpan startStopTimeout,
                                 List<Repository> repositories,
-                                SerializerFactoryProvider serializerProvider,
                                 Option<Path> frameworkJarsPath) {
-    @SuppressWarnings("JBCT-RET-03")
     public static SliceActionConfig sliceActionConfig() {
-        return sliceActionConfig((SerializerFactoryProvider) null);
-    }
-
-    public static SliceActionConfig sliceActionConfig(SerializerFactoryProvider serializerProvider) {
         return new SliceActionConfig(timeSpan(2).minutes(),
                                      timeSpan(1).minutes(),
                                      timeSpan(30).seconds(),
                                      timeSpan(2).minutes(),
                                      timeSpan(5).seconds(),
                                      List.of(localRepository()),
-                                     serializerProvider,
                                      Option.empty());
     }
 
     /// Create configuration with framework isolation enabled.
     ///
-    /// @param serializerProvider Provider for serialization
-    /// @param frameworkJarsPath  Path to directory containing framework JARs
+    /// @param frameworkJarsPath Path to directory containing framework JARs
     /// @return Configuration with isolation enabled
-    public static SliceActionConfig sliceActionConfig(SerializerFactoryProvider serializerProvider,
-                                                      Path frameworkJarsPath) {
+    public static SliceActionConfig sliceActionConfig(Path frameworkJarsPath) {
         return new SliceActionConfig(timeSpan(2).minutes(),
                                      timeSpan(1).minutes(),
                                      timeSpan(30).seconds(),
                                      timeSpan(2).minutes(),
                                      timeSpan(5).seconds(),
                                      List.of(localRepository()),
-                                     serializerProvider,
                                      option(frameworkJarsPath));
     }
 

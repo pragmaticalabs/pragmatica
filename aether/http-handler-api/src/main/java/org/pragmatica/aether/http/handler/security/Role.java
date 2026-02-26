@@ -3,6 +3,7 @@ package org.pragmatica.aether.http.handler.security;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
+import org.pragmatica.serialization.Codec;
 
 /// Role for authorization checks.
 ///
@@ -10,6 +11,7 @@ import org.pragmatica.lang.Verify;
 /// Used in conjunction with {@link SecurityContext} for access control.
 ///
 /// @param value the role name
+@Codec
 public record Role(String value) {
     /// Validation errors for Role.
     public sealed interface RoleError extends Cause {

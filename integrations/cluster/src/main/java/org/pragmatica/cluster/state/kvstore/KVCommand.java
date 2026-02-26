@@ -1,7 +1,9 @@
 package org.pragmatica.cluster.state.kvstore;
 
 import org.pragmatica.consensus.Command;
+import org.pragmatica.serialization.Codec;
 
+@Codec
 public sealed interface KVCommand<K extends StructuredKey> extends Command {
     K key();
 

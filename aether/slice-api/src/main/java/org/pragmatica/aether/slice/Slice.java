@@ -2,6 +2,7 @@ package org.pragmatica.aether.slice;
 
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.serialization.SliceCodec;
 
 import java.util.List;
 
@@ -16,7 +17,7 @@ public interface Slice {
 
     List<SliceMethod<?, ?>> methods();
 
-    default List<Class<?>> serializableClasses() {
-        return List.of();
+    default SliceCodec codec(SliceCodec parent) {
+        return parent;
     }
 }
