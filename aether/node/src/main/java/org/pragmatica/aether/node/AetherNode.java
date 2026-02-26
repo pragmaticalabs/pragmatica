@@ -610,8 +610,8 @@ public interface AetherNode {
         metricsCollector.setInvocationMetricsProvider(invocationMetrics);
         metricsCollector.recordCustom("mgmt.port", config.managementPort());
         var metricsScheduler = MetricsScheduler.metricsScheduler(config.self(), clusterNode.network(), metricsCollector);
-        // Create base decision tree controller
-        var controller = DecisionTreeController.decisionTreeController();
+        // Create base decision tree controller (uses node config — Forge disables CPU-based scaling)
+        var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         // Create blueprint service using composite repository from configuration
         var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, compositeRepository(repositories));
         // Create Maven protocol handler from artifact store (DHT created in createNode)
