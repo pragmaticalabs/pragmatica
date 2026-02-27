@@ -31,9 +31,9 @@ document.addEventListener('alpine:init', function() {
                         name: t.name,
                         targetRate: t.targetRate || 0,
                         actualRate: t.actualRate || 0,
-                        totalRequests: t.totalRequests || 0,
-                        successCount: t.successCount || 0,
-                        failureCount: t.failureCount || 0,
+                        totalRequests: t.requests || 0,
+                        successCount: t.success || 0,
+                        failureCount: t.failures || 0,
                         avgLatencyMs: t.avgLatencyMs || 0,
                         successRate: t.successRate != null ? t.successRate : 1
                     };
@@ -45,16 +45,19 @@ document.addEventListener('alpine:init', function() {
             var nodes = Alpine.store('cluster').nodes;
             var nonLeader = nodes.find(function(n) { return !n.isLeader; });
             if (nonLeader) {
-                await RestClient.post('/api/chaos/kill-node/' + nonLeader.nodeId);
+                await RestClient.post('/api/chaos/kill/' + nonLeader.nodeId);
             }
         },
 
         async killLeader() {
-            await RestClient.post('/api/chaos/kill-leader');
+            var leaderId = Alpine.store('cluster').leaderId;
+            if (leaderId) {
+                await RestClient.post('/api/chaos/kill/' + leaderId);
+            }
         },
 
         async rollingRestart() {
-            await RestClient.post('/api/chaos/rolling-restart');
+            await RestClient.post('/api/chaos/start-rolling-restart');
         },
 
         async addNode() {
@@ -82,16 +85,25 @@ document.addEventListener('alpine:init', function() {
         },
 
         async setRate(rate) {
-            await RestClient.post('/api/load/rate', { totalRequestsPerSecond: rate });
+            await RestClient.post('/api/load/rate/' + rate);
         },
 
         async uploadConfig() {
             if (!this.loadConfigText) return;
-            await RestClient.post('/api/load/config', this.loadConfigText);
+            // TOML config is sent as raw text, not JSON
+            try {
+                await fetch('/api/load/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain' },
+                    body: this.loadConfigText
+                });
+            } catch (e) {
+                console.error('Failed to upload config:', e);
+            }
         },
 
         async resetMetrics() {
-            await RestClient.post('/api/load/reset-metrics');
+            await RestClient.post('/api/chaos/reset-metrics');
         }
     });
 });

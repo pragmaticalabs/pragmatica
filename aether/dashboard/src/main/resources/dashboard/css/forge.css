@@ -1,34 +1,37 @@
 .forge-controls-panel { margin-top: var(--space-md); }
 
-.forge-controls-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-lg);
-}
-
-.chaos-buttons, .load-controls {
+.forge-control-section {
     display: flex;
-    flex-direction: column;
+    align-items: center;
     gap: var(--space-sm);
-}
-
-.chaos-buttons h3, .load-controls h3 {
-    font-size: var(--font-size-sm);
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    margin-bottom: var(--space-xs);
-}
-
-.rate-buttons {
-    display: flex;
+    padding: var(--space-sm) 0;
+    border-bottom: 1px solid var(--border-light);
     flex-wrap: wrap;
-    gap: var(--space-xs);
 }
 
-.load-actions {
-    display: flex;
-    gap: var(--space-sm);
-    margin-top: var(--space-sm);
+.forge-control-section:last-child { border-bottom: none; }
+
+.forge-section-label {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    min-width: 45px;
+    font-weight: 600;
+}
+
+.forge-divider {
+    width: 1px;
+    height: 20px;
+    background: var(--border);
+    margin: 0 var(--space-xs);
+}
+
+.forge-load-state {
+    font-size: var(--font-size-xs);
+    font-family: var(--font-mono);
+    color: var(--accent-cyan);
+    margin-left: var(--space-xs);
 }
 
 .chaos-controls-row {

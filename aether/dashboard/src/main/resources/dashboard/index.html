@@ -172,27 +172,23 @@
                 <div class="forge-controls-panel" x-show="$store.forge.isForge">
                     <div class="panel">
                         <h2>FORGE CONTROLS</h2>
-                        <div class="forge-controls-row">
-                            <div class="chaos-buttons">
-                                <h3>Chaos</h3>
-                                <button class="btn btn-danger" @click="$store.forge.killNode()">Kill Node</button>
-                                <button class="btn btn-warning" @click="$store.forge.killLeader()">Kill Leader</button>
-                                <button class="btn btn-secondary" @click="$store.forge.rollingRestart()">Rolling Restart</button>
-                                <button class="btn btn-primary" @click="$store.forge.addNode()">Add Node</button>
-                            </div>
-                            <div class="load-controls">
-                                <h3>Load Generator</h3>
-                                <div class="rate-buttons">
-                                    <template x-for="rate in [1000, 5000, 10000, 25000, 50000, 100000]" :key="rate">
-                                        <button class="btn btn-small btn-primary" @click="$store.forge.setRate(rate)" x-text="rate >= 1000 ? (rate/1000) + 'K' : rate"></button>
-                                    </template>
-                                </div>
-                                <div class="load-actions">
-                                    <button class="btn btn-success" @click="$store.forge.startLoad()">Start</button>
-                                    <button class="btn btn-danger" @click="$store.forge.stopLoad()">Stop</button>
-                                    <button class="btn btn-secondary" @click="$store.forge.resetMetrics()">Reset Metrics</button>
-                                </div>
-                            </div>
+                        <div class="forge-control-section">
+                            <span class="forge-section-label">Chaos</span>
+                            <button class="btn btn-danger btn-small" @click="$store.forge.killNode()">Kill Node</button>
+                            <button class="btn btn-warning btn-small" @click="$store.forge.killLeader()">Kill Leader</button>
+                            <button class="btn btn-secondary btn-small" @click="$store.forge.rollingRestart()">Rolling Restart</button>
+                            <button class="btn btn-primary btn-small" @click="$store.forge.addNode()">Add Node</button>
+                        </div>
+                        <div class="forge-control-section">
+                            <span class="forge-section-label">Load</span>
+                            <template x-for="rate in [1000, 5000, 10000, 25000, 50000, 100000]" :key="rate">
+                                <button class="btn btn-small btn-primary" @click="$store.forge.setRate(rate)" x-text="rate >= 1000 ? (rate/1000) + 'K' : rate"></button>
+                            </template>
+                            <span class="forge-divider"></span>
+                            <button class="btn btn-success btn-small" @click="$store.forge.startLoad()">Start</button>
+                            <button class="btn btn-danger btn-small" @click="$store.forge.stopLoad()">Stop</button>
+                            <button class="btn btn-secondary btn-small" @click="$store.forge.resetMetrics()">Reset</button>
+                            <span class="forge-load-state" x-text="$store.forge.loadState"></span>
                         </div>
                     </div>
                 </div>
