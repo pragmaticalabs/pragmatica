@@ -1,0 +1,70 @@
+.forge-controls-panel { margin-top: var(--space-md); }
+
+.forge-controls-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-lg);
+}
+
+.chaos-buttons, .load-controls {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+}
+
+.chaos-buttons h3, .load-controls h3 {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    margin-bottom: var(--space-xs);
+}
+
+.rate-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+}
+
+.load-actions {
+    display: flex;
+    gap: var(--space-sm);
+    margin-top: var(--space-sm);
+}
+
+.chaos-controls-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-sm);
+}
+
+.load-config-row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+}
+
+.load-config-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+}
+
+.config-textarea {
+    width: 100%;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-sm);
+    resize: vertical;
+}
+
+.config-textarea:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
+}
+
+.target-metrics-table { width: 100%; }

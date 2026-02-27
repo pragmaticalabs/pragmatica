@@ -1,5 +1,6 @@
 package org.pragmatica.aether.forge;
 
+import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.server.RequestContext;

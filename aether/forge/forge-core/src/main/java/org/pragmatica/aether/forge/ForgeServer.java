@@ -2,6 +2,7 @@ package org.pragmatica.aether.forge;
 
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.source.MapConfigSource;
+import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
 import org.pragmatica.aether.forge.load.LoadConfigLoader;
 import org.pragmatica.aether.forge.simulator.EntryPointMetrics;
@@ -80,6 +81,10 @@ public final class ForgeServer {
     private volatile Option<StatusWebSocketPublisher> wsPublisher = Option.empty();
     private final StatusWebSocketHandler wsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
                                                                                                                               false));
+    private final StatusWebSocketHandler dashboardWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
+                                                                                                                                       false));
+    private final StatusWebSocketHandler eventWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
+                                                                                                                                   false));
     private final long startTime = System.currentTimeMillis();
 
     private ForgeServer(StartupConfig startupConfig, ForgeConfig forgeConfig) {
@@ -189,8 +194,7 @@ public final class ForgeServer {
                                                                                            entryPointMetrics);
         var apiHandlerInstance = ForgeApiHandler.forgeApiHandler(clusterInstance,
                                                                  metricsInstance,
-                                                                 configurableLoadRunnerInstance,
-                                                                 startupConfig.loadConfig());
+                                                                 configurableLoadRunnerInstance);
         metrics = Option.some(metricsInstance);
         cluster = Option.some(clusterInstance);
         configurableLoadRunner = Option.some(configurableLoadRunnerInstance);
@@ -421,11 +425,15 @@ public final class ForgeServer {
 
     private void launchHttpServer(ForgeRequestHandler requestHandler) {
         var wsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/status", wsHandler);
+        var dashboardWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/dashboard", dashboardWsHandler);
+        var eventWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/events", eventWsHandler);
         var config = HttpServerConfig.httpServerConfig("forge-dashboard",
                                                        forgeConfig.dashboardPort())
                                      .withMaxContentLength(MAX_CONTENT_LENGTH)
                                      .withChunkedWrite()
-                                     .withWebSocket(wsEndpoint);
+                                     .withWebSocket(wsEndpoint)
+                                     .withWebSocket(dashboardWsEndpoint)
+                                     .withWebSocket(eventWsEndpoint);
         HttpServer.httpServer(config, requestHandler::handle)
                   .await(TimeSpan.timeSpan(10)
                                  .seconds())

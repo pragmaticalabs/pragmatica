@@ -3,7 +3,7 @@ package org.pragmatica.aether.api;
 import org.pragmatica.aether.api.routes.AlertRoutes;
 import org.pragmatica.aether.api.routes.ConfigRoutes;
 import org.pragmatica.aether.api.routes.ControllerRoutes;
-import org.pragmatica.aether.api.routes.DashboardRoutes;
+import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.aether.api.routes.LogLevelRoutes;
 import org.pragmatica.aether.api.routes.ManagementRouter;
 import org.pragmatica.aether.api.routes.MavenProtocolRoutes;
@@ -125,6 +125,8 @@ class ManagementServerImpl implements ManagementServer {
     private final WebSocketAuthenticator wsAuthenticator;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
 
+    private final StaticFileHandler staticFileHandler;
+
     // Route-based router (new pattern)
     private final ManagementRouter router;
 
@@ -166,6 +168,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                                                      .eventAggregator()
                                                                                                      .eventsSince(since),
                                                                                 ManagementServerImpl::buildEventsJson);
+        this.staticFileHandler = StaticFileHandler.staticFileHandler();
         this.observability = ObservabilityRegistry.prometheus();
         this.tls = tls;
         this.probeJsonMapper = JsonMapper.defaultJsonMapper();
@@ -184,7 +187,6 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(RollingUpdateRoutes.rollingUpdateRoutes(nodeSupplier));
         routeSources.add(NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier));
         routeSources.add(RepositoryRoutes.repositoryRoutes(nodeSupplier));
-        routeSources.add(DashboardRoutes.dashboardRoutes());
         routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry, scheduledTaskManager));
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm)));
         this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
@@ -236,7 +238,7 @@ class ManagementServerImpl implements ManagementServer {
         var protocol = tls.isPresent()
                        ? "HTTPS"
                        : "HTTP";
-        log.info("{} management server started on port {} (dashboard at /dashboard)", protocol, port);
+        log.info("{} management server started on port {} (dashboard at /)", protocol, port);
     }
 
     private static String escapeJson(String value) {
@@ -445,8 +447,8 @@ class ManagementServerImpl implements ManagementServer {
                 return;
             }
         }
-        // No route matched
-        response.notFound();
+        // No route matched — fall back to static dashboard files
+        staticFileHandler.handle(ctx, response);
     }
 
     @SuppressWarnings("JBCT-PAT-01")

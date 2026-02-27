@@ -4,230 +4,500 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Aether Dashboard</title>
-    <link rel="stylesheet" href="style.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="vendor/uplot.min.css">
+    <link rel="stylesheet" href="css/tokens.css">
+    <link rel="stylesheet" href="css/layout.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/charts.css">
+    <link rel="stylesheet" href="css/forge.css">
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
+    <div x-data="app" x-init="init()">
+        <!-- Header Bar -->
         <header class="header">
-            <h1 id="header-title">AETHER</h1>
-            <div class="header-stats">
-                <span class="stat"><span class="stat-label">Uptime:</span><span id="uptime" class="stat-value">0:00</span></span>
-                <span class="stat"><span class="stat-label">Nodes:</span><span id="node-count" class="stat-value">0</span></span>
-                <span class="stat"><span class="stat-label">Slices:</span><span id="slice-count" class="stat-value">0</span></span>
+            <div class="header-left">
+                <h1 class="header-title">AETHER</h1>
+            </div>
+            <div class="header-right">
+                <span class="ws-indicator" :class="wsConnected ? 'connected' : 'disconnected'"
+                      x-text="wsConnected ? 'WS ●' : 'WS ○'"></span>
+                <span class="header-stat">Uptime: <span x-text="formatUptime($store.cluster.uptimeSeconds)"></span></span>
+                <span class="header-stat">Nodes: <span x-text="$store.cluster.nodes.length + '/' + $store.cluster.targetClusterSize"></span>
+                    <span class="health-dot" :class="$store.cluster.healthy ? 'healthy' : 'unhealthy'"></span>
+                </span>
             </div>
         </header>
 
         <!-- Navigation Tabs -->
         <nav class="nav-tabs">
-            <button class="nav-tab active" data-page="overview">Overview</button>
-            <button class="nav-tab" data-page="config">Configuration</button>
-            <button class="nav-tab" data-page="alerts">Alerts</button>
-            <button class="nav-tab" data-page="cluster">Cluster</button>
+            <button class="nav-tab" :class="currentPage === 'overview' && 'active'" @click="currentPage = 'overview'">Overview</button>
+            <button class="nav-tab" :class="currentPage === 'metrics' && 'active'" @click="currentPage = 'metrics'">Metrics</button>
+            <button class="nav-tab" :class="currentPage === 'requests' && 'active'" @click="currentPage = 'requests'">Requests</button>
+            <button class="nav-tab" :class="currentPage === 'alerts' && 'active'" @click="currentPage = 'alerts'">Alerts</button>
+            <button class="nav-tab" :class="currentPage === 'deployments' && 'active'" @click="currentPage = 'deployments'">Deployments</button>
+            <button class="nav-tab" :class="currentPage === 'config' && 'active'" @click="currentPage = 'config'">Config</button>
+            <button class="nav-tab" :class="currentPage === 'testing' && 'active'" @click="currentPage = 'testing'" x-show="$store.forge.isForge">Testing</button>
         </nav>
 
-        <!-- Page: Overview -->
-        <div id="page-overview" class="page active">
-            <!-- Main Grid -->
-            <div class="main-grid">
-                <!-- Left Column -->
-                <div class="left-column">
-                    <!-- Nodes Panel -->
+        <!-- Pages -->
+        <main class="main-content">
+            <!-- Overview Page -->
+            <div x-show="currentPage === 'overview'" x-cloak>
+                <!-- Two-column overview layout -->
+                <div class="overview-columns">
+                    <!-- Left: Cluster Nodes -->
                     <div class="panel">
-                        <h2>Cluster Nodes</h2>
-                        <div id="nodes-list" class="nodes-list">
-                            <div class="node-item placeholder">Waiting for cluster...</div>
+                        <h2 class="panel-header">
+                            CLUSTER NODES
+                            <span class="panel-count" x-text="$store.cluster.nodes.length + ' NODES'"></span>
+                        </h2>
+                        <div class="node-list">
+                            <template x-for="node in $store.cluster.nodes" :key="node.nodeId">
+                                <div class="node-row" @click="navigateToNode(node.nodeId)">
+                                    <span class="node-id" x-text="node.nodeId"></span>
+                                    <span class="node-badge leader" x-show="node.isLeader">LEADER</span>
+                                    <span class="node-stat" x-text="'CPU ' + Math.round(node.cpuUsage * 100) + '%'"></span>
+                                    <span class="node-stat" x-text="'Heap ' + node.heapUsedMb + '/' + node.heapMaxMb + 'MB'"></span>
+                                    <span class="node-slice-badges">
+                                        <template x-for="slice in (node.slices || [])" :key="slice">
+                                            <span class="slice-badge" x-text="shortSliceName(slice)"></span>
+                                        </template>
+                                    </span>
+                                </div>
+                            </template>
+                            <div x-show="$store.cluster.nodes.length === 0" class="no-data">No nodes connected</div>
                         </div>
                     </div>
 
-                    <!-- Metrics Panel -->
-                    <div class="panel">
-                        <h2>Metrics</h2>
-                        <div class="metrics-row">
-                            <div class="metric-card">
-                                <div class="metric-value" id="requests-per-sec">0</div>
-                                <div class="metric-label">req/s</div>
-                            </div>
-                            <div class="metric-card success">
-                                <div class="metric-value" id="success-rate">100%</div>
-                                <div class="metric-label">success</div>
-                            </div>
-                            <div class="metric-card">
-                                <div class="metric-value" id="avg-latency">0ms</div>
-                                <div class="metric-label">latency</div>
+                    <!-- Right column -->
+                    <div class="overview-right">
+                        <!-- Slices Status -->
+                        <div class="panel">
+                            <h2 class="panel-header">
+                                SLICES STATUS
+                                <span class="panel-count" x-text="$store.deployments.slices.length + ' ACTIVE'"></span>
+                            </h2>
+                            <div class="slice-list">
+                                <template x-for="slice in $store.deployments.slices" :key="slice.artifact">
+                                    <div class="slice-status-row" @click="navigateToSlice(slice.artifact)">
+                                        <div class="slice-artifact" x-text="slice.artifact"></div>
+                                        <div class="slice-status-line">
+                                            <span class="status-badge" :class="(slice.state || 'ACTIVE').toLowerCase()" x-text="slice.state || 'ACTIVE'"></span>
+                                            <span class="instance-badges">
+                                                <template x-for="inst in slice.instances" :key="inst.nodeId">
+                                                    <span class="instance-badge" :class="inst.state.toLowerCase()" x-text="inst.nodeId + ': ' + inst.state"></span>
+                                                </template>
+                                            </span>
+                                        </div>
+                                    </div>
+                                </template>
+                                <div x-show="$store.deployments.slices.length === 0" class="no-data">No slices deployed</div>
                             </div>
                         </div>
-                        <div class="chart-row">
-                            <div class="chart-container"><canvas id="success-chart"></canvas></div>
-                            <div class="chart-container"><canvas id="throughput-chart"></canvas></div>
+
+                        <!-- Metrics Grid -->
+                        <div class="panel">
+                            <h2 class="panel-header">METRICS</h2>
+                            <div class="metrics-grid">
+                                <div class="metric-cell">
+                                    <div class="metric-value" x-text="avgCpu()"></div>
+                                    <div class="metric-label">AVG CPU</div>
+                                </div>
+                                <div class="metric-cell">
+                                    <div class="metric-value" x-text="totalHeap()"></div>
+                                    <div class="metric-label">TOTAL HEAP</div>
+                                </div>
+                                <div class="metric-cell">
+                                    <div class="metric-value" x-text="formatNumber($store.metrics.rps)"></div>
+                                    <div class="metric-label">REQ/S</div>
+                                </div>
+                                <div class="metric-cell">
+                                    <div class="metric-value" x-text="formatPercent($store.metrics.successRate)"></div>
+                                    <div class="metric-label">SUCCESS</div>
+                                </div>
+                                <div class="metric-cell">
+                                    <div class="metric-value" x-text="formatLatency($store.metrics.avgLatencyMs)"></div>
+                                    <div class="metric-label">AVG LATENCY</div>
+                                </div>
+                                <div class="metric-cell">
+                                    <div class="metric-value" x-text="formatNumber($store.metrics.totalRequests || 0)"></div>
+                                    <div class="metric-label">TOTAL REQS</div>
+                                </div>
+                                <div class="metric-cell">
+                                    <div class="metric-value" x-text="formatNumber($store.metrics.successCount || 0)"></div>
+                                    <div class="metric-label">SUCCESS</div>
+                                </div>
+                                <div class="metric-cell">
+                                    <div class="metric-value" x-text="formatNumber($store.metrics.failureCount || 0)"></div>
+                                    <div class="metric-label">FAILURES</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Right Column -->
-                <div class="right-column">
-                    <!-- Entry Points Panel -->
+                <!-- Bottom Row: Events + Entry Points -->
+                <div class="overview-bottom-row">
                     <div class="panel">
-                        <h2>Entry Points</h2>
-                        <div class="entrypoints-table">
-                            <table>
-                                <thead>
+                        <h2>LIVE EVENTS</h2>
+                        <div class="event-feed" x-ref="eventFeed">
+                            <template x-for="event in $store.events.recent.slice(0, 10)" :key="event.timestamp + event.type">
+                                <div class="event-item" :class="'severity-' + (event.severity || 'INFO').toLowerCase()">
+                                    <span class="event-time" x-text="formatTime(event.timestamp)"></span>
+                                    <span class="event-type" x-text="event.type"></span>
+                                    <span class="event-summary" x-text="event.summary || event.message"></span>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                    <div class="panel">
+                        <h2>TOP ENTRY POINTS</h2>
+                        <table class="entry-points-table">
+                            <thead><tr><th>Method</th><th>Count</th><th>Suc%</th><th>Avg</th></tr></thead>
+                            <tbody>
+                                <template x-for="ep in $store.metrics.entryPoints.slice(0, 5)" :key="ep.method">
                                     <tr>
-                                        <th>Entry Point</th>
-                                        <th>Total</th>
-                                        <th>Success</th>
-                                        <th>Avg</th>
-                                        <th>P99</th>
+                                        <td x-text="ep.method"></td>
+                                        <td x-text="formatNumber(ep.count)"></td>
+                                        <td x-text="formatPercent(ep.successRate)"></td>
+                                        <td x-text="formatLatency(ep.avgDurationMs)"></td>
                                     </tr>
-                                </thead>
-                                <tbody id="entrypoints-body">
-                                    <tr><td colspan="5" class="placeholder">Loading...</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
+                                </template>
+                            </tbody>
+                        </table>
                     </div>
+                </div>
 
-                    <!-- Timeline Panel -->
+                <!-- Forge Controls (conditional) -->
+                <div class="forge-controls-panel" x-show="$store.forge.isForge">
                     <div class="panel">
-                        <h2>Events</h2>
-                        <div id="timeline" class="timeline">
-                            <div class="timeline-event">
-                                <span class="event-time">--:--</span>
-                                <span class="event-type">READY</span>
-                                <span class="event-message">Waiting...</span>
+                        <h2>FORGE CONTROLS</h2>
+                        <div class="forge-controls-row">
+                            <div class="chaos-buttons">
+                                <h3>Chaos</h3>
+                                <button class="btn btn-danger" @click="$store.forge.killNode()">Kill Node</button>
+                                <button class="btn btn-warning" @click="$store.forge.killLeader()">Kill Leader</button>
+                                <button class="btn btn-secondary" @click="$store.forge.rollingRestart()">Rolling Restart</button>
+                                <button class="btn btn-primary" @click="$store.forge.addNode()">Add Node</button>
+                            </div>
+                            <div class="load-controls">
+                                <h3>Load Generator</h3>
+                                <div class="rate-buttons">
+                                    <template x-for="rate in [1000, 5000, 10000, 25000, 50000, 100000]" :key="rate">
+                                        <button class="btn btn-small btn-primary" @click="$store.forge.setRate(rate)" x-text="rate >= 1000 ? (rate/1000) + 'K' : rate"></button>
+                                    </template>
+                                </div>
+                                <div class="load-actions">
+                                    <button class="btn btn-success" @click="$store.forge.startLoad()">Start</button>
+                                    <button class="btn btn-danger" @click="$store.forge.stopLoad()">Stop</button>
+                                    <button class="btn btn-secondary" @click="$store.forge.resetMetrics()">Reset Metrics</button>
+                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Dynamic Control Panel (injected from /api/panel/chaos) -->
-            <div id="control-panel-container"></div>
-        </div>
-
-        <!-- Page: Configuration -->
-        <div id="page-config" class="page">
-            <div class="config-grid">
-                <!-- Controller Config -->
-                <div class="panel">
-                    <h2>Controller Configuration</h2>
-                    <div id="controller-config" class="config-content">
-                        <div class="placeholder">Loading...</div>
+            <!-- Metrics Page -->
+            <div x-show="currentPage === 'metrics'" x-cloak>
+                <div class="metrics-controls">
+                    <div class="time-range-selector">
+                        <template x-for="range in ['5m', '15m', '1h', '2h']" :key="range">
+                            <button class="btn btn-small" :class="$store.metrics.timeRange === range ? 'btn-primary' : 'btn-secondary'"
+                                    @click="$store.metrics.setTimeRange(range)" x-text="range"></button>
+                        </template>
                     </div>
-                    <div class="panel-actions">
-                        <button id="btn-refresh-controller" class="btn btn-secondary btn-small">Refresh</button>
-                    </div>
+                    <label class="toggle-label">
+                        <input type="checkbox" x-model="$store.metrics.perNode"> Per-node
+                    </label>
                 </div>
-
-                <!-- TTM Status -->
-                <div class="panel">
-                    <h2>TTM (Predictive Scaling)</h2>
-                    <div id="ttm-status" class="config-content">
-                        <div class="placeholder">Loading...</div>
-                    </div>
-                    <div class="panel-actions">
-                        <button id="btn-refresh-ttm" class="btn btn-secondary btn-small">Refresh</button>
-                    </div>
+                <div class="chart-panel"><h3>RPS Over Time</h3><div class="chart-container" x-ref="chartRps"></div></div>
+                <div class="charts-row">
+                    <div class="chart-panel half"><h3>Latency P50/P95/P99</h3><div class="chart-container" x-ref="chartLatency"></div></div>
+                    <div class="chart-panel half"><h3>Success Rate</h3><div class="chart-container" x-ref="chartSuccess"></div></div>
                 </div>
-
-                <!-- Thresholds -->
-                <div class="panel">
-                    <h2>Alert Thresholds</h2>
-                    <div id="thresholds-config" class="config-content">
-                        <div class="placeholder">Loading...</div>
-                    </div>
-                    <div class="panel-actions">
-                        <button id="btn-refresh-thresholds" class="btn btn-secondary btn-small">Refresh</button>
-                    </div>
+                <div class="charts-row">
+                    <div class="chart-panel half"><h3>CPU Per Node</h3><div class="chart-container" x-ref="chartCpu"></div></div>
+                    <div class="chart-panel half"><h3>Heap Per Node</h3><div class="chart-container" x-ref="chartHeap"></div></div>
                 </div>
-
-                <!-- Controller Status -->
                 <div class="panel">
-                    <h2>Controller Status</h2>
-                    <div id="controller-status" class="config-content">
-                        <div class="placeholder">Loading...</div>
-                    </div>
-                    <div class="panel-actions">
-                        <button id="btn-refresh-controller-status" class="btn btn-secondary btn-small">Refresh</button>
+                    <h2>NODE DETAIL</h2>
+                    <template x-for="node in $store.cluster.nodes" :key="node.nodeId">
+                        <div class="node-detail-row">
+                            <span class="node-id" x-text="node.nodeId"></span>
+                            <span class="node-badge leader" x-show="node.isLeader">LEADER</span>
+                            <span x-text="'CPU ' + Math.round(node.cpuUsage * 100) + '%'"></span>
+                            <span x-text="'Heap ' + node.heapUsedMb + '/' + node.heapMaxMb + 'MB'"></span>
+                            <span x-text="(node.slices || []).length + ' slices'"></span>
+                            <span class="node-badge lifecycle" x-text="node.lifecycleState || 'ON_DUTY'"></span>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+            <!-- Requests Page -->
+            <div x-show="currentPage === 'requests'" x-cloak>
+                <div class="filter-bar">
+                    <input type="text" placeholder="Filter by artifact..." x-model="requestFilters.artifact" class="filter-input">
+                    <input type="text" placeholder="Filter by method..." x-model="requestFilters.method" class="filter-input">
+                    <select x-model="requestFilters.status" class="filter-select">
+                        <option value="">All</option>
+                        <option value="success">Success</option>
+                        <option value="failure">Failure</option>
+                    </select>
+                </div>
+                <div class="panel">
+                    <h2>INVOCATION TABLE</h2>
+                    <table class="invocation-table sortable">
+                        <thead>
+                            <tr>
+                                <th @click="sortInvocations('method')">Method</th>
+                                <th @click="sortInvocations('artifact')">Artifact</th>
+                                <th @click="sortInvocations('count')">Count</th>
+                                <th @click="sortInvocations('successRate')">Suc%</th>
+                                <th @click="sortInvocations('avgDurationMs')">Avg</th>
+                                <th>Slow</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="inv in filteredInvocations()" :key="inv.artifact + ':' + inv.method">
+                                <tr @click="toggleInvocationDetail(inv)" class="clickable-row">
+                                    <td x-text="inv.method"></td>
+                                    <td x-text="inv.artifact"></td>
+                                    <td x-text="formatNumber(inv.count)"></td>
+                                    <td x-text="formatPercent(1 - inv.errorRate)"></td>
+                                    <td x-text="formatLatency(inv.avgDurationMs)"></td>
+                                    <td x-text="inv.slowCalls"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Alerts Page -->
+            <div x-show="currentPage === 'alerts'" x-cloak>
+                <div class="panel">
+                    <h2 class="panel-header">ACTIVE ALERTS <button class="btn btn-small btn-warning" @click="$store.alerts.clearAll()">Clear All</button></h2>
+                    <template x-for="alert in $store.alerts.active" :key="alert.id || alert.metric + alert.nodeId">
+                        <div class="alert-item" :class="'severity-' + alert.severity.toLowerCase()">
+                            <span class="alert-severity" x-text="alert.severity"></span>
+                            <span class="alert-metric" x-text="alert.metric + ' on ' + alert.nodeId"></span>
+                            <span class="alert-message" x-text="alert.message"></span>
+                            <span class="alert-time" x-text="formatTime(alert.timestamp)"></span>
+                            <button class="btn btn-small btn-secondary" @click="$store.alerts.acknowledge(alert)">Ack</button>
+                        </div>
+                    </template>
+                    <div x-show="$store.alerts.active.length === 0" class="no-data">No active alerts</div>
+                </div>
+                <div class="panel">
+                    <h2>ALERT HISTORY</h2>
+                    <template x-for="alert in $store.alerts.history" :key="alert.timestamp + alert.metric">
+                        <div class="alert-item resolved">
+                            <span class="alert-severity">RESOLVED</span>
+                            <span class="alert-metric" x-text="alert.metric + ' on ' + alert.nodeId"></span>
+                            <span class="alert-message" x-text="alert.message"></span>
+                            <span class="alert-time" x-text="formatTime(alert.timestamp)"></span>
+                        </div>
+                    </template>
+                    <div x-show="$store.alerts.history.length === 0" class="no-data">No alert history</div>
+                </div>
+                <div class="panel">
+                    <h2>THRESHOLD CONFIG</h2>
+                    <table class="threshold-table">
+                        <thead><tr><th>Metric</th><th>Warning</th><th>Critical</th><th>Actions</th></tr></thead>
+                        <tbody>
+                            <template x-for="t in $store.alerts.thresholds" :key="t.metric">
+                                <tr>
+                                    <td x-text="t.metric"></td>
+                                    <td><input type="number" step="0.1" :value="t.warning" @change="t.warning = parseFloat($event.target.value)" class="threshold-input"></td>
+                                    <td><input type="number" step="0.1" :value="t.critical" @change="t.critical = parseFloat($event.target.value)" class="threshold-input"></td>
+                                    <td>
+                                        <button class="btn btn-small btn-primary" @click="$store.alerts.saveThreshold(t)">Save</button>
+                                        <button class="btn btn-small btn-danger" @click="$store.alerts.deleteThreshold(t)">Delete</button>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                    <div class="threshold-add">
+                        <input type="text" placeholder="metric" x-model="newThreshold.metric" class="threshold-input">
+                        <input type="number" step="0.1" placeholder="warning" x-model="newThreshold.warning" class="threshold-input">
+                        <input type="number" step="0.1" placeholder="critical" x-model="newThreshold.critical" class="threshold-input">
+                        <button class="btn btn-small btn-primary" @click="$store.alerts.addThreshold(newThreshold); newThreshold = {metric:'', warning:0.7, critical:0.9}">Add</button>
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- Page: Alerts -->
-        <div id="page-alerts" class="page">
-            <div class="alerts-grid">
-                <!-- Active Alerts -->
-                <div class="panel panel-wide">
-                    <h2>Active Alerts</h2>
-                    <div id="active-alerts" class="alerts-content">
-                        <div class="placeholder">Loading...</div>
-                    </div>
-                    <div class="panel-actions">
-                        <button id="btn-clear-alerts" class="btn btn-warning btn-small">Clear All</button>
-                        <button id="btn-refresh-alerts" class="btn btn-secondary btn-small">Refresh</button>
+            <!-- Deployments Page -->
+            <div x-show="currentPage === 'deployments'" x-cloak>
+                <div class="panel">
+                    <h2>BLUEPRINTS</h2>
+                    <template x-for="bp in $store.deployments.blueprints" :key="bp.name">
+                        <div class="blueprint-card">
+                            <div class="blueprint-header">
+                                <span class="blueprint-name" x-text="bp.name"></span>
+                                <span class="blueprint-status" x-text="bp.status"></span>
+                            </div>
+                            <div class="slice-instance-map">
+                                <template x-for="slice in bp.slices || $store.deployments.slices" :key="slice.artifact">
+                                    <div class="slice-row">
+                                        <span class="slice-name" x-text="slice.artifact"></span>
+                                        <span class="slice-instances">
+                                            <template x-for="inst in slice.instances" :key="inst.nodeId">
+                                                <span class="instance-dot" :class="inst.state === 'ACTIVE' ? 'active' : 'loading'" :title="inst.nodeId" x-text="inst.state === 'ACTIVE' ? '●' : '○'"></span>
+                                            </template>
+                                        </span>
+                                        <span class="slice-summary" x-text="sliceSummary(slice)"></span>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+                    <div x-show="$store.deployments.blueprints.length === 0">
+                        <div class="slice-instance-map">
+                            <template x-for="slice in $store.deployments.slices" :key="slice.artifact">
+                                <div class="slice-row">
+                                    <span class="slice-name" x-text="slice.artifact"></span>
+                                    <span class="slice-instances">
+                                        <template x-for="inst in slice.instances" :key="inst.nodeId">
+                                            <span class="instance-dot" :class="inst.state === 'ACTIVE' ? 'active' : 'loading'" :title="inst.nodeId" x-text="inst.state === 'ACTIVE' ? '●' : '○'"></span>
+                                        </template>
+                                    </span>
+                                    <span class="slice-summary" x-text="sliceSummary(slice)"></span>
+                                </div>
+                            </template>
+                        </div>
                     </div>
                 </div>
+                <div class="panel" x-show="$store.deployments.rollingUpdates.length > 0">
+                    <h2>ROLLING UPDATES</h2>
+                    <template x-for="update in $store.deployments.rollingUpdates" :key="update.sliceId">
+                        <div class="rolling-update-card">
+                            <span x-text="update.sliceId + ' ' + update.fromVersion + '→' + update.toVersion"></span>
+                            <span class="update-phase" x-text="update.phase"></span>
+                            <div class="progress-bar"><div class="progress-fill" :style="'width:' + update.progress + '%'"></div></div>
+                            <span x-text="update.progress + '%'"></span>
+                        </div>
+                    </template>
+                </div>
+            </div>
 
-                <!-- Alert History -->
-                <div class="panel panel-wide">
-                    <h2>Alert History</h2>
-                    <div id="alert-history" class="alerts-content">
-                        <div class="placeholder">Loading...</div>
+            <!-- Config Page -->
+            <div x-show="currentPage === 'config'" x-cloak>
+                <div class="config-grid">
+                    <div class="panel">
+                        <h2>CONTROLLER CONFIG</h2>
+                        <div class="config-form" x-show="$store.cluster.controllerConfig">
+                            <template x-for="(value, key) in $store.cluster.controllerConfig || {}" :key="key">
+                                <div class="config-field">
+                                    <label x-text="key"></label>
+                                    <input type="text" :value="value" @change="$store.cluster.updateConfig(key, $event.target.value)" class="config-input">
+                                </div>
+                            </template>
+                            <button class="btn btn-primary" @click="$store.cluster.saveConfig()">Save Config</button>
+                        </div>
+                        <div x-show="!$store.cluster.controllerConfig" class="no-data">Loading...</div>
+                    </div>
+                    <div class="panel">
+                        <h2>TTM (PREDICTIVE)</h2>
+                        <div class="ttm-status">
+                            <span>State: <span x-text="$store.cluster.ttmStatus || 'DISABLED'"></span></span>
+                            <button class="btn btn-small btn-secondary" @click="$store.cluster.refreshTtm()">Refresh</button>
+                        </div>
+                    </div>
+                    <div class="panel">
+                        <h2>LOG LEVELS</h2>
+                        <template x-for="(level, logger) in $store.cluster.logLevels || {}" :key="logger">
+                            <div class="log-level-row">
+                                <span class="logger-name" x-text="logger"></span>
+                                <select :value="level" @change="$store.cluster.setLogLevel(logger, $event.target.value)" class="log-level-select">
+                                    <option>TRACE</option><option>DEBUG</option><option>INFO</option><option>WARN</option><option>ERROR</option>
+                                </select>
+                            </div>
+                        </template>
+                    </div>
+                    <div class="panel">
+                        <h2>OBSERVABILITY DEPTH</h2>
+                        <template x-for="(depth, key) in $store.cluster.observabilityDepth || {}" :key="key">
+                            <div class="obs-depth-row">
+                                <span x-text="key"></span>
+                                <input type="number" :value="depth" @change="$store.cluster.setObservabilityDepth(key, parseInt($event.target.value))" class="obs-depth-input">
+                            </div>
+                        </template>
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- Page: Cluster -->
-        <div id="page-cluster" class="page">
-            <div class="cluster-grid">
-                <!-- Health -->
+            <!-- Testing Page (Forge only) -->
+            <div x-show="currentPage === 'testing' && $store.forge.isForge" x-cloak>
                 <div class="panel">
-                    <h2>Cluster Health</h2>
-                    <div id="cluster-health" class="config-content">
-                        <div class="placeholder">Loading...</div>
-                    </div>
-                    <div class="panel-actions">
-                        <button id="btn-refresh-health" class="btn btn-secondary btn-small">Refresh</button>
+                    <h2 class="panel-header">LOAD CONFIG <span class="panel-badge" x-text="$store.forge.loadState"></span></h2>
+                    <div class="load-config-row">
+                        <textarea x-model="$store.forge.loadConfigText" placeholder="Paste TOML configuration..." rows="6" class="config-textarea"></textarea>
+                        <div class="load-config-actions">
+                            <button class="btn btn-primary" @click="$store.forge.uploadConfig()">Upload TOML</button>
+                            <span x-text="$store.forge.targetCount + ' targets'"></span>
+                            <button class="btn btn-success" @click="$store.forge.startLoad()">Start</button>
+                            <button class="btn btn-danger" @click="$store.forge.stopLoad()">Stop</button>
+                            <button class="btn btn-warning" @click="$store.forge.pauseLoad()">Pause</button>
+                        </div>
                     </div>
                 </div>
-
-                <!-- Comprehensive Metrics -->
                 <div class="panel">
-                    <h2>Comprehensive Metrics</h2>
-                    <div id="comprehensive-metrics" class="config-content">
-                        <div class="placeholder">Loading...</div>
-                    </div>
-                    <div class="panel-actions">
-                        <button id="btn-refresh-metrics" class="btn btn-secondary btn-small">Refresh</button>
-                    </div>
+                    <h2>PER-TARGET METRICS</h2>
+                    <table class="target-metrics-table">
+                        <thead><tr><th>Target</th><th>Rate (act/tgt)</th><th>Requests</th><th>Suc%</th><th>Avg Lat</th></tr></thead>
+                        <tbody>
+                            <template x-for="t in $store.forge.targets" :key="t.name">
+                                <tr>
+                                    <td x-text="t.name"></td>
+                                    <td x-text="formatNumber(t.actualRate) + '/' + formatNumber(t.targetRate)"></td>
+                                    <td x-text="formatNumber(t.totalRequests)"></td>
+                                    <td x-text="formatPercent(t.successRate)"></td>
+                                    <td x-text="formatLatency(t.avgLatencyMs)"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
                 </div>
-
-                <!-- Slices Status -->
-                <div class="panel panel-wide">
-                    <h2>Slices Status</h2>
-                    <div id="slices-status" class="slices-content">
-                        <div class="placeholder">Loading...</div>
-                    </div>
-                    <div class="panel-actions">
-                        <button id="btn-refresh-slices" class="btn btn-secondary btn-small">Refresh</button>
+                <div class="charts-row">
+                    <div class="chart-panel half"><h3>Load Rate</h3><div class="chart-container" x-ref="chartLoadRate"></div></div>
+                    <div class="chart-panel half"><h3>Latency</h3><div class="chart-container" x-ref="chartLoadLatency"></div></div>
+                </div>
+                <div class="panel">
+                    <h2>CHAOS CONTROLS</h2>
+                    <div class="chaos-controls-row">
+                        <button class="btn btn-danger" @click="$store.forge.killNode()">Kill Node</button>
+                        <button class="btn btn-warning" @click="$store.forge.killLeader()">Kill Leader</button>
+                        <button class="btn btn-secondary" @click="$store.forge.rollingRestart()">Rolling Restart</button>
+                        <button class="btn btn-primary" @click="$store.forge.addNode()">Add Node</button>
+                        <button class="btn btn-danger" @click="$store.forge.resetMetrics()">Reset All</button>
                     </div>
                 </div>
             </div>
-        </div>
+        </main>
     </div>
 
-    <!-- Node Selection Modal (used by chaos panel when present) -->
-    <div id="node-modal" class="modal hidden">
-        <div class="modal-content">
-            <h3>Select Node</h3>
-            <div id="node-list" class="node-list"></div>
-            <button id="modal-cancel" class="btn btn-secondary">Cancel</button>
-        </div>
-    </div>
-
-    <script src="dashboard.js"></script>
+    <!-- Scripts (order matters!) -->
+    <script src="vendor/alpine.min.js" defer></script>
+    <script src="vendor/uplot.min.js"></script>
+    <script src="js/lib/formatters.js"></script>
+    <script src="js/lib/rest-client.js"></script>
+    <script src="js/lib/ws-manager.js"></script>
+    <script src="js/stores/cluster.js"></script>
+    <script src="js/stores/metrics.js"></script>
+    <script src="js/stores/events.js"></script>
+    <script src="js/stores/alerts.js"></script>
+    <script src="js/stores/deployments.js"></script>
+    <script src="js/stores/forge.js"></script>
+    <script src="js/components/sparkline.js"></script>
+    <script src="js/components/timeseries.js"></script>
+    <script src="js/components/event-feed.js"></script>
+    <script src="js/components/invocation-table.js"></script>
+    <script src="js/components/trace-detail.js"></script>
+    <script src="js/components/node-detail.js"></script>
+    <script src="js/components/rolling-update.js"></script>
+    <script src="js/app.js"></script>
 </body>
 </html>

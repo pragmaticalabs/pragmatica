@@ -166,6 +166,11 @@
             <!-- Internal -->
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>dashboard</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>slice-annotations</artifactId>
                 <version>${project.version}</version>
             </dependency>

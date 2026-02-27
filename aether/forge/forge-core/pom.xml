@@ -33,6 +33,12 @@
             <artifactId>forge-api</artifactId>
         </dependency>
 
+        <!-- Dashboard -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>dashboard</artifactId>
+        </dependency>
+
         <!-- Pragmatica -->
         <dependency>
             <groupId>org.pragmatica-lite</groupId>

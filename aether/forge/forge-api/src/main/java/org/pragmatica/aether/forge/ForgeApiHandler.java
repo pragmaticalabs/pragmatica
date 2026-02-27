@@ -21,7 +21,6 @@ import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.server.RequestContext;
 import org.pragmatica.http.server.ResponseWriter;
 
-import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Deque;
@@ -61,8 +60,7 @@ public final class ForgeApiHandler {
                             ChaosController chaosController,
                             InventoryState inventoryState,
                             Deque<ForgeEvent> events,
-                            long startTime,
-                            Option<Path> loadConfigPath) {
+                            long startTime) {
         this.chaosController = chaosController;
         this.inventoryState = inventoryState;
         this.events = events;
@@ -77,14 +75,12 @@ public final class ForgeApiHandler {
                                               metrics,
                                               events,
                                               startTime,
-                                              this::logEvent,
-                                              loadConfigPath);
+                                              this::logEvent);
     }
 
     public static ForgeApiHandler forgeApiHandler(ForgeCluster cluster,
                                                   ForgeMetrics metrics,
-                                                  ConfigurableLoadRunner configurableLoadRunner,
-                                                  Option<Path> loadConfigPath) {
+                                                  ConfigurableLoadRunner configurableLoadRunner) {
         var chaosController = ChaosController.chaosController(event -> executeChaosEvent(cluster, event));
         var inventoryState = InventoryState.inventoryState();
         var events = new ConcurrentLinkedDeque<ForgeEvent>();
@@ -95,8 +91,7 @@ public final class ForgeApiHandler {
                                    chaosController,
                                    inventoryState,
                                    events,
-                                   startTime,
-                                   loadConfigPath);
+                                   startTime);
     }
 
     private static void executeChaosEvent(ForgeCluster cluster, ChaosEvent event) {

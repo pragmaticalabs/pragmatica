@@ -34,7 +34,8 @@ public final class StatusRoutes {
         return RouteSource.of(statusRoute(cluster, metrics, startTime, loadRunner),
                               nodeMetricsRoute(cluster),
                               eventsRoute(events),
-                              healthRoute());
+                              healthRoute(),
+                              forgeStatusRoute());
     }
 
     private static Route<FullStatusResponse> statusRoute(ForgeCluster cluster,
@@ -58,6 +59,11 @@ public final class StatusRoutes {
     private static Route<HealthResponse> healthRoute() {
         return Route.<HealthResponse> get("/health")
                     .toJson(StatusRoutes::buildHealthResponse);
+    }
+
+    private static Route<ForgeStatusResponse> forgeStatusRoute() {
+        return Route.<ForgeStatusResponse> get("/api/forge/status")
+                    .toJson(() -> new ForgeStatusResponse(true));
     }
 
     // ==================== Handler Methods ====================

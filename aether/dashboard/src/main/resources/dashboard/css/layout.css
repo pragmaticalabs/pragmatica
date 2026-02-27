@@ -1,0 +1,100 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: var(--font-sans);
+    font-size: var(--font-size-md);
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    line-height: 1.5;
+}
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--space-sm) var(--space-lg);
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.header-left { display: flex; align-items: center; gap: var(--space-md); }
+.header-right { display: flex; align-items: center; gap: var(--space-lg); }
+.header-title { font-size: var(--font-size-xl); font-weight: 700; letter-spacing: 2px; color: var(--accent-blue); }
+.header-stat { font-size: var(--font-size-sm); color: var(--text-secondary); }
+
+.nav-tabs {
+    display: flex;
+    gap: 2px;
+    padding: var(--space-xs) var(--space-lg);
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.main-content {
+    padding: var(--space-lg);
+    max-width: 1600px;
+    margin: 0 auto;
+}
+
+/* Grid helpers */
+.overview-bottom-row, .charts-row, .config-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-md);
+}
+
+/* Overview two-column layout */
+.overview-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-md);
+    margin-bottom: var(--space-md);
+}
+
+.overview-right {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+}
+
+.overview-right > .panel { margin-bottom: 0; }
+
+/* Metrics 2x4 grid */
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--space-sm);
+}
+
+.filter-bar {
+    display: flex;
+    gap: var(--space-md);
+    margin-bottom: var(--space-md);
+}
+
+.metrics-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--space-md);
+}
+
+.time-range-selector {
+    display: flex;
+    gap: var(--space-xs);
+}
+
+.slice-status-grid {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+}
+
+.slice-instance-map {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+}

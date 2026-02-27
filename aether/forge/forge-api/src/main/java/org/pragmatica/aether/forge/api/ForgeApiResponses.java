@@ -243,4 +243,8 @@ public final class ForgeApiResponses {
     // ========== Multiplier/Config Responses ==========
     /// Response from multiplier set operation.
     public record MultiplierSetResponse(boolean success, double multiplier) {}
+
+    // ========== Forge Detection ==========
+    /// Response from /api/forge/status endpoint indicating this is a Forge instance.
+    public record ForgeStatusResponse(boolean forge) {}
 }

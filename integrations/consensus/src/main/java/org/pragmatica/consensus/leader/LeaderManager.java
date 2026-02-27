@@ -264,39 +264,56 @@ public interface LeaderManager {
                     return;
                 }
                 var candidatePool = selectCandidatePool(topology);
-                var candidate = candidatePool.stream()
-                                             .min(Comparator.naturalOrder())
-                                             .orElse(self);
-                var isInitialElection = !hasEverHadLeader.get();
-                // Fallback: after multiple failed attempts during initial election,
-                // any active node can take over submission for the designated candidate.
-                // CRITICAL: The candidate stays the SAME (min node) — only the submitter changes.
-                // If each node proposed itself, different BatchIds would cause infinite V0 decisions
-                // because no single proposal gets quorum agreement.
-                var shouldSubmit = self.equals(candidate);
-                if (!shouldSubmit && isInitialElection && electionRetryCount.get() >= ELECTION_FALLBACK_RETRIES) {
-                    log.info("Election fallback after {} retries: self={} taking over submission "
-                             + "for candidate={} (designated min node may be slow)",
-                             electionRetryCount.get(),
-                             self,
-                             candidate);
-                    shouldSubmit = true;
-                }
-                if (!shouldSubmit) {
-                    log.debug("Skipping election trigger: self={} is not min node {} in candidatePool {} (initial={})",
-                              self,
-                              candidate,
-                              candidatePool,
-                              isInitialElection);
+                var sortedCandidates = candidatePool.stream()
+                                                    .sorted()
+                                                    .toList();
+                if (sortedCandidates.isEmpty()) {
+                    log.debug("Skipping election trigger: no candidates available");
                     return;
                 }
-                log.debug("Submitting leader proposal: candidate={}, submitter={} (min node in {}, initial={})",
+                var isInitialElection = !hasEverHadLeader.get();
+                var retries = electionRetryCount.get();
+                // During initial election, rotate candidate every ELECTION_FALLBACK_RETRIES attempts.
+                // This prevents stalling when the min node is slow to activate — each candidate
+                // gets a turn as both proposer and submitter.
+                // All nodes compute the same rotation because they use the same sorted expectedCluster
+                // and the same formula: index = (retries / FALLBACK_RETRIES) % poolSize.
+                var candidateIndex = isInitialElection
+                                     ? (retries / ELECTION_FALLBACK_RETRIES) % sortedCandidates.size()
+                                     : 0;
+                var candidate = sortedCandidates.get(candidateIndex);
+                var shouldSubmit = self.equals(candidate);
+                // Fallback within current rotation: after half the retry window,
+                // any active node can submit for the current candidate (in case the
+                // candidate is active but its submission keeps failing).
+                if (!shouldSubmit && isInitialElection) {
+                    var retriesWithinRotation = retries % ELECTION_FALLBACK_RETRIES;
+                    if (retriesWithinRotation >= ELECTION_FALLBACK_RETRIES / 2) {
+                        log.info("Election fallback at retry {}: self={} submitting for candidate={} "
+                                 + "(rotation {}/{})",
+                                 retries,
+                                 self,
+                                 candidate,
+                                 candidateIndex,
+                                 sortedCandidates.size());
+                        shouldSubmit = true;
+                    }
+                }
+                if (!shouldSubmit) {
+                    log.debug("Skipping election: self={} is not current candidate {} (rotation {}/{}, retry {})",
+                              self,
+                              candidate,
+                              candidateIndex,
+                              sortedCandidates.size(),
+                              retries);
+                    return;
+                }
+                log.debug("Submitting leader proposal: candidate={}, submitter={}, rotation {}/{}, retry {}",
                           candidate,
                           self,
-                          expectedCluster.isEmpty()
-                          ? "topology"
-                          : "expectedCluster",
-                          isInitialElection);
+                          candidateIndex,
+                          sortedCandidates.size(),
+                          retries);
                 // DON'T clear currentLeader here - let consensus decide.
                 // The leader will be updated via onLeaderCommitted().
                 submitProposal(handler, candidate);
