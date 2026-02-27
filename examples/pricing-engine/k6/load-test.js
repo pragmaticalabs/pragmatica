@@ -1,5 +1,5 @@
 import http from 'k6/http';
-import { check, sleep } from 'k6';
+import { check } from 'k6';
 import { Rate, Trend } from 'k6/metrics';
 
 // --- Custom metrics ---
@@ -56,8 +56,10 @@ function randomInt(min, max) {
     return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-function nodeUrl(path) {
-    const node = nodes[Math.floor(Math.random() * nodes.length)];
+// Pin each VU to a node via round-robin — enables HTTP keep-alive connection reuse
+// and prevents ephemeral port exhaustion at high RPS on macOS.
+function vuNodeUrl(path) {
+    const node = nodes[(__VU - 1) % nodes.length];
     return `${node}${path}`;
 }
 
@@ -85,16 +87,34 @@ const headers = {'Content-Type': 'application/json'};
 
 // --- Scenarios ---
 
+const targetRate = parseInt(__ENV.FORGE_RATE || '500');
+const steadyDuration = __ENV.FORGE_DURATION || '2m';
+const warmupDuration = __ENV.FORGE_WARMUP || '30s';
+
 export const options = {
     scenarios: {
-        // Steady-state: constant request rate across all nodes
+        // Warmup: ramp from low rate to target over warmupDuration
+        warmup_pricing: {
+            executor: 'ramping-arrival-rate',
+            startRate: Math.max(50, Math.floor(targetRate / 10)),
+            timeUnit: '1s',
+            stages: [
+                { duration: warmupDuration, target: targetRate },
+            ],
+            preAllocatedVUs: 300,
+            maxVUs: 3500,
+            exec: 'pricingCalculation',
+        },
+
+        // Steady-state: constant request rate after warmup
         steady_pricing: {
             executor: 'constant-arrival-rate',
-            rate: parseInt(__ENV.FORGE_RATE || '500'),
+            rate: targetRate,
             timeUnit: '1s',
-            duration: __ENV.FORGE_DURATION || '2m',
-            preAllocatedVUs: 200,
-            maxVUs: 1000,
+            duration: steadyDuration,
+            startTime: warmupDuration,
+            preAllocatedVUs: 300,
+            maxVUs: 3500,
             exec: 'pricingCalculation',
         },
 
@@ -103,7 +123,8 @@ export const options = {
             executor: 'constant-arrival-rate',
             rate: 1,
             timeUnit: '1s',
-            duration: __ENV.FORGE_DURATION || '2m',
+            duration: steadyDuration,
+            startTime: warmupDuration,
             preAllocatedVUs: 10,
             maxVUs: 50,
             exec: 'analyticsQuery',
@@ -120,7 +141,7 @@ export const options = {
 // --- Scenario executors ---
 
 export function pricingCalculation() {
-    const url = nodeUrl('/api/v1/pricing/calculate');
+    const url = vuNodeUrl('/api/v1/pricing/calculate');
     const payload = buildPriceRequest();
     const res = http.post(url, payload, {headers});
 
@@ -141,7 +162,7 @@ export function pricingCalculation() {
 }
 
 export function analyticsQuery() {
-    const url = nodeUrl('/api/v1/pricing/analytics/high-value');
+    const url = vuNodeUrl('/api/v1/pricing/analytics/high-value');
     const res = http.get(url);
 
     analyticsLatency.add(res.timings.duration);
@@ -157,7 +178,7 @@ export function analyticsQuery() {
 
 // Error path: test with invalid products
 export function errorPath() {
-    const url = nodeUrl('/api/v1/pricing/calculate');
+    const url = vuNodeUrl('/api/v1/pricing/calculate');
     const res = http.post(url, buildInvalidRequest(), {headers});
 
     check(res, {

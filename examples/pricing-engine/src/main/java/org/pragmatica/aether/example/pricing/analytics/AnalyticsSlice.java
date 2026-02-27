@@ -48,9 +48,9 @@ public interface AnalyticsSlice {
         record analyticsSlice(SqlConnector db) implements AnalyticsSlice {
             private static final String INSERT_ORDER = "INSERT INTO high_value_orders (product_id, quantity, total_cents, region_code) VALUES (?, ?, ?, ?)";
 
-            private static final String SELECT_HOURLY = "SELECT HOUR(created_at) AS hr, COUNT(*) AS order_count, SUM(total_cents) AS revenue"
+            private static final String SELECT_HOURLY = "SELECT EXTRACT(HOUR FROM created_at) AS hr, COUNT(*) AS order_count, SUM(total_cents) AS revenue"
                                                        + " FROM high_value_orders WHERE created_at >= CURRENT_DATE"
-                                                       + " GROUP BY HOUR(created_at) ORDER BY hr";
+                                                       + " GROUP BY EXTRACT(HOUR FROM created_at) ORDER BY hr";
 
             private static final RowMapper<HourlyBucket> BUCKET_MAPPER = analyticsSlice::mapBucket;
 

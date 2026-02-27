@@ -84,6 +84,7 @@ public final class StatusRoutes {
         var nodeMetrics = buildNodeMetrics(cluster);
         var slices = buildSliceStatusInfos(cluster);
         var loadTargets = buildLoadTargets(loadRunner);
+        var invocations = buildInvocations(cluster);
         return new FullStatusResponse(clusterInfo,
                                       metricsInfo,
                                       aetherMetrics,
@@ -93,7 +94,8 @@ public final class StatusRoutes {
                                       targetClusterSize,
                                       nodeMetrics,
                                       slices,
-                                      loadTargets);
+                                      loadTargets,
+                                      invocations);
     }
 
     private static List<NodeInfo> buildNodeInfos(ForgeCluster.ClusterStatus clusterStatus) {
@@ -186,6 +188,26 @@ public final class StatusRoutes {
                                                             t.remainingDuration()
                                                              .map(ForgeApiResponses::formatDuration)))
                          .toList();
+    }
+
+    private static List<InvocationInfo> buildInvocations(ForgeCluster cluster) {
+        return cluster.invocationDetails()
+                      .stream()
+                      .map(StatusRoutes::toInvocationInfo)
+                      .toList();
+    }
+
+    private static InvocationInfo toInvocationInfo(ForgeCluster.InvocationDetail detail) {
+        var errorRate = detail.count() > 0
+                        ? 1.0 - ((double) detail.successCount() / detail.count())
+                        : 0.0;
+        return new InvocationInfo(detail.artifact(),
+                                  detail.method(),
+                                  detail.count(),
+                                  detail.successCount(),
+                                  detail.failureCount(),
+                                  detail.avgLatencyMs(),
+                                  errorRate);
     }
 
     private static List<ForgeEvent> buildEventsList(Deque<ForgeEvent> events) {

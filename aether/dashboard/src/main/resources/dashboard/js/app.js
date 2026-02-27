@@ -71,12 +71,10 @@ document.addEventListener('alpine:init', function() {
 
             startPolling() {
                 var self = this;
-                // Poll every 2 seconds as WS supplement
+                // Always poll REST for full state (loadTargets, slices, etc.)
+                // WS provides incremental metrics but REST has the complete picture
                 this.pollTimer = setInterval(function() {
-                    if (!self.wsConnected) {
-                        self.pollStatus();
-                    }
-                    // Events always via REST (WS may not be available)
+                    self.pollStatus();
                     Alpine.store('events').refresh();
                 }, 2000);
             },

@@ -2,11 +2,13 @@
 topic_name = "high-value-order-events"
 
 [database]
-type = "H2"
+type = "POSTGRESQL"
 name = "pricing-engine"
 host = "localhost"
-port = 0
-database = "pricing"
+port = 5432
+database = "forge"
+username = "forge"
+password = "forge"
 
 [database.pool_config]
 min_connections = 2

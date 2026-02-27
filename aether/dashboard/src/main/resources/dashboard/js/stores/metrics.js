@@ -58,6 +58,22 @@ document.addEventListener('alpine:init', function() {
                     };
                 });
             }
+            // Map Aether invocation metrics (always available via gossip, takes priority)
+            if (data.invocations && Array.isArray(data.invocations) && data.invocations.length > 0) {
+                this.entryPoints = data.invocations.map(function(inv) {
+                    return {
+                        method: inv.method,
+                        artifact: inv.artifact,
+                        count: inv.count || 0,
+                        successCount: inv.successCount || 0,
+                        failureCount: inv.failureCount || 0,
+                        successRate: inv.count > 0 ? inv.successCount / inv.count : 1,
+                        avgDurationMs: inv.avgDurationMs || 0,
+                        errorRate: inv.errorRate || 0,
+                        slowCalls: 0
+                    };
+                });
+            }
         },
 
         updateFromWsDashboard(data) {

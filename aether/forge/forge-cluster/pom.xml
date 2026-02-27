@@ -52,11 +52,18 @@
             <version>7.0.2</version>
         </dependency>
 
-        <!-- H2 Database -->
+        <!-- H2 Database (embedded mode) -->
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
             <version>2.4.240</version>
+        </dependency>
+
+        <!-- PostgreSQL JDBC Driver -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>42.7.5</version>
         </dependency>
 
         <!-- Logging -->

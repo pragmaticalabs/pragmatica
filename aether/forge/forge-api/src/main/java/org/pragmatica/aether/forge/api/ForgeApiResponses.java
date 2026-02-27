@@ -43,7 +43,17 @@ public final class ForgeApiResponses {
                                      int targetClusterSize,
                                      List<NodeMetricsResponse> nodeMetrics,
                                      List<SliceStatusInfo> slices,
-                                     List<LoadRunnerTargetInfo> loadTargets) {}
+                                     List<LoadRunnerTargetInfo> loadTargets,
+                                     List<InvocationInfo> invocations) {}
+
+    /// Per-method invocation metrics from Aether gossip data.
+    public record InvocationInfo(String artifact,
+                                 String method,
+                                 long count,
+                                 long successCount,
+                                 long failureCount,
+                                 double avgDurationMs,
+                                 double errorRate) {}
 
     /// Cluster information including all nodes.
     public record ClusterInfo(List<NodeInfo> nodes,

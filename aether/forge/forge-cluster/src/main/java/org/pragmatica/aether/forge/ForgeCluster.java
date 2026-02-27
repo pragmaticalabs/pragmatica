@@ -30,6 +30,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
@@ -668,8 +669,9 @@ public final class ForgeCluster {
                 }
             }
         }
-        long deltaInvocations = totalInvocations - lastTotalInvocations;
-        long deltaSuccess = totalSuccess - lastTotalSuccess;
+        // Clamp to 0: counters can decrease when nodes restart and metrics reset
+        long deltaInvocations = Math.max(0, totalInvocations - lastTotalInvocations);
+        long deltaSuccess = Math.max(0, totalSuccess - lastTotalSuccess);
         double instantRps = deltaInvocations;
         double instantSuccessRate = deltaInvocations > 0
                                     ? (double) deltaSuccess / deltaInvocations
@@ -688,6 +690,71 @@ public final class ForgeCluster {
                                     totalInvocations,
                                     totalSuccess,
                                     totalFailure);
+    }
+
+    /// Compute per-method invocation details from cluster-wide gossip data.
+    /// Aggregates inv|artifact|method|* entries across all nodes.
+    public List<InvocationDetail> invocationDetails() {
+        var allNodeMetrics = leaderOrFirstNodeMetrics();
+        if (allNodeMetrics.isEmpty()) {
+            return List.of();
+        }
+        var aggregated = new HashMap<String, long[]>();
+        for (var nodeMetrics : allNodeMetrics.values()) {
+            for (var entry : nodeMetrics.entrySet()) {
+                var key = entry.getKey();
+                if (!key.startsWith("inv|")) {
+                    continue;
+                }
+                var parts = key.split("\\|");
+                if (parts.length != 4) {
+                    continue;
+                }
+                var compositeKey = parts[1] + "|" + parts[2];
+                var values = aggregated.computeIfAbsent(compositeKey, _ -> new long[4]);
+                accumulateInvocationMetric(values, parts[3], entry.getValue());
+            }
+        }
+        return aggregated.entrySet()
+                         .stream()
+                         .map(ForgeCluster::toInvocationDetail)
+                         .toList();
+    }
+
+    private static void accumulateInvocationMetric(long[] values, String suffix, double value) {
+        switch (suffix) {
+            case "count" -> values[0] += (long) value;
+            case "success" -> values[1] += (long) value;
+            case "failure" -> values[2] += (long) value;
+            case "totalNs" -> values[3] += (long) value;
+            default -> {}
+        }
+    }
+
+    private static InvocationDetail toInvocationDetail(Map.Entry<String, long[]> entry) {
+        var parts = entry.getKey()
+                         .split("\\|", 2);
+        var values = entry.getValue();
+        var count = values[0];
+        var avgMs = count > 0
+                    ? (double) values[3] / count / 1_000_000.0
+                    : 0.0;
+        return new InvocationDetail(parts[0], parts[1], count, values[1], values[2], avgMs);
+    }
+
+    private Map<org.pragmatica.consensus.NodeId, Map<String, Double>> leaderOrFirstNodeMetrics() {
+        var leaderId = currentLeader().or("");
+        var leaderNode = nodes.get(leaderId);
+        if (leaderNode == null) {
+            if (nodes.isEmpty()) {
+                return Map.of();
+            }
+            leaderNode = nodes.values()
+                              .iterator()
+                              .next();
+        }
+        return leaderNode.metricsCollector()
+                         .allMetrics();
     }
 
     private NodeMetrics toNodeMetrics(String nodeId, Map<String, Double> metrics, String leaderId) {
@@ -744,6 +811,14 @@ public final class ForgeCluster {
                                    long totalInvocations,
                                    long totalSuccess,
                                    long totalFailures) {}
+
+    /// Per-method invocation metrics from Aether gossip data.
+    public record InvocationDetail(String artifact,
+                                   String method,
+                                   long count,
+                                   long successCount,
+                                   long failureCount,
+                                   double avgLatencyMs) {}
 
     /// Get slice status from the DeploymentMap.
     /// Uses event-driven index instead of KV store scan — zero allocations per poll.

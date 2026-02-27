@@ -174,8 +174,15 @@
     border-radius: var(--radius-sm);
 }
 
-.ws-indicator.connected { color: var(--accent-green); }
-.ws-indicator.disconnected { color: var(--accent-red); }
+.ws-indicator.connected {
+    color: var(--accent-green);
+    background: rgba(63, 185, 80, 0.15);
+}
+
+.ws-indicator.disconnected {
+    color: var(--accent-red);
+    background: rgba(248, 81, 73, 0.15);
+}
 
 /* Node List (row-based) */
 .node-list {
