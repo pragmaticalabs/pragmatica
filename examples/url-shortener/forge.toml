@@ -6,9 +6,8 @@ management_port = 5150
 dashboard_port = 8888
 app_http_port = 8070
 
+[observability]
+depth_threshold = -1
+
 [database]
-enabled = true
-port = 9092
-name = "forge"
-persistent = true
-init_script = "./schema/url-shortener.sql"
+enabled = false

@@ -227,6 +227,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-xs);
+    margin-left: 2em;
 }
 
 .slice-badge {

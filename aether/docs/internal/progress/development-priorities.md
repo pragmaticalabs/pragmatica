@@ -301,6 +301,11 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
     - **Scope exclusions:** no template engine (slices own their content), no mailing list management
     - **Depends on:** Cloud Integration (#1) for SES/cloud-based backends; SMTP backend standalone
 
+22. **Forge Scaffold Generation**
+     - slice-processor auto-generates `forge.toml` and `run-forge.sh` alongside `blueprint.toml`
+     - Derives node count default, DB enabled flag (from `@Sql` presence), and test curl commands (from `routes.toml`)
+     - Eliminates manual boilerplate for new examples
+
 ### Cloud Provider Support
 
 Part of Cloud Integration (#1). Per-provider status:
