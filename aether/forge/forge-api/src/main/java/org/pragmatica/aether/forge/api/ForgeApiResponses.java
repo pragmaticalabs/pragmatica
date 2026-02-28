@@ -248,6 +248,7 @@ public final class ForgeApiResponses {
     /// Forge event for event log.
     public record ForgeEvent(String timestamp,
                              String type,
+                             String severity,
                              String message) {}
 
     // ========== Multiplier/Config Responses ==========

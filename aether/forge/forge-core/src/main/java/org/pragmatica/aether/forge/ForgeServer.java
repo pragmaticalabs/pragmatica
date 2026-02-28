@@ -27,6 +27,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -86,6 +87,7 @@ public final class ForgeServer {
     private final StatusWebSocketHandler eventWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
                                                                                                                                    false));
     private final long startTime = System.currentTimeMillis();
+    private volatile String lastEventTimestamp = "";
 
     private ForgeServer(StartupConfig startupConfig, ForgeConfig forgeConfig) {
         this.startupConfig = startupConfig;
@@ -242,8 +244,97 @@ public final class ForgeServer {
     private void startMetricsCollection() {
         var scheduler = Executors.newSingleThreadScheduledExecutor();
         metrics.onPresent(m -> scheduler.scheduleAtFixedRate(m::snapshot, 500, 500, TimeUnit.MILLISECONDS));
+        scheduler.scheduleAtFixedRate(this::pollNodeEvents, 2, 2, TimeUnit.SECONDS);
         metricsScheduler = Option.some(scheduler);
         wsPublisher.onPresent(StatusWebSocketPublisher::start);
+    }
+
+    private void pollNodeEvents() {
+        try{
+            var port = cluster.flatMap(ForgeCluster::getLeaderManagementPort)
+                              .or(forgeConfig.managementPort());
+            var uriStr = "http://localhost:" + port + "/api/events";
+            if (!lastEventTimestamp.isEmpty()) {
+                uriStr += "?since=" + java.net.URLEncoder.encode(lastEventTimestamp,
+                                                                 java.nio.charset.StandardCharsets.UTF_8);
+            }
+            try (var client = HttpClient.newHttpClient()) {
+                var request = HttpRequest.newBuilder()
+                                         .uri(URI.create(uriStr))
+                                         .GET()
+                                         .timeout(java.time.Duration.ofSeconds(2))
+                                         .build();
+                var response = client.send(request, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() == 200) {
+                    parseAndMergeEvents(response.body());
+                }
+            }
+        } catch (Exception e) {
+            log.trace("Event polling failed: {}", e.getMessage());
+        }
+    }
+
+    private void parseAndMergeEvents(String json) {
+        if (json == null || json.length() < 3 || !json.startsWith("[")) {
+            return;
+        }
+        var content = json.substring(1,
+                                     json.length() - 1)
+                          .trim();
+        if (content.isEmpty()) {
+            return;
+        }
+        var events = splitJsonObjects(content);
+        for (var eventJson : events) {
+            mergeEvent(eventJson);
+        }
+    }
+
+    private void mergeEvent(String eventJson) {
+        extractJsonString(eventJson, "timestamp")
+        .onPresent(timestamp -> extractJsonString(eventJson, "type")
+        .onPresent(type -> {
+                       var severity = extractJsonString(eventJson, "severity").or("INFO");
+                       var summary = extractJsonString(eventJson, "summary").or("");
+                       apiHandler.onPresent(h -> h.addNodeEvent(timestamp, type, severity, summary));
+                       lastEventTimestamp = timestamp;
+                   }));
+    }
+
+    private static List<String> splitJsonObjects(String content) {
+        var objects = new java.util.ArrayList<String>();
+        var depth = 0;
+        var start = - 1;
+        for (int i = 0; i < content.length(); i++) {
+            var ch = content.charAt(i);
+            if (ch == '{') {
+                if (depth == 0) {
+                    start = i;
+                }
+                depth++;
+            } else if (ch == '}') {
+                depth--;
+                if (depth == 0 && start >= 0) {
+                    objects.add(content.substring(start, i + 1));
+                    start = - 1;
+                }
+            }
+        }
+        return objects;
+    }
+
+    private static Option<String> extractJsonString(String json, String key) {
+        var search = "\"" + key + "\":\"";
+        var idx = json.indexOf(search);
+        if (idx < 0) {
+            return Option.empty();
+        }
+        var valStart = idx + search.length();
+        var valEnd = json.indexOf("\"", valStart);
+        if (valEnd < 0) {
+            return Option.empty();
+        }
+        return Option.some(json.substring(valStart, valEnd));
     }
 
     private void deployAndStartLoad() {

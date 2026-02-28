@@ -14,6 +14,7 @@ import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.DecisionTreeController;
 import org.pragmatica.aether.controller.RollbackManager;
+import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
@@ -663,7 +664,8 @@ public interface AetherNode {
                                                                           .scalingConfig()
                                                                           .evaluationIntervalMs())
                                                           .millis(),
-                                                  config.controllerConfig());
+                                                  config.controllerConfig(),
+                                                  delegateRouter::route);
         // Create rollback manager for automatic version rollback on persistent failures
         var rollbackManager = config.rollback()
                                     .enabled()
@@ -1106,6 +1108,8 @@ public interface AetherNode {
                                               eventAggregator::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               eventAggregator::onSliceFailure));
+        entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledUp.class, eventAggregator::onScaledUp));
+        entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledDown.class, eventAggregator::onScaledDown));
         entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                               eventAggregator::onConnectionEstablished));
         entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionFailed.class,

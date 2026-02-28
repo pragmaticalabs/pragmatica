@@ -214,6 +214,7 @@ public final class StatusRoutes {
         return events.stream()
                      .map(e -> new ForgeEvent(e.timestamp(),
                                               e.type(),
+                                              e.severity(),
                                               e.message()))
                      .toList();
     }

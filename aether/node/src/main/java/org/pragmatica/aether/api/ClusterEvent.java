@@ -29,6 +29,8 @@ public record ClusterEvent(Instant timestamp,
         DEPLOYMENT_STARTED,
         DEPLOYMENT_COMPLETED,
         DEPLOYMENT_FAILED,
+        SCALE_UP,
+        SCALE_DOWN,
         SLICE_FAILURE,
         CONNECTION_ESTABLISHED,
         CONNECTION_FAILED

@@ -11,9 +11,9 @@ username = "forge"
 password = "forge"
 
 [database.pool_config]
-min_connections = 2
-max_connections = 10
+min_connections = 4
+max_connections = 20
 idle_timeout = "10m"
-connection_timeout = "30s"
+connection_timeout = "5s"
 max_lifetime = "30m"
 leak_detection_timeout = "0s"

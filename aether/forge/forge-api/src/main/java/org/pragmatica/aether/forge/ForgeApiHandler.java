@@ -257,12 +257,21 @@ public final class ForgeApiHandler {
         var event = new ForgeEvent(Instant.now()
                                           .toString(),
                                    type,
+                                   "INFO",
                                    message);
         events.addLast(event);
         while (events.size() > MAX_EVENTS) {
             events.pollFirst();
         }
         log.info("[EVENT] {}: {}", type, message);
+    }
+
+    public void addNodeEvent(String timestamp, String type, String severity, String message) {
+        var event = new ForgeEvent(timestamp, type, severity, message);
+        events.addLast(event);
+        while (events.size() > MAX_EVENTS) {
+            events.pollFirst();
+        }
     }
 
     private String escapeJson(String str) {
