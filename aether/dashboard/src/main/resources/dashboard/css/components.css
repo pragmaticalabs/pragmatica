@@ -218,6 +218,9 @@
     font-size: var(--font-size-xs);
     color: var(--text-secondary);
     white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    min-width: 7em;
+    text-align: right;
 }
 
 .node-slice-badges {

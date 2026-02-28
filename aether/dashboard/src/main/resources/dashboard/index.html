@@ -56,8 +56,8 @@
                                 <div class="node-row" @click="navigateToNode(node.nodeId)">
                                     <span class="node-id" x-text="node.nodeId"></span>
                                     <span class="node-badge leader" x-show="node.isLeader">LEADER</span>
-                                    <span class="node-stat" x-text="'CPU ' + Math.round(node.cpuUsage * 100) + '%'"></span>
-                                    <span class="node-stat" x-text="'Heap ' + node.heapUsedMb + '/' + node.heapMaxMb + 'MB'"></span>
+                                    <span class="node-stat" x-text="'CPU ' + String(Math.round(node.cpuUsage * 100)).padStart(3) + '%'"></span>
+                                    <span class="node-stat" x-text="'Heap ' + String(node.heapUsedMb).padStart(4) + '/' + node.heapMaxMb + ' MB'"></span>
                                     <span class="node-slice-badges">
                                         <template x-for="slice in (node.slices || [])" :key="slice">
                                             <span class="slice-badge" x-text="shortSliceName(slice)"></span>
@@ -222,8 +222,8 @@
                         <div class="node-detail-row">
                             <span class="node-id" x-text="node.nodeId"></span>
                             <span class="node-badge leader" x-show="node.isLeader">LEADER</span>
-                            <span x-text="'CPU ' + Math.round(node.cpuUsage * 100) + '%'"></span>
-                            <span x-text="'Heap ' + node.heapUsedMb + '/' + node.heapMaxMb + 'MB'"></span>
+                            <span class="node-stat" x-text="'CPU ' + String(Math.round(node.cpuUsage * 100)).padStart(3) + '%'"></span>
+                            <span class="node-stat" x-text="'Heap ' + String(node.heapUsedMb).padStart(4) + '/' + node.heapMaxMb + ' MB'"></span>
                             <span x-text="(node.slices || []).length + ' slices'"></span>
                             <span class="node-badge lifecycle" x-text="node.lifecycleState || 'ON_DUTY'"></span>
                         </div>
