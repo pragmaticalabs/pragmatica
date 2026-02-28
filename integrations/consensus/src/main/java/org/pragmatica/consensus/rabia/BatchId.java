@@ -23,7 +23,7 @@ import org.pragmatica.utility.IdGenerator;
 
 /// Unique identifier for a command batch.
 @Codec
-public record BatchId(String id) {
+public record BatchId(String id) implements Comparable<BatchId> {
     public static Result<BatchId> batchId(String id) {
         return Verify.ensure(id, Verify.Is::notBlank)
                      .map(BatchId::new);
@@ -35,5 +35,10 @@ public record BatchId(String id) {
 
     public static BatchId emptyBatchId() {
         return new BatchId("empty");
+    }
+
+    @Override
+    public int compareTo(BatchId o) {
+        return id.compareTo(o.id);
     }
 }
