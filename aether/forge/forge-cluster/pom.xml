@@ -66,6 +66,25 @@
             <version>42.7.5</version>
         </dependency>
 
+        <!-- Resource: R2DBC Database Connector (ServiceLoader provider) -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-db-r2dbc</artifactId>
+        </dependency>
+
+        <!-- R2DBC Pool (optional in resource-db-r2dbc, required at runtime) -->
+        <dependency>
+            <groupId>io.r2dbc</groupId>
+            <artifactId>r2dbc-pool</artifactId>
+        </dependency>
+
+        <!-- PostgreSQL R2DBC Driver -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>r2dbc-postgresql</artifactId>
+            <version>1.0.7.RELEASE</version>
+        </dependency>
+
         <!-- Logging -->
         <dependency>
             <groupId>org.slf4j</groupId>

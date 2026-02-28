@@ -35,7 +35,8 @@ else
         -e POSTGRES_DB="$PG_DB" \
         -p "${PG_PORT}:5432" \
         -v forge-pgdata:/var/lib/postgresql/data \
-        "$PG_IMAGE"
+        "$PG_IMAGE" \
+        -c max_connections=500
 
     # Wait for PostgreSQL to be ready
     echo -n "Waiting for PostgreSQL..."

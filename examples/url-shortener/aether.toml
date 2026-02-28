@@ -8,10 +8,11 @@ port = 5432
 database = "forge"
 username = "forge"
 password = "forge"
+r2dbc_url = "r2dbc:postgresql://localhost:5432/forge"
 
 [database.pool_config]
-min_connections = 4
-max_connections = 20
+min_connections = 10
+max_connections = 50
 idle_timeout = "10m"
 connection_timeout = "5s"
 max_lifetime = "30m"

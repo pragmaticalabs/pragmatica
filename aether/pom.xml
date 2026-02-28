@@ -234,6 +234,14 @@
                 <artifactId>resource-db-jooq-r2dbc</artifactId>
                 <version>${project.version}</version>
             </dependency>
+
+            <!-- R2DBC Pool -->
+            <dependency>
+                <groupId>io.r2dbc</groupId>
+                <artifactId>r2dbc-pool</artifactId>
+                <version>1.0.2.RELEASE</version>
+            </dependency>
+
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>resource-http</artifactId>
