@@ -210,7 +210,7 @@
     font-size: var(--font-size-sm);
     color: var(--text-primary);
     font-weight: 600;
-    min-width: 80px;
+    min-width: 52px;
 }
 
 .node-stat {
@@ -227,7 +227,6 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-xs);
-    margin-left: auto;
 }
 
 .slice-badge {
@@ -243,11 +242,10 @@
 /* Badges */
 .node-badge {
     font-size: var(--font-size-xs);
-    padding: 1px var(--space-sm);
+    padding: 1px var(--space-xs);
     border-radius: var(--radius-sm);
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
 }
 
 .node-badge.leader {
@@ -368,6 +366,10 @@
 }
 
 .slice-status-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-sm);
     padding: var(--space-sm) var(--space-md);
     border-bottom: 1px solid var(--border-light);
     cursor: pointer;
@@ -381,7 +383,6 @@
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
     color: var(--text-primary);
-    margin-bottom: var(--space-xs);
 }
 
 .slice-status-line {

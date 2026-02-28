@@ -80,15 +80,13 @@
                             <div class="slice-list">
                                 <template x-for="slice in $store.deployments.slices" :key="slice.artifact">
                                     <div class="slice-status-row" @click="navigateToSlice(slice.artifact)">
-                                        <div class="slice-artifact" x-text="slice.artifact"></div>
-                                        <div class="slice-status-line">
-                                            <span class="status-badge" :class="(slice.state || 'ACTIVE').toLowerCase()" x-text="slice.state || 'ACTIVE'"></span>
-                                            <span class="instance-badges">
-                                                <template x-for="inst in slice.instances" :key="inst.nodeId">
-                                                    <span class="instance-badge" :class="inst.state.toLowerCase()" x-text="inst.nodeId + ': ' + inst.state"></span>
-                                                </template>
-                                            </span>
-                                        </div>
+                                        <span class="slice-artifact" x-text="shortSliceName(slice.artifact)"></span>
+                                        <span class="status-badge" :class="(slice.state || 'ACTIVE').toLowerCase()" x-text="slice.state || 'ACTIVE'"></span>
+                                        <span class="instance-badges">
+                                            <template x-for="inst in slice.instances" :key="inst.nodeId">
+                                                <span class="instance-badge" :class="inst.state.toLowerCase()" x-text="inst.nodeId + ': ' + inst.state"></span>
+                                            </template>
+                                        </span>
                                     </div>
                                 </template>
                                 <div x-show="$store.deployments.slices.length === 0" class="no-data">No slices deployed</div>
