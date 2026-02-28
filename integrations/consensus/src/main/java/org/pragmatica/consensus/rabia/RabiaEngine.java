@@ -31,6 +31,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 
@@ -69,6 +70,7 @@ import static org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.S
 public class RabiaEngine<C extends Command> {
     private static final Logger log = LoggerFactory.getLogger(RabiaEngine.class);
     private static final double SCALE = 0.5d;
+    private static final long PHASE_STALL_CHECK_MS = 500;
 
     private final NodeId self;
     private final TopologyManager topologyManager;
@@ -98,6 +100,7 @@ public class RabiaEngine<C extends Command> {
     private final AtomicReference<Promise<Unit>> startPromise = new AtomicReference<>(Promise.promise());
     private final AtomicReference<Phase> lastCommittedPhase = new AtomicReference<>(Phase.ZERO);
     private final AtomicReference<ScheduledFuture<?>> pendingSyncTask = new AtomicReference<>();
+    private final AtomicReference<ScheduledFuture<?>> phaseStallTask = new AtomicReference<>();
 
     // Per Rabia spec: after a decision, the next phase inherits this value for round 1 vote
     private final AtomicReference<Option<StateValue>> lockedValue = new AtomicReference<>(Option.none());
@@ -172,6 +175,7 @@ public class RabiaEngine<C extends Command> {
         if (!active.compareAndSet(true, false)) {
             return;
         }
+        cancelPhaseStallDetector();
         // Cancel any pending sync task
         Option.option(pendingSyncTask.getAndSet(null))
               .onPresent(task -> task.cancel(false));
@@ -271,6 +275,7 @@ public class RabiaEngine<C extends Command> {
         cleanupTask.onPresent(task -> task.cancel(false));
         Option.option(pendingSyncTask.getAndSet(null))
               .onPresent(task -> task.cancel(false));
+        cancelPhaseStallDetector();
         clusterDisconnected();
         executor.shutdown();
         promise.succeed(Unit.unit());
@@ -488,6 +493,49 @@ public class RabiaEngine<C extends Command> {
         metrics.recordSyncAttempt(self, true);
         log.info("Node {} activated in phase {}", self, currentPhase.get());
         executor.execute(this::startPhase);
+        startPhaseStallDetector();
+    }
+
+    /// Starts a periodic stall detector that re-broadcasts the node's own proposal
+    /// when a phase hasn't advanced within the configured interval.
+    /// This fixes the startup race where dormant nodes miss proposals from early activators.
+    private void startPhaseStallDetector() {
+        cancelPhaseStallDetector();
+        var task = SharedScheduler.scheduleAtFixedRate(
+            () -> executor.execute(this::checkPhaseStall),
+            TimeSpan.timeSpan(PHASE_STALL_CHECK_MS).millis());
+        phaseStallTask.set(task);
+    }
+
+    /// Checks if the current phase is stalled due to missing proposals and re-broadcasts
+    /// the node's own proposal if needed.
+    private void checkPhaseStall() {
+        if (!active.get() || !isInPhase.get()) {
+            return;
+        }
+        var phase = currentPhase.get();
+        var phaseData = phases.get(phase);
+        if (phaseData == null) {
+            return;
+        }
+        var quorumSize = topologyManager.quorumSize();
+        if (!phaseData.hasQuorumProposals(quorumSize) && phaseData.hasProposal(self)) {
+            log.debug("Node {} stall detected in phase {}: {}/{} proposals, re-broadcasting own proposal",
+                      self, phase, phaseData.proposalCount(), quorumSize);
+            rebroadcastOwnProposal(phase, phaseData);
+        }
+    }
+
+    /// Re-broadcasts the node's own proposal for the given phase.
+    private void rebroadcastOwnProposal(Phase phase, PhaseData<C> phaseData) {
+        Option.option(phaseData.getProposal(self))
+              .onPresent(batch -> network.broadcast(new Propose<>(self, phase, batch)));
+    }
+
+    /// Cancels the phase stall detector if running.
+    private void cancelPhaseStallDetector() {
+        Option.option(phaseStallTask.getAndSet(null))
+              .onPresent(task -> task.cancel(false));
     }
 
     /// Handles a synchronization request from another node.
@@ -501,7 +549,7 @@ public class RabiaEngine<C extends Command> {
             stateMachine.makeSnapshot()
                         .map(snapshot -> new SyncResponse<>(self,
                                                             savedState(snapshot,
-                                                                       lastCommittedPhase.get(),
+                                                                       currentPhase.get(),
                                                                        pendingBatches.values())))
                         .onSuccess(response -> network.send(request.sender(),
                                                             response))
@@ -839,8 +887,14 @@ public class RabiaEngine<C extends Command> {
         var nextPhase = currentPhase.successor();
         this.currentPhase.set(nextPhase);
         isInPhase.set(false);
-        // Lock the value for the next phase's round 1 vote
-        lockedValue.set(Option.some(decidedValue));
+        // Only lock V1 values (critical for liveness) or V0 when no pending work.
+        // Locking V0 with pending batches causes a self-reinforcing loop where
+        // locked V0 votes prevent proposals from ever converging on V1.
+        if (decidedValue == StateValue.V1 || pendingBatches.isEmpty()) {
+            lockedValue.set(Option.some(decidedValue));
+        } else {
+            lockedValue.set(Option.none());
+        }
         log.trace("Node {} moving to phase {} with locked value {}", self, nextPhase, decidedValue);
         // If we have more commands to process, start a new phase
         if (!pendingBatches.isEmpty()) {

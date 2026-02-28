@@ -83,6 +83,11 @@ final class PhaseData<C extends Command> {
         return proposals.containsKey(node);
     }
 
+    /// Returns the proposal batch for a specific node, or null if not present.
+    Batch<C> getProposal(NodeId node) {
+        return proposals.get(node);
+    }
+
     /// Checks if a node has already voted in round 1.
     boolean hasVotedRound1(NodeId node) {
         return round1Votes.containsKey(node);
