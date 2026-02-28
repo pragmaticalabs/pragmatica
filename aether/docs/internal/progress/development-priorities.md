@@ -306,6 +306,13 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
      - Derives node count default, DB enabled flag (from `@Sql` presence), and test curl commands (from `routes.toml`)
      - Eliminates manual boilerplate for new examples
 
+23. **Investigate Feasibility of Resurrecting Asynchronous Postgres Driver from pragmatica-lite**
+     - pragmatica-lite had a custom async PostgreSQL driver built on Netty — non-blocking, zero-copy, no reactor overhead
+     - R2DBC PostgreSQL works but adds reactor-core dependency and scheduling overhead (~8x latency penalty at low load vs JDBC)
+     - Under sustained high load (3K+ req/s) the gap narrows; R2DBC shows flatter latency distribution
+     - Evaluate: resurrect the native driver as an alternative `SqlConnector` SPI implementation, bypassing both JDBC and R2DBC
+     - Would eliminate HikariCP thread pool and reactor-core from the hot path
+
 ### Cloud Provider Support
 
 Part of Cloud Integration (#1). Per-provider status:
