@@ -1,11 +1,11 @@
-package org.pragmatica.aether.resource.aspect;
+package org.pragmatica.aether.resource.interceptor;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.resource.aspect.RetryConfig.retryConfig;
+import static org.pragmatica.aether.resource.interceptor.RetryConfig.retryConfig;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class RetryConfigTest {

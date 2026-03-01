@@ -5,6 +5,7 @@ import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.http.websocket.WebSocketSession;
+import org.pragmatica.json.JsonMapper;
 
 import java.util.List;
 import java.util.Map;
@@ -25,6 +26,8 @@ import org.slf4j.LoggerFactory;
 public final class WebSocketAuthenticator {
     private static final Logger log = LoggerFactory.getLogger(WebSocketAuthenticator.class);
     private static final long AUTH_TIMEOUT_MS = 5_000;
+    private static final JsonMapper JSON = JsonMapper.defaultJsonMapper();
+    private static final String AUTH_TYPE = "AUTH";
 
     private final SecurityValidator securityValidator;
     private final boolean securityEnabled;
@@ -100,11 +103,14 @@ public final class WebSocketAuthenticator {
 
     @SuppressWarnings("JBCT-PAT-01")
     private boolean handleAuthMessage(WebSocketSession session, String text) {
-        if (!isAuthMessageFormat(text)) {
+        var parsed = JSON.readString(text, AuthMessage.class);
+        if (parsed.isFailure() || !AUTH_TYPE.equals(parsed.unwrap()
+                                                          .type())) {
             session.send("{\"type\":\"AUTH_FAILED\",\"reason\":\"invalid_message\"}");
             return true;
         }
-        var apiKey = extractJsonValue(text, "apiKey");
+        var apiKey = parsed.unwrap()
+                           .apiKey();
         if (apiKey == null || apiKey.isEmpty()) {
             AuditLog.wsAuthFailure(session.id(), "empty_key");
             session.send("{\"type\":\"AUTH_FAILED\",\"reason\":\"missing_key\"}");
@@ -112,10 +118,6 @@ public final class WebSocketAuthenticator {
             return true;
         }
         return validateApiKeyAndRespond(session, apiKey);
-    }
-
-    private static boolean isAuthMessageFormat(String text) {
-        return text.contains("\"type\"") && text.contains("\"AUTH\"") && text.contains("\"apiKey\"");
     }
 
     @SuppressWarnings("JBCT-PAT-01")
@@ -148,31 +150,5 @@ public final class WebSocketAuthenticator {
         session.close();
     }
 
-    /// Extract a JSON string value by key (simple parsing without Jackson dependency).
-    /// Handles escaped quotes within values.
-    @SuppressWarnings("JBCT-PAT-01")
-    static String extractJsonValue(String json, String key) {
-        var pattern = "\"" + key + "\"";
-        var keyIndex = json.indexOf(pattern);
-        if (keyIndex < 0) {
-            return null;
-        }
-        var colonIndex = json.indexOf(':', keyIndex + pattern.length());
-        if (colonIndex < 0) {
-            return null;
-        }
-        var quoteStart = json.indexOf('"', colonIndex + 1);
-        if (quoteStart < 0) {
-            return null;
-        }
-        // Scan for unescaped closing quote
-        var pos = quoteStart + 1;
-        while (pos < json.length()) {
-            if (json.charAt(pos) == '"' && json.charAt(pos - 1) != '\\') {
-                return json.substring(quoteStart + 1, pos);
-            }
-            pos++;
-        }
-        return null;
-    }
+    record AuthMessage(String type, String apiKey) {}
 }

@@ -38,7 +38,7 @@ public final class GitHubVersionResolver {
     // All components share the same version from the pragmatica monorepo
     private static final String REPO_OWNER = "siy";
     private static final String REPO_NAME = "pragmatica";
-    private static final String DEFAULT_VERSION = "0.18.0";
+    private static final String DEFAULT_VERSION = "0.19.0";
 
     // Running binary version (loaded from jbct-version.properties)
     private static final String RUNNING_JBCT_VERSION = loadRunningVersion();

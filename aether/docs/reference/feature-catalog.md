@@ -122,7 +122,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 55 | JBCT compliance | Complete | Format linting, return type validation, pattern checking, factory naming conventions. Maven plugin |
 | 56 | Envelope format versioning | Complete | `ENVELOPE_FORMAT_VERSION` in ManifestGenerator with runtime compatibility check |
 | 57 | Forge simulator | Battle-tested | Standalone cluster simulator with load generation (constant/ramp/spike), chaos injection, visual dashboard, REST API |
-| 58 | Web dashboard | Partial | Forge dashboard complete (cluster visualization, load generation, chaos injection, metrics). Node management dashboard needs modernization for production use |
+| 58 | Web dashboard | Partial (WIP) | Forge dashboard complete (cluster visualization, load generation, chaos injection, metrics, scaling events, deployment timing). Node management dashboard in active development — missing observability depth UI, invocation trace viewer, log level management |
 
 ## Node Operations
 
@@ -186,7 +186,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Feature | Key Gap |
 |---------|---------|
 | TTM predictive scaling | Disabled by default, no live model training |
-| Web dashboard | Node management dashboard needs modernization for production use |
+| Web dashboard | Node management dashboard in active development (v0.19.0) — observability UI, trace viewer, log levels pending |
 
 **Planned features:**
 
@@ -206,4 +206,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-02-25 (v0.18.0)*
+*Last updated: 2026-02-28 (v0.19.0)*

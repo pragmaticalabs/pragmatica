@@ -44,8 +44,8 @@ class InvocationMetricsTest extends ForgeTestBase {
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
 
-    private static final String URL_SHORTENER_ARTIFACT = "org.pragmatica.aether.example:url-shortener-url-shortener:0.18.0";
-    private static final String ANALYTICS_ARTIFACT = "org.pragmatica.aether.example:url-shortener-analytics:0.18.0";
+    private static final String URL_SHORTENER_ARTIFACT = "org.pragmatica.aether.example:url-shortener-url-shortener:0.19.0";
+    private static final String ANALYTICS_ARTIFACT = "org.pragmatica.aether.example:url-shortener-analytics:0.19.0";
     private static final String BLUEPRINT_ID = "forge.test:url-shortener-metrics:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 

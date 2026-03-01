@@ -36,7 +36,7 @@ class BootstrapTest {
     private static final int BASE_MGMT_PORT = 7600;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.18.0";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.19.0";
     private static final String BLUEPRINT_ID = "forge.test:bootstrap:1.0.0";
 
     private ForgeCluster cluster;

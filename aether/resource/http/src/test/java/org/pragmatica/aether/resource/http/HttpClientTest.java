@@ -64,7 +64,7 @@ class HttpClientTest {
 
     @Test
     void httpClient_factory_createsInstance() {
-        var client = HttpClient.httpClient();
+        var client = JdkHttpClient.jdkHttpClient();
 
         assertThat(client).isNotNull();
         assertThat(client.config()).isNotNull();
@@ -74,7 +74,7 @@ class HttpClientTest {
     @Test
     void httpClient_factoryWithConfig_usesConfig() {
         var config = HttpClientConfig.httpClientConfig("https://api.example.com").unwrap();
-        var client = HttpClient.httpClient(config);
+        var client = JdkHttpClient.jdkHttpClient(config);
 
         assertThat(client.config()).isEqualTo(config);
         assertThat(client.config().baseUrl().fold(() -> "", v -> v)).isEqualTo("https://api.example.com");
