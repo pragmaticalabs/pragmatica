@@ -522,7 +522,7 @@ tbody tr:hover { background: var(--bg-tertiary); }
 /* Event Feed */
 .event-feed {
     max-height: 300px;
-    overflow-y: auto;
+    overflow: auto;
 }
 
 .event-item {
