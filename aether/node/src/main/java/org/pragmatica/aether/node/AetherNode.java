@@ -711,7 +711,8 @@ public interface AetherNode {
                                                         Option.some(clusterNode.network()),
                                                         Option.some(serializer),
                                                         Option.some(deserializer),
-                                                        config.tls());
+                                                        config.tls(),
+                                                        Option.some(invocationMetrics));
         // Collect all route entries from RabiaNode and AetherNode components
         var aetherEntries = collectRouteEntries(kvStore,
                                                 nodeDeploymentManager,

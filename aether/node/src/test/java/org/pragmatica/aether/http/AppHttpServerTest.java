@@ -45,7 +45,8 @@ class AppHttpServerTest {
                                              Option.none(),  // No ClusterNetwork
                                              Option.none(),  // No Serializer
                                              Option.none(),  // No Deserializer
-                                             Option.none()); // No TLS
+                                             Option.none(),  // No TLS
+                                             Option.none()); // No InvocationMetricsCollector
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();
@@ -104,6 +105,7 @@ class AppHttpServerTest {
         var disabledServer = AppHttpServer.appHttpServer(disabledConfig,
                                                          SELF_NODE,
                                                          registry,
+                                                         Option.none(),
                                                          Option.none(),
                                                          Option.none(),
                                                          Option.none(),

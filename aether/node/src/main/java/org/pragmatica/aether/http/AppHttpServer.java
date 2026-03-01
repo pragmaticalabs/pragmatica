@@ -1,6 +1,8 @@
 package org.pragmatica.aether.http;
 
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
@@ -13,6 +15,8 @@ import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationContext;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -109,7 +113,8 @@ public interface AppHttpServer {
                                        Option<ClusterNetwork> clusterNetwork,
                                        Option<Serializer> serializer,
                                        Option<Deserializer> deserializer,
-                                       Option<TlsConfig> tls) {
+                                       Option<TlsConfig> tls,
+                                       Option<InvocationMetricsCollector> metricsCollector) {
         return new AppHttpServerImpl(config,
                                      selfNodeId,
                                      routeRegistry,
@@ -117,7 +122,8 @@ public interface AppHttpServer {
                                      clusterNetwork,
                                      serializer,
                                      deserializer,
-                                     tls);
+                                     tls,
+                                     metricsCollector);
     }
 }
 
@@ -135,6 +141,7 @@ class AppHttpServerImpl implements AppHttpServer {
     private final Option<Deserializer> deserializer;
     private final SecurityValidator securityValidator;
     private final Option<TlsConfig> tls;
+    private final Option<InvocationMetricsCollector> metricsCollector;
     private final Option<HttpForwarder> httpForwarder;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
     private final AtomicReference<RouteTable> routeTableRef = new AtomicReference<>(RouteTable.empty());
@@ -147,7 +154,8 @@ class AppHttpServerImpl implements AppHttpServer {
                       Option<ClusterNetwork> clusterNetwork,
                       Option<Serializer> serializer,
                       Option<Deserializer> deserializer,
-                      Option<TlsConfig> tls) {
+                      Option<TlsConfig> tls,
+                      Option<InvocationMetricsCollector> metricsCollector) {
         this.config = config;
         this.selfNodeId = selfNodeId;
         this.routeRegistry = routeRegistry;
@@ -159,6 +167,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                  ? SecurityValidator.apiKeyValidator(config.apiKeyValues())
                                  : SecurityValidator.noOpValidator();
         this.tls = tls;
+        this.metricsCollector = metricsCollector;
         this.httpForwarder = buildHttpForwarder(selfNodeId,
                                                 routeRegistry,
                                                 clusterNetwork,
@@ -462,7 +471,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                                                   request.path(),
                                                                   routeKey,
                                                                   requestId))
-                          .onPresent(router -> invokeLocalRouter(request, response, router, requestId));
+                          .onPresent(router -> invokeLocalRouter(request, response, router, routeKey, requestId));
     }
 
     private void handleMissingLocalRouter(ResponseWriter response,
@@ -476,14 +485,50 @@ class AppHttpServerImpl implements AppHttpServer {
     private void invokeLocalRouter(RequestContext request,
                                    ResponseWriter response,
                                    SliceRouter router,
+                                   HttpRouteKey routeKey,
                                    String requestId) {
         var context = toHttpRequestContext(request, requestId);
+        var routeInfo = resolveRouteInfo(routeKey.httpMethod(), routeKey.pathPrefix());
+        var startTime = System.nanoTime();
+        routeInfo.onPresent(info -> recordMetricsStart(info));
         router.handle(context)
-              .onSuccess(responseData -> sendResponse(response, responseData, requestId))
-              .onFailure(cause -> handleLocalRouteFailure(response,
-                                                          request.path(),
-                                                          requestId,
-                                                          cause));
+              .onSuccess(responseData -> handleLocalRouterSuccess(response,
+                                                                  responseData,
+                                                                  requestId,
+                                                                  routeInfo,
+                                                                  startTime,
+                                                                  context))
+              .onFailure(cause -> handleLocalRouterFailure(response,
+                                                           request.path(),
+                                                           requestId,
+                                                           cause,
+                                                           routeInfo,
+                                                           startTime,
+                                                           context));
+    }
+
+    private void handleLocalRouterSuccess(ResponseWriter response,
+                                          HttpResponseData responseData,
+                                          String requestId,
+                                          Option<ResolvedRoute> routeInfo,
+                                          long startTime,
+                                          HttpRequestContext context) {
+        routeInfo.onPresent(info -> recordMetricsSuccess(info,
+                                                         startTime,
+                                                         context.body().length,
+                                                         responseData.body().length));
+        sendResponse(response, responseData, requestId);
+    }
+
+    private void handleLocalRouterFailure(ResponseWriter response,
+                                          String path,
+                                          String requestId,
+                                          Cause cause,
+                                          Option<ResolvedRoute> routeInfo,
+                                          long startTime,
+                                          HttpRequestContext context) {
+        routeInfo.onPresent(info -> recordMetricsFailure(info, startTime, context.body().length, cause));
+        handleLocalRouteFailure(response, path, requestId, cause);
     }
 
     private void handleLocalRouteFailure(ResponseWriter response, String path, String requestId, Cause cause) {
@@ -571,13 +616,44 @@ class AppHttpServerImpl implements AppHttpServer {
             sendForwardError(network, request, "Route not found locally");
             return;
         }
-        // Handle the request locally
+        // Handle the request locally with metrics
+        var routeInfo = resolveRouteInfo(method, normalizedPath);
+        var startTime = System.nanoTime();
+        routeInfo.onPresent(info -> recordMetricsStart(info));
         routerOpt.unwrap()
                  .handle(context)
-                 .onSuccess(responseData -> sendForwardSuccess(network, request, ser, responseData))
-                 .onFailure(cause -> sendForwardError(network,
-                                                      request,
-                                                      cause.message()));
+                 .onSuccess(responseData -> handleForwardSuccess(network,
+                                                                 request,
+                                                                 ser,
+                                                                 responseData,
+                                                                 routeInfo,
+                                                                 startTime,
+                                                                 context))
+                 .onFailure(cause -> handleForwardFailure(network, request, cause, routeInfo, startTime, context));
+    }
+
+    private void handleForwardSuccess(ClusterNetwork network,
+                                      HttpForwardRequest request,
+                                      Serializer ser,
+                                      HttpResponseData responseData,
+                                      Option<ResolvedRoute> routeInfo,
+                                      long startTime,
+                                      HttpRequestContext context) {
+        routeInfo.onPresent(info -> recordMetricsSuccess(info,
+                                                         startTime,
+                                                         context.body().length,
+                                                         responseData.body().length));
+        sendForwardSuccess(network, request, ser, responseData);
+    }
+
+    private void handleForwardFailure(ClusterNetwork network,
+                                      HttpForwardRequest request,
+                                      Cause cause,
+                                      Option<ResolvedRoute> routeInfo,
+                                      long startTime,
+                                      HttpRequestContext context) {
+        routeInfo.onPresent(info -> recordMetricsFailure(info, startTime, context.body().length, cause));
+        sendForwardError(network, request, cause.message());
     }
 
     private Option<SliceRouter> findLocalRouterForPath(HttpRoutePublisher pub,
@@ -741,6 +817,56 @@ class AppHttpServerImpl implements AppHttpServer {
     private static org.pragmatica.http.HttpStatus toServerStatus(int code) {
         return Option.option(STATUS_MAP.get(code))
                      .or(org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    // ================== Invocation Metrics ==================
+    /// Resolved artifact and method name for metrics recording.
+    record ResolvedRoute(Artifact artifact, MethodName method) {}
+
+    private Option<ResolvedRoute> resolveRouteInfo(String httpMethod, String path) {
+        return metricsCollector.flatMap(_ -> httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(httpMethod, path))
+                                                               .flatMap(this::toResolvedRoute));
+    }
+
+    private Option<ResolvedRoute> toResolvedRoute(LocalRouteInfo info) {
+        return Artifact.artifact(info.artifactCoord())
+                       .flatMap(artifact -> MethodName.methodName(info.sliceMethod())
+                                                      .map(method -> new ResolvedRoute(artifact, method)))
+                       .option();
+    }
+
+    private void recordMetricsStart(ResolvedRoute route) {
+        metricsCollector.onPresent(mc -> mc.recordStart(route.artifact(), route.method()));
+    }
+
+    private void recordMetricsSuccess(ResolvedRoute route, long startTime, int requestBytes, int responseBytes) {
+        var durationNs = System.nanoTime() - startTime;
+        metricsCollector.onPresent(mc -> recordSuccessMetrics(mc, route, durationNs, requestBytes, responseBytes));
+    }
+
+    private void recordSuccessMetrics(InvocationMetricsCollector mc,
+                                      ResolvedRoute route,
+                                      long durationNs,
+                                      int requestBytes,
+                                      int responseBytes) {
+        mc.recordComplete(route.artifact(), route.method());
+        mc.recordSuccess(route.artifact(), route.method(), durationNs, requestBytes, responseBytes);
+    }
+
+    private void recordMetricsFailure(ResolvedRoute route, long startTime, int requestBytes, Cause cause) {
+        var durationNs = System.nanoTime() - startTime;
+        var errorType = cause.getClass()
+                             .getSimpleName();
+        metricsCollector.onPresent(mc -> recordFailureMetrics(mc, route, durationNs, requestBytes, errorType));
+    }
+
+    private void recordFailureMetrics(InvocationMetricsCollector mc,
+                                      ResolvedRoute route,
+                                      long durationNs,
+                                      int requestBytes,
+                                      String errorType) {
+        mc.recordComplete(route.artifact(), route.method());
+        mc.recordFailure(route.artifact(), route.method(), durationNs, requestBytes, errorType);
     }
 
     // ================== Route Table ==================
