@@ -18,6 +18,7 @@ package org.pragmatica.consensus.topology;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -84,4 +85,13 @@ public interface TopologyManager {
 
     /// Returns the list of all node IDs in the topology.
     List<NodeId> topology();
+
+    /// Returns the count of active (non-passive) nodes in the topology.
+    /// Passive nodes (load balancers, observers) are excluded from the count.
+    default int activeNodeCount() {
+        return (int) topology().stream()
+                               .filter(id -> get(id).filter(info -> info.role() == NodeRole.PASSIVE)
+                                                    .isEmpty())
+                               .count();
+    }
 }

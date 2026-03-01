@@ -536,7 +536,11 @@ public interface ClusterDeploymentManager {
                                                      cause.message()));
             }
 
-            /// Compute cluster deficit: target size minus current active nodes.
+            /// Compute cluster deficit: target size minus currently connected active nodes.
+            /// Uses activeNodes (real-time network view from topology notifications) rather than
+            /// topologyManager state, which retains killed nodes in SUSPECTED state during backoff.
+            /// Passive nodes are already excluded from activeNodes by the network layer (Hello handshake
+            /// carries NodeRole, and currentView() filters out passive peers).
             private int computeAutoHealDeficit() {
                 return topologyManager.clusterSize() - activeNodes.get()
                                                                  .size();
@@ -578,10 +582,9 @@ public interface ClusterDeploymentManager {
                     log.trace("AUTO-HEAL: Cooldown active, deferring provisioning ({} node deficit)", deficit);
                     return;
                 }
-                var currentSize = activeNodes.get()
-                                             .size();
+                var currentActiveSize = topologyManager.clusterSize() - deficit;
                 log.info("AUTO-HEAL: Cluster size {} below target {}, provisioning {} replacement node(s)",
-                         currentSize,
+                         currentActiveSize,
                          topologyManager.clusterSize(),
                          deficit);
                 provisionReplacements(deficit);
@@ -600,10 +603,9 @@ public interface ClusterDeploymentManager {
                     cancelAutoHeal();
                     return;
                 }
-                var currentSize = activeNodes.get()
-                                             .size();
+                var currentActiveSize = topologyManager.clusterSize() - deficit;
                 log.info("AUTO-HEAL: Cluster still below target ({}/{}), provisioning {} node(s)",
-                         currentSize,
+                         currentActiveSize,
                          topologyManager.clusterSize(),
                          deficit);
                 provisionReplacements(deficit);
@@ -1362,14 +1364,10 @@ public interface ClusterDeploymentManager {
             @Override
             public void onLeaderChange(LeaderChange leaderChange) {
                 if (leaderChange.localNodeIsLeader()) {
-                    var currentTopology = topologyRef.get();
-                    log.info("Node {} became leader, activating cluster deployment manager with {} known nodes",
-                             self,
-                             currentTopology.size());
                     // Deactivate old Active state to suppress stale scheduled callbacks
                     deactivateCurrentState();
-                    // Create active state with current topology
-                    var activeNodes = new AtomicReference<>(currentTopology);
+                    // Create active state — topology will be refreshed after state swap
+                    var activeNodes = new AtomicReference<>(topologyRef.get());
                     var activeState = new ClusterDeploymentState.Active(self,
                                                                         cluster,
                                                                         kvStore,
@@ -1387,7 +1385,18 @@ public interface ClusterDeploymentManager {
                                                                         new AtomicReference<>(),
                                                                         new AtomicBoolean(false),
                                                                         ConcurrentHashMap.newKeySet());
+                    // Swap to Active FIRST — ensures topology changes arriving on other threads
+                    // are dispatched to Active.onTopologyChange() instead of being lost in Dormant.
                     state.set(activeState);
+                    // Re-read topology to catch NodeRemoved events that arrived between the
+                    // initial topologyRef.get() and state.set(). During that window, topology
+                    // changes were dispatched to the Dormant state (no-op) but topologyRef was
+                    // still updated. Re-reading ensures the Active state has the current view.
+                    activeNodes.set(topologyRef.get());
+                    log.info("Node {} became leader, activating cluster deployment manager with {} known nodes",
+                             self,
+                             activeNodes.get()
+                                        .size());
                     // Rebuild state from KVStore and reconcile
                     activeState.rebuildStateFromKVStore();
                     activeState.reconcile();
@@ -1399,6 +1408,16 @@ public interface ClusterDeploymentManager {
                     } else {
                         activeState.checkAndScheduleAutoHeal();
                     }
+                    // Defense in depth: schedule a deferred recheck to catch any topology events
+                    // still in-flight during the activation window.
+                    SharedScheduler.schedule(() -> {
+                                                 if (!activeState.deactivated()
+                                                                 .get()) {
+                                                     activeNodes.set(topologyRef.get());
+                                                     activeState.checkAndScheduleAutoHeal();
+                                                 }
+                                             },
+                                             timeSpan(2).seconds());
                 } else {
                     log.info("Node {} is not leader, deactivating cluster deployment manager", self);
                     // Deactivate old Active state to suppress stale scheduled callbacks
