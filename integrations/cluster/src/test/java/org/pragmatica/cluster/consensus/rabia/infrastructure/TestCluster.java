@@ -66,7 +66,7 @@ public class TestCluster {
 
     public TestCluster(int size) {
         this.size = size;
-        var topologyManager = new TestTopologyManager(size, new NodeInfo(randomNodeId(), nodeAddress("localhost", 8090).unwrap()));
+        var topologyManager = new TestTopologyManager(size, NodeInfo.nodeInfo(randomNodeId(), nodeAddress("localhost", 8090).unwrap()));
         network = new LocalNetwork(topologyManager, routers, new FaultInjector());
 
         // create nodes
@@ -109,7 +109,7 @@ public class TestCluster {
     public void addNewNode(NodeId id) {
         var router = MessageRouter.mutable();
         var store = new KVStore<StringKey, String>(router, codec, codec);
-        var topologyManager = new TestTopologyManager(size, new NodeInfo(id, nodeAddress("localhost", 8090).unwrap()));
+        var topologyManager = new TestTopologyManager(size, NodeInfo.nodeInfo(id, nodeAddress("localhost", 8090).unwrap()));
         var engine = new RabiaEngine<>(topologyManager, network, store, ProtocolConfig.testConfig());
 
         router.addRoute(KVStoreLocalIO.Request.Find.class, store::find);

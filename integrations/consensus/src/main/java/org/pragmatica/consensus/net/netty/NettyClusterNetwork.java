@@ -11,6 +11,7 @@ import org.pragmatica.consensus.net.NetworkMessage.Ping;
 import org.pragmatica.consensus.net.NetworkMessage.Pong;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
@@ -60,6 +61,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
 
     private final NodeInfo self;
     private final Map<NodeId, Channel> peerLinks = new ConcurrentHashMap<>();
+    private final Set<NodeId> passivePeers = ConcurrentHashMap.newKeySet();
     private final Map<Channel, NodeId> channelToNodeId = new ConcurrentHashMap<>();
     private final Set<Channel> pendingChannels = ConcurrentHashMap.newKeySet();
     private final Map<Channel, ScheduledFuture<?>> helloTimeouts = new ConcurrentHashMap<>();
@@ -196,7 +198,8 @@ public class NettyClusterNetwork implements ClusterNetwork {
                 return;
             }
             unknownNodeInfo = addressResult.map(addr -> new NodeInfo(hello.sender(),
-                                                                     addr))
+                                                                     addr,
+                                                                     NodeRole.ACTIVE))
                                            .option();
             log.info("Unknown node {} connecting from {}", hello.sender(), channel.remoteAddress());
         }
@@ -209,6 +212,8 @@ public class NettyClusterNetwork implements ClusterNetwork {
             return;
         }
         channelToNodeId.put(channel, hello.sender());
+        // Track passive peers
+        trackPassiveRole(hello.sender(), unknownNodeInfo);
         // Send AddNode BEFORE ConnectionEstablished if unknown
         unknownNodeInfo.onPresent(nodeInfo -> router.route(new TopologyManagementMessage.AddNode(nodeInfo)));
         router.route(new NetworkServiceMessage.ConnectionEstablished(hello.sender()));
@@ -219,12 +224,20 @@ public class NettyClusterNetwork implements ClusterNetwork {
         log.debug("Node {} connected via Hello handshake", hello.sender());
     }
 
+    private void trackPassiveRole(NodeId nodeId, Option<NodeInfo> unknownNodeInfo) {
+        // For unknown nodes, check the constructed NodeInfo; for known nodes, look up topology
+        unknownNodeInfo.orElse(() -> topologyManager.get(nodeId))
+                       .filter(info -> info.role() == NodeRole.PASSIVE)
+                       .onPresent(_ -> passivePeers.add(nodeId));
+    }
+
     private void peerDisconnected(Channel channel) {
         helloTimeouts.remove(channel);
         pendingChannels.remove(channel);
         Option.option(channelToNodeId.remove(channel))
               .filter(nodeId -> peerLinks.remove(nodeId, channel))
               .onPresent(nodeId -> {
+                             passivePeers.remove(nodeId);
                              processViewChange(REMOVE, nodeId);
                              log.info("Node {} disconnected, triggering topology change", nodeId);
                          });
@@ -320,6 +333,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
         Option.option(peerLinks.remove(disconnectNode.nodeId()))
               .onPresent(channel -> {
                              channelToNodeId.remove(channel);
+                             passivePeers.remove(disconnectNode.nodeId());
                              processViewChange(REMOVE,
                                                disconnectNode.nodeId());
                              channel.close()
@@ -363,19 +377,25 @@ public class NettyClusterNetwork implements ClusterNetwork {
 
     @Override
     public <M extends ProtocolMessage> Unit broadcast(M message) {
-        peerLinks.forEach((peerId, channel) -> sendToChannel(peerId, message, channel));
+        peerLinks.forEach((peerId, channel) -> broadcastToEligiblePeer(peerId, channel, message));
         return Unit.unit();
     }
 
+    private <M extends ProtocolMessage> void broadcastToEligiblePeer(NodeId peerId, Channel channel, M message) {
+        if (!passivePeers.contains(peerId) || message.deliverToPassive()) {
+            sendToChannel(peerId, message, channel);
+        }
+    }
+
     private void processViewChange(ViewChangeOperation operation, NodeId peerId) {
-        var peerCount = peerLinks.size();
+        var activePeerCount = peerLinks.size() - passivePeers.size();
         var quorumSize = topologyManager.quorumSize();
         var clusterSize = topologyManager.clusterSize();
-        var currentlyHaveQuorum = (peerCount + 1) >= quorumSize;
-        log.info("processViewChange: op={}, peer={}, peerCount={}, clusterSize={}, quorumSize={}, haveQuorum={}, wasEstablished={}",
+        var currentlyHaveQuorum = (activePeerCount + 1) >= quorumSize;
+        log.info("processViewChange: op={}, peer={}, activePeerCount={}, clusterSize={}, quorumSize={}, haveQuorum={}, wasEstablished={}",
                  operation,
                  peerId,
-                 peerCount,
+                 activePeerCount,
                  clusterSize,
                  quorumSize,
                  currentlyHaveQuorum,
@@ -406,10 +426,11 @@ public class NettyClusterNetwork implements ClusterNetwork {
     }
 
     private List<NodeId> currentView() {
-        // Include self in the view so leader election considers all nodes
+        // Include self in the view; exclude passive peers from leader election
         return java.util.stream.Stream.concat(java.util.stream.Stream.of(self.id()),
                                               peerLinks.keySet()
-                                                       .stream())
+                                                       .stream()
+                                                       .filter(id -> !passivePeers.contains(id)))
                    .sorted()
                    .toList();
     }

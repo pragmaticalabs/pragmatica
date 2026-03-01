@@ -1,5 +1,6 @@
 #!/bin/bash
 # Single-node load: all traffic to one specific node.
+# Bypasses the LB — sends directly to one node.
 # Useful for isolating per-node behavior or comparing leader vs follower.
 #
 # Usage:
@@ -13,8 +14,8 @@ NODE_INDEX="${1:-0}"
 RATE="${2:-500}"
 DURATION="${3:-2m}"
 
-# Extract the specific node URL
-IFS=',' read -ra NODE_ARRAY <<< "$FORGE_NODES"
+# Extract the specific node URL from individual node list
+IFS=',' read -ra NODE_ARRAY <<< "$FORGE_ALL_NODES"
 NODE_URL="${NODE_ARRAY[$NODE_INDEX]}"
 
 if [ -z "$NODE_URL" ]; then

@@ -38,7 +38,7 @@ public sealed interface MavenSettingsCredentials {
     }
 
     private static Option<Credentials> parseSettingsFile(String serverId, File settingsFile) {
-        try {
+        try{
             var dbf = DocumentBuilderFactory.newInstance();
             dbf.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
             var db = dbf.newDocumentBuilder();
@@ -69,9 +69,12 @@ public sealed interface MavenSettingsCredentials {
         for (int j = 0; j < children.getLength(); j++) {
             var child = children.item(j);
             switch (child.getNodeName()) {
-                case "id" -> id = child.getTextContent().trim();
-                case "username" -> username = child.getTextContent().trim();
-                case "password" -> password = child.getTextContent().trim();
+                case "id" -> id = child.getTextContent()
+                                       .trim();
+                case "username" -> username = child.getTextContent()
+                                                   .trim();
+                case "password" -> password = child.getTextContent()
+                                                   .trim();
                 default -> {}
             }
         }
@@ -85,7 +88,8 @@ public sealed interface MavenSettingsCredentials {
     record Credentials(String username, String password) {
         /// Encode as HTTP Basic authentication header value.
         public String toBasicAuthHeader() {
-            return "Basic " + Base64.getEncoder().encodeToString((username + ":" + password).getBytes());
+            return "Basic " + Base64.getEncoder()
+                                   .encodeToString((username + ":" + password).getBytes());
         }
     }
 

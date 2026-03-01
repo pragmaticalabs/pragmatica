@@ -48,7 +48,7 @@ public record Money(BigDecimal amount, Currency currency) {
     public static final Currency USD = Currency.getInstance("USD");
     public static final Currency EUR = Currency.getInstance("EUR");
 
-    public static final Money ZERO_USD = new Money(BigDecimal.ZERO, USD);
+    public static final Money ZERO_USD = money(BigDecimal.ZERO, USD).expect("Money.ZERO_USD");
 
     public static Result<Money> money(BigDecimal amount, Currency currency) {
         return Verify.ensure(amount,
@@ -73,12 +73,12 @@ public record Money(BigDecimal amount, Currency currency) {
     }
 
     public Result<Money> add(Money other) {
-        return verifySameCurrency(other).map(_ -> new Money(amount.add(other.amount), currency));
+        return verifySameCurrency(other).flatMap(_ -> money(amount.add(other.amount), currency));
     }
 
     public Result<Money> subtract(Money other) {
         return verifySameCurrency(other)
-        .map(_ -> new Money(amount.subtract(other.amount)
+        .flatMap(_ -> money(amount.subtract(other.amount)
                                   .max(BigDecimal.ZERO),
                             currency));
     }

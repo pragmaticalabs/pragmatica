@@ -233,15 +233,43 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
     - Rollback: if upgraded node fails health check, revert to previous version before continuing
     - Prerequisite: Official Container (#5) or Official Binaries (#6)
 
+### MEDIUM PRIORITY - PassiveNode Use Cases
+
+The `PassiveNode<K,V>` abstraction (`integrations/cluster/.../node/passive/PassiveNode.java`) provides reusable cluster infrastructure for non-voting observers. The passive load balancer (`AetherPassiveLB`) is the first consumer. Additional use cases:
+
+11. **Management API Proxy**
+    - Passive node exposes management endpoints externally, forwards mutations to active leader
+    - Use case: operators access cluster management without direct node exposure
+    - Consumer adds: HTTP server with management routes, leader-forwarding logic
+    - PassiveNode provides: cluster connectivity, route table via Decisions, topology awareness
+
+12. **Read Replica / Query Gateway**
+    - Passive node maintains full KV-Store replica, serves read-only queries directly
+    - Use case: offload read traffic from consensus-participating nodes
+    - Consumer adds: HTTP query API, cache layer, staleness tolerance config
+    - PassiveNode provides: KV-Store with all committed Decisions applied, zero consensus overhead
+
+13. **Multi-Cluster Bridge**
+    - Passive node joins cluster A, forwards selected Decisions/events to cluster B
+    - Use case: cross-region replication, event streaming between independent clusters
+    - Consumer adds: bridge logic (filter + transform + forward), second cluster connection
+    - PassiveNode provides: full Decision stream from source cluster
+
+14. **DHT Client Node**
+    - Passive node with DHT read access for external systems needing artifact/data retrieval
+    - Use case: CI/CD pipelines, monitoring tools that need cluster data without joining consensus
+    - Consumer adds: DHT client wiring, external API
+    - PassiveNode provides: cluster network membership, topology for DHT partition routing
+
 ### MEDIUM PRIORITY - Reliability
 
-12. **Placement Hints**
+15. **Placement Hints**
     - Affinity/anti-affinity rules for slice placement
     - Spread: distribute instances across nodes/zones
     - Co-locate: place related slices on same node
     - Zone-aware scheduling for high availability
 
-15. **Dead Letter Handling**
+16. **Dead Letter Handling**
     - Failed pub-sub messages and failed scheduled task invocations currently logged and lost
     - DLQ storage: KV-Store backed dead letter queue per topic/task
     - Retry policy: configurable max attempts with exponential backoff before dead-lettering
@@ -250,18 +278,18 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 
 ### LOWER PRIORITY - Security & Operations
 
-16. **TLS Certificate Management**
+17. **TLS Certificate Management**
      - Certificate provisioning and rotation
      - Mutual TLS between nodes
      - Integration with external CA or self-signed
 
-17. **Canary & Blue-Green Deployment Strategies**
+18. **Canary & Blue-Green Deployment Strategies**
      - Current: Rolling updates with weighted routing exist
      - Add explicit canary deployment with automatic rollback on error threshold
      - Add blue-green deployment with instant switchover
      - A/B testing support with traffic splitting by criteria
 
-18. **Topology in KV Store**
+19. **Topology in KV Store**
      - Leader maintains cluster topology in consensus KV store
      - Best-effort updates on membership changes
      - Enables external observability without direct node queries

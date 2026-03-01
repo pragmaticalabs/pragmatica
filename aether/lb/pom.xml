@@ -12,7 +12,7 @@
 
     <artifactId>lb</artifactId>
     <name>Aether Load Balancer</name>
-    <description>HTTP reverse proxy with health-checking and round-robin routing</description>
+    <description>Cluster-aware passive load balancer node</description>
 
     <dependencies>
         <!-- Pragmatica Core -->
@@ -21,10 +21,30 @@
             <artifactId>core</artifactId>
         </dependency>
 
-        <!-- HTTP Server (Netty-based, for accepting incoming connections) -->
+        <!-- HTTP Server (Netty-based, for accepting incoming client connections) -->
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>http-server</artifactId>
+        </dependency>
+
+        <!-- Cluster networking -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>cluster</artifactId>
+        </dependency>
+
+        <!-- Aether Invoke (HttpForwarder, HttpRouteRegistry, HttpForwardMessage) -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-invoke</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Aether Node (NodeCodecs for serialization) -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>node</artifactId>
+            <version>${project.version}</version>
         </dependency>
 
         <!-- Logging -->

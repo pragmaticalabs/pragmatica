@@ -44,7 +44,12 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
                                            Phase phase,
                                            StateValue stateValue,
                                            Batch<C> value)
-        implements Synchronous {}
+        implements Synchronous {
+            @Override
+            public boolean deliverToPassive() {
+                return true;
+            }
+        }
 
         /// State synchronization response.
         record SyncResponse<C extends Command>(NodeId sender, SavedState<C> state) implements Synchronous {}

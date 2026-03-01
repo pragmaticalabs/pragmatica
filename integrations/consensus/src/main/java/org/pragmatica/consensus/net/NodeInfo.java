@@ -20,11 +20,16 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Codec;
 
-/// Node information: ID and address.
+/// Node information: ID, address, and role.
 @Codec
-public record NodeInfo(NodeId id, NodeAddress address) {
-    /// Factory method for creating NodeInfo.
+public record NodeInfo(NodeId id, NodeAddress address, NodeRole role) {
+    /// Factory method for creating NodeInfo (backward-compatible, defaults to ACTIVE).
     public static NodeInfo nodeInfo(NodeId id, NodeAddress address) {
-        return new NodeInfo(id, address);
+        return new NodeInfo(id, address, NodeRole.ACTIVE);
+    }
+
+    /// Factory method for creating NodeInfo with explicit role.
+    public static NodeInfo nodeInfo(NodeId id, NodeAddress address, NodeRole role) {
+        return new NodeInfo(id, address, role);
     }
 }

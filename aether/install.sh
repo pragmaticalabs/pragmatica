@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="siy/aether"
+REPO="pragmaticalabs/pragmatica"
 INSTALL_DIR="${AETHER_HOME:-$HOME/.aether}"
 
 main() {

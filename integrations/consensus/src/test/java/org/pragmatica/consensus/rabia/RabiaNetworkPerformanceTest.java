@@ -82,7 +82,7 @@ class RabiaNetworkPerformanceTest {
         for (int i = 0; i < CLUSTER_SIZE; i++) {
             var id = nodeId("node-" + i).unwrap();
             var port = basePort + i;
-            nodeInfos.add(new NodeInfo(id, NodeAddress.nodeAddress("127.0.0.1", port).unwrap()));
+            nodeInfos.add(NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("127.0.0.1", port).unwrap()));
         }
 
         // Create all nodes

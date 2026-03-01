@@ -4,8 +4,12 @@ import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberConfig;
 import org.pragmatica.aether.ember.EmberH2Config;
 import org.pragmatica.aether.ember.EmberH2Server;
-import org.pragmatica.aether.lb.AetherLoadBalancer;
-import org.pragmatica.aether.lb.Backend;
+import org.pragmatica.aether.lb.AetherPassiveLB;
+import org.pragmatica.aether.lb.PassiveLBConfig;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.NodeRole;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.aether.dashboard.StaticFileHandler;
@@ -79,7 +83,7 @@ public final class ForgeServer {
     private final EmberConfig forgeConfig;
 
     private volatile Option<EmberCluster> cluster = Option.empty();
-    private volatile Option<AetherLoadBalancer> loadBalancer = Option.empty();
+    private volatile Option<AetherPassiveLB> loadBalancer = Option.empty();
     private volatile Option<ConfigurableLoadRunner> configurableLoadRunner = Option.empty();
     private volatile Option<ForgeMetrics> metrics = Option.empty();
     private volatile Option<ForgeApiHandler> apiHandler = Option.empty();
@@ -260,34 +264,35 @@ public final class ForgeServer {
         if (!forgeConfig.lbEnabled()) {
             return;
         }
-        var backends = buildBackendList();
-        if (backends.isEmpty()) {
-            log.warn("No app HTTP ports available, skipping load balancer start");
+        var clusterNodeInfos = cluster.map(EmberCluster::getNodeInfos)
+                                      .or(List.of());
+        if (clusterNodeInfos.isEmpty()) {
+            log.warn("No cluster nodes available, skipping load balancer start");
             return;
         }
-        var lb = AetherLoadBalancer.aetherLoadBalancer(forgeConfig.lbPort(), backends);
+        var selfNodeId = NodeId.nodeId("lb-passive")
+                               .unwrap();
+        var lbClusterPort = EmberCluster.DEFAULT_BASE_PORT + forgeConfig.nodes() + 10;
+        var selfInfo = NodeInfo.nodeInfo(selfNodeId,
+                                         NodeAddress.nodeAddress("localhost", lbClusterPort)
+                                                    .unwrap(),
+                                         NodeRole.PASSIVE);
+        var lbConfig = PassiveLBConfig.passiveLBConfig(forgeConfig.lbPort(),
+                                                       selfInfo,
+                                                       clusterNodeInfos,
+                                                       forgeConfig.nodes());
+        var lb = AetherPassiveLB.aetherPassiveLB(lbConfig);
         lb.start()
-          .await(TimeSpan.timeSpan(10)
+          .await(TimeSpan.timeSpan(30)
                          .seconds())
-          .onSuccess(_ -> {
-                         loadBalancer = Option.some(lb);
-                         log.info("Load balancer started on port {} with {} backends",
-                                  forgeConfig.lbPort(), backends.size());
-                     })
-          .onFailure(cause -> log.error("Failed to start load balancer: {}", cause.message()));
+          .onSuccess(_ -> registerLoadBalancer(lb, lbClusterPort))
+          .onFailure(cause -> log.error("Failed to start passive LB: {}",
+                                        cause.message()));
     }
 
-    private List<Backend> buildBackendList() {
-        return cluster.map(EmberCluster::getAvailableAppHttpPorts)
-                      .or(List.of())
-                      .stream()
-                      .map(port -> Backend.backend("localhost", port, managementPortForAppPort(port)))
-                      .toList();
-    }
-
-    private int managementPortForAppPort(int appPort) {
-        var slot = appPort - forgeConfig.appHttpPort();
-        return forgeConfig.managementPort() + slot;
+    private void registerLoadBalancer(AetherPassiveLB lb, int lbClusterPort) {
+        loadBalancer = Option.some(lb);
+        log.info("Passive LB started on port {} (cluster port {})", forgeConfig.lbPort(), lbClusterPort);
     }
 
     private void startMetricsCollection() {
@@ -463,9 +468,9 @@ public final class ForgeServer {
                                              .onFailure(cause -> log.warn("Error stopping HTTP server: {}",
                                                                           cause.message())));
         loadBalancer.onPresent(lb -> lb.stop()
-                                      .await(TimeSpan.timeSpan(10)
-                                                     .seconds())
-                                      .onFailure(cause -> log.warn("Error stopping load balancer: {}",
+                                       .await(TimeSpan.timeSpan(10)
+                                                      .seconds())
+                                       .onFailure(cause -> log.warn("Error stopping load balancer: {}",
                                                                     cause.message())));
         cluster.onPresent(c -> c.stop()
                                 .await(TimeSpan.timeSpan(30)

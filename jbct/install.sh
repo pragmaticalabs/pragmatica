@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="siy/jbct-cli"
+REPO="pragmaticalabs/pragmatica"
 INSTALL_DIR="${JBCT_HOME:-$HOME/.jbct}"
 
 main() {

@@ -24,7 +24,7 @@ public record Quantity(int value) {
     }
 
     public static final int MAX_QUANTITY = 10_000;
-    public static final Quantity ZERO = new Quantity(0);
+    public static final Quantity ZERO = quantity(0).expect("Quantity.ZERO");
 
     public static Result<Quantity> quantity(int value) {
         return Verify.ensure(value,

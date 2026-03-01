@@ -1,5 +1,6 @@
 package org.pragmatica.aether.ember;
 
+import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.lang.Result;
 
 /// Fluent builder for creating embedded Aether clusters.
@@ -90,9 +91,14 @@ public final class Ember {
 
     /// Build configuration and start the cluster.
     public Result<EmberInstance> start() {
-        return EmberConfig.emberConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config,
-                                       org.pragmatica.aether.invoke.ObservabilityConfig.DEFAULT,
-                                       lbEnabled, lbPort)
+        return EmberConfig.emberConfig(nodes,
+                                       managementPort,
+                                       dashboardPort,
+                                       appHttpPort,
+                                       h2Config,
+                                       ObservabilityConfig.DEFAULT,
+                                       lbEnabled,
+                                       lbPort)
                           .map(config -> EmberInstance.emberInstance(config));
     }
 }

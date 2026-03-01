@@ -1,5 +1,5 @@
 #!/bin/bash
-# Steady-state load: constant request rate across all forge nodes.
+# Steady-state load: constant request rate via passive LB.
 #
 # Usage:
 #   ./k6/run-steady.sh                  # 500 req/s for 2 minutes (30s warmup)
@@ -13,5 +13,5 @@ export FORGE_RATE="${1:-500}"
 export FORGE_DURATION="${2:-2m}"
 export FORGE_WARMUP="${3:-30s}"
 
-echo "Steady-state: ${FORGE_RATE} req/s for ${FORGE_DURATION} (warmup: ${FORGE_WARMUP}) across $(echo $FORGE_NODES | tr ',' '\n' | wc -l | tr -d ' ') nodes"
+echo "Steady-state: ${FORGE_RATE} req/s for ${FORGE_DURATION} (warmup: ${FORGE_WARMUP}) via ${FORGE_NODES}"
 k6 run "$SCRIPT_DIR/load-test.js"

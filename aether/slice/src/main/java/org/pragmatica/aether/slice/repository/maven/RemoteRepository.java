@@ -43,17 +43,18 @@ public interface RemoteRepository extends Repository {
     /// @param baseUrl Base URL of the remote Maven repository
     /// @return RemoteRepository instance
     static RemoteRepository remoteRepository(String repoId, String baseUrl) {
-        var normalizedUrl = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
+        var normalizedUrl = baseUrl.endsWith("/")
+                            ? baseUrl
+                            : baseUrl + "/";
         var credentials = MavenSettingsCredentials.forServer(repoId);
         var localRepo = Path.of(MavenLocalRepoLocator.findLocalRepository());
-
         return artifact -> resolveArtifact(artifact, normalizedUrl, credentials, localRepo);
     }
 
     private static Promise<Location> resolveArtifact(Artifact artifact,
-                                                      String baseUrl,
-                                                      Option<MavenSettingsCredentials.Credentials> credentials,
-                                                      Path localRepo) {
+                                                     String baseUrl,
+                                                     Option<MavenSettingsCredentials.Credentials> credentials,
+                                                     Path localRepo) {
         var cachedPath = localPath(artifact, localRepo);
         if (Files.exists(cachedPath)) {
             log.debug("Cache hit for {} at {}", artifact.asString(), cachedPath);
@@ -63,37 +64,36 @@ public interface RemoteRepository extends Repository {
     }
 
     private static Promise<Location> downloadAndCache(Artifact artifact,
-                                                       String baseUrl,
-                                                       Option<MavenSettingsCredentials.Credentials> credentials,
-                                                       Path targetPath) {
+                                                      String baseUrl,
+                                                      Option<MavenSettingsCredentials.Credentials> credentials,
+                                                      Path targetPath) {
         var artifactPath = remotePath(artifact);
         var jarUrl = baseUrl + artifactPath;
         var sha1Url = jarUrl + ".sha1";
-
-        return Promise.lift(
-            cause -> new RemoteRepositoryError.DownloadFailed(jarUrl, cause),
-            () -> {
-                try (var client = HttpClient.newBuilder()
-                                            .followRedirects(HttpClient.Redirect.NORMAL)
-                                            .connectTimeout(HTTP_TIMEOUT)
-                                            .build()) {
-                    var jarBytes = downloadJar(client, jarUrl, credentials, artifact);
-                    verifySha1(client, sha1Url, credentials, jarBytes, artifact);
-                    cacheArtifact(targetPath, jarBytes);
-                    log.info("Cached {} to {}", artifact.asString(), targetPath);
-                    return targetPath;
-                }
-            })
-            .flatMap(path -> toLocation(artifact, path));
+        return Promise.lift(cause -> new RemoteRepositoryError.DownloadFailed(jarUrl, cause),
+                            () -> {
+                                try (var client = HttpClient.newBuilder()
+                                                            .followRedirects(HttpClient.Redirect.NORMAL)
+                                                            .connectTimeout(HTTP_TIMEOUT)
+                                                            .build()) {
+                                    var jarBytes = downloadJar(client, jarUrl, credentials, artifact);
+                                    verifySha1(client, sha1Url, credentials, jarBytes, artifact);
+                                    cacheArtifact(targetPath, jarBytes);
+                                    log.info("Cached {} to {}",
+                                             artifact.asString(),
+                                             targetPath);
+                                    return targetPath;
+                                }
+                            })
+                      .flatMap(path -> toLocation(artifact, path));
     }
 
     private static byte[] downloadJar(HttpClient client,
-                                       String jarUrl,
-                                       Option<MavenSettingsCredentials.Credentials> credentials,
-                                       Artifact artifact) throws IOException, InterruptedException {
+                                      String jarUrl,
+                                      Option<MavenSettingsCredentials.Credentials> credentials,
+                                      Artifact artifact) throws IOException, InterruptedException {
         var jarRequest = buildRequest(jarUrl, credentials);
         var jarResponse = client.send(jarRequest, HttpResponse.BodyHandlers.ofByteArray());
-
         if (jarResponse.statusCode() != 200) {
             throw new RemoteDownloadException(jarUrl, jarResponse.statusCode());
         }
@@ -112,15 +112,16 @@ public interface RemoteRepository extends Repository {
     }
 
     private static void verifySha1(HttpClient client,
-                                    String sha1Url,
-                                    Option<MavenSettingsCredentials.Credentials> credentials,
-                                    byte[] jarBytes,
-                                    Artifact artifact) throws Exception {
+                                   String sha1Url,
+                                   Option<MavenSettingsCredentials.Credentials> credentials,
+                                   byte[] jarBytes,
+                                   Artifact artifact) throws Exception {
         var sha1Request = buildRequest(sha1Url, credentials);
         var sha1Response = client.send(sha1Request, HttpResponse.BodyHandlers.ofString());
-
         if (sha1Response.statusCode() == 200) {
-            var expectedSha1 = sha1Response.body().trim().split("\\s")[0];
+            var expectedSha1 = sha1Response.body()
+                                           .trim()
+                                           .split("\\s") [0];
             var actualSha1 = computeSha1(jarBytes);
             if (!expectedSha1.equalsIgnoreCase(actualSha1)) {
                 throw new ChecksumMismatchException(artifact.asString(), expectedSha1, actualSha1);
@@ -128,7 +129,8 @@ public interface RemoteRepository extends Repository {
             log.debug("SHA-1 verified for {}: {}", artifact.asString(), actualSha1);
         } else {
             log.debug("No SHA-1 checksum available for {} ({}), skipping verification",
-                      artifact.asString(), sha1Response.statusCode());
+                      artifact.asString(),
+                      sha1Response.statusCode());
         }
     }
 
@@ -145,7 +147,7 @@ public interface RemoteRepository extends Repository {
     private static void cacheArtifact(Path targetPath, byte[] content) throws IOException {
         Files.createDirectories(targetPath.getParent());
         var tempFile = Files.createTempFile(targetPath.getParent(), ".download-", ".tmp");
-        try {
+        try{
             Files.write(tempFile, content);
             Files.move(tempFile, targetPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (Exception e) {
@@ -156,8 +158,11 @@ public interface RemoteRepository extends Repository {
 
     private static Path localPath(Artifact artifact, Path localRepo) {
         var version = artifact.version();
-        var artifactId = artifact.artifactId().id();
-        return localRepo.resolve(artifact.groupId().id().replace('.', '/'))
+        var artifactId = artifact.artifactId()
+                                 .id();
+        return localRepo.resolve(artifact.groupId()
+                                         .id()
+                                         .replace('.', '/'))
                         .resolve(artifactId)
                         .resolve(version.withQualifier())
                         .resolve(artifactId + "-" + version.withQualifier() + ".jar");
@@ -165,18 +170,19 @@ public interface RemoteRepository extends Repository {
 
     private static String remotePath(Artifact artifact) {
         var version = artifact.version();
-        var artifactId = artifact.artifactId().id();
-        return artifact.groupId().id().replace('.', '/')
-               + "/" + artifactId
-               + "/" + version.withQualifier()
-               + "/" + artifactId + "-" + version.withQualifier() + ".jar";
+        var artifactId = artifact.artifactId()
+                                 .id();
+        return artifact.groupId()
+                       .id()
+                       .replace('.', '/') + "/" + artifactId + "/" + version.withQualifier() + "/" + artifactId + "-" + version.withQualifier()
+               + ".jar";
     }
 
     private static Promise<Location> toLocation(Artifact artifact, Path path) {
-        return Promise.lift(
-            cause -> LOCATION_ERROR.apply(artifact.asString() + ": " + cause.getMessage()),
-            () -> path.toUri().toURL())
-            .flatMap(url -> location(artifact, url).async());
+        return Promise.lift(cause -> LOCATION_ERROR.apply(artifact.asString() + ": " + cause.getMessage()),
+                            () -> path.toUri()
+                                      .toURL())
+                      .flatMap(url -> location(artifact, url).async());
     }
 
     Fn1<Cause, String> LOCATION_ERROR = Causes.forOneValue("Failed to create location for artifact %s");
@@ -208,8 +214,13 @@ public interface RemoteRepository extends Repository {
             this.statusCode = statusCode;
         }
 
-        String url() { return url; }
-        int statusCode() { return statusCode; }
+        String url() {
+            return url;
+        }
+
+        int statusCode() {
+            return statusCode;
+        }
     }
 
     /// Internal exception for checksum mismatches.
@@ -225,8 +236,16 @@ public interface RemoteRepository extends Repository {
             this.actual = actual;
         }
 
-        String artifact() { return artifact; }
-        String expected() { return expected; }
-        String actual() { return actual; }
+        String artifact() {
+            return artifact;
+        }
+
+        String expected() {
+            return expected;
+        }
+
+        String actual() {
+            return actual;
+        }
     }
 }

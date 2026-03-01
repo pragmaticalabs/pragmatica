@@ -51,6 +51,9 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 19 | Endpoint registry | Complete | Artifact-to-node mapping for slice instance tracking and load balancing |
 | 20 | Service-to-service invocation | Battle-tested | SliceInvoker with HTTP routing, load balancer selection, timeout/retry, metrics |
 | 21 | Version routing | Battle-tested | Traffic splitting between old/new versions during rolling updates (configurable ratio) |
+| 67 | Passive load balancer | Complete | Cluster-aware LB node (NodeRole.PASSIVE) joins cluster network, receives route table via committed Decisions, forwards HTTP via binary protocol. Smart routing, automatic failover, live topology awareness. No HTTP re-serialization. Reusable `PassiveNode<K,V>` abstraction in `integrations/cluster` separates infrastructure from consumer-specific wiring |
+| 68 | NodeRole cluster membership | Complete | ACTIVE/PASSIVE roles in NodeInfo. Passive nodes excluded from quorum/leader election, receive only Decision messages via deliverToPassive() filtering |
+| 69 | HttpForwarder (reusable) | Complete | Extracted HTTP forwarding with round-robin selection, retry with backoff, node departure failover. Used by both AppHttpServer and passive LB |
 
 ## Messaging (Pub-Sub)
 

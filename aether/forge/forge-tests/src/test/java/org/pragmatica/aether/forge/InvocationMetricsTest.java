@@ -63,7 +63,7 @@ class InvocationMetricsTest extends ForgeTestBase {
                              .normalize()
                              .toString();
         var h2Config = EmberH2Config.emberH2Config(true, H2_PORT, "forge", false, Option.some(schemaPath));
-        h2Server = EmberH2Server.forgeH2Server(h2Config);
+        h2Server = EmberH2Server.emberH2Server(h2Config);
         h2Server.start()
                 .await()
                 .onFailure(cause -> {

@@ -77,8 +77,14 @@ public record EmberConfig(int nodes,
                                                   int dashboardPort,
                                                   int appHttpPort,
                                                   EmberH2Config h2Config) {
-        return emberConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config, ObservabilityConfig.DEFAULT,
-                           DEFAULT_LB_ENABLED, DEFAULT_LB_PORT);
+        return emberConfig(nodes,
+                           managementPort,
+                           dashboardPort,
+                           appHttpPort,
+                           h2Config,
+                           ObservabilityConfig.DEFAULT,
+                           DEFAULT_LB_ENABLED,
+                           DEFAULT_LB_PORT);
     }
 
     /// Create configuration with specified values and validation.
@@ -88,8 +94,14 @@ public record EmberConfig(int nodes,
                                                   int appHttpPort,
                                                   EmberH2Config h2Config,
                                                   ObservabilityConfig observability) {
-        return emberConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config, observability,
-                           DEFAULT_LB_ENABLED, DEFAULT_LB_PORT);
+        return emberConfig(nodes,
+                           managementPort,
+                           dashboardPort,
+                           appHttpPort,
+                           h2Config,
+                           observability,
+                           DEFAULT_LB_ENABLED,
+                           DEFAULT_LB_PORT);
     }
 
     /// Create configuration with all values and validation.
@@ -129,8 +141,14 @@ public record EmberConfig(int nodes,
             return EmberConfigError.invalidValue("lb_port", lbPort, "must be valid port")
                                    .result();
         }
-        return Result.success(new EmberConfig(nodes, managementPort, dashboardPort, appHttpPort,
-                                              h2Config, observability, lbEnabled, lbPort));
+        return Result.success(new EmberConfig(nodes,
+                                              managementPort,
+                                              dashboardPort,
+                                              appHttpPort,
+                                              h2Config,
+                                              observability,
+                                              lbEnabled,
+                                              lbPort));
     }
 
     /// Load configuration from file path.
@@ -171,8 +189,7 @@ public record EmberConfig(int nodes,
                                .or(DEFAULT_LB_ENABLED);
         int lbPort = doc.getInt("lb", "port")
                         .or(DEFAULT_LB_PORT);
-        return emberConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config, observability,
-                           lbEnabled, lbPort);
+        return emberConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config, observability, lbEnabled, lbPort);
     }
 
     private static ObservabilityConfig parseObservabilityConfig(org.pragmatica.config.toml.TomlDocument doc) {

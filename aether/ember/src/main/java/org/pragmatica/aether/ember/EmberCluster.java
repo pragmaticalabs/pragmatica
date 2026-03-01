@@ -293,7 +293,7 @@ public final class EmberCluster {
             var slot = availableSlots.poll();
             var nodeId = nodeId(nodeIdPrefix + "-" + i).unwrap();
             var port = basePort + slot;
-            var info = new NodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
+            var info = NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
             initialNodes.add(info);
             nodeInfos.put(nodeId.id(), info);
             slotsByNodeId.put(nodeId.id(), slot);
@@ -426,7 +426,7 @@ public final class EmberCluster {
         var port = basePort + slot;
         var mgmtPort = baseMgmtPort + slot;
         var appHttpPort = baseAppHttpPort + slot;
-        var info = new NodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
+        var info = NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
         log.info("Adding new node {} on port {}", nodeId.id(), port);
         nodeInfos.put(nodeId.id(), info);
         slotsByNodeId.put(nodeId.id(), slot);
@@ -557,6 +557,11 @@ public final class EmberCluster {
     /// Get the app HTTP port of the first node (for load generation).
     public int getAppHttpPort() {
         return baseAppHttpPort;
+    }
+
+    /// Get all node infos for the current cluster nodes.
+    public List<NodeInfo> getNodeInfos() {
+        return List.copyOf(nodeInfos.values());
     }
 
     /// Get the app HTTP ports of all currently active and route-ready nodes.

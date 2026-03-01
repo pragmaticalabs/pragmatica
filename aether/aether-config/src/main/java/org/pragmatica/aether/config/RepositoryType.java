@@ -58,22 +58,21 @@ public sealed interface RepositoryType {
             case "local" -> success(new Local());
             case "builtin" -> success(new Builtin());
             default -> {
-                if (name.toLowerCase().startsWith("remote:")) {
+                if (name.toLowerCase()
+                        .startsWith("remote:")) {
                     yield parseRemote(name.substring(7));
                 }
-                yield RepositoryTypeError.InvalidRepositoryType
-                    .invalidRepositoryType("unknown repository type: " + name
-                                           + ". Valid types: local, builtin, remote:<id-or-url>")
-                    .result();
+                yield RepositoryTypeError.InvalidRepositoryType.invalidRepositoryType("unknown repository type: " + name
+                                                                                      + ". Valid types: local, builtin, remote:<id-or-url>")
+                                         .result();
             }
         };
     }
 
     private static Result<RepositoryType> parseRemote(String value) {
         if (value.isEmpty()) {
-            return RepositoryTypeError.InvalidRepositoryType
-                .invalidRepositoryType("remote repository requires an identifier or URL after 'remote:'")
-                .result();
+            return RepositoryTypeError.InvalidRepositoryType.invalidRepositoryType("remote repository requires an identifier or URL after 'remote:'")
+                                      .result();
         }
         // Well-known: "central"
         if (value.equalsIgnoreCase("central")) {
@@ -81,7 +80,8 @@ public sealed interface RepositoryType {
         }
         // URL with explicit id: "myid:https://..."
         var colonIdx = value.indexOf(':');
-        if (colonIdx > 0 && value.substring(colonIdx + 1).startsWith("http")) {
+        if (colonIdx > 0 && value.substring(colonIdx + 1)
+                                 .startsWith("http")) {
             return success(new Remote(value.substring(0, colonIdx), value.substring(colonIdx + 1)));
         }
         // Plain URL: "https://..."
@@ -89,16 +89,16 @@ public sealed interface RepositoryType {
             var id = deriveIdFromUrl(value);
             return success(new Remote(id, value));
         }
-        return RepositoryTypeError.InvalidRepositoryType
-            .invalidRepositoryType("invalid remote repository format: " + value
-                                   + ". Use 'remote:central', 'remote:https://...', or 'remote:id:https://...'")
-            .result();
+        return RepositoryTypeError.InvalidRepositoryType.invalidRepositoryType("invalid remote repository format: " + value
+                                                                               + ". Use 'remote:central', 'remote:https://...', or 'remote:id:https://...'")
+                                  .result();
     }
 
     private static String deriveIdFromUrl(String url) {
-        try {
+        try{
             var uri = java.net.URI.create(url);
-            return uri.getHost().replace('.', '-');
+            return uri.getHost()
+                      .replace('.', '-');
         } catch (Exception e) {
             return "remote";
         }

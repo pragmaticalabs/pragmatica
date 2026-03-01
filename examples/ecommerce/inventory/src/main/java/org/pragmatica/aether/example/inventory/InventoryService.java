@@ -4,16 +4,18 @@ import org.pragmatica.aether.example.shared.LineItem;
 import org.pragmatica.aether.example.shared.OrderId;
 import org.pragmatica.aether.example.shared.ProductId;
 import org.pragmatica.aether.example.shared.Quantity;
+import org.pragmatica.aether.resource.db.Sql;
+import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.IdGenerator;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /// Inventory management slice.
@@ -106,6 +108,9 @@ public interface InventoryService {
         }
     }
 
+    // === Internal Types ===
+    record ProductStock(ProductId productId, Quantity available) {}
+
     // === Operations ===
     Promise<StockAvailability> checkStock(CheckStockRequest request);
 
@@ -113,91 +118,161 @@ public interface InventoryService {
 
     Promise<Unit> releaseStock(ReleaseStockRequest request);
 
+    // === SQL Constants ===
+    String SELECT_STOCK = "SELECT product_id, stock FROM products WHERE product_id = ?";
+    String UPDATE_STOCK = "UPDATE products SET stock = stock - ? WHERE product_id = ? AND stock >= ?";
+    String RESTORE_STOCK = "UPDATE products SET stock = stock + ? WHERE product_id = ?";
+    String INSERT_RESERVATION = "INSERT INTO stock_reservations (reservation_id, order_id, expires_at) VALUES (?, ?, ?)";
+    String INSERT_RESERVATION_ITEM = "INSERT INTO reservation_items (reservation_id, product_id, quantity) VALUES (?, ?, ?)";
+    String SELECT_RESERVATION_ITEMS = "SELECT product_id, quantity FROM reservation_items WHERE reservation_id = ?";
+    String DELETE_RESERVATION_ITEMS = "DELETE FROM reservation_items WHERE reservation_id = ?";
+    String DELETE_RESERVATION = "DELETE FROM stock_reservations WHERE reservation_id = ?";
+
     // === Factory ===
-    static InventoryService inventoryService() {
-        record inventoryService(Map<ProductId, Quantity> stock,
-                                Map<String, ReserveStockRequest> reservations) implements InventoryService {
+    static InventoryService inventoryService(@Sql SqlConnector db) {
+        record inventoryService(SqlConnector db) implements InventoryService {
             @Override
             public Promise<StockAvailability> checkStock(CheckStockRequest request) {
-                return Promise.success(calculateAvailability(request.items()));
+                return fetchStockLevels(request.items()).map(stockMap -> buildAvailability(request.items(), stockMap));
             }
 
             @Override
             public Promise<StockReservation> reserveStock(ReserveStockRequest request) {
-                var availability = calculateAvailability(request.items());
-                if (availability.hasUnavailableItems()) {
-                    return InventoryError.insufficientStock(availability.unavailableItems())
-                                         .promise();
-                }
-                var reservation = StockReservation.stockReservation(request.orderId());
-                reservations.put(reservation.reservationId(), request);
-                request.items()
-                       .forEach(this::decrementStock);
-                return Promise.success(reservation);
+                return checkStock(CheckStockRequest.checkStockRequest(request.items()))
+                .flatMap(availability -> availability.hasUnavailableItems()
+                                         ? InventoryError.insufficientStock(availability.unavailableItems())
+                                                         .promise()
+                                         : performReservation(request));
             }
 
             @Override
             public Promise<Unit> releaseStock(ReleaseStockRequest request) {
-                var reserved = reservations.remove(request.reservationId());
-                if (reserved != null) {
-                    reserved.items()
-                            .forEach(this::incrementStock);
-                }
-                return Promise.success(Unit.unit());
+                return db.transactional(conn -> restoreStockFromReservation(conn, request.reservationId()));
             }
 
-            private StockAvailability calculateAvailability(List<LineItem> items) {
-                var available = items.stream()
-                                     .collect(Collectors.toMap(LineItem::productId,
-                                                               item -> stock.getOrDefault(item.productId(),
-                                                                                          Quantity.ZERO)));
+            private Promise<Map<ProductId, Quantity>> fetchStockLevels(List<LineItem> items) {
+                var promises = items.stream()
+                                    .map(item -> fetchSingleStock(item.productId()))
+                                    .toList();
+                return Promise.allOf(promises)
+                              .flatMap(results -> Result.allOf(results)
+                                                        .async())
+                              .map(inventoryService::toStockMap);
+            }
+
+            private Promise<ProductStock> fetchSingleStock(ProductId productId) {
+                return db.queryOptional(SELECT_STOCK,
+                                        row -> row.getInt("stock")
+                                                  .flatMap(Quantity::quantity)
+                                                  .map(qty -> new ProductStock(productId, qty)),
+                                        productId.value())
+                         .map(opt -> opt.or(new ProductStock(productId, Quantity.ZERO)));
+            }
+
+            private static Map<ProductId, Quantity> toStockMap(List<ProductStock> stocks) {
+                return stocks.stream()
+                             .collect(Collectors.toMap(ProductStock::productId, ProductStock::available));
+            }
+
+            private static StockAvailability buildAvailability(List<LineItem> items,
+                                                               Map<ProductId, Quantity> stockMap) {
                 var unavailable = items.stream()
-                                       .filter(item -> available.get(item.productId())
-                                                                .value() < item.quantity()
-                                                                               .value())
+                                       .filter(item -> stockMap.getOrDefault(item.productId(),
+                                                                             Quantity.ZERO)
+                                                               .value() < item.quantity()
+                                                                              .value())
                                        .map(LineItem::productId)
                                        .toList();
                 return unavailable.isEmpty()
-                       ? StockAvailability.fullyAvailable(available)
-                       : StockAvailability.partiallyAvailable(available, unavailable);
+                       ? StockAvailability.fullyAvailable(stockMap)
+                       : StockAvailability.partiallyAvailable(stockMap, unavailable);
             }
 
-            private void decrementStock(LineItem item) {
-                stock.computeIfPresent(item.productId(),
-                                       (_, current) -> current.subtract(item.quantity())
-                                                              .or(Quantity.ZERO));
+            private Promise<StockReservation> performReservation(ReserveStockRequest request) {
+                var reservation = StockReservation.stockReservation(request.orderId());
+                return db.transactional(conn -> reserveInTransaction(conn, reservation, request.items()));
             }
 
-            private void incrementStock(LineItem item) {
-                stock.compute(item.productId(),
-                              (_, current) -> current == null
-                                              ? item.quantity()
-                                              : current.add(item.quantity())
-                                                       .or(current));
+            private Promise<StockReservation> reserveInTransaction(SqlConnector conn,
+                                                                   StockReservation reservation,
+                                                                   List<LineItem> items) {
+                return conn.update(INSERT_RESERVATION,
+                                   reservation.reservationId(),
+                                   reservation.orderId()
+                                              .value(),
+                                   reservation.expiresAt())
+                           .flatMap(_ -> decrementAllStock(conn, items))
+                           .flatMap(_ -> insertAllReservationItems(conn,
+                                                                   reservation.reservationId(),
+                                                                   items))
+                           .map(_ -> reservation);
+            }
+
+            private Promise<Integer> decrementAllStock(SqlConnector conn, List<LineItem> items) {
+                var updates = items.stream()
+                                   .map(item -> conn.update(UPDATE_STOCK,
+                                                            item.quantity()
+                                                                .value(),
+                                                            item.productId()
+                                                                .value(),
+                                                            item.quantity()
+                                                                .value()))
+                                   .toList();
+                return Promise.allOf(updates)
+                              .flatMap(results -> Result.allOf(results)
+                                                        .async())
+                              .map(counts -> counts.stream()
+                                                   .mapToInt(Integer::intValue)
+                                                   .sum());
+            }
+
+            private Promise<Integer> insertAllReservationItems(SqlConnector conn,
+                                                               String reservationId,
+                                                               List<LineItem> items) {
+                var inserts = items.stream()
+                                   .map(item -> conn.update(INSERT_RESERVATION_ITEM,
+                                                            reservationId,
+                                                            item.productId()
+                                                                .value(),
+                                                            item.quantity()
+                                                                .value()))
+                                   .toList();
+                return Promise.allOf(inserts)
+                              .flatMap(results -> Result.allOf(results)
+                                                        .async())
+                              .map(counts -> counts.stream()
+                                                   .mapToInt(Integer::intValue)
+                                                   .sum());
+            }
+
+            private Promise<Unit> restoreStockFromReservation(SqlConnector conn, String reservationId) {
+                return conn.queryList(SELECT_RESERVATION_ITEMS,
+                                      row -> Result.all(row.getString("product_id"),
+                                                        row.getInt("quantity"))
+                                                   .map(ReservationItem::new),
+                                      reservationId)
+                           .flatMap(items -> restoreAllStock(conn, items))
+                           .flatMap(_ -> conn.update(DELETE_RESERVATION_ITEMS, reservationId))
+                           .flatMap(_ -> conn.update(DELETE_RESERVATION, reservationId))
+                           .mapToUnit();
+            }
+
+            private Promise<Integer> restoreAllStock(SqlConnector conn, List<ReservationItem> items) {
+                var updates = items.stream()
+                                   .map(item -> conn.update(RESTORE_STOCK,
+                                                            item.quantity(),
+                                                            item.productId()))
+                                   .toList();
+                return Promise.allOf(updates)
+                              .flatMap(results -> Result.allOf(results)
+                                                        .async())
+                              .map(counts -> counts.stream()
+                                                   .mapToInt(Integer::intValue)
+                                                   .sum());
             }
         }
-        var stock = new ConcurrentHashMap<ProductId, Quantity>();
-        var reservations = new ConcurrentHashMap<String, ReserveStockRequest>();
-        initializeDemoStock(stock);
-        return new inventoryService(stock, reservations);
+        return new inventoryService(db);
     }
 
-    private static void initializeDemoStock(Map<ProductId, Quantity> stock) {
-        addStock(stock, "LAPTOP-PRO", 50);
-        addStock(stock, "MOUSE-WIRELESS", 200);
-        addStock(stock, "KEYBOARD-MECH", 100);
-        addStock(stock, "MONITOR-4K", 30);
-        addStock(stock, "HEADSET-BT", 75);
-        addStock(stock, "WEBCAM-HD", 60);
-        addStock(stock, "USB-HUB", 150);
-        addStock(stock, "CHARGER-65W", 120);
-    }
-
-    private static void addStock(Map<ProductId, Quantity> stock, String productId, int quantity) {
-        ProductId.productId(productId)
-                 .flatMap(id -> Quantity.quantity(quantity)
-                                        .map(qty -> Map.entry(id, qty)))
-                 .onSuccess(entry -> stock.put(entry.getKey(),
-                                               entry.getValue()));
-    }
+    record ReservationItem(String productId, int quantity) {}
 }
