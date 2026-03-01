@@ -1,8 +1,8 @@
-package org.pragmatica.aether.forge;
+package org.pragmatica.aether.ember;
 
 import org.pragmatica.lang.Option;
 
-/// Configuration for embedded H2 database server in Forge.
+/// Configuration for embedded H2 database server in Ember.
 ///
 /// Example TOML configuration:
 /// ```
@@ -13,7 +13,7 @@ import org.pragmatica.lang.Option;
 /// persistent = false
 /// init_script = "init.sql"
 /// ```
-public record ForgeH2Config(boolean enabled,
+public record EmberH2Config(boolean enabled,
                             int port,
                             String name,
                             boolean persistent,
@@ -23,26 +23,26 @@ public record ForgeH2Config(boolean enabled,
     public static final boolean DEFAULT_PERSISTENT = false;
 
     /// Create H2 configuration with all parameters.
-    public static ForgeH2Config forgeH2Config(boolean enabled,
+    public static EmberH2Config emberH2Config(boolean enabled,
                                               int port,
                                               String name,
                                               boolean persistent,
                                               Option<String> initScript) {
-        return new ForgeH2Config(enabled, port, name, persistent, initScript);
+        return new EmberH2Config(enabled, port, name, persistent, initScript);
     }
 
     /// Create disabled H2 configuration.
-    public static ForgeH2Config disabled() {
-        return new ForgeH2Config(false, DEFAULT_PORT, DEFAULT_NAME, DEFAULT_PERSISTENT, Option.none());
+    public static EmberH2Config disabled() {
+        return new EmberH2Config(false, DEFAULT_PORT, DEFAULT_NAME, DEFAULT_PERSISTENT, Option.none());
     }
 
     /// Create enabled H2 configuration with defaults.
-    public static ForgeH2Config enabledWithDefaults() {
-        return new ForgeH2Config(true, DEFAULT_PORT, DEFAULT_NAME, DEFAULT_PERSISTENT, Option.none());
+    public static EmberH2Config enabledWithDefaults() {
+        return new EmberH2Config(true, DEFAULT_PORT, DEFAULT_NAME, DEFAULT_PERSISTENT, Option.none());
     }
 
     /// Create enabled H2 configuration on a specific port.
-    public static ForgeH2Config enabledOnPort(int port) {
-        return new ForgeH2Config(true, port, DEFAULT_NAME, DEFAULT_PERSISTENT, Option.none());
+    public static EmberH2Config enabledOnPort(int port) {
+        return new EmberH2Config(true, port, DEFAULT_NAME, DEFAULT_PERSISTENT, Option.none());
     }
 }

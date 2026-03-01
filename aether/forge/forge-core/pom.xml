@@ -26,7 +26,11 @@
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>forge-cluster</artifactId>
+            <artifactId>ember</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>lb</artifactId>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>

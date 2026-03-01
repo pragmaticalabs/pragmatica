@@ -1,6 +1,6 @@
 package org.pragmatica.aether.forge.api;
 
-import org.pragmatica.aether.forge.ForgeCluster;
+import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.forge.ForgeMetrics;
 import org.pragmatica.aether.forge.ForgeMetrics.MetricsSnapshot;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
@@ -26,7 +26,7 @@ public final class StatusRoutes {
     /// @param startTime the server start time in milliseconds
     /// @param loadRunner the ConfigurableLoadRunner for load testing
     /// @return RouteSource containing all status-related routes
-    public static RouteSource statusRoutes(ForgeCluster cluster,
+    public static RouteSource statusRoutes(EmberCluster cluster,
                                            ForgeMetrics metrics,
                                            Deque<ForgeEvent> events,
                                            long startTime,
@@ -38,7 +38,7 @@ public final class StatusRoutes {
                               forgeStatusRoute());
     }
 
-    private static Route<FullStatusResponse> statusRoute(ForgeCluster cluster,
+    private static Route<FullStatusResponse> statusRoute(EmberCluster cluster,
                                                          ForgeMetrics metrics,
                                                          long startTime,
                                                          ConfigurableLoadRunner loadRunner) {
@@ -46,7 +46,7 @@ public final class StatusRoutes {
                     .toJson(() -> buildFullStatus(cluster, metrics, startTime, loadRunner));
     }
 
-    private static Route<List<NodeMetricsResponse>> nodeMetricsRoute(ForgeCluster cluster) {
+    private static Route<List<NodeMetricsResponse>> nodeMetricsRoute(EmberCluster cluster) {
         return Route.<List<NodeMetricsResponse>> get("/api/node-metrics")
                     .toJson(() -> buildNodeMetrics(cluster));
     }
@@ -67,7 +67,7 @@ public final class StatusRoutes {
     }
 
     // ==================== Handler Methods ====================
-    public static FullStatusResponse buildFullStatus(ForgeCluster cluster,
+    public static FullStatusResponse buildFullStatus(EmberCluster cluster,
                                                      ForgeMetrics metrics,
                                                      long startTime,
                                                      ConfigurableLoadRunner loadRunner) {
@@ -98,7 +98,7 @@ public final class StatusRoutes {
                                       invocations);
     }
 
-    private static List<NodeInfo> buildNodeInfos(ForgeCluster.ClusterStatus clusterStatus) {
+    private static List<NodeInfo> buildNodeInfos(EmberCluster.ClusterStatus clusterStatus) {
         return clusterStatus.nodes()
                             .stream()
                             .map(n -> new NodeInfo(n.id(),
@@ -116,7 +116,7 @@ public final class StatusRoutes {
                                snapshot.totalFailures());
     }
 
-    private static AetherAggregates buildAetherMetrics(ForgeCluster cluster) {
+    private static AetherAggregates buildAetherMetrics(EmberCluster cluster) {
         var agg = cluster.aetherAggregates();
         return new AetherAggregates(agg.rps(),
                                     agg.successRate(),
@@ -136,7 +136,7 @@ public final class StatusRoutes {
                                       .size());
     }
 
-    private static int countSlices(ForgeCluster cluster) {
+    private static int countSlices(EmberCluster cluster) {
         return cluster.allNodes()
                       .stream()
                       .mapToInt(node -> node.sliceStore()
@@ -149,7 +149,7 @@ public final class StatusRoutes {
         return (System.currentTimeMillis() - startTime) / 1000;
     }
 
-    private static List<NodeMetricsResponse> buildNodeMetrics(ForgeCluster cluster) {
+    private static List<NodeMetricsResponse> buildNodeMetrics(EmberCluster cluster) {
         return cluster.nodeMetrics()
                       .stream()
                       .map(m -> new NodeMetricsResponse(m.nodeId(),
@@ -160,7 +160,7 @@ public final class StatusRoutes {
                       .toList();
     }
 
-    private static List<SliceStatusInfo> buildSliceStatusInfos(ForgeCluster cluster) {
+    private static List<SliceStatusInfo> buildSliceStatusInfos(EmberCluster cluster) {
         return cluster.slicesStatus()
                       .stream()
                       .map(s -> new SliceStatusInfo(s.artifact(),
@@ -190,14 +190,14 @@ public final class StatusRoutes {
                          .toList();
     }
 
-    private static List<InvocationInfo> buildInvocations(ForgeCluster cluster) {
+    private static List<InvocationInfo> buildInvocations(EmberCluster cluster) {
         return cluster.invocationDetails()
                       .stream()
                       .map(StatusRoutes::toInvocationInfo)
                       .toList();
     }
 
-    private static InvocationInfo toInvocationInfo(ForgeCluster.InvocationDetail detail) {
+    private static InvocationInfo toInvocationInfo(EmberCluster.InvocationDetail detail) {
         var errorRate = detail.count() > 0
                         ? 1.0 - ((double) detail.successCount() / detail.count())
                         : 0.0;

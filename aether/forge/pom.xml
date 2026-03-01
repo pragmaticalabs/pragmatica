@@ -18,7 +18,6 @@
     <modules>
         <module>forge-simulator</module>
         <module>forge-load</module>
-        <module>forge-cluster</module>
         <module>forge-api</module>
         <module>forge-core</module>
         <!-- forge-tests requires examples to be installed first, enabled via -Pwith-e2e profile -->

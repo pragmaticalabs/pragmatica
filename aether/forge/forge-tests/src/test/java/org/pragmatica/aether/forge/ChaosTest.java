@@ -23,7 +23,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
+import org.pragmatica.aether.ember.EmberCluster;
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
 /// Chaos testing for cluster resilience.
 ///
@@ -45,7 +46,7 @@ class ChaosTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
-    private ForgeCluster cluster;
+    private EmberCluster cluster;
     private HttpClient httpClient;
     private Random random;
     private Set<String> killedNodeIds;
@@ -53,7 +54,7 @@ class ChaosTest {
     @BeforeEach
     void setUp(TestInfo testInfo) {
         int portOffset = getPortOffset(testInfo);
-        cluster = forgeCluster(5, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "ch");
+        cluster = emberCluster(5, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "ch");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();
@@ -338,7 +339,7 @@ class ChaosTest {
 
     private List<String> getRunningNodeIds() {
         return cluster.status().nodes().stream()
-                      .map(ForgeCluster.NodeStatus::id)
+                      .map(EmberCluster.NodeStatus::id)
                       .toList();
     }
 

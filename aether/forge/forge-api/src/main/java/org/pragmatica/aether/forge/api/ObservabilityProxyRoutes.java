@@ -1,6 +1,6 @@
 package org.pragmatica.aether.forge.api;
 
-import org.pragmatica.aether.forge.ForgeCluster;
+import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -32,7 +32,7 @@ public sealed interface ObservabilityProxyRoutes {
 
     record DepthDeleteResponse(boolean success, String body) {}
 
-    static RouteSource observabilityProxyRoutes(ForgeCluster cluster) {
+    static RouteSource observabilityProxyRoutes(EmberCluster cluster) {
         var http = JdkHttpOperations.jdkHttpOperations();
         return RouteSource.routeSource(in("/api/traces").serve(listTracesRoute(cluster, http),
                                                                traceStatsRoute(cluster, http),
@@ -43,7 +43,7 @@ public sealed interface ObservabilityProxyRoutes {
     }
 
     // --- Trace routes ---
-    private static Route<TraceListResponse> listTracesRoute(ForgeCluster cluster,
+    private static Route<TraceListResponse> listTracesRoute(EmberCluster cluster,
                                                             JdkHttpOperations http) {
         return Route.<TraceListResponse> get("")
                     .to(ctx -> proxyGetWithQuery(cluster,
@@ -53,14 +53,14 @@ public sealed interface ObservabilityProxyRoutes {
                     .asJson();
     }
 
-    private static Route<TraceStatsResponse> traceStatsRoute(ForgeCluster cluster,
+    private static Route<TraceStatsResponse> traceStatsRoute(EmberCluster cluster,
                                                              JdkHttpOperations http) {
         return Route.<TraceStatsResponse> get("/stats")
                     .to(_ -> proxyGetStats(cluster, http))
                     .asJson();
     }
 
-    private static Route<TraceListResponse> traceByRequestIdRoute(ForgeCluster cluster,
+    private static Route<TraceListResponse> traceByRequestIdRoute(EmberCluster cluster,
                                                                   JdkHttpOperations http) {
         return Route.<TraceListResponse> get("")
                     .withPath(aString())
@@ -69,14 +69,14 @@ public sealed interface ObservabilityProxyRoutes {
     }
 
     // --- Depth routes ---
-    private static Route<DepthListResponse> listDepthRoute(ForgeCluster cluster,
+    private static Route<DepthListResponse> listDepthRoute(EmberCluster cluster,
                                                            JdkHttpOperations http) {
         return Route.<DepthListResponse> get("/depth")
                     .to(_ -> proxyGetDepth(cluster, http))
                     .asJson();
     }
 
-    private static Route<DepthSetResponse> setDepthRoute(ForgeCluster cluster,
+    private static Route<DepthSetResponse> setDepthRoute(EmberCluster cluster,
                                                          JdkHttpOperations http) {
         return Route.<DepthSetResponse> post("/depth")
                     .to(ctx -> proxyPostDepth(cluster,
@@ -85,7 +85,7 @@ public sealed interface ObservabilityProxyRoutes {
                     .asJson();
     }
 
-    private static Route<DepthDeleteResponse> deleteDepthRoute(ForgeCluster cluster,
+    private static Route<DepthDeleteResponse> deleteDepthRoute(EmberCluster cluster,
                                                                JdkHttpOperations http) {
         return Route.<DepthDeleteResponse> delete("/depth")
                     .withPath(aString(),
@@ -95,7 +95,7 @@ public sealed interface ObservabilityProxyRoutes {
     }
 
     // --- Proxy helpers ---
-    private static Promise<TraceListResponse> proxyGetWithQuery(ForgeCluster cluster,
+    private static Promise<TraceListResponse> proxyGetWithQuery(EmberCluster cluster,
                                                                 JdkHttpOperations http,
                                                                 String path,
                                                                 Map<String, List<String>> queryParams) {
@@ -106,7 +106,7 @@ public sealed interface ObservabilityProxyRoutes {
                       .map(TraceListResponse::new);
     }
 
-    private static Promise<TraceStatsResponse> proxyGetStats(ForgeCluster cluster,
+    private static Promise<TraceStatsResponse> proxyGetStats(EmberCluster cluster,
                                                              JdkHttpOperations http) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
@@ -114,7 +114,7 @@ public sealed interface ObservabilityProxyRoutes {
                       .map(TraceStatsResponse::new);
     }
 
-    private static Promise<TraceListResponse> proxyGetTraceById(ForgeCluster cluster,
+    private static Promise<TraceListResponse> proxyGetTraceById(EmberCluster cluster,
                                                                 JdkHttpOperations http,
                                                                 String requestId) {
         return cluster.getLeaderManagementPort()
@@ -123,7 +123,7 @@ public sealed interface ObservabilityProxyRoutes {
                       .map(TraceListResponse::new);
     }
 
-    private static Promise<DepthListResponse> proxyGetDepth(ForgeCluster cluster,
+    private static Promise<DepthListResponse> proxyGetDepth(EmberCluster cluster,
                                                             JdkHttpOperations http) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
@@ -131,7 +131,7 @@ public sealed interface ObservabilityProxyRoutes {
                       .map(DepthListResponse::new);
     }
 
-    private static Promise<DepthSetResponse> proxyPostDepth(ForgeCluster cluster,
+    private static Promise<DepthSetResponse> proxyPostDepth(EmberCluster cluster,
                                                             JdkHttpOperations http,
                                                             String body) {
         return cluster.getLeaderManagementPort()
@@ -140,7 +140,7 @@ public sealed interface ObservabilityProxyRoutes {
                       .map(resp -> new DepthSetResponse(true, resp));
     }
 
-    private static Promise<DepthDeleteResponse> proxyDeleteDepth(ForgeCluster cluster,
+    private static Promise<DepthDeleteResponse> proxyDeleteDepth(EmberCluster cluster,
                                                                  JdkHttpOperations http,
                                                                  String key) {
         return cluster.getLeaderManagementPort()

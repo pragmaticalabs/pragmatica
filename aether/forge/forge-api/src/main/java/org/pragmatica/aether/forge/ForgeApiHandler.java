@@ -1,6 +1,7 @@
 package org.pragmatica.aether.forge;
 
-import org.pragmatica.aether.forge.ForgeCluster.EventLogEntry;
+import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.ember.EmberCluster.EventLogEntry;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.ForgeEvent;
 import org.pragmatica.aether.forge.api.ForgeRouter;
 import org.pragmatica.aether.forge.api.SimulatorRoutes.InventoryState;
@@ -54,7 +55,7 @@ public final class ForgeApiHandler {
     private final ChaosController chaosController;
     private final InventoryState inventoryState;
 
-    private ForgeApiHandler(ForgeCluster cluster,
+    private ForgeApiHandler(EmberCluster cluster,
                             ForgeMetrics metrics,
                             ConfigurableLoadRunner configurableLoadRunner,
                             ChaosController chaosController,
@@ -78,7 +79,7 @@ public final class ForgeApiHandler {
                                               this::logEvent);
     }
 
-    public static ForgeApiHandler forgeApiHandler(ForgeCluster cluster,
+    public static ForgeApiHandler forgeApiHandler(EmberCluster cluster,
                                                   ForgeMetrics metrics,
                                                   ConfigurableLoadRunner configurableLoadRunner) {
         var chaosController = ChaosController.chaosController(event -> executeChaosEvent(cluster, event));
@@ -94,7 +95,7 @@ public final class ForgeApiHandler {
                                    startTime);
     }
 
-    private static void executeChaosEvent(ForgeCluster cluster, ChaosEvent event) {
+    private static void executeChaosEvent(EmberCluster cluster, ChaosEvent event) {
         switch (event) {
             case ChaosEvent.NodeKill kill -> cluster.killNode(kill.nodeId(), false);
             case ChaosEvent.LatencySpike _ -> {}

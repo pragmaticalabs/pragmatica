@@ -1,8 +1,8 @@
 package org.pragmatica.aether.forge.api;
 
-import org.pragmatica.aether.forge.ForgeCluster;
+import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.ember.EmberCluster.EventLogEntry;
 import org.pragmatica.aether.forge.ForgeMetrics;
-import org.pragmatica.aether.forge.ForgeCluster.EventLogEntry;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.ForgeEvent;
 import org.pragmatica.aether.forge.api.SimulatorRoutes.InventoryState;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
@@ -20,7 +20,7 @@ public final class ForgeRouter {
 
     /// Create a RequestRouter combining all Forge API routes.
     ///
-    /// @param cluster         the ForgeCluster for node management
+    /// @param cluster         the EmberCluster for node management
     /// @param loadRunner      the ConfigurableLoadRunner for load testing
     /// @param chaosController the ChaosController for chaos injection
     /// @param configSupplier  supplier for SimulatorConfig
@@ -30,7 +30,7 @@ public final class ForgeRouter {
     /// @param startTime       server start time in milliseconds
     /// @param eventLogger     callback to log events for the dashboard
     /// @return RequestRouter containing all Forge API routes
-    public static RequestRouter forgeRouter(ForgeCluster cluster,
+    public static RequestRouter forgeRouter(EmberCluster cluster,
                                             ConfigurableLoadRunner loadRunner,
                                             ChaosController chaosController,
                                             Supplier<SimulatorConfig> configSupplier,

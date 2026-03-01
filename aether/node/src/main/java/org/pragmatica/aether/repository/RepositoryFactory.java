@@ -4,6 +4,7 @@ import org.pragmatica.aether.config.RepositoryType;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.slice.repository.Repository;
+import org.pragmatica.aether.slice.repository.maven.RemoteRepository;
 
 import java.util.List;
 
@@ -37,8 +38,9 @@ public interface RepositoryFactory {
     /// @return RepositoryFactory instance
     static RepositoryFactory repositoryFactory(ArtifactStore artifactStore) {
         return type -> switch (type) {
-            case LOCAL -> localRepository();
-            case BUILTIN -> BuiltinRepository.builtinRepository(artifactStore);
+            case RepositoryType.Local _ -> localRepository();
+            case RepositoryType.Builtin _ -> BuiltinRepository.builtinRepository(artifactStore);
+            case RepositoryType.Remote remote -> RemoteRepository.remoteRepository(remote.id(), remote.url());
         };
     }
 }

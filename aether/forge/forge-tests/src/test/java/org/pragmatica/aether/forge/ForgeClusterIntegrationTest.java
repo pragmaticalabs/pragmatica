@@ -15,15 +15,16 @@ import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
+import org.pragmatica.aether.ember.EmberCluster;
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
-/// Integration tests for ForgeCluster startup, blueprint deployment, and shutdown.
-class ForgeClusterIntegrationTest {
+/// Integration tests for EmberCluster startup, blueprint deployment, and shutdown.
+class EmberClusterIntegrationTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(180);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.19.0";
 
-    private ForgeCluster cluster;
+    private EmberCluster cluster;
     private HttpClient httpClient;
 
     private static final int BASE_PORT = 12500;
@@ -32,7 +33,7 @@ class ForgeClusterIntegrationTest {
     @BeforeEach
     void setUp(TestInfo testInfo) {
         int portOffset = getPortOffset(testInfo);
-        cluster = forgeCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "fci");
+        cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "fci");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();

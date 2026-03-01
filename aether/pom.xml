@@ -53,6 +53,8 @@
         <module>resource</module>
         <module>slice</module>
         <module>cli</module>
+        <module>lb</module>
+        <module>ember</module>
         <module>forge</module>
         <!-- e2e-tests requires examples to be installed first, enabled via -Pwith-e2e profile -->
         <module>http-handler-api</module>
@@ -321,7 +323,12 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>forge-cluster</artifactId>
+                <artifactId>lb</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>ember</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

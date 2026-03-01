@@ -17,7 +17,8 @@ import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
+import org.pragmatica.aether.ember.EmberCluster;
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
 /// Tests for metrics collection and distribution.
 ///
@@ -39,12 +40,12 @@ class MetricsTest {
     private static final Duration METRICS_INTERVAL = Duration.ofSeconds(2);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
-    private ForgeCluster cluster;
+    private EmberCluster cluster;
     private HttpClient httpClient;
 
     @BeforeAll
     void setUp() {
-        cluster = forgeCluster(3, BASE_PORT, BASE_MGMT_PORT, "mt");
+        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "mt");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();

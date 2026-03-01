@@ -22,7 +22,7 @@ import static org.pragmatica.lang.Result.success;
 /// @param repositories Ordered list of repository types to search for slices
 @SuppressWarnings({"JBCT-ZONE-02", "JBCT-ZONE-03"})
 public record SliceConfig(List<RepositoryType> repositories) {
-    private static final SliceConfig DEFAULT = sliceConfig(List.of(RepositoryType.LOCAL)).unwrap();
+    private static final SliceConfig DEFAULT = sliceConfig(List.of(new RepositoryType.Local())).unwrap();
 
     /// Factory method following JBCT naming convention.
     public static Result<SliceConfig> sliceConfig(List<RepositoryType> repositories) {

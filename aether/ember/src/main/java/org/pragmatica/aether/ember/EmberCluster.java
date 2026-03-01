@@ -1,4 +1,4 @@
-package org.pragmatica.aether.forge;
+package org.pragmatica.aether.ember;
 
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
@@ -54,11 +54,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
-/// Manages a cluster of AetherNodes for Forge.
+/// Manages a cluster of AetherNodes for Ember.
 /// Supports starting, stopping, adding, and killing nodes.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
-public final class ForgeCluster {
-    private static final Logger log = LoggerFactory.getLogger(ForgeCluster.class);
+public final class EmberCluster {
+    private static final Logger log = LoggerFactory.getLogger(EmberCluster.class);
 
     public static final int DEFAULT_BASE_PORT = 6000;
     public static final int DEFAULT_BASE_MGMT_PORT = 6100;
@@ -100,10 +100,10 @@ public final class ForgeCluster {
     private final ObservabilityConfig observability;
 
     // Environment integration for auto-healing (CDM provisions replacements via compute facet)
-    private final EnvironmentIntegration forgeEnvironment;
+    private final EnvironmentIntegration emberEnvironment;
 
-    /// ComputeProvider implementation that provisions nodes via ForgeCluster.addNode().
-    private final class ForgeComputeProvider implements ComputeProvider {
+    /// ComputeProvider implementation that provisions nodes via EmberCluster.addNode().
+    private final class EmberComputeProvider implements ComputeProvider {
         @Override
         public Promise<InstanceInfo> provision(InstanceType instanceType) {
             return addNode().map(nodeId -> toInstanceInfo(nodeId.id()));
@@ -139,7 +139,7 @@ public final class ForgeCluster {
         }
     }
 
-    private ForgeCluster(int initialClusterSize,
+    private EmberCluster(int initialClusterSize,
                          int basePort,
                          int baseMgmtPort,
                          int baseAppHttpPort,
@@ -155,15 +155,15 @@ public final class ForgeCluster {
         this.effectiveSize = new AtomicInteger(initialClusterSize);
         this.configProvider = configProvider;
         this.observability = observability;
-        this.forgeEnvironment = EnvironmentIntegration.withCompute(new ForgeComputeProvider());
+        this.emberEnvironment = EnvironmentIntegration.withCompute(new EmberComputeProvider());
     }
 
-    public static ForgeCluster forgeCluster() {
-        return forgeCluster(5);
+    public static EmberCluster emberCluster() {
+        return emberCluster(5);
     }
 
-    public static ForgeCluster forgeCluster(int initialSize) {
-        return new ForgeCluster(initialSize,
+    public static EmberCluster emberCluster(int initialSize) {
+        return new EmberCluster(initialSize,
                                 DEFAULT_BASE_PORT,
                                 DEFAULT_BASE_MGMT_PORT,
                                 DEFAULT_BASE_APP_HTTP_PORT,
@@ -172,14 +172,14 @@ public final class ForgeCluster {
                                 ObservabilityConfig.DEFAULT);
     }
 
-    /// Create a ForgeCluster with custom port ranges.
+    /// Create an EmberCluster with custom port ranges.
     /// Use this to avoid port conflicts when running multiple tests in parallel.
     ///
     /// @param initialSize  Number of nodes to start with
     /// @param basePort     Base port for cluster communication (each node uses basePort + nodeIndex)
     /// @param baseMgmtPort Base port for management HTTP API (each node uses baseMgmtPort + nodeIndex)
-    public static ForgeCluster forgeCluster(int initialSize, int basePort, int baseMgmtPort) {
-        return new ForgeCluster(initialSize,
+    public static EmberCluster emberCluster(int initialSize, int basePort, int baseMgmtPort) {
+        return new EmberCluster(initialSize,
                                 basePort,
                                 baseMgmtPort,
                                 DEFAULT_BASE_APP_HTTP_PORT,
@@ -188,15 +188,15 @@ public final class ForgeCluster {
                                 ObservabilityConfig.DEFAULT);
     }
 
-    /// Create a ForgeCluster with custom port ranges and node ID prefix.
+    /// Create an EmberCluster with custom port ranges and node ID prefix.
     /// Use this to avoid port conflicts when running multiple tests in parallel.
     ///
     /// @param initialSize   Number of nodes to start with
     /// @param basePort      Base port for cluster communication (each node uses basePort + nodeIndex)
     /// @param baseMgmtPort  Base port for management HTTP API (each node uses baseMgmtPort + nodeIndex)
     /// @param nodeIdPrefix  Prefix for node IDs (e.g., "cf" creates nodes "cf-1", "cf-2", etc.)
-    public static ForgeCluster forgeCluster(int initialSize, int basePort, int baseMgmtPort, String nodeIdPrefix) {
-        return new ForgeCluster(initialSize,
+    public static EmberCluster emberCluster(int initialSize, int basePort, int baseMgmtPort, String nodeIdPrefix) {
+        return new EmberCluster(initialSize,
                                 basePort,
                                 baseMgmtPort,
                                 DEFAULT_BASE_APP_HTTP_PORT,
@@ -205,19 +205,19 @@ public final class ForgeCluster {
                                 ObservabilityConfig.DEFAULT);
     }
 
-    /// Create a ForgeCluster with custom port ranges including app HTTP.
+    /// Create an EmberCluster with custom port ranges including app HTTP.
     ///
     /// @param initialSize     Number of nodes to start with
     /// @param basePort        Base port for cluster communication
     /// @param baseMgmtPort    Base port for management HTTP API
     /// @param baseAppHttpPort Base port for application HTTP API (slice endpoints)
     /// @param nodeIdPrefix    Prefix for node IDs
-    public static ForgeCluster forgeCluster(int initialSize,
+    public static EmberCluster emberCluster(int initialSize,
                                             int basePort,
                                             int baseMgmtPort,
                                             int baseAppHttpPort,
                                             String nodeIdPrefix) {
-        return forgeCluster(initialSize,
+        return emberCluster(initialSize,
                             basePort,
                             baseMgmtPort,
                             baseAppHttpPort,
@@ -226,7 +226,7 @@ public final class ForgeCluster {
                             ObservabilityConfig.DEFAULT);
     }
 
-    /// Create a ForgeCluster with ConfigurationProvider for node configuration.
+    /// Create an EmberCluster with ConfigurationProvider for node configuration.
     ///
     /// @param initialSize        Number of nodes to start with
     /// @param basePort           Base port for cluster communication
@@ -234,13 +234,13 @@ public final class ForgeCluster {
     /// @param baseAppHttpPort    Base port for application HTTP API (slice endpoints)
     /// @param nodeIdPrefix       Prefix for node IDs
     /// @param configProvider     Configuration provider for all nodes (shared)
-    public static ForgeCluster forgeCluster(int initialSize,
+    public static EmberCluster emberCluster(int initialSize,
                                             int basePort,
                                             int baseMgmtPort,
                                             int baseAppHttpPort,
                                             String nodeIdPrefix,
                                             Option<ConfigurationProvider> configProvider) {
-        return forgeCluster(initialSize,
+        return emberCluster(initialSize,
                             basePort,
                             baseMgmtPort,
                             baseAppHttpPort,
@@ -249,7 +249,7 @@ public final class ForgeCluster {
                             ObservabilityConfig.DEFAULT);
     }
 
-    /// Create a ForgeCluster with ConfigurationProvider and ObservabilityConfig.
+    /// Create an EmberCluster with ConfigurationProvider and ObservabilityConfig.
     ///
     /// @param initialSize        Number of nodes to start with
     /// @param basePort           Base port for cluster communication
@@ -258,14 +258,14 @@ public final class ForgeCluster {
     /// @param nodeIdPrefix       Prefix for node IDs
     /// @param configProvider     Configuration provider for all nodes (shared)
     /// @param observability      Observability configuration for all nodes
-    public static ForgeCluster forgeCluster(int initialSize,
+    public static EmberCluster emberCluster(int initialSize,
                                             int basePort,
                                             int baseMgmtPort,
                                             int baseAppHttpPort,
                                             String nodeIdPrefix,
                                             Option<ConfigurationProvider> configProvider,
                                             ObservabilityConfig observability) {
-        return new ForgeCluster(initialSize,
+        return new EmberCluster(initialSize,
                                 basePort,
                                 baseMgmtPort,
                                 baseAppHttpPort,
@@ -277,7 +277,7 @@ public final class ForgeCluster {
     /// Start the initial cluster with configured number of nodes.
     /// If any node fails to start, all successfully started nodes are stopped and the failure is returned.
     public Promise<Unit> start() {
-        log.info("Starting Forge cluster with {} nodes on ports {}-{}",
+        log.info("Starting Ember cluster with {} nodes on ports {}-{}",
                  initialClusterSize,
                  basePort,
                  basePort + initialClusterSize - 1);
@@ -351,7 +351,7 @@ public final class ForgeCluster {
             log.info("All nodes started, waiting for cluster stabilization...");
             return Promise.promise(timeSpan(2).seconds(),
                                    () -> Result.success(Unit.unit()))
-                          .onSuccess(_ -> log.info("Forge cluster started with {} nodes", initialClusterSize));
+                          .onSuccess(_ -> log.info("Ember cluster started with {} nodes", initialClusterSize));
         }
         // Log all failures with details
         for (var f : failed) {
@@ -390,7 +390,7 @@ public final class ForgeCluster {
 
     /// Stop all nodes gracefully.
     public Promise<Unit> stop() {
-        log.info("Stopping Forge cluster");
+        log.info("Stopping Ember cluster");
         // Cancel rolling restart if active
         var task = rollingRestartTask.getAndSet(null);
         if (task != null) {
@@ -412,7 +412,7 @@ public final class ForgeCluster {
         nodeInfos.clear();
         slotsByNodeId.clear();
         availableSlots.clear();
-        log.info("Forge cluster stopped");
+        log.info("Ember cluster stopped");
     }
 
     /// Add a new node to the cluster.
@@ -595,7 +595,7 @@ public final class ForgeCluster {
                                           AppHttpConfig.appHttpConfig(appHttpPort),
                                           ControllerConfig.forgeDefaults(),
                                           configProvider,
-                                          Option.some(forgeEnvironment),
+                                          Option.some(emberEnvironment),
                                           AutoHealConfig.DEFAULT,
                                           observability);
         return AetherNode.aetherNode(config)
@@ -717,7 +717,7 @@ public final class ForgeCluster {
         }
         return aggregated.entrySet()
                          .stream()
-                         .map(ForgeCluster::toInvocationDetail)
+                         .map(EmberCluster::toInvocationDetail)
                          .toList();
     }
 

@@ -15,7 +15,8 @@ import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
+import org.pragmatica.aether.ember.EmberCluster;
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
 /// Tests for node failure and recovery scenarios.
 ///
@@ -36,13 +37,13 @@ class NodeFailureTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
-    private ForgeCluster cluster;
+    private EmberCluster cluster;
     private HttpClient httpClient;
 
     @BeforeEach
     void setUp(TestInfo testInfo) {
         int portOffset = getPortOffset(testInfo);
-        cluster = forgeCluster(5, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "nf");
+        cluster = emberCluster(5, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "nf");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();
@@ -114,7 +115,7 @@ class NodeFailureTest {
 
         var status = cluster.status();
         var nodeIds = status.nodes().stream()
-                            .map(ForgeCluster.NodeStatus::id)
+                            .map(EmberCluster.NodeStatus::id)
                             .toList();
         assertThat(nodeIds).contains("nf-1");
         assertThat(nodeIds).contains("nf-3");
@@ -172,7 +173,7 @@ class NodeFailureTest {
     void manualRollingRestart_maintainsQuorum() {
         // Perform a manual rolling restart: kill and add nodes one at a time
         var nodeIds = cluster.status().nodes().stream()
-                             .map(ForgeCluster.NodeStatus::id)
+                             .map(EmberCluster.NodeStatus::id)
                              .toList();
 
         for (var nodeId : nodeIds) {

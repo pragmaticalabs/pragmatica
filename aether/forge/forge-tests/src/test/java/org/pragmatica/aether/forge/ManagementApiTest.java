@@ -17,7 +17,8 @@ import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
+import org.pragmatica.aether.ember.EmberCluster;
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
 /// Tests for Management API endpoints.
 ///
@@ -39,13 +40,13 @@ class ManagementApiTest {
     private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.19.0";
     private static final String BLUEPRINT_ID = "forge.test:management-api:1.0.0";
 
-    private ForgeCluster cluster;
+    private EmberCluster cluster;
     private HttpClient httpClient;
 
     @BeforeEach
     void setUp(TestInfo testInfo) {
         int portOffset = getPortOffset(testInfo);
-        cluster = forgeCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "ma");
+        cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "ma");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();

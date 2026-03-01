@@ -1,4 +1,4 @@
-package org.pragmatica.aether.forge;
+package org.pragmatica.aether.ember;
 
 import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.config.toml.TomlParser;
@@ -8,7 +8,7 @@ import org.pragmatica.lang.Result;
 
 import java.nio.file.Path;
 
-/// Forge cluster configuration loaded from TOML file.
+/// Ember cluster configuration loaded from TOML file.
 ///
 /// Example configuration:
 /// ```
@@ -16,93 +16,126 @@ import java.nio.file.Path;
 /// nodes = 5
 /// management_port = 5150
 /// dashboard_port = 8888
+///
+/// [lb]
+/// enabled = true
+/// port = 8080
 /// ```
-public record ForgeConfig(int nodes,
+public record EmberConfig(int nodes,
                           int managementPort,
                           int dashboardPort,
                           int appHttpPort,
-                          ForgeH2Config h2Config,
-                          ObservabilityConfig observability) {
+                          EmberH2Config h2Config,
+                          ObservabilityConfig observability,
+                          boolean lbEnabled,
+                          int lbPort) {
     public static final int DEFAULT_NODES = 5;
     public static final int DEFAULT_MANAGEMENT_PORT = 5150;
     public static final int DEFAULT_DASHBOARD_PORT = 8888;
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
+    public static final boolean DEFAULT_LB_ENABLED = true;
+    public static final int DEFAULT_LB_PORT = 8080;
 
     /// Default configuration.
     @SuppressWarnings("JBCT-VO-02")
-    public static final ForgeConfig DEFAULT = new ForgeConfig(DEFAULT_NODES,
+    public static final EmberConfig DEFAULT = new EmberConfig(DEFAULT_NODES,
                                                               DEFAULT_MANAGEMENT_PORT,
                                                               DEFAULT_DASHBOARD_PORT,
                                                               DEFAULT_APP_HTTP_PORT,
-                                                              ForgeH2Config.disabled(),
-                                                              ObservabilityConfig.DEFAULT);
+                                                              EmberH2Config.disabled(),
+                                                              ObservabilityConfig.DEFAULT,
+                                                              DEFAULT_LB_ENABLED,
+                                                              DEFAULT_LB_PORT);
 
     /// Create configuration with specified values and validation.
-    public static Result<ForgeConfig> forgeConfig(int nodes, int managementPort, int dashboardPort) {
-        return forgeConfig(nodes,
+    public static Result<EmberConfig> emberConfig(int nodes, int managementPort, int dashboardPort) {
+        return emberConfig(nodes,
                            managementPort,
                            dashboardPort,
                            DEFAULT_APP_HTTP_PORT,
-                           ForgeH2Config.disabled(),
-                           ObservabilityConfig.DEFAULT);
+                           EmberH2Config.disabled(),
+                           ObservabilityConfig.DEFAULT,
+                           DEFAULT_LB_ENABLED,
+                           DEFAULT_LB_PORT);
     }
 
     /// Create configuration with specified values and validation.
-    public static Result<ForgeConfig> forgeConfig(int nodes, int managementPort, int dashboardPort, int appHttpPort) {
-        return forgeConfig(nodes,
+    public static Result<EmberConfig> emberConfig(int nodes, int managementPort, int dashboardPort, int appHttpPort) {
+        return emberConfig(nodes,
                            managementPort,
                            dashboardPort,
                            appHttpPort,
-                           ForgeH2Config.disabled(),
-                           ObservabilityConfig.DEFAULT);
+                           EmberH2Config.disabled(),
+                           ObservabilityConfig.DEFAULT,
+                           DEFAULT_LB_ENABLED,
+                           DEFAULT_LB_PORT);
     }
 
     /// Create configuration with specified values and validation.
-    public static Result<ForgeConfig> forgeConfig(int nodes,
+    public static Result<EmberConfig> emberConfig(int nodes,
                                                   int managementPort,
                                                   int dashboardPort,
                                                   int appHttpPort,
-                                                  ForgeH2Config h2Config) {
-        return forgeConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config, ObservabilityConfig.DEFAULT);
+                                                  EmberH2Config h2Config) {
+        return emberConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config, ObservabilityConfig.DEFAULT,
+                           DEFAULT_LB_ENABLED, DEFAULT_LB_PORT);
     }
 
     /// Create configuration with specified values and validation.
-    public static Result<ForgeConfig> forgeConfig(int nodes,
+    public static Result<EmberConfig> emberConfig(int nodes,
                                                   int managementPort,
                                                   int dashboardPort,
                                                   int appHttpPort,
-                                                  ForgeH2Config h2Config,
+                                                  EmberH2Config h2Config,
                                                   ObservabilityConfig observability) {
+        return emberConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config, observability,
+                           DEFAULT_LB_ENABLED, DEFAULT_LB_PORT);
+    }
+
+    /// Create configuration with all values and validation.
+    public static Result<EmberConfig> emberConfig(int nodes,
+                                                  int managementPort,
+                                                  int dashboardPort,
+                                                  int appHttpPort,
+                                                  EmberH2Config h2Config,
+                                                  ObservabilityConfig observability,
+                                                  boolean lbEnabled,
+                                                  int lbPort) {
         if (nodes < 1) {
-            return ForgeConfigError.invalidValue("nodes", nodes, "must be at least 1")
+            return EmberConfigError.invalidValue("nodes", nodes, "must be at least 1")
                                    .result();
         }
         if (nodes > 100) {
-            return ForgeConfigError.invalidValue("nodes", nodes, "must be at most 100")
+            return EmberConfigError.invalidValue("nodes", nodes, "must be at most 100")
                                    .result();
         }
         if (managementPort < 1 || managementPort > 65535) {
-            return ForgeConfigError.invalidValue("management_port", managementPort, "must be valid port")
+            return EmberConfigError.invalidValue("management_port", managementPort, "must be valid port")
                                    .result();
         }
         if (dashboardPort < 1 || dashboardPort > 65535) {
-            return ForgeConfigError.invalidValue("dashboard_port", dashboardPort, "must be valid port")
+            return EmberConfigError.invalidValue("dashboard_port", dashboardPort, "must be valid port")
                                    .result();
         }
         if (appHttpPort < 1 || appHttpPort > 65535) {
-            return ForgeConfigError.invalidValue("app_http_port", appHttpPort, "must be valid port")
+            return EmberConfigError.invalidValue("app_http_port", appHttpPort, "must be valid port")
                                    .result();
         }
         if (managementPort == dashboardPort) {
-            return ForgeConfigError.portConflict(managementPort)
+            return EmberConfigError.portConflict(managementPort)
                                    .result();
         }
-        return Result.success(new ForgeConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config, observability));
+        if (lbEnabled && (lbPort < 1 || lbPort > 65535)) {
+            return EmberConfigError.invalidValue("lb_port", lbPort, "must be valid port")
+                                   .result();
+        }
+        return Result.success(new EmberConfig(nodes, managementPort, dashboardPort, appHttpPort,
+                                              h2Config, observability, lbEnabled, lbPort));
     }
 
     /// Load configuration from file path.
     /// Relative paths in the config (e.g., init_script) are resolved relative to the config file's directory.
-    public static Result<ForgeConfig> load(Path path) {
+    public static Result<EmberConfig> load(Path path) {
         var baseDir = path.toAbsolutePath()
                           .getParent();
         return TomlParser.parseFile(path)
@@ -110,20 +143,20 @@ public record ForgeConfig(int nodes,
     }
 
     /// Load configuration from TOML string content.
-    public static Result<ForgeConfig> loadFromString(String content) {
+    public static Result<EmberConfig> loadFromString(String content) {
         return TomlParser.parse(content)
-                         .flatMap(ForgeConfig::fromDocument);
+                         .flatMap(EmberConfig::fromDocument);
     }
 
-    private static Result<ForgeConfig> fromDocument(org.pragmatica.config.toml.TomlDocument doc) {
+    private static Result<EmberConfig> fromDocument(org.pragmatica.config.toml.TomlDocument doc) {
         return fromDocument(doc, Option.none());
     }
 
-    private static Result<ForgeConfig> fromDocument(org.pragmatica.config.toml.TomlDocument doc, Path baseDir) {
+    private static Result<EmberConfig> fromDocument(org.pragmatica.config.toml.TomlDocument doc, Path baseDir) {
         return fromDocument(doc, Option.some(baseDir));
     }
 
-    private static Result<ForgeConfig> fromDocument(org.pragmatica.config.toml.TomlDocument doc, Option<Path> baseDir) {
+    private static Result<EmberConfig> fromDocument(org.pragmatica.config.toml.TomlDocument doc, Option<Path> baseDir) {
         int nodes = doc.getInt("cluster", "nodes")
                        .or(DEFAULT_NODES);
         int managementPort = doc.getInt("cluster", "management_port")
@@ -134,7 +167,12 @@ public record ForgeConfig(int nodes,
                              .or(DEFAULT_APP_HTTP_PORT);
         var h2Config = parseH2Config(doc, baseDir);
         var observability = parseObservabilityConfig(doc);
-        return forgeConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config, observability);
+        boolean lbEnabled = doc.getBoolean("lb", "enabled")
+                               .or(DEFAULT_LB_ENABLED);
+        int lbPort = doc.getInt("lb", "port")
+                        .or(DEFAULT_LB_PORT);
+        return emberConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config, observability,
+                           lbEnabled, lbPort);
     }
 
     private static ObservabilityConfig parseObservabilityConfig(org.pragmatica.config.toml.TomlDocument doc) {
@@ -145,21 +183,21 @@ public record ForgeConfig(int nodes,
         return ObservabilityConfig.observabilityConfig(depthThreshold, targetTracesPerSec);
     }
 
-    private static ForgeH2Config parseH2Config(org.pragmatica.config.toml.TomlDocument doc, Option<Path> baseDir) {
+    private static EmberH2Config parseH2Config(org.pragmatica.config.toml.TomlDocument doc, Option<Path> baseDir) {
         boolean enabled = doc.getBoolean("database", "enabled")
                              .or(false);
         if (!enabled) {
-            return ForgeH2Config.disabled();
+            return EmberH2Config.disabled();
         }
         int port = doc.getInt("database", "port")
-                      .or(ForgeH2Config.DEFAULT_PORT);
+                      .or(EmberH2Config.DEFAULT_PORT);
         String name = doc.getString("database", "name")
-                         .or(ForgeH2Config.DEFAULT_NAME);
+                         .or(EmberH2Config.DEFAULT_NAME);
         boolean persistent = doc.getBoolean("database", "persistent")
-                                .or(ForgeH2Config.DEFAULT_PERSISTENT);
+                                .or(EmberH2Config.DEFAULT_PERSISTENT);
         Option<String> initScript = doc.getString("database", "init_script")
                                        .map(script -> resolveRelativePath(script, baseDir));
-        return ForgeH2Config.forgeH2Config(enabled, port, name, persistent, initScript);
+        return EmberH2Config.emberH2Config(enabled, port, name, persistent, initScript);
     }
 
     private static String resolveRelativePath(String path, Option<Path> baseDir) {
@@ -173,27 +211,27 @@ public record ForgeConfig(int nodes,
                       .or(path);
     }
 
-    /// Forge configuration errors.
-    public sealed interface ForgeConfigError extends Cause {
-        record InvalidValue(String field, int value, String reason) implements ForgeConfigError {
+    /// Ember configuration errors.
+    public sealed interface EmberConfigError extends Cause {
+        record InvalidValue(String field, int value, String reason) implements EmberConfigError {
             @Override
             public String message() {
                 return "Invalid " + field + " value " + value + ": " + reason;
             }
         }
 
-        record PortConflict(int port) implements ForgeConfigError {
+        record PortConflict(int port) implements EmberConfigError {
             @Override
             public String message() {
                 return "management_port and dashboard_port cannot be the same: " + port;
             }
         }
 
-        static ForgeConfigError invalidValue(String field, int value, String reason) {
+        static EmberConfigError invalidValue(String field, int value, String reason) {
             return new InvalidValue(field, value, reason);
         }
 
-        static ForgeConfigError portConflict(int port) {
+        static EmberConfigError portConflict(int port) {
             return new PortConflict(port);
         }
     }

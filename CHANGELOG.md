@@ -7,10 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [0.19.0] - Unreleased
 
 ### Added
+- **Ember** — embeddable headless cluster runtime extracted from `forge-cluster` into `aether/ember/` module with fluent builder API (`Ember.cluster(5).withH2().start()`)
+- **Remote Maven repositories** — resolve slices from Maven Central or private Nexus repos (`repositories = ["local", "remote:central"]`). SHA-1 verification, local cache to `~/.m2/repository`, auth from `settings.xml`
+- **Load Balancer** — standalone `aether/lb/` module for single-entry-point HTTP reverse proxy with round-robin routing, active health checking, automatic retry on failure, and X-Forwarded-* headers
+- Load balancer integration in Ember/Forge — auto-starts LB on cluster boot, configurable via `[lb]` TOML section
 
 ### Fixed
 
 ### Changed
+- `RepositoryType` converted from enum to sealed interface with `Local`, `Builtin`, and `Remote` record variants
+- `forge-cluster` module deleted — all cluster management code now in `aether/ember/` with `Ember*` naming
+- `ForgeCluster` → `EmberCluster`, `ForgeConfig` → `EmberConfig`, `ForgeH2Server` → `EmberH2Server`, `ForgeH2Config` → `EmberH2Config`
 
 ## [0.18.0] - 2026-02-26
 

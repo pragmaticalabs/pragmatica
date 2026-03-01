@@ -1,7 +1,7 @@
 package org.pragmatica.aether.forge.api;
 
-import org.pragmatica.aether.forge.ForgeCluster;
-import org.pragmatica.aether.forge.ForgeCluster.EventLogEntry;
+import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.ember.EmberCluster.EventLogEntry;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.RepositoryPutResponse;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.http.JdkHttpOperations;
@@ -43,8 +43,8 @@ public sealed interface DeploymentRoutes {
     record ProxyResponse(boolean success, String body) {}
 
     /// Slices status response.
-    /// Contains slice data directly from ForgeCluster's KV store query.
-    record SlicesStatusResponse(java.util.List<ForgeCluster.SliceStatus> slices) {}
+    /// Contains slice data directly from EmberCluster's KV store query.
+    record SlicesStatusResponse(java.util.List<EmberCluster.SliceStatus> slices) {}
 
     /// Cluster metrics response from leader.
     record ClusterMetricsResponse(String body) {}
@@ -52,10 +52,10 @@ public sealed interface DeploymentRoutes {
     // ========== Route Factory ==========
     /// Create route source for all deployment-related endpoints.
     ///
-    /// @param cluster     the ForgeCluster for finding the leader node
+    /// @param cluster     the EmberCluster for finding the leader node
     /// @param eventLogger callback to log events for the dashboard
     /// @return RouteSource containing all deployment routes
-    static RouteSource deploymentRoutes(ForgeCluster cluster,
+    static RouteSource deploymentRoutes(EmberCluster cluster,
                                         Consumer<EventLogEntry> eventLogger) {
         var http = JdkHttpOperations.jdkHttpOperations();
         return RouteSource.of(blueprintRoute(cluster, http, eventLogger),
@@ -65,7 +65,7 @@ public sealed interface DeploymentRoutes {
     }
 
     // ========== Route Definitions ==========
-    private static Route<ProxyResponse> blueprintRoute(ForgeCluster cluster,
+    private static Route<ProxyResponse> blueprintRoute(EmberCluster cluster,
                                                        JdkHttpOperations http,
                                                        Consumer<EventLogEntry> eventLogger) {
         return Route.<ProxyResponse> post("/api/blueprint")
@@ -73,20 +73,20 @@ public sealed interface DeploymentRoutes {
                     .toJson(body -> proxyBlueprint(cluster, http, eventLogger, body));
     }
 
-    private static Route<SlicesStatusResponse> slicesStatusRoute(ForgeCluster cluster,
+    private static Route<SlicesStatusResponse> slicesStatusRoute(EmberCluster cluster,
                                                                  JdkHttpOperations http) {
         return Route.<SlicesStatusResponse> get("/api/slices/status")
                     .toJson(() -> getSlicesStatus(cluster));
     }
 
-    private static Route<ClusterMetricsResponse> clusterMetricsRoute(ForgeCluster cluster,
+    private static Route<ClusterMetricsResponse> clusterMetricsRoute(EmberCluster cluster,
                                                                      JdkHttpOperations http) {
         return Route.<ClusterMetricsResponse> get("/api/cluster/metrics")
                     .to(_ -> proxyClusterMetrics(cluster, http))
                     .asJson();
     }
 
-    private static Route<RepositoryPutResponse> repositoryPutRoute(ForgeCluster cluster,
+    private static Route<RepositoryPutResponse> repositoryPutRoute(EmberCluster cluster,
                                                                    Consumer<EventLogEntry> eventLogger) {
         return Route.<RepositoryPutResponse> put("/api/repository")
                     .withBody(RepositoryPutRequest.class)
@@ -94,7 +94,7 @@ public sealed interface DeploymentRoutes {
     }
 
     // ========== Handler Methods ==========
-    private static Promise<ProxyResponse> proxyBlueprint(ForgeCluster cluster,
+    private static Promise<ProxyResponse> proxyBlueprint(EmberCluster cluster,
                                                          JdkHttpOperations http,
                                                          Consumer<EventLogEntry> eventLogger,
                                                          String blueprintJson) {
@@ -109,18 +109,18 @@ public sealed interface DeploymentRoutes {
         return new ProxyResponse(true, body);
     }
 
-    private static SlicesStatusResponse getSlicesStatus(ForgeCluster cluster) {
+    private static SlicesStatusResponse getSlicesStatus(EmberCluster cluster) {
         return new SlicesStatusResponse(cluster.slicesStatus());
     }
 
-    private static Promise<ClusterMetricsResponse> proxyClusterMetrics(ForgeCluster cluster,
+    private static Promise<ClusterMetricsResponse> proxyClusterMetrics(EmberCluster cluster,
                                                                        JdkHttpOperations http) {
         return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
                              .flatMap(port -> proxyGet(http, port, "/api/metrics"))
                              .map(ClusterMetricsResponse::new);
     }
 
-    private static Promise<RepositoryPutResponse> storeArtifact(ForgeCluster cluster,
+    private static Promise<RepositoryPutResponse> storeArtifact(EmberCluster cluster,
                                                                 Consumer<EventLogEntry> eventLogger,
                                                                 RepositoryPutRequest request) {
         return findAnyNode(cluster).async(NoNodesAvailable.INSTANCE)
@@ -147,11 +147,11 @@ public sealed interface DeploymentRoutes {
     }
 
     // ========== Helper Methods ==========
-    private static Option<Integer> findLeaderPort(ForgeCluster cluster) {
+    private static Option<Integer> findLeaderPort(EmberCluster cluster) {
         return cluster.getLeaderManagementPort();
     }
 
-    private static Option<AetherNode> findAnyNode(ForgeCluster cluster) {
+    private static Option<AetherNode> findAnyNode(EmberCluster cluster) {
         var nodes = cluster.allNodes();
         return nodes.isEmpty()
                ? Option.none()

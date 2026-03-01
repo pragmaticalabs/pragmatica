@@ -18,7 +18,8 @@ import java.util.ArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
+import org.pragmatica.aether.ember.EmberCluster;
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
 /// Tests for cluster bootstrap and recovery scenarios.
 ///
@@ -39,14 +40,14 @@ class BootstrapTest {
     private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.19.0";
     private static final String BLUEPRINT_ID = "forge.test:bootstrap:1.0.0";
 
-    private ForgeCluster cluster;
+    private EmberCluster cluster;
     private HttpClient httpClient;
 
     @BeforeEach
     void setUp(TestInfo testInfo) {
         // Use method-specific port offset to avoid port conflicts between tests
         int portOffset = getPortOffset(testInfo);
-        cluster = forgeCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "bt");
+        cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "bt");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();
@@ -207,7 +208,7 @@ class BootstrapTest {
 
         // Snapshot current node IDs at start
         var initialNodeIds = new ArrayList<>(cluster.status().nodes().stream()
-                                                     .map(ForgeCluster.NodeStatus::id)
+                                                     .map(EmberCluster.NodeStatus::id)
                                                      .toList());
 
         for (var nodeId : initialNodeIds) {

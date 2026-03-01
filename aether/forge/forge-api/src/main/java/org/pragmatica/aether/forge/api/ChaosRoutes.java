@@ -1,6 +1,6 @@
 package org.pragmatica.aether.forge.api;
 
-import org.pragmatica.aether.forge.ForgeCluster;
+import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.ChaosEnabledResponse;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.ChaosInjectResponse;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.ChaosStatusResponse;
@@ -9,9 +9,9 @@ import org.pragmatica.aether.forge.api.ForgeApiResponses.ActiveChaosEventInfo;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.NodeActionResponse;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.NodeAddedResponse;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.SuccessResponse;
-import org.pragmatica.aether.forge.ForgeCluster.RollingRestartResponse;
-import org.pragmatica.aether.forge.ForgeCluster.RollingRestartStatusResponse;
-import org.pragmatica.aether.forge.ForgeCluster.EventLogEntry;
+import org.pragmatica.aether.ember.EmberCluster.RollingRestartResponse;
+import org.pragmatica.aether.ember.EmberCluster.RollingRestartStatusResponse;
+import org.pragmatica.aether.ember.EmberCluster.EventLogEntry;
 import org.pragmatica.aether.forge.simulator.ChaosController;
 import org.pragmatica.aether.forge.simulator.ChaosController.ActiveChaosEvent;
 import org.pragmatica.aether.forge.simulator.ChaosController.ChaosStatus;
@@ -47,13 +47,13 @@ public final class ChaosRoutes {
 
     /// Creates chaos routes for the Forge API.
     ///
-    /// @param cluster         the ForgeCluster for node management operations
+    /// @param cluster         the EmberCluster for node management operations
     /// @param chaosController the ChaosController for chaos injection
     /// @param events          the event log deque
     /// @param inventoryState  state for inventory simulation
     /// @param eventLogger     callback to log events for the dashboard
     /// @return RouteSource containing all chaos-related routes
-    public static RouteSource chaosRoutes(ForgeCluster cluster,
+    public static RouteSource chaosRoutes(EmberCluster cluster,
                                           ChaosController chaosController,
                                           Deque<ForgeApiResponses.ForgeEvent> events,
                                           InventoryState inventoryState,
@@ -106,13 +106,13 @@ public final class ChaosRoutes {
                     .toJson(_ -> stopAllChaos(chaosController, eventLogger));
     }
 
-    private static Route<NodeAddedResponse> addNodeRoute(ForgeCluster cluster,
+    private static Route<NodeAddedResponse> addNodeRoute(EmberCluster cluster,
                                                          Consumer<EventLogEntry> eventLogger) {
         return Route.<NodeAddedResponse> post("/add-node")
                     .toJson(_ -> addNode(cluster, eventLogger));
     }
 
-    private static Route<NodeActionResponse> killNodeRoute(ForgeCluster cluster,
+    private static Route<NodeActionResponse> killNodeRoute(EmberCluster cluster,
                                                            Consumer<EventLogEntry> eventLogger) {
         return Route.<NodeActionResponse> post("/kill")
                     .withPath(aString())
@@ -127,19 +127,19 @@ public final class ChaosRoutes {
                     .toJson(_ -> resetMetrics(events, inventoryState, eventLogger));
     }
 
-    private static Route<RollingRestartResponse> startRollingRestartRoute(ForgeCluster cluster,
+    private static Route<RollingRestartResponse> startRollingRestartRoute(EmberCluster cluster,
                                                                           Consumer<EventLogEntry> eventLogger) {
         return Route.<RollingRestartResponse> post("/start-rolling-restart")
                     .toJson(_ -> startRollingRestart(cluster, eventLogger));
     }
 
-    private static Route<RollingRestartResponse> stopRollingRestartRoute(ForgeCluster cluster,
+    private static Route<RollingRestartResponse> stopRollingRestartRoute(EmberCluster cluster,
                                                                          Consumer<EventLogEntry> eventLogger) {
         return Route.<RollingRestartResponse> post("/stop-rolling-restart")
                     .toJson(_ -> stopRollingRestart(cluster, eventLogger));
     }
 
-    private static Route<RollingRestartStatusResponse> rollingRestartStatusRoute(ForgeCluster cluster) {
+    private static Route<RollingRestartStatusResponse> rollingRestartStatusRoute(EmberCluster cluster) {
         return Route.<RollingRestartStatusResponse> get("/rolling-restart-status")
                     .toJson(() -> rollingRestartStatus(cluster));
     }
@@ -301,7 +301,7 @@ public final class ChaosRoutes {
         return Promise.success(SuccessResponse.OK);
     }
 
-    private static Promise<NodeAddedResponse> addNode(ForgeCluster cluster,
+    private static Promise<NodeAddedResponse> addNode(EmberCluster cluster,
                                                       Consumer<EventLogEntry> eventLogger) {
         eventLogger.accept(new EventLogEntry("ADD_NODE", "Adding new node to cluster"));
         return cluster.addNode()
@@ -316,7 +316,7 @@ public final class ChaosRoutes {
         return new NodeAddedResponse(true, nodeId.id(), "joining");
     }
 
-    private static Promise<NodeActionResponse> killNode(ForgeCluster cluster,
+    private static Promise<NodeActionResponse> killNode(EmberCluster cluster,
                                                         Consumer<EventLogEntry> eventLogger,
                                                         String nodeId) {
         boolean wasLeader = cluster.currentLeader()
@@ -331,7 +331,7 @@ public final class ChaosRoutes {
                                                                                "Failed to kill node " + nodeId)));
     }
 
-    private static NodeActionResponse logAndBuildNodeKilledResponse(ForgeCluster cluster,
+    private static NodeActionResponse logAndBuildNodeKilledResponse(EmberCluster cluster,
                                                                     Consumer<EventLogEntry> eventLogger,
                                                                     String nodeId,
                                                                     boolean wasLeader) {
@@ -353,17 +353,17 @@ public final class ChaosRoutes {
         return Promise.success(SuccessResponse.OK);
     }
 
-    private static Promise<RollingRestartResponse> startRollingRestart(ForgeCluster cluster,
+    private static Promise<RollingRestartResponse> startRollingRestart(EmberCluster cluster,
                                                                        Consumer<EventLogEntry> eventLogger) {
         return cluster.startRollingRestart(eventLogger);
     }
 
-    private static Promise<RollingRestartResponse> stopRollingRestart(ForgeCluster cluster,
+    private static Promise<RollingRestartResponse> stopRollingRestart(EmberCluster cluster,
                                                                       Consumer<EventLogEntry> eventLogger) {
         return cluster.stopRollingRestart(eventLogger);
     }
 
-    private static RollingRestartStatusResponse rollingRestartStatus(ForgeCluster cluster) {
+    private static RollingRestartStatusResponse rollingRestartStatus(EmberCluster cluster) {
         return cluster.rollingRestartStatus();
     }
 }

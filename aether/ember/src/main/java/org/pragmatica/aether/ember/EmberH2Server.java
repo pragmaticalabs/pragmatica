@@ -1,4 +1,4 @@
-package org.pragmatica.aether.forge;
+package org.pragmatica.aether.ember;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -13,22 +13,22 @@ import org.h2.tools.Server;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/// Embedded H2 database server for Forge.
+/// Embedded H2 database server for Ember.
 /// Provides an in-memory or persistent H2 database that slices can connect to.
 @SuppressWarnings({"JBCT-RET-03", "JBCT-EX-01"})
-public final class ForgeH2Server {
-    private static final Logger log = LoggerFactory.getLogger(ForgeH2Server.class);
+public final class EmberH2Server {
+    private static final Logger log = LoggerFactory.getLogger(EmberH2Server.class);
 
-    private final ForgeH2Config config;
+    private final EmberH2Config config;
     private volatile Server tcpServer;
 
-    private ForgeH2Server(ForgeH2Config config) {
+    private EmberH2Server(EmberH2Config config) {
         this.config = config;
     }
 
     /// Create a new H2 server instance.
-    public static ForgeH2Server forgeH2Server(ForgeH2Config config) {
-        return new ForgeH2Server(config);
+    public static EmberH2Server emberH2Server(EmberH2Config config) {
+        return new EmberH2Server(config);
     }
 
     /// Start the H2 TCP server.
