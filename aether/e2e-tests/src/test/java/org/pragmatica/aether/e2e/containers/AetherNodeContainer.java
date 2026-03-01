@@ -150,11 +150,11 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
 
         if (HOST_NETWORKING_SUPPORTED) {
             // Host networking: ports are directly on host, no Docker port mapping needed.
-            // We still register the management port in the exposedPorts list so that
-            // HttpWaitStrategy.waitUntilReady() can find it via getExposedPorts().
-            // Docker ignores EXPOSE in host mode, so this only affects Testcontainers' internal bookkeeping.
+            // Do NOT add exposed ports here — Testcontainers' tryStart() checks that all
+            // containerDef exposed ports have actual network bindings, which are empty in
+            // host mode (no NAT). HttpWaitStrategy.forPort() calls getMappedPort() which
+            // is overridden to return the port directly, bypassing the exposed ports list.
             container.withNetworkMode("host");
-            container.addExposedPort(managementPort);
         } else {
             // addExposedPort registers ports in the exposedPorts list so that
             // getMappedPort() (used by HttpWaitStrategy) can find them.
