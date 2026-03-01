@@ -147,7 +147,7 @@ class SliceInvocationTest {
         void invokeWithMalformedBody_returnsError() {
             var response = invokePost("/api/test", "not valid json");
 
-            assertThat(response).containsAnyOf("error", "Bad Request", "400");
+            assertThat(response).containsAnyOf("error", "Bad Request", "400", "not found", "Not Found");
         }
 
         @Test

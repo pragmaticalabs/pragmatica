@@ -149,10 +149,12 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
                  .withEnv("JAVA_OPTS", "-Xmx256m -XX:+UseZGC");
 
         if (HOST_NETWORKING_SUPPORTED) {
-            // Host networking: ports are directly on host, no mapping needed.
-            // Do NOT call addExposedPort — Testcontainers checks for port bindings
-            // which don't exist in host mode, causing a 5-second startup timeout.
+            // Host networking: ports are directly on host, no Docker port mapping needed.
+            // We still register the management port in the exposedPorts list so that
+            // HttpWaitStrategy.waitUntilReady() can find it via getExposedPorts().
+            // Docker ignores EXPOSE in host mode, so this only affects Testcontainers' internal bookkeeping.
             container.withNetworkMode("host");
+            container.addExposedPort(managementPort);
         } else {
             // addExposedPort registers ports in the exposedPorts list so that
             // getMappedPort() (used by HttpWaitStrategy) can find them.

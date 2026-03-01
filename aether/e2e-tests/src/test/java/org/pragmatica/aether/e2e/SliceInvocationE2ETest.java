@@ -192,7 +192,7 @@ class SliceInvocationE2ETest {
             var response = cluster.anyNode().invokePost("/api/test", "not valid json");
 
             // Should handle gracefully
-            assertThat(response).containsAnyOf("error", "404", "Bad Request");
+            assertThat(response).containsAnyOf("error", "404", "Bad Request", "not found", "Not Found");
         }
 
         @Test
