@@ -40,7 +40,7 @@ class SliceDeploymentTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration DEPLOY_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.19.0";
+    private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:slice-deploy:1.0.0";
 
     private EmberCluster cluster;
@@ -211,9 +211,9 @@ class SliceDeploymentTest {
             id = "org.test:blueprint:1.0.0"
 
             [[slices]]
-            artifact = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.19.0"
+            artifact = "%s"
             instances = 2
-            """;
+            """.formatted(TEST_ARTIFACT);
 
         var response = applyBlueprint(leaderPort, blueprint);
         assertThat(response).doesNotContain("\"error\"");

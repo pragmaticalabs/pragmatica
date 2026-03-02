@@ -58,6 +58,9 @@
                 <artifactId>maven-failsafe-plugin</artifactId>
                 <version>3.5.1</version>
                 <configuration>
+                    <systemPropertyVariables>
+                        <project.version>${project.version}</project.version>
+                    </systemPropertyVariables>
                     <includes>
                         <include>**/*Test.java</include>
                     </includes>

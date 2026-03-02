@@ -22,7 +22,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class EmberClusterIntegrationTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(180);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.19.0";
+    private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
 
     private EmberCluster cluster;
     private HttpClient httpClient;
@@ -106,9 +106,9 @@ class EmberClusterIntegrationTest {
             id = "org.test:blueprint:1.0.0"
 
             [[slices]]
-            artifact = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.19.0"
+            artifact = "%s"
             instances = 1
-            """;
+            """.formatted(TEST_ARTIFACT);
         deployBlueprint(leaderPort, blueprintContent);
 
         await().atMost(WAIT_TIMEOUT)
