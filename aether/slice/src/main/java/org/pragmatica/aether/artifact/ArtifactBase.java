@@ -16,7 +16,7 @@ import org.pragmatica.serialization.Codec;
 /// Format: groupId:artifactId (e.g., "org.pragmatica-lite.aether:example-slice")
 @Codec
 public record ArtifactBase(GroupId groupId, ArtifactId artifactId) {
-    private static final Fn1<Cause, String> INVALID_FORMAT = Causes.forOneValue("Invalid artifact base format {}");
+    private static final Fn1<Cause, String> INVALID_FORMAT = Causes.forOneValue("Invalid artifact base format %s");
 
     /// Parses an artifact base from string format (groupId:artifactId).
     ///

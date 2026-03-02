@@ -111,6 +111,6 @@ public enum SliceState {
     public static Result<SliceState> sliceState(String stateString) {
         return option(STRING_TO_STATE.get(stateString.toUpperCase())).toResult(UNKNOWN_STATE.apply(stateString));
     }
-    private static final Fn1<Cause, String> UNKNOWN_STATE = Causes.forOneValue("Unknown slice state [{}]");
+    private static final Fn1<Cause, String> UNKNOWN_STATE = Causes.forOneValue("Unknown slice state [%s]");
     private static final Cause TERMINAL_STATE_ERROR = Causes.cause("Cannot transition from UNLOADING terminal state");
 }

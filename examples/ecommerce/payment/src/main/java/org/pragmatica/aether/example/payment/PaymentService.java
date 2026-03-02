@@ -102,7 +102,7 @@ public interface PaymentService {
                               validateCvv(cvv),
                               Verify.ensure(cardholderName,
                                             Verify.Is::notBlank,
-                                            Causes.forOneValue("Invalid cardholder name: {}")))
+                                            Causes.forOneValue("Invalid cardholder name: %s")))
                          .map((card, _, validCvv, name) -> new PaymentMethod(card,
                                                                              expiryMonth,
                                                                              expiryYear,

@@ -22,7 +22,7 @@ public enum Environment {
     LOCAL("local", 3, "256m", false),
     DOCKER("docker", 5, "512m", false),
     KUBERNETES("kubernetes", 5, "1g", true);
-    private static final Fn1<Cause, String> UNKNOWN_ENVIRONMENT = Causes.forOneValue("Unknown environment: {}. Valid: local, docker, kubernetes");
+    private static final Fn1<Cause, String> UNKNOWN_ENVIRONMENT = Causes.forOneValue("Unknown environment: %s. Valid: local, docker, kubernetes");
     private final String name;
     private final int defaultNodes;
     private final String defaultHeap;

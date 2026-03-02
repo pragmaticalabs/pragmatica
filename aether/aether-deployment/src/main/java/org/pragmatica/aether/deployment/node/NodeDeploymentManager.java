@@ -110,11 +110,11 @@ public interface NodeDeploymentManager {
                                          Option<SliceInvokerFacade> sliceInvokerFacade) implements NodeDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(ActiveNodeDeploymentState.class);
 
-            private static final Fn1<Cause, SliceNodeKey> CLEANUP_FAILED = Causes.forOneValue("Failed to cleanup slice {} during abrupt removal");
+            private static final Fn1<Cause, SliceNodeKey> CLEANUP_FAILED = Causes.forOneValue("Failed to cleanup slice %s during abrupt removal");
 
-            private static final Fn1<Cause, SliceNodeKey> STATE_UPDATE_FAILED = Causes.forOneValue("Failed to update slice state for {}");
+            private static final Fn1<Cause, SliceNodeKey> STATE_UPDATE_FAILED = Causes.forOneValue("Failed to update slice state for %s");
 
-            private static final Fn1<Cause, SliceNodeKey> UNLOAD_FAILED = Causes.forOneValue("Failed to unload slice {}");
+            private static final Fn1<Cause, SliceNodeKey> UNLOAD_FAILED = Causes.forOneValue("Failed to unload slice %s");
 
             private Option<SliceStore.LoadedSlice> findLoadedSlice(Artifact artifact) {
                 return Option.from(sliceStore.loaded()
@@ -335,7 +335,7 @@ public interface NodeDeploymentManager {
                                       .async();
             }
 
-            private static final Fn1<Cause, String> SLICE_NOT_LOADED_FOR_REGISTRATION = Causes.forOneValue("Slice not loaded for registration: {}");
+            private static final Fn1<Cause, String> SLICE_NOT_LOADED_FOR_REGISTRATION = Causes.forOneValue("Slice not loaded for registration: %s");
 
             private Result<Unit> registerSliceBridge(Artifact artifact, Slice slice) {
                 var sliceCodec = slice.codec(nodeCodec);
