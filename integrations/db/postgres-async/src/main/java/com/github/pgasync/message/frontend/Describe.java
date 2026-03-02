@@ -19,7 +19,7 @@ import com.github.pgasync.message.ExtendedQueryMessage;
 /**
  * @author Marat Gainullin
  */
-public class Describe implements ExtendedQueryMessage {
+public final class Describe implements ExtendedQueryMessage {
 
     public enum Kind {
         STATEMENT((byte) 'S'),

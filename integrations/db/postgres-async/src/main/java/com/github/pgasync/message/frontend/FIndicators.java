@@ -14,11 +14,11 @@
 
 package com.github.pgasync.message.frontend;
 
-import com.github.pgasync.message.Message;
+import com.github.pgasync.message.FrontendMessage;
 
 /**
  * @author Marat Gainullin
  */
-public enum FIndicators implements Message {
+public enum FIndicators implements FrontendMessage {
     SYNC
 }

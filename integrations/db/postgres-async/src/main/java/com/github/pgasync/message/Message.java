@@ -19,5 +19,5 @@ package com.github.pgasync.message;
  *
  * @author Antti Laisi
  */
-public interface Message {
+public sealed interface Message permits FrontendMessage, BackendMessage {
 }

@@ -36,7 +36,26 @@ import java.nio.charset.Charset;
  * @author Marat Gainullin
  */
 public class NettyConnectibleBuilder extends ConnectibleBuilder {
-    private final EventLoopGroup eventLoopGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+    private EventLoopGroup eventLoopGroup;
+    private boolean ownsEventLoopGroup;
+
+    public NettyConnectibleBuilder eventLoopGroup(EventLoopGroup eventLoopGroup) {
+        this.eventLoopGroup = eventLoopGroup;
+        this.ownsEventLoopGroup = false;
+        return this;
+    }
+
+    public EventLoopGroup eventLoopGroup() {
+        return resolveEventLoopGroup();
+    }
+
+    private EventLoopGroup resolveEventLoopGroup() {
+        if (eventLoopGroup == null) {
+            eventLoopGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+            ownsEventLoopGroup = true;
+        }
+        return eventLoopGroup;
+    }
 
     private Promise<ProtocolStream> obtainStream() {
         try {
@@ -44,7 +63,7 @@ public class NettyConnectibleBuilder extends ConnectibleBuilder {
             var sockAddr = new InetSocketAddress(address, properties.port());
             return Promise.success(
                 new NettyPgProtocolStream(sockAddr, properties.useSsl(),
-                    Charset.forName(properties.encoding()), eventLoopGroup));
+                    Charset.forName(properties.encoding()), resolveEventLoopGroup()));
         } catch (Exception e) {
             return Promise.failure(SqlError.fromThrowable(e));
         }
@@ -58,7 +77,7 @@ public class NettyConnectibleBuilder extends ConnectibleBuilder {
         return new PgDatabase(properties, this::obtainStream);
     }
 
-    public EventLoopGroup eventLoopGroup() {
-        return eventLoopGroup;
+    public boolean ownsEventLoopGroup() {
+        return ownsEventLoopGroup;
     }
 }

@@ -15,12 +15,12 @@
 package com.github.pgasync.message.backend;
 
 import com.github.pgasync.Oid;
-import com.github.pgasync.message.Message;
+import com.github.pgasync.message.BackendMessage;
 
 /**
  * @author  Antti Laisi
  */
-public class RowDescription implements Message {
+public final class RowDescription implements BackendMessage {
 
     public static class ColumnDescription {
 

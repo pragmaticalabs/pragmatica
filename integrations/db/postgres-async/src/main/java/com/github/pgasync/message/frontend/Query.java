@@ -14,9 +14,9 @@
 
 package com.github.pgasync.message.frontend;
 
-import com.github.pgasync.message.Message;
+import com.github.pgasync.message.FrontendMessage;
 
 /**
  * @author Antti Laisi
  */
-public record Query(String query) implements Message {}
+public record Query(String query) implements FrontendMessage {}

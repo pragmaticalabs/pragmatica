@@ -1,6 +1,6 @@
 package com.github.pgasync.message.frontend;
 
-import com.github.pgasync.message.Message;
+import com.github.pgasync.message.FrontendMessage;
 import com.github.pgasync.message.backend.Authentication;
 import com.github.pgasync.sasl.SaslPrep;
 
@@ -12,7 +12,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
 
-public class SASLResponse implements Message {
+public final class SASLResponse implements FrontendMessage {
 
     // These three fields contain the data, which have been already sent to a server, so we should recalculate them.
     private final String gs2Header;

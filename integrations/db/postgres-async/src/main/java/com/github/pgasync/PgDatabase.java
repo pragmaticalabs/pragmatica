@@ -18,7 +18,7 @@ public class PgDatabase extends PgConnectible {
     @Override
     public Promise<Connection> getConnection() {
         return obtainStream.get()
-                           .flatMap(stream -> new PgConnection(stream, dataConverter).connect(username, password, database))
+                           .flatMap(stream -> new PgConnection(stream, dataConverter, 0).connect(username, password, database))
                            .flatMap(this::validateConnection);
     }
 

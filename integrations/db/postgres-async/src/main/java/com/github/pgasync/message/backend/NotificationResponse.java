@@ -1,11 +1,11 @@
 package com.github.pgasync.message.backend;
 
-import com.github.pgasync.message.Message;
+import com.github.pgasync.message.BackendMessage;
 
 /**
  * @author  Antti Laisi
  */
-public class NotificationResponse implements Message {
+public final class NotificationResponse implements BackendMessage {
 
     private final int backend;
     private final String channel;

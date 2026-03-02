@@ -14,12 +14,12 @@
 
 package com.github.pgasync.message.backend;
 
-import com.github.pgasync.message.Message;
+import com.github.pgasync.message.BackendMessage;
 
 /**
  * @author Antti Laisi
  */
-public interface LogResponse extends Message {
+public sealed interface LogResponse extends BackendMessage permits ErrorResponse, NoticeResponse {
     String level();
     String code();
     String message();

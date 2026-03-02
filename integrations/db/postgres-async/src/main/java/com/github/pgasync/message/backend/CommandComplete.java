@@ -14,9 +14,9 @@
 
 package com.github.pgasync.message.backend;
 
-import com.github.pgasync.message.Message;
+import com.github.pgasync.message.BackendMessage;
 
 /**
  * @author Antti Laisi
  */
-public record CommandComplete(String tag, int affectedRows) implements Message {}
+public record CommandComplete(String tag, int affectedRows) implements BackendMessage {}

@@ -29,11 +29,15 @@ import org.pragmatica.lang.Unit;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import static com.github.pgasync.message.backend.RowDescription.ColumnDescription;
+import static org.pragmatica.lang.Unit.unit;
 
 /**
  * A connection to Postgres backend. The postmaster forks a backend process for each connection. A connection can process only a single query at a
@@ -47,10 +51,12 @@ public class PgConnection implements Connection {
      */
     public class PgPreparedStatement implements PreparedStatement {
         private final String sname;
+        private final String sql;
         private Columns columns;
 
-        PgPreparedStatement(String sname) {
+        PgPreparedStatement(String sname, String sql) {
             this.sname = sname;
+            this.sql = sql;
         }
 
         @Override
@@ -84,10 +90,44 @@ public class PgConnection implements Connection {
 
         @Override
         public Promise<Unit> close() {
+            if (statementCache != null) {
+                return closeWithCache();
+            }
+            return closeOnServer();
+        }
+
+        private Promise<Unit> closeWithCache() {
+            PgPreparedStatement already = statementCache.put(sql, this);
+            if (evicted != null) {
+                try {
+                    if (already != null && already != evicted) {
+                        log.warn(DUPLICATED_PREPARED_STATEMENT_DETECTED, already.sql);
+                        return evicted.closeOnServer()
+                                      .flatMap(_ -> already.closeOnServer());
+                    } else {
+                        return evicted.closeOnServer();
+                    }
+                } finally {
+                    evicted = null;
+                }
+            } else {
+                if (already != null) {
+                    log.warn(DUPLICATED_PREPARED_STATEMENT_DETECTED, already.sql);
+                    return already.closeOnServer();
+                } else {
+                    return Promise.success(unit());
+                }
+            }
+        }
+
+        private Promise<Unit> closeOnServer() {
             return stream.send(Close.statement(sname))
                          .mapToUnit();
         }
     }
+
+    private static final String DUPLICATED_PREPARED_STATEMENT_DETECTED =
+        "Duplicated prepared statement detected. Closing extra instance. \n{}";
 
     public record Columns(Map<String, PgColumn> byName, PgColumn[] ordered) {}
 
@@ -112,12 +152,31 @@ public class PgConnection implements Connection {
 
     private final ProtocolStream stream;
     private final DataConverter dataConverter;
+    private final LinkedHashMap<String, PgPreparedStatement> statementCache;
+    private PgPreparedStatement evicted;
+    private Runnable onRelease;
 
     private Columns currentColumns;
 
-    PgConnection(ProtocolStream stream, DataConverter dataConverter) {
+    PgConnection(ProtocolStream stream, DataConverter dataConverter, int maxStatements) {
         this.stream = stream;
         this.dataConverter = dataConverter;
+        this.statementCache = maxStatements > 0
+            ? new LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, PgPreparedStatement> eldest) {
+                    if (size() > maxStatements) {
+                        evicted = eldest.getValue();
+                        return true;
+                    }
+                    return false;
+                }
+            }
+            : null;
+    }
+
+    void onRelease(Runnable onRelease) {
+        this.onRelease = onRelease;
     }
 
     Promise<Connection> connect(String username, String password, String database) {
@@ -138,6 +197,12 @@ public class PgConnection implements Connection {
 
     @Override
     public Promise<? extends PreparedStatement> prepareStatement(String sql, Oid... parametersTypes) {
+        if (statementCache != null) {
+            var cached = statementCache.remove(sql);
+            if (cached != null) {
+                return Promise.success(cached);
+            }
+        }
         return preparedStatementOf(sql, parametersTypes);
     }
 
@@ -146,14 +211,14 @@ public class PgConnection implements Connection {
             throw new IllegalArgumentException("'sql' shouldn't be null or empty or blank string");
         }
         if (parametersTypes == null) {
-            throw new IllegalArgumentException("'parametersTypes' shouldn't be null, atr least it should be empty");
+            throw new IllegalArgumentException("'parametersTypes' shouldn't be null, at least it should be empty");
         }
 
         var statementName = preparedStatementNames.next();
 
         return stream
             .send(new Parse(sql, statementName, parametersTypes))
-            .map(_ -> new PgPreparedStatement(statementName));
+            .map(_ -> new PgPreparedStatement(statementName, sql));
     }
 
     @Override
@@ -213,6 +278,20 @@ public class PgConnection implements Connection {
 
     @Override
     public Promise<Unit> close() {
+        if (onRelease != null) {
+            onRelease.run();
+            return Promise.success(unit());
+        }
+        return stream.close();
+    }
+
+    Promise<Unit> shutdown() {
+        if (statementCache != null) {
+            return allOf(statementCache.values().stream()
+                             .map(PgPreparedStatement::closeOnServer))
+                .withResult(_ -> statementCache.clear())
+                .fold(_ -> stream.close());
+        }
         return stream.close();
     }
 
@@ -233,22 +312,35 @@ public class PgConnection implements Connection {
      * Transaction that rollbacks the tx on backend error and closes the connection on COMMIT/ROLLBACK failure.
      */
     class PgConnectionTransaction implements Transaction {
+        private final int depth;
+
+        PgConnectionTransaction() {
+            this(0);
+        }
+
+        private PgConnectionTransaction(int depth) {
+            this.depth = depth;
+        }
+
         @Override
         public Promise<Transaction> begin() {
-            return completeScript("SAVEPOINT sp_1")
-                .map(_ -> new PgConnectionNestedTransaction(1));
+            int next = depth + 1;
+            return completeScript("SAVEPOINT sp_" + next)
+                .map(_ -> new PgConnectionTransaction(next));
         }
 
         @Override
         public Promise<Unit> commit() {
-            return PgConnection.this.completeScript("COMMIT")
-                                    .map(Unit::toUnit);
+            return depth == 0
+                ? PgConnection.this.completeScript("COMMIT").map(Unit::toUnit)
+                : PgConnection.this.completeScript("RELEASE SAVEPOINT sp_" + depth).map(Unit::toUnit);
         }
 
         @Override
         public Promise<Unit> rollback() {
-            return PgConnection.this.completeScript("ROLLBACK")
-                                    .map(Unit::toUnit);
+            return depth == 0
+                ? PgConnection.this.completeScript("ROLLBACK").map(Unit::toUnit)
+                : PgConnection.this.completeScript("ROLLBACK TO SAVEPOINT sp_" + depth).map(Unit::toUnit);
         }
 
         @Override
@@ -285,32 +377,27 @@ public class PgConnection implements Connection {
         }
     }
 
-    /**
-     * Nested transaction using savepoints.
-     */
-    class PgConnectionNestedTransaction extends PgConnectionTransaction {
-        final int depth;
-
-        PgConnectionNestedTransaction(int depth) {
-            this.depth = depth;
+    private static Promise<Unit> allOf(Stream<? extends Promise<?>> promises) {
+        var list = promises.toList();
+        if (list.isEmpty()) {
+            return Promise.success(unit());
         }
-
-        @Override
-        public Promise<Transaction> begin() {
-            return completeScript("SAVEPOINT sp_" + (depth + 1))
-                .map(_ -> new PgConnectionNestedTransaction(depth + 1));
+        var result = Promise.<Unit>promise();
+        var remaining = new AtomicInteger(list.size());
+        for (var p : list) {
+            p.onResult(r -> r.fold(
+                cause -> {
+                    result.fail(cause);
+                    return null;
+                },
+                _ -> {
+                    if (remaining.decrementAndGet() == 0) {
+                        result.succeed(unit());
+                    }
+                    return null;
+                }
+            ));
         }
-
-        @Override
-        public Promise<Unit> commit() {
-            return PgConnection.this.completeScript("RELEASE SAVEPOINT sp_" + depth)
-                                    .map(Unit::toUnit);
-        }
-
-        @Override
-        public Promise<Unit> rollback() {
-            return PgConnection.this.completeScript("ROLLBACK TO SAVEPOINT sp_" + depth)
-                                    .map(Unit::toUnit);
-        }
+        return result;
     }
 }

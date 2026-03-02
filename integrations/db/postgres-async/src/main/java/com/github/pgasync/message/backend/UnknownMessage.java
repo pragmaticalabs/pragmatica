@@ -1,8 +1,8 @@
 package com.github.pgasync.message.backend;
 
-import com.github.pgasync.message.Message;
+import com.github.pgasync.message.BackendMessage;
 
-public class UnknownMessage implements Message {
+public final class UnknownMessage implements BackendMessage {
 
     private final byte id;
 

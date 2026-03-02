@@ -1,10 +1,10 @@
 package com.github.pgasync.message.backend;
 
-import com.github.pgasync.message.Message;
+import com.github.pgasync.message.BackendMessage;
 
 /**
  * @author Marat Gainullin
  */
-public enum SslHandshake implements Message {
+public enum SslHandshake implements BackendMessage {
     INSTANCE
 }

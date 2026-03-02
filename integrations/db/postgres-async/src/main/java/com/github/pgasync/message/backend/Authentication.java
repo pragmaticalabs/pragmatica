@@ -14,7 +14,7 @@
 
 package com.github.pgasync.message.backend;
 
-import com.github.pgasync.message.Message;
+import com.github.pgasync.message.BackendMessage;
 
 import static com.github.pgasync.util.HexConverter.printHexBinary;
 
@@ -22,7 +22,7 @@ import static com.github.pgasync.util.HexConverter.printHexBinary;
  * @author Antti Laisi, Marat Gainullin
  */
 public record Authentication(boolean authenticationOk, boolean saslScramSha256, byte[] md5salt,
-                             String saslContinueData, byte[] saslAdditionalData) implements Message {
+                             String saslContinueData, byte[] saslAdditionalData) implements BackendMessage {
     public static final Authentication OK = new Authentication(true, false, null, null, null);
     public static final Authentication CLEAR_TEXT = new Authentication(false, false, null, null, null);
     public static final Authentication SCRAM_SHA_256 = new Authentication(false, true, null, null, null);

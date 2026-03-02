@@ -38,18 +38,30 @@ import java.util.function.Consumer;
 public abstract class PgProtocolStream implements ProtocolStream {
     private static final Logger log = LoggerFactory.getLogger(PgProtocolStream.class);
 
+    sealed interface ActiveQuery {
+        record SimpleQuery(
+            Consumer<RowDescription.ColumnDescription[]> onColumns,
+            Consumer<DataRow> onRow,
+            Consumer<CommandComplete> onAffected
+        ) implements ActiveQuery {}
+
+        record ExtendedQuery(
+            Consumer<RowDescription.ColumnDescription[]> onColumns,
+            Consumer<DataRow> onRow
+        ) implements ActiveQuery {}
+
+        record SingleMessage() implements ActiveQuery {}
+    }
+
     protected final Charset encoding;
 
     private volatile Promise<? super Message> onResponse;
     private final Map<String, Set<Consumer<String>>> subscriptions = new HashMap<>();
 
-    private Consumer<RowDescription.ColumnDescription[]> onColumns;
-    private Consumer<DataRow> onRow;
-    private Consumer<CommandComplete> onAffected;
+    private ActiveQuery activeQuery;
 
     private boolean seenReadyForQuery;
     private Message readyForQueryPendingMessage;
-    private Message lastSentMessage;
 
     public PgProtocolStream(Charset encoding) {
         this.encoding = encoding;
@@ -102,7 +114,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
     @Override
     public Promise<Message> send(Message message) {
         return offerRoundTrip(() -> {
-            lastSentMessage = message;
+            activeQuery = new ActiveQuery.SingleMessage();
             write(message);
             if (message instanceof ExtendedQueryMessage) {
                 write(FIndicators.SYNC);
@@ -115,11 +127,10 @@ public abstract class PgProtocolStream implements ProtocolStream {
                               Consumer<RowDescription.ColumnDescription[]> onColumns,
                               Consumer<DataRow> onRow,
                               Consumer<CommandComplete> onAffected) {
-        this.onColumns = onColumns;
-        this.onRow = onRow;
-        this.onAffected = onAffected;
-
-        return send(query).mapToUnit();
+        return offerRoundTrip(() -> {
+            activeQuery = new ActiveQuery.SimpleQuery(onColumns, onRow, onAffected);
+            write(query);
+        }).mapToUnit();
     }
 
     @Override
@@ -127,25 +138,17 @@ public abstract class PgProtocolStream implements ProtocolStream {
                                  Describe describe,
                                  Consumer<RowDescription.ColumnDescription[]> onColumns,
                                  Consumer<DataRow> onRow) {
-        this.onColumns = onColumns;
-        this.onRow = onRow;
-        this.onAffected = null;
         return offerRoundTrip(() -> {
-            Execute execute;
-            lastSentMessage = execute = new Execute();
-            write(bind, describe, execute, FIndicators.SYNC);
+            activeQuery = new ActiveQuery.ExtendedQuery(onColumns, onRow);
+            write(bind, describe, new Execute(), FIndicators.SYNC);
         }).map(commandComplete -> ((CommandComplete) commandComplete).affectedRows());
     }
 
     @Override
     public Promise<Integer> send(Bind bind, Consumer<DataRow> onRow) {
-        this.onColumns = null;
-        this.onRow = onRow;
-        this.onAffected = null;
         return offerRoundTrip(() -> {
-            Execute execute;
-            lastSentMessage = execute = new Execute();
-            write(bind, execute, FIndicators.SYNC);
+            activeQuery = new ActiveQuery.ExtendedQuery(null, onRow);
+            write(bind, new Execute(), FIndicators.SYNC);
         }).map(commandComplete -> ((CommandComplete) commandComplete).affectedRows());
     }
 
@@ -162,11 +165,8 @@ public abstract class PgProtocolStream implements ProtocolStream {
     }
 
     protected void gotError(Cause cause) {
-        onColumns = null;
-        onRow = null;
-        onAffected = null;
+        activeQuery = null;
         readyForQueryPendingMessage = null;
-        lastSentMessage = null;
 
         if (onResponse != null) {
             consumeOnResponse(cause, null);
@@ -176,11 +176,32 @@ public abstract class PgProtocolStream implements ProtocolStream {
     protected void gotMessage(Message message) {
         switch (message) {
             case NotificationResponse notification -> publish(notification);
-            case BIndicators.BindComplete _ -> {} // op op since bulk message sequence
+            case BIndicators.BindComplete _ -> {} // no-op since bulk message sequence
             case BIndicators.ParseComplete _, BIndicators.CloseComplete _ -> readyForQueryPendingMessage = message;
-            case RowDescription rowDescription -> onColumns.accept(rowDescription.getColumns());
-            case BIndicators.NoData _ -> onColumns.accept(new RowDescription.ColumnDescription[]{});
-            case DataRow dataRow -> onRow.accept(dataRow);
+            case RowDescription rowDescription -> {
+                switch (activeQuery) {
+                    case ActiveQuery.SimpleQuery sq -> sq.onColumns().accept(rowDescription.getColumns());
+                    case ActiveQuery.ExtendedQuery eq -> eq.onColumns().accept(rowDescription.getColumns());
+                    case ActiveQuery.SingleMessage _ -> {}
+                    case null -> {}
+                }
+            }
+            case BIndicators.NoData _ -> {
+                switch (activeQuery) {
+                    case ActiveQuery.SimpleQuery sq -> sq.onColumns().accept(new RowDescription.ColumnDescription[]{});
+                    case ActiveQuery.ExtendedQuery eq -> eq.onColumns().accept(new RowDescription.ColumnDescription[]{});
+                    case ActiveQuery.SingleMessage _ -> {}
+                    case null -> {}
+                }
+            }
+            case DataRow dataRow -> {
+                switch (activeQuery) {
+                    case ActiveQuery.SimpleQuery sq -> sq.onRow().accept(dataRow);
+                    case ActiveQuery.ExtendedQuery eq -> eq.onRow().accept(dataRow);
+                    case ActiveQuery.SingleMessage _ -> {}
+                    case null -> {}
+                }
+            }
             case ErrorResponse errorResponse -> {
                 if (seenReadyForQuery) {
                     readyForQueryPendingMessage = message;
@@ -189,12 +210,9 @@ public abstract class PgProtocolStream implements ProtocolStream {
                 }
             }
             case CommandComplete commandComplete -> {
-                if (isSimpleQueryInProgress()) {
-                    onAffected.accept(commandComplete);
+                if (activeQuery instanceof ActiveQuery.SimpleQuery sq) {
+                    sq.onAffected().accept(commandComplete);
                 } else {
-                    // assert !isSimpleQueryInProgress() :
-                    // "During simple query message flow, CommandComplete message should be consumed only by dedicated callback,
-                    // due to possibility of multiple CommandComplete messages, one per sql clause.";
                     readyForQueryPendingMessage = message;
                 }
             }
@@ -210,9 +228,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
                 if (readyForQueryPendingMessage instanceof ErrorResponse errorResponse) {
                     gotError(toSqlCause(errorResponse));
                 } else {
-                    onColumns = null;
-                    onRow = null;
-                    onAffected = null;
+                    activeQuery = null;
                     var response = readyForQueryPendingMessage != null ? readyForQueryPendingMessage : message;
                     consumeOnResponse(null, response);
                 }
@@ -256,15 +272,6 @@ public abstract class PgProtocolStream implements ProtocolStream {
         if (consumers != null) {
             consumers.forEach(c -> c.accept(notification.getPayload()));
         }
-    }
-
-    private boolean isSimpleQueryInProgress() {
-        return lastSentMessage instanceof Query;
-    }
-
-    @SuppressWarnings("unused")
-    private boolean isExtendedQueryInProgress() {
-        return lastSentMessage instanceof ExtendedQueryMessage;
     }
 
     private static Cause toSqlCause(ErrorResponse error) {

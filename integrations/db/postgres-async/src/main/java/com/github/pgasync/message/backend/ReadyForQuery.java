@@ -14,11 +14,11 @@
 
 package com.github.pgasync.message.backend;
 
-import com.github.pgasync.message.Message;
+import com.github.pgasync.message.BackendMessage;
 
 /**
  * @author  Antti Laisi
  */
-public record ReadyForQuery() implements Message {
+public record ReadyForQuery() implements BackendMessage {
     public static final ReadyForQuery INSTANCE = new ReadyForQuery();
 }

@@ -14,7 +14,7 @@
 
 package com.github.pgasync.message.frontend;
 
-import com.github.pgasync.message.Message;
+import com.github.pgasync.message.FrontendMessage;
 
 import java.nio.charset.Charset;
 import java.security.MessageDigest;
@@ -25,7 +25,7 @@ import static com.github.pgasync.util.HexConverter.printHexBinary;
 /**
  * @author Antti Laisi
  */
-public record PasswordMessage(String password, byte[] passwordHash) implements Message {
+public record PasswordMessage(String password, byte[] passwordHash) implements FrontendMessage {
     public static PasswordMessage passwordMessage(String username, String password, byte[] md5salt, Charset encoding) {
         return new PasswordMessage(password, md5salt != null ? md5(username, password, md5salt, encoding) : null);
     }

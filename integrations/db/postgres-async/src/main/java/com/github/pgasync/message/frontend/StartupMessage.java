@@ -14,12 +14,12 @@
 
 package com.github.pgasync.message.frontend;
 
-import com.github.pgasync.message.Message;
+import com.github.pgasync.message.FrontendMessage;
 
 /**
  * @author Antti Laisi
  */
-public class StartupMessage implements Message {
+public final class StartupMessage implements FrontendMessage {
 
     private static final int protocol = 196608;
     private final String username;

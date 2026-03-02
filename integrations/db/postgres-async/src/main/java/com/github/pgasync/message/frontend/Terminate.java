@@ -14,11 +14,11 @@
 
 package com.github.pgasync.message.frontend;
 
-import com.github.pgasync.message.Message;
+import com.github.pgasync.message.FrontendMessage;
 
 /**
  * @author  Antti Laisi
  */
-public enum Terminate implements Message {
+public enum Terminate implements FrontendMessage {
     INSTANCE
 }

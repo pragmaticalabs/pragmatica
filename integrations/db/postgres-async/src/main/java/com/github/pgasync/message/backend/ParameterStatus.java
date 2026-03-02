@@ -1,8 +1,8 @@
 package com.github.pgasync.message.backend;
 
-import com.github.pgasync.message.Message;
+import com.github.pgasync.message.BackendMessage;
 
-public class ParameterStatus implements Message {
+public final class ParameterStatus implements BackendMessage {
 
     private final String name;
     private final String value;
