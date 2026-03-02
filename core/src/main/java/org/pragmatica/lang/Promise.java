@@ -246,9 +246,9 @@ public interface Promise<T> {
     ///
     /// @return New promise instance.
     default Promise<T> withResult(Consumer<Result<T>> consumer) {
-        return fold(result -> {
-            result.onResult(consumer);
-            return this;
+        return replaceResult(result -> {
+            consumer.accept(result);
+            return result;
         });
     }
 
@@ -299,7 +299,7 @@ public interface Promise<T> {
     ///
     /// @return New promise instance.
     default Promise<T> withSuccess(Consumer<T> consumer) {
-        return fold(result -> Promise.resolved(result.onSuccess(consumer)));
+        return replaceResult(result -> result.onSuccess(consumer));
     }
 
     /// **[Side Effect]**
@@ -388,7 +388,7 @@ public interface Promise<T> {
     ///
     /// @return New promise instance.
     default Promise<T> withFailure(Consumer<Cause> consumer) {
-        return fold(result -> Promise.resolved(result.onFailure(consumer)));
+        return replaceResult(result -> result.onFailure(consumer));
     }
 
     /// **[Resolution]**
@@ -2355,6 +2355,17 @@ final class PromiseImpl<T> implements Promise<T> {
     }
 
     @Override
+    public <U> Promise<U> replaceResult(Fn1<Result<U>, Result<T>> transformation) {
+        if (result != null) {
+            return new PromiseImpl<>(transformation.apply(result));
+        } else {
+            var dependency = new PromiseImpl<U>(null);
+            push(new CompletionMap<>(dependency, transformation));
+            return dependency;
+        }
+    }
+
+    @Override
     public Result<T> await() {
         if (result != null) {
             return result;
@@ -2424,13 +2435,20 @@ final class PromiseImpl<T> implements Promise<T> {
         do{
             head = this.stack;
         } while (!STACK.compareAndSet(this, head, null));
+
+        // Fast path: single dependent completion (most common case in chains)
+        if (head != null && head.next == null && !(head instanceof CompletionOnResult)) {
+            head.complete(result);
+            return;
+        }
+
         // Split all completions into three lists - joins, regular completions (dependent transformations), and
         // event handlers.
         // Regular completions are executed immediately, event processors executed asynchronously.
         // Joins are executed after all regular completions are done.
         CompletionJoin joins = null;
         CompletionOnResult events = null;
-        CompletionFold actions = null;
+        Completion actions = null;
         Completion current = head;
         Completion tmp;
         // Split and reverse the list in one pass
@@ -2448,6 +2466,14 @@ final class PromiseImpl<T> implements Promise<T> {
                 case CompletionFold action -> {
                     action.next = actions;
                     actions = action;
+                }
+                case CompletionMap map -> {
+                    map.next = actions;
+                    actions = map;
+                }
+                case CompletionResolve resolve -> {
+                    resolve.next = actions;
+                    actions = resolve;
                 }
             }
             current = tmp;
@@ -2475,6 +2501,9 @@ final class PromiseImpl<T> implements Promise<T> {
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private void runEventHandlers(Completion asyncEvents) {
+        if (asyncEvents == null) {
+            return;
+        }
         AsyncExecutor.INSTANCE.runAsync(() -> {
                                             var current = asyncEvents;
                                             while (current != null) {
@@ -2506,7 +2535,7 @@ final class PromiseImpl<T> implements Promise<T> {
         } while (!STACK.compareAndSet(this, prevStack, completion));
     }
 
-    sealed interface CompletionMarker permits CompletionOnResult, CompletionFold, CompletionJoin {}
+    sealed interface CompletionMarker permits CompletionOnResult, CompletionFold, CompletionMap, CompletionResolve, CompletionJoin {}
 
     abstract static class Completion<T> {
         volatile Completion<T> next;
@@ -2515,18 +2544,56 @@ final class PromiseImpl<T> implements Promise<T> {
     }
 
     final static class CompletionFold<U, T> extends Completion<T> implements CompletionMarker {
-        private final Promise<U> dependency;
+        private final PromiseImpl<U> dependency;
         private final Fn1<Promise<U>, Result<T>> transformer;
 
-        CompletionFold(Promise<U> dependency, Fn1<Promise<U>, Result<T>> transformer) {
+        CompletionFold(PromiseImpl<U> dependency, Fn1<Promise<U>, Result<T>> transformer) {
+            this.dependency = dependency;
+            this.transformer = transformer;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public void complete(Result<T> value) {
+            var inner = transformer.apply(value);
+
+            if (inner instanceof PromiseImpl<?> impl) {
+                if (impl.result != null) {
+                    dependency.resolve((Result<U>) impl.result);
+                } else {
+                    ((PromiseImpl<U>) impl).push(new CompletionResolve<>(dependency));
+                }
+            } else {
+                inner.onResult(dependency::resolve);
+            }
+        }
+    }
+
+    final static class CompletionMap<U, T> extends Completion<T> implements CompletionMarker {
+        private final PromiseImpl<U> dependency;
+        private final Fn1<Result<U>, Result<T>> transformer;
+
+        CompletionMap(PromiseImpl<U> dependency, Fn1<Result<U>, Result<T>> transformer) {
             this.dependency = dependency;
             this.transformer = transformer;
         }
 
         @Override
         public void complete(Result<T> value) {
-            transformer.apply(value)
-                       .onResult(dependency::resolve);
+            dependency.resolve(transformer.apply(value));
+        }
+    }
+
+    final static class CompletionResolve<T> extends Completion<T> implements CompletionMarker {
+        private final PromiseImpl<T> target;
+
+        CompletionResolve(PromiseImpl<T> target) {
+            this.target = target;
+        }
+
+        @Override
+        public void complete(Result<T> value) {
+            target.resolve(value);
         }
     }
 
