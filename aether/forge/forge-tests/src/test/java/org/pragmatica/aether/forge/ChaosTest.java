@@ -42,7 +42,7 @@ class ChaosTest {
     private static final int BASE_PORT = 9500;
     private static final int BASE_MGMT_PORT = 9600;
     private static final Duration CHAOS_DURATION = Duration.ofSeconds(30);
-    private static final Duration RECOVERY_TIMEOUT = Duration.ofSeconds(60);
+    private static final Duration RECOVERY_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 

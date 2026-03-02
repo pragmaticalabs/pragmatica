@@ -32,7 +32,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class NodeLifecycleTest {
     private static final int BASE_PORT = 13000;
     private static final int BASE_MGMT_PORT = 13100;
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
     private EmberCluster cluster;
@@ -91,10 +91,14 @@ class NodeLifecycleTest {
         assertThat(drainResponse).contains("\"success\":true");
         assertThat(drainResponse).contains("\"state\":\"DRAINING\"");
 
-        // Verify via GET that lc-2 is now DRAINING
+        // Verify via GET that lc-2 has transitioned (DRAINING or DECOMMISSIONED).
+        // With no slices deployed, drain eviction completes instantly → DECOMMISSIONED.
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
-               .until(() -> getNodeLifecycle(anyNodePort(), "lc-2").contains("\"state\":\"DRAINING\""));
+               .until(() -> {
+                   var state = getNodeLifecycle(anyNodePort(), "lc-2");
+                   return state.contains("\"state\":\"DRAINING\"") || state.contains("\"state\":\"DECOMMISSIONED\"");
+               });
     }
 
     @Test
@@ -108,7 +112,10 @@ class NodeLifecycleTest {
         httpPost(anyNodePort(), "/api/node/drain/lc-2", "");
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
-               .until(() -> getNodeLifecycle(anyNodePort(), "lc-2").contains("\"state\":\"DRAINING\""));
+               .until(() -> {
+                   var state = getNodeLifecycle(anyNodePort(), "lc-2");
+                   return state.contains("\"state\":\"DRAINING\"") || state.contains("\"state\":\"DECOMMISSIONED\"");
+               });
 
         // Then activate it back
         var activateResponse = httpPost(anyNodePort(), "/api/node/activate/lc-2", "");

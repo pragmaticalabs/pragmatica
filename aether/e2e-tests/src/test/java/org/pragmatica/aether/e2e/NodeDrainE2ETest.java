@@ -81,21 +81,24 @@ class NodeDrainE2ETest {
         assertThat(drainResponse).contains("\"success\":true");
         assertThat(drainResponse).contains("\"state\":\"DRAINING\"");
 
-        // Verify lifecycle endpoint reflects the change
-        cluster.awaitNodeLifecycle("node-3", "DRAINING", DEFAULT_TIMEOUT);
+        // After drain, node transitions through DRAINING → DECOMMISSIONED.
+        // With no slices deployed, eviction completes instantly so the node
+        // reaches DECOMMISSIONED before the first poll.
+        cluster.awaitNodeLifecycle("node-3", "DECOMMISSIONED", DEFAULT_TIMEOUT);
 
         var lifecycleResponse = cluster.anyNode().getNodeLifecycle("node-3");
-        assertThat(lifecycleResponse).contains("\"state\":\"DRAINING\"");
+        assertThat(lifecycleResponse).containsAnyOf("\"state\":\"DRAINING\"", "\"state\":\"DECOMMISSIONED\"");
     }
 
     @Test
     @Order(3)
     void cancelDrain_nodeResumesService() {
-        // Ensure node-3 is still DRAINING from previous test
+        // node-3 should be in DRAINING or DECOMMISSIONED from previous test
+        // (DECOMMISSIONED is the terminal drain state when no slices need eviction)
         var lifecycleBefore = cluster.anyNode().getNodeLifecycle("node-3");
-        assertThat(lifecycleBefore).contains("\"state\":\"DRAINING\"");
+        assertThat(lifecycleBefore).containsAnyOf("\"state\":\"DRAINING\"", "\"state\":\"DECOMMISSIONED\"");
 
-        // Activate node-3 back to ON_DUTY
+        // Activate works from both DRAINING and DECOMMISSIONED states
         var activateResponse = cluster.anyNode().activateNode("node-3");
         assertThat(activateResponse).contains("\"success\":true");
         assertThat(activateResponse).contains("\"state\":\"ON_DUTY\"");
