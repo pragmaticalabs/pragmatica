@@ -18,13 +18,19 @@ import static org.pragmatica.lang.Result.success;
 /// @param maxLifetime          Maximum lifetime of a connection
 /// @param validationQuery      SQL query to validate connections (optional)
 /// @param leakDetectionTimeout Time after which connection leak warnings are logged
+/// @param ioThreads            Number of Netty IO threads for async transport (0 = auto)
 public record PoolConfig(int minConnections,
                          int maxConnections,
                          Duration connectionTimeout,
                          Duration idleTimeout,
                          Duration maxLifetime,
                          Option<String> validationQuery,
-                         Duration leakDetectionTimeout) {
+                         Duration leakDetectionTimeout,
+                         int ioThreads) {
+    private static final int DEFAULT_IO_THREADS = Math.max(Runtime.getRuntime()
+                                                                  .availableProcessors(),
+                                                           8);
+
     /// Creates a validated pool config with all parameters.
     ///
     /// @param minConnections       Minimum connections
@@ -41,14 +47,23 @@ public record PoolConfig(int minConnections,
                                                 Duration idleTimeout,
                                                 Duration maxLifetime,
                                                 Option<String> validationQuery,
-                                                Duration leakDetectionTimeout) {
+                                                Duration leakDetectionTimeout,
+                                                int ioThreads) {
         return success(new PoolConfig(minConnections,
                                       maxConnections,
                                       connectionTimeout,
                                       idleTimeout,
                                       maxLifetime,
                                       validationQuery,
-                                      leakDetectionTimeout));
+                                      leakDetectionTimeout,
+                                      ioThreads));
+    }
+
+    /// Returns the effective IO thread count, using auto-detection when set to 0.
+    public int effectiveIoThreads() {
+        return ioThreads > 0
+               ? ioThreads
+               : DEFAULT_IO_THREADS;
     }
 
     /// Default pool configuration suitable for most applications.
@@ -58,7 +73,8 @@ public record PoolConfig(int minConnections,
                                                         Duration.ofMinutes(10),
                                                         Duration.ofMinutes(30),
                                                         none(),
-                                                        Duration.ZERO).unwrap();
+                                                        Duration.ZERO,
+                                                        0).unwrap();
 
     /// Creates a builder for fluent configuration.
     ///
@@ -76,6 +92,7 @@ public record PoolConfig(int minConnections,
         private Duration maxLifetime = DEFAULT.maxLifetime;
         private Option<String> validationQuery = DEFAULT.validationQuery;
         private Duration leakDetectionTimeout = DEFAULT.leakDetectionTimeout;
+        private int ioThreads = DEFAULT.ioThreads;
 
         private Builder() {}
 
@@ -114,6 +131,11 @@ public record PoolConfig(int minConnections,
             return this;
         }
 
+        public Builder withIoThreads(int value) {
+            this.ioThreads = value;
+            return this;
+        }
+
         public Result<PoolConfig> build() {
             return poolConfig(minConnections,
                               maxConnections,
@@ -121,7 +143,8 @@ public record PoolConfig(int minConnections,
                               idleTimeout,
                               maxLifetime,
                               validationQuery,
-                              leakDetectionTimeout);
+                              leakDetectionTimeout,
+                              ioThreads);
         }
     }
 }

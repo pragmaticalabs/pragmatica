@@ -176,11 +176,12 @@ request_timeout = "5s"
 **Resource types:** `SqlConnector`, `JooqConnector`
 **Config prefix:** `database`
 **Built-in qualifiers:** `@Sql`, `@Jooq`
-**Factories:** `JdbcSqlConnectorFactory`, `R2dbcSqlConnectorFactory`, `JdbcJooqConnectorFactory`, `R2dbcJooqConnectorFactory`
+**Factories:** `AsyncSqlConnectorFactory` (priority 20), `R2dbcSqlConnectorFactory`, `JdbcSqlConnectorFactory`, `JdbcJooqConnectorFactory`, `R2dbcJooqConnectorFactory`
 
-Transport is selected automatically:
-- If `r2dbc_url` is present, R2DBC transport is used
-- Otherwise, JDBC transport (default)
+Transport is selected automatically by priority:
+1. If `async_url` is present, **postgres-async** transport is used (native Netty, highest priority)
+2. If `r2dbc_url` is present, **R2DBC** transport is used
+3. Otherwise, **JDBC** transport (default)
 
 ### Configuration
 
@@ -195,6 +196,7 @@ Transport is selected automatically:
 | `password` | `String` (optional) | none | Connection password |
 | `jdbc_url` | `String` (optional) | none | Override JDBC URL (replaces host/port/database) |
 | `r2dbc_url` | `String` (optional) | none | Override R2DBC URL (replaces host/port/database) |
+| `async_url` | `String` (optional) | none | Override async URL — selects postgres-async transport (highest priority) |
 | `properties.*` | `Map<String, String>` | empty | Additional driver-specific properties |
 
 ### Database Types
@@ -213,17 +215,18 @@ Transport is selected automatically:
 
 ### Connection Pool Configuration
 
-Nested under `pool` in the database section.
+Nested under `pool_config` in the database section.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `min_connections` | `int` | `2` | Minimum connections to maintain |
-| `max_connections` | `int` | `10` | Maximum connections allowed |
+| `min_connections` | `int` | `4` | Minimum connections to maintain |
+| `max_connections` | `int` | `20` | Maximum connections allowed |
 | `connection_timeout` | duration | `30s` | Maximum wait time for a connection |
 | `idle_timeout` | duration | `10m` | Maximum idle time before closing |
 | `max_lifetime` | duration | `30m` | Maximum lifetime of a connection |
 | `validation_query` | `String` (optional) | none | SQL query to validate connections |
 | `leak_detection_timeout` | duration | `0` (disabled) | Time after which leak warnings are logged |
+| `io_threads` | `int` | `0` (auto) | Netty IO threads for async transport. `0` = `max(availableProcessors, 8)` |
 
 ### SqlConnector API
 
@@ -268,24 +271,47 @@ Nested under `pool` in the database section.
 
 ### TOML Examples
 
-**Primary database (JDBC):**
+**Primary database (postgres-async — recommended for PostgreSQL):**
 ```toml
 [database.primary]
 name = "primary"
-type = "postgresql"
+type = "POSTGRESQL"
 host = "db.example.com"
 port = 5432
 database = "myapp"
 username = "app_user"
 password = "${secrets:database/primary/password}"
+async_url = "postgresql://db.example.com:5432/myapp"
 
-[database.primary.pool]
+[database.primary.pool_config]
 min_connections = 5
 max_connections = 20
 connection_timeout = "10s"
 idle_timeout = "5m"
 max_lifetime = "30m"
 leak_detection_timeout = "30s"
+io_threads = 0
+```
+
+**Primary database (JDBC):**
+```toml
+[database.primary]
+name = "primary"
+type = "POSTGRESQL"
+host = "db.example.com"
+port = 5432
+database = "myapp"
+username = "app_user"
+password = "${secrets:database/primary/password}"
+
+[database.primary.pool_config]
+min_connections = 5
+max_connections = 20
+connection_timeout = "10s"
+idle_timeout = "5m"
+max_lifetime = "30m"
+leak_detection_timeout = "30s"
+io_threads = 0
 ```
 
 **Analytics database (R2DBC):**
@@ -297,7 +323,7 @@ r2dbc_url = "r2dbc:postgresql://analytics.internal:5432/metrics"
 username = "analytics_reader"
 password = "${secrets:database/analytics/password}"
 
-[database.analytics.pool]
+[database.analytics.pool_config]
 min_connections = 2
 max_connections = 5
 ```

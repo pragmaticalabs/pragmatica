@@ -27,6 +27,8 @@ class DatabaseConnectorConfigTest {
             assertThat(config.database()).isEqualTo("testdb");
             assertThat(config.port()).isZero();
             assertThat(config.poolConfig()).isEqualTo(PoolConfig.DEFAULT);
+            assertThat(config.poolConfig().ioThreads()).isZero();
+            assertThat(config.poolConfig().effectiveIoThreads()).isGreaterThanOrEqualTo(8);
             assertThat(config.properties()).isEmpty();
             assertThat(config.jdbcUrl().isEmpty()).isTrue();
             assertThat(config.r2dbcUrl().isEmpty()).isTrue();

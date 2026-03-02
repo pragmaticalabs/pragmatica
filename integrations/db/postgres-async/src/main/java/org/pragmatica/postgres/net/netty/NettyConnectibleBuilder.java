@@ -51,7 +51,7 @@ public class NettyConnectibleBuilder extends ConnectibleBuilder {
 
     private EventLoopGroup resolveEventLoopGroup() {
         if (eventLoopGroup == null) {
-            eventLoopGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+            eventLoopGroup = new MultiThreadIoEventLoopGroup(properties.ioThreads(), NioIoHandler.newFactory());
             ownsEventLoopGroup = true;
         }
         return eventLoopGroup;

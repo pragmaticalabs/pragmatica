@@ -60,6 +60,8 @@ public final class AsyncSqlConnectorFactory implements ResourceFactory<SqlConnec
     private static void configurePool(NettyConnectibleBuilder builder, DatabaseConnectorConfig config) {
         builder.maxConnections(config.poolConfig()
                                      .maxConnections());
+        builder.ioThreads(config.poolConfig()
+                                .effectiveIoThreads());
         config.poolConfig()
               .validationQuery()
               .onPresent(builder::validationQuery);

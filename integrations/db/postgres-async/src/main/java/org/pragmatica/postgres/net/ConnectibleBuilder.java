@@ -101,6 +101,11 @@ public abstract class ConnectibleBuilder {
         return this;
     }
 
+    public ConnectibleBuilder ioThreads(int ioThreads) {
+        properties.ioThreads = ioThreads;
+        return this;
+    }
+
     /**
      * Configuration for a connectible.
      */
@@ -117,6 +122,7 @@ public abstract class ConnectibleBuilder {
         private boolean useSsl;
         private String encoding = System.getProperty("pg.async.encoding", "utf-8");
         private String validationQuery;
+        private int ioThreads = Math.max(Runtime.getRuntime().availableProcessors(), 8);
 
         public String hostname() {
             return hostname;
@@ -160,6 +166,10 @@ public abstract class ConnectibleBuilder {
 
         public String validationQuery() {
             return validationQuery;
+        }
+
+        public int ioThreads() {
+            return ioThreads;
         }
     }
 }
