@@ -14,22 +14,26 @@
 
 package com.github.pgasync;
 
-import com.github.pgasync.async.ThrowingPromise;
 import com.github.pgasync.net.Connectible;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 import java.util.List;
 import java.util.SortedMap;
 import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntFunction;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
 
+import static com.github.pgasync.DatabaseExtension.block;
 import static java.lang.System.currentTimeMillis;
 import static java.lang.System.out;
 import static org.pragmatica.lang.Unit.unit;
@@ -73,10 +77,11 @@ public class PerformanceTest {
             .username(DatabaseExtension.postgres.getUsername())
             .pool();
         var connections = IntStream.range(0, poolSize)
-                                   .mapToObj(_ -> pool.getConnection().await()).toList();
+                                   .mapToObj(_ -> block(pool.getConnection())).toList();
         connections.forEach(connection -> {
-            connection.prepareStatement(SELECT_42).await().close().await();
-            connection.close().await();
+            var ps = block(connection.prepareStatement(SELECT_42));
+            block(ps.close());
+            block(connection.close());
         });
 
         try {
@@ -84,22 +89,21 @@ public class PerformanceTest {
             performBatches(preparedStatementResults, poolSize, numThreads, pool, _ -> new Batch(batchSize, pool).startWithPreparedStatement());
         } finally {
             // Teardown
-            pool.close().await();
+            block(pool.close());
         }
     }
 
     @SuppressWarnings("OptionalGetWithoutIsPresent")
-    private void performBatches(SortedMap<Integer, SortedMap<Integer, Long>> results, int poolSize, int numThreads, Connectible pool, IntFunction<ThrowingPromise<Long>> batchStarter) {
+    private void performBatches(SortedMap<Integer, SortedMap<Integer, Long>> results, int poolSize, int numThreads, Connectible pool, IntFunction<Promise<Long>> batchStarter) {
         double mean = LongStream.range(0, repeats)
                                 .map(_ -> {
                                     try {
                                         var batches = IntStream.range(0, poolSize)
                                                                .mapToObj(batchStarter)
                                                                .toList();
-                                        ThrowingPromise.allOf(batches.stream())
-                                                       .await();
+                                        awaitAll(batches);
                                         return batches.stream()
-                                                      .map(ThrowingPromise::await)
+                                                      .map(b -> block(b))
                                                       .max(Long::compare)
                                                       .get();
                                     } catch (Exception ex) {
@@ -112,27 +116,50 @@ public class PerformanceTest {
                .put(numThreads, Math.round(mean));
     }
 
+    private static void awaitAll(List<Promise<Long>> promises) {
+        if (promises.isEmpty()) {
+            return;
+        }
+        var result = Promise.<Unit>promise();
+        var remaining = new AtomicInteger(promises.size());
+        for (var p : promises) {
+            p.onResult(r -> r.fold(
+                cause -> {
+                    result.fail(cause);
+                    return null;
+                },
+                _ -> {
+                    if (remaining.decrementAndGet() == 0) {
+                        result.succeed(unit());
+                    }
+                    return null;
+                }
+            ));
+        }
+        block(result);
+    }
+
     private static class Batch {
         private final long batchSize;
         private final Connectible pool;
         private long performed;
         private long startedAt;
-        private ThrowingPromise<Long> onBatch;
+        private Promise<Long> onBatch;
 
         Batch(long batchSize, Connectible pool) {
             this.batchSize = batchSize;
             this.pool = pool;
         }
 
-        private ThrowingPromise<Long> startWithPreparedStatement() {
-            onBatch = ThrowingPromise.create();
+        private Promise<Long> startWithPreparedStatement() {
+            onBatch = Promise.promise();
             startedAt = System.currentTimeMillis();
             nextSamplePreparedStatement();
             return onBatch;
         }
 
-        private ThrowingPromise<Long> startWithSimpleQuery() {
-            onBatch = ThrowingPromise.create();
+        private Promise<Long> startWithSimpleQuery() {
+            onBatch = Promise.promise();
             startedAt = System.currentTimeMillis();
             nextSampleSimpleQuery();
             return onBatch;
@@ -147,32 +174,33 @@ public class PerformanceTest {
                                                         .fold(_ -> stmt.close())
                                                         .fold(_ -> connection.close())))
 
-                .onSuccess(_ -> {
-                    if (++performed < batchSize) {
-                        nextSamplePreparedStatement();
-                    } else {
-                        long duration = currentTimeMillis() - startedAt;
-                        onBatch.succeed(duration);
-                    }
-                })
-                .tryRecover(th -> {
-                    onBatch.fail(th);
-                    return unit();
-                });
+                .withSuccess(_ -> completeBatchStep(true))
+                .recover(this::failBatch);
 
+        }
+
+        private void completeBatchStep(boolean preparedStatement) {
+            if (++performed < batchSize) {
+                if (preparedStatement) {
+                    nextSamplePreparedStatement();
+                } else {
+                    nextSampleSimpleQuery();
+                }
+            } else {
+                long duration = currentTimeMillis() - startedAt;
+                onBatch.succeed(duration);
+            }
+        }
+
+        private Unit failBatch(Cause cause) {
+            onBatch.fail(cause);
+            return unit();
         }
 
         private void nextSampleSimpleQuery() {
             pool.completeScript(SELECT_42)
-                .onSuccess(_ -> {
-                    if (++performed < batchSize) {
-                        nextSamplePreparedStatement();
-                    } else {
-                        long duration = currentTimeMillis() - startedAt;
-                        onBatch.succeed(duration);
-                    }
-                })
-                .withFailure(th -> onBatch.fail(th));
+                .withSuccess(_ -> completeBatchStep(false))
+                .withFailure(cause -> onBatch.fail(cause));
         }
     }
 

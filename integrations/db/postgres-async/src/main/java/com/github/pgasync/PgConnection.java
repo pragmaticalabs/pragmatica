@@ -14,8 +14,6 @@
 
 package com.github.pgasync;
 
-import com.github.pgasync.async.ThrowableCause;
-import com.github.pgasync.async.ThrowingPromise;
 import com.github.pgasync.conversion.DataConverter;
 import com.github.pgasync.message.Message;
 import com.github.pgasync.message.backend.Authentication;
@@ -25,6 +23,7 @@ import com.github.pgasync.net.Connection;
 import com.github.pgasync.net.Listening;
 import com.github.pgasync.net.PreparedStatement;
 import com.github.pgasync.net.Transaction;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -35,7 +34,6 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 import static com.github.pgasync.message.backend.RowDescription.ColumnDescription;
-import static org.pragmatica.lang.Functions.Fn1;
 
 /**
  * A connection to Postgres backend. The postmaster forks a backend process for each connection. A connection can process only a single query at a
@@ -56,7 +54,7 @@ public class PgConnection implements Connection {
         }
 
         @Override
-        public ThrowingPromise<PgResultSet> query(Object... params) {
+        public Promise<PgResultSet> query(Object... params) {
             var rows = new ArrayList<PgRow>();
 
             return fetch((_, _) -> {}, rows::add, params)
@@ -65,9 +63,9 @@ public class PgConnection implements Connection {
 
         //TODO: consider conversion to "reducer" style to eliminate externally stored state
         @Override
-        public ThrowingPromise<Integer> fetch(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
-                                              Consumer<PgRow> processor,
-                                              Object... params) {
+        public Promise<Integer> fetch(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
+                                      Consumer<PgRow> processor,
+                                      Object... params) {
             var bind = new Bind(sname, dataConverter.fromParameters(params));
             Consumer<DataRow> rowProcessor = dataRow -> processor.accept(new PgRow(dataRow, columns.byName, columns.ordered, dataConverter));
 
@@ -85,7 +83,7 @@ public class PgConnection implements Connection {
         }
 
         @Override
-        public ThrowingPromise<Unit> close() {
+        public Promise<Unit> close() {
             return stream.send(Close.statement(sname))
                          .mapToUnit();
         }
@@ -122,16 +120,16 @@ public class PgConnection implements Connection {
         this.dataConverter = dataConverter;
     }
 
-    ThrowingPromise<Connection> connect(String username, String password, String database) {
+    Promise<Connection> connect(String username, String password, String database) {
         return stream.connect(new StartupMessage(username, database))
                      .flatMap(authentication -> authenticate(username, password, authentication))
                      .map(_ -> PgConnection.this);
     }
 
-    private ThrowingPromise<? extends Message> authenticate(String username, String password, Message message) {
+    private Promise<? extends Message> authenticate(String username, String password, Message message) {
         return message instanceof Authentication authentication && !authentication.authenticationOk()
                ? stream.authenticate(username, password, authentication)
-               : ThrowingPromise.successful(message);
+               : Promise.success(message);
     }
 
     public boolean isConnected() {
@@ -139,11 +137,11 @@ public class PgConnection implements Connection {
     }
 
     @Override
-    public ThrowingPromise<? extends PreparedStatement> prepareStatement(String sql, Oid... parametersTypes) {
+    public Promise<? extends PreparedStatement> prepareStatement(String sql, Oid... parametersTypes) {
         return preparedStatementOf(sql, parametersTypes);
     }
 
-    ThrowingPromise<PgPreparedStatement> preparedStatementOf(String sql, Oid... parametersTypes) {
+    Promise<PgPreparedStatement> preparedStatementOf(String sql, Oid... parametersTypes) {
         if (sql == null || sql.isBlank()) {
             throw new IllegalArgumentException("'sql' shouldn't be null or empty or blank string");
         }
@@ -159,10 +157,10 @@ public class PgConnection implements Connection {
     }
 
     @Override
-    public ThrowingPromise<Unit> script(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
-                                        Consumer<PgRow> onRow,
-                                        Consumer<Integer> onAffected,
-                                        String sql) {
+    public Promise<Unit> script(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
+                                Consumer<PgRow> onRow,
+                                Consumer<Integer> onAffected,
+                                String sql) {
         if (sql == null || sql.isBlank()) {
             throw new IllegalArgumentException("'sql' shouldn't be null or empty or blank string");
         }
@@ -182,42 +180,39 @@ public class PgConnection implements Connection {
     }
 
     @Override
-    public ThrowingPromise<Integer> query(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
-                                          Consumer<PgRow> onRow,
-                                          String sql,
-                                          Object... params) {
+    public Promise<Integer> query(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
+                                  Consumer<PgRow> onRow,
+                                  String sql,
+                                  Object... params) {
         return prepareStatement(sql, dataConverter.assumeTypes(params))
             .flatMap(ps -> ps.fetch(onColumns, onRow, params)
                              .fold(result -> closePreparedStatement(result, ps)));
     }
 
-    private static ThrowingPromise<Integer> closePreparedStatement(Result<Integer> result, PreparedStatement ps) {
+    private static Promise<Integer> closePreparedStatement(Result<Integer> result, PreparedStatement ps) {
         return ps.close()
-                 .map(_ -> result.fold(cause -> {
-                                           throw new RuntimeException(((ThrowableCause) cause).throwable());
-                                       },
-                                       Fn1.id()));
+                 .flatMap(_ -> Promise.resolved(result));
     }
 
     @Override
-    public ThrowingPromise<Transaction> begin() {
+    public Promise<Transaction> begin() {
         return completeScript("BEGIN")
             .map(_ -> new PgConnectionTransaction());
     }
 
-    public ThrowingPromise<Listening> subscribe(String channel, Consumer<String> onNotification) {
+    public Promise<Listening> subscribe(String channel, Consumer<String> onNotification) {
         // TODO: wait for commit before sending unlisten as otherwise it can be rolled back
         return completeScript("LISTEN " + channel)
             .map(_ -> {
                 var unsubscribe = stream.subscribe(channel, onNotification);
 
-                return () -> completeScript("UNLISTEN " + channel).onSuccess(_ -> unsubscribe.run())
+                return () -> completeScript("UNLISTEN " + channel).withSuccess(_ -> unsubscribe.run())
                                                                   .mapToUnit();
             });
     }
 
     @Override
-    public ThrowingPromise<Unit> close() {
+    public Promise<Unit> close() {
         return stream.close();
     }
 
@@ -239,25 +234,25 @@ public class PgConnection implements Connection {
      */
     class PgConnectionTransaction implements Transaction {
         @Override
-        public ThrowingPromise<Transaction> begin() {
+        public Promise<Transaction> begin() {
             return completeScript("SAVEPOINT sp_1")
                 .map(_ -> new PgConnectionNestedTransaction(1));
         }
 
         @Override
-        public ThrowingPromise<Unit> commit() {
+        public Promise<Unit> commit() {
             return PgConnection.this.completeScript("COMMIT")
                                     .map(Unit::toUnit);
         }
 
         @Override
-        public ThrowingPromise<Unit> rollback() {
+        public Promise<Unit> rollback() {
             return PgConnection.this.completeScript("ROLLBACK")
                                     .map(Unit::toUnit);
         }
 
         @Override
-        public ThrowingPromise<Unit> close() {
+        public Promise<Unit> close() {
             return commit()
                 .fold(this::handleException);
         }
@@ -268,25 +263,25 @@ public class PgConnection implements Connection {
         }
 
         @Override
-        public ThrowingPromise<Unit> script(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
-                                            Consumer<PgRow> onRow,
-                                            Consumer<Integer> onAffected,
-                                            String sql) {
+        public Promise<Unit> script(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
+                                    Consumer<PgRow> onRow,
+                                    Consumer<Integer> onAffected,
+                                    String sql) {
             return PgConnection.this.script(onColumns, onRow, onAffected, sql)
                                     .fold(this::handleException);
         }
 
-        public ThrowingPromise<Integer> query(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
-                                              Consumer<PgRow> onRow,
-                                              String sql,
-                                              Object... params) {
+        public Promise<Integer> query(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
+                                      Consumer<PgRow> onRow,
+                                      String sql,
+                                      Object... params) {
             return PgConnection.this.query(onColumns, onRow, sql, params)
                                     .fold(this::handleException);
         }
 
-        private <T> ThrowingPromise<T> handleException(Result<T> result) {
-            return result.fold(cause -> rollback().fold(_ -> ThrowingPromise.failed((ThrowableCause) cause)),
-                               ThrowingPromise::successful);
+        private <T> Promise<T> handleException(Result<T> result) {
+            return result.fold(cause -> rollback().fold(_ -> Promise.failure(cause)),
+                               Promise::success);
         }
     }
 
@@ -301,19 +296,19 @@ public class PgConnection implements Connection {
         }
 
         @Override
-        public ThrowingPromise<Transaction> begin() {
+        public Promise<Transaction> begin() {
             return completeScript("SAVEPOINT sp_" + (depth + 1))
                 .map(_ -> new PgConnectionNestedTransaction(depth + 1));
         }
 
         @Override
-        public ThrowingPromise<Unit> commit() {
+        public Promise<Unit> commit() {
             return PgConnection.this.completeScript("RELEASE SAVEPOINT sp_" + depth)
                                     .map(Unit::toUnit);
         }
 
         @Override
-        public ThrowingPromise<Unit> rollback() {
+        public Promise<Unit> rollback() {
             return PgConnection.this.completeScript("ROLLBACK TO SAVEPOINT sp_" + depth)
                                     .map(Unit::toUnit);
         }

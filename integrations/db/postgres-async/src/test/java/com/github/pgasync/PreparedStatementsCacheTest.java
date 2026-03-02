@@ -9,6 +9,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
+import static com.github.pgasync.DatabaseExtension.block;
+
 /**
  * @author Marat Gainullin
  */
@@ -33,59 +35,59 @@ public class PreparedStatementsCacheTest {
 
     @AfterEach
     public void shutdown() {
-        pool.close().await();
+        block(pool.close());
     }
 
     @Test
     public void shouldEvictedStatementBeReallyClosed() {
-        Connection conn = pool.getConnection().await();
+        Connection conn = block(pool.getConnection());
         try {
-            PreparedStatement evictor = conn.prepareStatement(SELECT_52).await();
+            PreparedStatement evictor = block(conn.prepareStatement(SELECT_52));
             try {
-                PreparedStatement evicted = conn.prepareStatement(SELECT_32).await();
-                evicted.close().await();
+                PreparedStatement evicted = block(conn.prepareStatement(SELECT_32));
+                block(evicted.close());
             } finally {
-                evictor.close().await();
+                block(evictor.close());
             }
         } finally {
-            conn.close().await();
+            block(conn.close());
         }
     }
 
     @Test
     public void shouldDuplicatedStatementBeReallyClosed() {
-        Connection conn = pool.getConnection().await();
+        Connection conn = block(pool.getConnection());
         try {
-            PreparedStatement stmt = conn.prepareStatement(SELECT_52).await();
+            PreparedStatement stmt = block(conn.prepareStatement(SELECT_52));
             try {
-                PreparedStatement duplicated = conn.prepareStatement(SELECT_52).await();
-                duplicated.close().await();
+                PreparedStatement duplicated = block(conn.prepareStatement(SELECT_52));
+                block(duplicated.close());
             } finally {
-                stmt.close().await();
+                block(stmt.close());
             }
         } finally {
-            conn.close().await();
+            block(conn.close());
         }
     }
 
     @Test
     public void shouldDuplicatedAndEvictedStatementsBeReallyClosed() {
-        Connection conn = pool.getConnection().await();
+        Connection conn = block(pool.getConnection());
         try {
-            PreparedStatement stmt = conn.prepareStatement(SELECT_52).await();
+            PreparedStatement stmt = block(conn.prepareStatement(SELECT_52));
             try {
-                PreparedStatement duplicated = conn.prepareStatement(SELECT_52).await();
+                PreparedStatement duplicated = block(conn.prepareStatement(SELECT_52));
                 try {
-                    PreparedStatement evicted = conn.prepareStatement(SELECT_32).await();
-                    evicted.close().await();
+                    PreparedStatement evicted = block(conn.prepareStatement(SELECT_32));
+                    block(evicted.close());
                 } finally {
-                    duplicated.close().await();
+                    block(duplicated.close());
                 }
             } finally {
-                stmt.close().await();
+                block(stmt.close());
             }
         } finally {
-            conn.close().await();
+            block(conn.close());
         }
     }
 

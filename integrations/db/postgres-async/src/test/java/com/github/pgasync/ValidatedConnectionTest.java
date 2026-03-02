@@ -23,6 +23,7 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.util.function.Consumer;
 
+import static com.github.pgasync.DatabaseExtension.block;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
@@ -36,23 +37,15 @@ public class ValidatedConnectionTest {
     @RegisterExtension
     final DatabaseExtension dbr = DatabaseExtension.defaultConfiguration();
 
-    private void withSource(Connectible source, Consumer<Connectible> action) throws Exception {
+    private void withSource(Connectible source, Consumer<Connectible> action) {
         try {
             action.accept(source);
-        } catch (Exception ex) {
-            DatabaseExtension.ifCause(ex,
-                    sqlException -> {
-                        throw sqlException;
-                    },
-                                 () -> {
-                        throw ex;
-                    });
         } finally {
-            source.close().await();
+            block(source.close());
         }
     }
 
-    private void withPlain(String clause, Consumer<Connectible> action) throws Exception {
+    private void withPlain(String clause, Consumer<Connectible> action) {
         withSource(dbr.builder
                         .validationQuery(clause)
                         .plain(),
@@ -60,7 +53,7 @@ public class ValidatedConnectionTest {
         );
     }
 
-    private void withPool(String clause, Consumer<Connectible> action) throws Exception {
+    private void withPool(String clause, Consumer<Connectible> action) {
         withSource(dbr.builder
                         .validationQuery(clause)
                         .pool(),
@@ -69,32 +62,28 @@ public class ValidatedConnectionTest {
     }
 
     @Test
-    public void shouldReturnValidPlainConnection() throws Exception {
+    public void shouldReturnValidPlainConnection() {
         withPlain("Select 89", plain -> {
-            Connection conn = plain.getConnection().await();
-            conn.close().await();
+            Connection conn = block(plain.getConnection());
+            block(conn.close());
         });
     }
 
     @Test
     public void shouldNotReturnInvalidPlainConnection() {
-        assertThrows(SqlException.class, () -> {
-            withPlain("Selec t 89", plain -> plain.getConnection().await());
-        });
+        assertThrows(SqlException.class, () -> withPlain("Selec t 89", plain -> block(plain.getConnection())));
     }
 
     @Test
-    public void shouldReturnValidPooledConnection() throws Exception {
+    public void shouldReturnValidPooledConnection() {
         withPool("Select 89", source -> {
-            Connection conn = source.getConnection().await();
-            conn.close().await();
+            Connection conn = block(source.getConnection());
+            block(conn.close());
         });
     }
 
     @Test
     public void shouldNotReturnInvalidPooledConnection() {
-        assertThrows(SqlException.class, () -> {
-            withPool("Selec t 89", source -> source.getConnection().await());
-        });
+        assertThrows(SqlException.class, () -> withPool("Selec t 89", source -> block(source.getConnection())));
     }
 }

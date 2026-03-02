@@ -15,14 +15,13 @@
 package com.github.pgasync;
 
 import com.github.pgasync.SqlError.*;
-import com.github.pgasync.async.ThrowableCause;
-import com.github.pgasync.async.ThrowingPromise;
 import com.github.pgasync.message.ExtendedQueryMessage;
 import com.github.pgasync.message.Message;
 import com.github.pgasync.message.backend.*;
 import com.github.pgasync.message.frontend.*;
-import com.github.pgasync.net.SqlException;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,7 +40,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
 
     protected final Charset encoding;
 
-    private volatile ThrowingPromise<? super Message> onResponse;
+    private volatile Promise<? super Message> onResponse;
     private final Map<String, Set<Consumer<String>>> subscriptions = new HashMap<>();
 
     private Consumer<RowDescription.ColumnDescription[]> onColumns;
@@ -56,50 +55,52 @@ public abstract class PgProtocolStream implements ProtocolStream {
         this.encoding = encoding;
     }
 
-    private void consumeOnResponse(ThrowableCause th, Message message) {
+    private void consumeOnResponse(Cause cause, Message message) {
         var wasOnResponse = onResponse;
         onResponse = null;
 
-        if (th != null) {
-            wasOnResponse.fail(th);
+        if (cause != null) {
+            wasOnResponse.fail(cause);
         } else {
             wasOnResponse.succeed(message);
         }
     }
 
     @Override
-    public ThrowingPromise<Message> authenticate(String userName, String password, Authentication authRequired) {
+    public Promise<Message> authenticate(String userName, String password, Authentication authRequired) {
         if (authRequired.saslScramSha256()) {
             var clientNonce = UUID.randomUUID().toString();
             var saslInitialResponse = new SASLInitialResponse(Authentication.SUPPORTED_SASL,
                                                               null, ""/*SaslPrep.asQueryString(userName) - Postgres requires an empty string here*/,
                                                               clientNonce);
             return send(saslInitialResponse)
-                .flatMap(message -> {
-                    if (message instanceof Authentication authentication) {
-                        var serverFirstMessage = authentication.saslContinueData();
-                        if (serverFirstMessage != null) {
-                            return send(SASLResponse.of(password,
-                                                        serverFirstMessage,
-                                                        clientNonce,
-                                                        saslInitialResponse.gs2Header(),
-                                                        saslInitialResponse.clientFirstMessageBare()));
-                        } else {
-                            throw new IllegalStateException("Bad SASL authentication sequence message detected on 'server-first-message' step");
-                        }
-                    } else {
-                        throw new IllegalStateException("Bad SASL authentication sequence detected on 'server-first-message' step");
-                    }
-                });
+                .flatMap(message -> handleSaslResponse(message, password, clientNonce, saslInitialResponse));
         } else {
             return send(PasswordMessage.passwordMessage(userName, password, authRequired.md5salt(), encoding));
+        }
+    }
+
+    private Promise<Message> handleSaslResponse(Message message, String password, String clientNonce, SASLInitialResponse saslInitialResponse) {
+        if (message instanceof Authentication authentication) {
+            var serverFirstMessage = authentication.saslContinueData();
+            if (serverFirstMessage != null) {
+                return send(SASLResponse.of(password,
+                                            serverFirstMessage,
+                                            clientNonce,
+                                            saslInitialResponse.gs2Header(),
+                                            saslInitialResponse.clientFirstMessageBare()));
+            } else {
+                return Promise.failure(new SqlError.BadAuthenticationSequence("Bad SASL authentication sequence message detected on 'server-first-message' step"));
+            }
+        } else {
+            return Promise.failure(new SqlError.BadAuthenticationSequence("Bad SASL authentication sequence detected on 'server-first-message' step"));
         }
     }
 
     protected abstract void write(Message... messages);
 
     @Override
-    public ThrowingPromise<Message> send(Message message) {
+    public Promise<Message> send(Message message) {
         return offerRoundTrip(() -> {
             lastSentMessage = message;
             write(message);
@@ -110,10 +111,10 @@ public abstract class PgProtocolStream implements ProtocolStream {
     }
 
     @Override
-    public ThrowingPromise<Unit> send(Query query,
-                                      Consumer<RowDescription.ColumnDescription[]> onColumns,
-                                      Consumer<DataRow> onRow,
-                                      Consumer<CommandComplete> onAffected) {
+    public Promise<Unit> send(Query query,
+                              Consumer<RowDescription.ColumnDescription[]> onColumns,
+                              Consumer<DataRow> onRow,
+                              Consumer<CommandComplete> onAffected) {
         this.onColumns = onColumns;
         this.onRow = onRow;
         this.onAffected = onAffected;
@@ -122,10 +123,10 @@ public abstract class PgProtocolStream implements ProtocolStream {
     }
 
     @Override
-    public ThrowingPromise<Integer> send(Bind bind,
-                                         Describe describe,
-                                         Consumer<RowDescription.ColumnDescription[]> onColumns,
-                                         Consumer<DataRow> onRow) {
+    public Promise<Integer> send(Bind bind,
+                                 Describe describe,
+                                 Consumer<RowDescription.ColumnDescription[]> onColumns,
+                                 Consumer<DataRow> onRow) {
         this.onColumns = onColumns;
         this.onRow = onRow;
         this.onAffected = null;
@@ -137,7 +138,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
     }
 
     @Override
-    public ThrowingPromise<Integer> send(Bind bind, Consumer<DataRow> onRow) {
+    public Promise<Integer> send(Bind bind, Consumer<DataRow> onRow) {
         this.onColumns = null;
         this.onRow = onRow;
         this.onAffected = null;
@@ -160,7 +161,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
         });
     }
 
-    protected void gotError(ThrowableCause th) {
+    protected void gotError(Cause cause) {
         onColumns = null;
         onRow = null;
         onAffected = null;
@@ -168,7 +169,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
         lastSentMessage = null;
 
         if (onResponse != null) {
-            consumeOnResponse(th, null);
+            consumeOnResponse(cause, null);
         }
     }
 
@@ -184,7 +185,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
                 if (seenReadyForQuery) {
                     readyForQueryPendingMessage = message;
                 } else {
-                    gotError(toSqlException(errorResponse));
+                    gotError(toSqlCause(errorResponse));
                 }
             }
             case CommandComplete commandComplete -> {
@@ -207,7 +208,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
             case ReadyForQuery _ -> {
                 seenReadyForQuery = true;
                 if (readyForQueryPendingMessage instanceof ErrorResponse errorResponse) {
-                    gotError(toSqlException(errorResponse));
+                    gotError(toSqlCause(errorResponse));
                 } else {
                     onColumns = null;
                     onRow = null;
@@ -223,12 +224,12 @@ public abstract class PgProtocolStream implements ProtocolStream {
         }
     }
 
-    private ThrowingPromise<Message> offerRoundTrip(Runnable requestAction) {
+    private Promise<Message> offerRoundTrip(Runnable requestAction) {
         return offerRoundTrip(requestAction, true);
     }
 
-    protected ThrowingPromise<Message> offerRoundTrip(Runnable requestAction, boolean assumeConnected) {
-        var uponResponse = ThrowingPromise.<Message>create();
+    protected Promise<Message> offerRoundTrip(Runnable requestAction, boolean assumeConnected) {
+        var uponResponse = Promise.<Message>promise();
 
         if (!assumeConnected || isConnected()) {
             if (onResponse == null) {
@@ -236,15 +237,15 @@ public abstract class PgProtocolStream implements ProtocolStream {
                 try {
                     requestAction.run();
                 } catch (Throwable th) {
-                    gotError(ThrowableCause.asCause(th));
+                    gotError(SqlError.fromThrowable(th));
                 }
             } else {
                 var error = new SqlError.SimultaneousUseDetected("Postgres messages stream simultaneous use detected");
-                uponResponse.fail(ThrowableCause.forError(error));
+                uponResponse.fail(error);
             }
         } else {
             var error = new SqlError.ChannelClosed("Channel is closed");
-            uponResponse.fail(ThrowableCause.forError(error));
+            uponResponse.fail(error);
         }
         return uponResponse;
     }
@@ -266,8 +267,8 @@ public abstract class PgProtocolStream implements ProtocolStream {
         return lastSentMessage instanceof ExtendedQueryMessage;
     }
 
-    private static ThrowableCause toSqlException(ErrorResponse error) {
-        return ThrowableCause.asCause(new SqlException(toSqlError(error)));
+    private static Cause toSqlCause(ErrorResponse error) {
+        return toSqlError(error);
     }
 
     private static ServerError toSqlError(ErrorResponse error) {

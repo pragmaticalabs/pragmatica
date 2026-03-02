@@ -1,9 +1,9 @@
 package com.github.pgasync;
 
-import com.github.pgasync.async.ThrowingPromise;
 import com.github.pgasync.conversion.DataConverter;
 import com.github.pgasync.net.Connectible;
 import com.github.pgasync.net.ConnectibleBuilder;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import java.nio.charset.Charset;
@@ -16,14 +16,14 @@ public abstract class PgConnectible implements Connectible {
     final String validationQuery;
     final String username;
     final DataConverter dataConverter;
-    final Supplier<ThrowingPromise<ProtocolStream>> obtainStream;
+    final Supplier<Promise<ProtocolStream>> obtainStream;
 
     protected final String password;
     protected final String database;
     protected final Charset encoding;
 
     PgConnectible(ConnectibleBuilder.ConnectibleConfiguration properties,
-                  Supplier<ThrowingPromise<ProtocolStream>> obtainStream) {
+                  Supplier<Promise<ProtocolStream>> obtainStream) {
         this.username = properties.username();
         this.password = properties.password();
         this.database = properties.database();
@@ -34,10 +34,10 @@ public abstract class PgConnectible implements Connectible {
     }
 
     @Override
-    public ThrowingPromise<Unit> script(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
-                                        Consumer<PgRow> onRow,
-                                        Consumer<Integer> onAffected,
-                                        String sql) {
+    public Promise<Unit> script(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
+                                Consumer<PgRow> onRow,
+                                Consumer<Integer> onAffected,
+                                String sql) {
         return getConnection()
             .flatMap(connection ->
                          connection.script(onColumns, onRow, onAffected, sql)
@@ -45,10 +45,10 @@ public abstract class PgConnectible implements Connectible {
     }
 
     @Override
-    public ThrowingPromise<Integer> query(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
-                                          Consumer<PgRow> onRow,
-                                          String sql,
-                                          Object... params) {
+    public Promise<Integer> query(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
+                                  Consumer<PgRow> onRow,
+                                  String sql,
+                                  Object... params) {
         return getConnection()
             .flatMap(connection ->
                          connection.query(onColumns, onRow, sql, params)

@@ -1,9 +1,8 @@
 package com.github.pgasync;
 
-import com.github.pgasync.async.ThrowableCause;
-import com.github.pgasync.async.ThrowingPromise;
 import com.github.pgasync.net.ConnectibleBuilder;
 import com.github.pgasync.net.Connection;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import java.util.function.Supplier;
@@ -12,29 +11,28 @@ import static org.pragmatica.lang.Unit.unit;
 
 public class PgDatabase extends PgConnectible {
 
-    public PgDatabase(ConnectibleBuilder.ConnectibleConfiguration properties, Supplier<ThrowingPromise<ProtocolStream>> obtainStream) {
+    public PgDatabase(ConnectibleBuilder.ConnectibleConfiguration properties, Supplier<Promise<ProtocolStream>> obtainStream) {
         super(properties, obtainStream);
     }
 
     @Override
-    public ThrowingPromise<Connection> getConnection() {
+    public Promise<Connection> getConnection() {
         return obtainStream.get()
                            .flatMap(stream -> new PgConnection(stream, dataConverter).connect(username, password, database))
-                           .flatMap(connection -> {
-                               if (validationQuery != null && !validationQuery.isBlank()) {
-                                   return connection.completeScript(validationQuery)
-                                                    .fold(result -> result.fold(
-                                                        cause -> ThrowingPromise.failed(((ThrowableCause) cause)),
-                                                        _ -> ThrowingPromise.successful(connection)
-                                                    ));
-                               } else {
-                                   return ThrowingPromise.successful(connection);
-                               }
-                           });
+                           .flatMap(this::validateConnection);
+    }
+
+    private Promise<Connection> validateConnection(Connection connection) {
+        if (validationQuery != null && !validationQuery.isBlank()) {
+            return connection.completeScript(validationQuery)
+                             .map(_ -> connection);
+        } else {
+            return Promise.success(connection);
+        }
     }
 
     @Override
-    public ThrowingPromise<Unit> close() {
-        return ThrowingPromise.successful(unit());
+    public Promise<Unit> close() {
+        return Promise.success(unit());
     }
 }

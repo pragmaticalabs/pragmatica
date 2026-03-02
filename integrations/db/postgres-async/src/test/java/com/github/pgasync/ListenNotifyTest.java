@@ -12,6 +12,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
+import static com.github.pgasync.DatabaseExtension.block;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
@@ -33,35 +34,34 @@ public class ListenNotifyTest {
 
     @AfterEach
     public void shutdown() {
-        pool.close().await();
+        block(pool.close());
     }
 
     @Test
     public void shouldReceiveNotificationsOnListenedChannel() throws InterruptedException {
         BlockingQueue<String> result = new LinkedBlockingQueue<>(5);
 
-        Connection conn = pool.getConnection().await();
+        Connection conn = block(pool.getConnection());
         try {
-            var subscription = conn.subscribe("example", result::offer)
-                                   .await();
+            var subscription = block(conn.subscribe("example", result::offer));
             try {
                 TimeUnit.SECONDS.sleep(2);
 
-                pool.completeScript("notify example, 'msg-1'").await();
-                pool.completeScript("notify example, 'msg-2'").await();
-                pool.completeScript("notify example, 'msg-3'").await();
+                block(pool.completeScript("notify example, 'msg-1'"));
+                block(pool.completeScript("notify example, 'msg-2'"));
+                block(pool.completeScript("notify example, 'msg-3'"));
 
                 assertEquals("msg-1", result.poll(2, TimeUnit.SECONDS));
                 assertEquals("msg-2", result.poll(2, TimeUnit.SECONDS));
                 assertEquals("msg-3", result.poll(2, TimeUnit.SECONDS));
             } finally {
-                subscription.unlisten().await();
+                block(subscription.unlisten());
             }
         } finally {
-            conn.close().await();
+            block(conn.close());
         }
 
-        pool.completeQuery("notify example, 'msg'").await();
+        block(pool.completeQuery("notify example, 'msg'"));
         assertNull(result.poll(2, TimeUnit.SECONDS));
     }
 

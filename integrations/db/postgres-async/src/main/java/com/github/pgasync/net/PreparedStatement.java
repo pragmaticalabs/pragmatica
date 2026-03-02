@@ -3,8 +3,8 @@ package com.github.pgasync.net;
 import com.github.pgasync.PgColumn;
 import com.github.pgasync.PgResultSet;
 import com.github.pgasync.PgRow;
-import com.github.pgasync.async.ThrowingPromise;
 import com.github.pgasync.message.backend.DataRow;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import java.util.Map;
@@ -17,19 +17,19 @@ import java.util.function.Consumer;
  *
  * @see <a href="https://www.postgresql.org/docs/11/protocol-flow.html#id-1.10.5.7.6"/>.
  *     Concurrent using of implementations is impossible. {@link PreparedStatement} implementations are never thread-safe. They are designed to be
- *     used in context of single {@link ThrowingPromise} completion at a time.
+ *     used in context of single {@link Promise} completion at a time.
  */
 public interface PreparedStatement {
 
     /**
-     * Fetches the whole row set and returns a {@link ThrowingPromise} completed with an instance of {@link ResultSet}. This promise may be
+     * Fetches the whole row set and returns a {@link Promise} completed with an instance of {@link ResultSet}. This promise may be
      * completed with an error. Use this method if you are sure, that all data, returned by the query can be placed into memory.
      *
      * @param params Array of query parameters values.
      *
      * @return An instance of {@link ResultSet} with data.
      */
-    ThrowingPromise<PgResultSet> query(Object... params);
+    Promise<PgResultSet> query(Object... params);
 
     /**
      * Fetches data rows from Postgres one by one. Use this method when you are unsure, that all data, returned by the query can be placed into
@@ -43,7 +43,7 @@ public interface PreparedStatement {
      * @return Promise that completes when the whole process ends or when an error occurs. Promise's value will indicate the number of rows affected
      *     by the query.
      */
-    ThrowingPromise<Integer> fetch(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns, Consumer<PgRow> processor, Object... params);
+    Promise<Integer> fetch(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns, Consumer<PgRow> processor, Object... params);
 
     /**
      * Closes this {@link PreparedStatement} and possibly frees resources. In case of pool statement it may be returned to a pool for future reuse.
@@ -51,5 +51,5 @@ public interface PreparedStatement {
      * @return Promise that is completed when the network process ends. Network process may occur if returned statement has evicted some other
      *     statement from the pool in case of pooled statement. Closing of such evicted statement is network activity, we should be aware of.
      */
-    ThrowingPromise<Unit> close();
+    Promise<Unit> close();
 }

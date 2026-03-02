@@ -14,7 +14,6 @@
 
 package com.github.pgasync;
 
-import com.github.pgasync.async.ThrowingPromise;
 import com.github.pgasync.message.Message;
 import com.github.pgasync.message.backend.Authentication;
 import com.github.pgasync.message.backend.CommandComplete;
@@ -24,6 +23,7 @@ import com.github.pgasync.message.frontend.Bind;
 import com.github.pgasync.message.frontend.Describe;
 import com.github.pgasync.message.frontend.Query;
 import com.github.pgasync.message.frontend.StartupMessage;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import java.util.function.Consumer;
@@ -35,22 +35,22 @@ import java.util.function.Consumer;
  */
 public interface ProtocolStream {
 
-    ThrowingPromise<Message> connect(StartupMessage startup);
+    Promise<Message> connect(StartupMessage startup);
 
-    ThrowingPromise<Message> authenticate(String userName, String password, Authentication authRequired);
+    Promise<Message> authenticate(String userName, String password, Authentication authRequired);
 
-    ThrowingPromise<Message> send(Message message);
+    Promise<Message> send(Message message);
 
-    ThrowingPromise<Unit> send(Query query, Consumer<RowDescription.ColumnDescription[]> onColumns, Consumer<DataRow> onRow, Consumer<CommandComplete> onAffected);
+    Promise<Unit> send(Query query, Consumer<RowDescription.ColumnDescription[]> onColumns, Consumer<DataRow> onRow, Consumer<CommandComplete> onAffected);
 
-    ThrowingPromise<Integer> send(Bind bind, Describe describe, Consumer<RowDescription.ColumnDescription[]> onColumns, Consumer<DataRow> onRow);
+    Promise<Integer> send(Bind bind, Describe describe, Consumer<RowDescription.ColumnDescription[]> onColumns, Consumer<DataRow> onRow);
 
-    ThrowingPromise<Integer> send(Bind bind, Consumer<DataRow> onRow);
+    Promise<Integer> send(Bind bind, Consumer<DataRow> onRow);
 
     Runnable subscribe(String channel, Consumer<String> onNotification);
 
     boolean isConnected();
 
-    ThrowingPromise<Unit> close();
+    Promise<Unit> close();
 
 }

@@ -15,8 +15,7 @@
 package com.github.pgasync.net.netty;
 
 import com.github.pgasync.PgProtocolStream;
-import com.github.pgasync.async.ThrowableCause;
-import com.github.pgasync.async.ThrowingPromise;
+import com.github.pgasync.SqlError;
 import com.github.pgasync.message.Message;
 import com.github.pgasync.message.backend.SslHandshake;
 import com.github.pgasync.message.frontend.SSLRequest;
@@ -33,6 +32,7 @@ import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import java.io.IOException;
@@ -56,7 +56,7 @@ public class NettyPgProtocolStream extends PgProtocolStream {
 
     private final GenericFutureListener<Future<? super Object>> outboundErrorListener = written -> {
         if (!written.isSuccess()) {
-            gotError(ThrowableCause.asCause(written.cause()));
+            gotError(SqlError.fromThrowable(written.cause()));
         }
     };
 
@@ -71,17 +71,19 @@ public class NettyPgProtocolStream extends PgProtocolStream {
     }
 
     @Override
-    public ThrowingPromise<Message> connect(StartupMessage startup) {
+    public Promise<Message> connect(StartupMessage startup) {
         startupWith = startup;
         return offerRoundTrip(() -> channelPipeline.connect(address).addListener(outboundErrorListener), false)
             .flatMap(this::send)
-            .flatMap(message -> {
-                if (message == SslHandshake.INSTANCE) {
-                    return send(startup);
-                } else {
-                    return ThrowingPromise.successful(message);
-                }
-            });
+            .flatMap(message -> connectSslOrDirect(message, startup));
+    }
+
+    private Promise<Message> connectSslOrDirect(Message message, StartupMessage startup) {
+        if (message == SslHandshake.INSTANCE) {
+            return send(startup);
+        } else {
+            return Promise.success(message);
+        }
     }
 
     @Override
@@ -90,25 +92,29 @@ public class NettyPgProtocolStream extends PgProtocolStream {
     }
 
     @Override
-    public ThrowingPromise<Unit> close() {
-        var uponClose = ThrowingPromise.<Unit>create();
+    public Promise<Unit> close() {
+        var uponClose = Promise.<Unit>promise();
 
         ctx.writeAndFlush(Terminate.INSTANCE)
-           .addListener(written -> {
-               if (written.isSuccess()) {
-                   ctx.close()
-                      .addListener(closed -> {
-                          if (closed.isSuccess()) {
-                              uponClose.succeed(unit());
-                          } else {
-                              uponClose.fail(ThrowableCause.asCause(closed.cause()));
-                          }
-                      });
-               } else {
-                   uponClose.fail(ThrowableCause.asCause(written.cause()));
-               }
-           });
+           .addListener(written -> handleWriteResult(written, uponClose));
         return uponClose;
+    }
+
+    private void handleWriteResult(io.netty.util.concurrent.Future<? super Void> written, Promise<Unit> uponClose) {
+        if (written.isSuccess()) {
+            ctx.close()
+               .addListener(closed -> handleCloseResult(closed, uponClose));
+        } else {
+            uponClose.fail(SqlError.fromThrowable(written.cause()));
+        }
+    }
+
+    private static void handleCloseResult(io.netty.util.concurrent.Future<? super Void> closed, Promise<Unit> uponClose) {
+        if (closed.isSuccess()) {
+            uponClose.succeed(unit());
+        } else {
+            uponClose.fail(SqlError.fromThrowable(closed.cause()));
+        }
     }
 
     @Override
@@ -189,12 +195,12 @@ public class NettyPgProtocolStream extends PgProtocolStream {
 
             @Override
             public void channelInactive(ChannelHandlerContext context) {
-                gotError(ThrowableCause.asCause(new IOException("Channel state changed to inactive")));
+                gotError(SqlError.fromThrowable(new IOException("Channel state changed to inactive")));
             }
 
             @Override
             public void exceptionCaught(ChannelHandlerContext context, Throwable cause) {
-                gotError(ThrowableCause.asCause(cause));
+                gotError(SqlError.fromThrowable(cause));
             }
         };
     }

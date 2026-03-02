@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
+import static com.github.pgasync.DatabaseExtension.block;
 import static java.util.stream.IntStream.range;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -39,23 +40,22 @@ public class PlainConnectionTest {
     @BeforeEach
     public void create() {
         plain = dbr.builder.plain();
-        plain.completeScript(
+        block(plain.completeScript(
             "DROP TABLE IF EXISTS PC_TEST_1;" +
             "DROP TABLE IF EXISTS PC_TEST_2;" +
             "CREATE TABLE PC_TEST_1 (ID VARCHAR(255) PRIMARY KEY);" +
             "CREATE TABLE PC_TEST_2 (ID VARCHAR(255) PRIMARY KEY);"
-        ).await();
+        ));
     }
 
     @AfterEach
     public void drop() {
-        plain.completeScript(
+        block(plain.completeScript(
             "DROP TABLE PC_TEST_1;" +
             "DROP TABLE PC_TEST_2;"
-        ).await();
+        ));
 
-        plain.close()
-             .await();
+        block(plain.close());
     }
 
     @Test
@@ -64,7 +64,7 @@ public class PlainConnectionTest {
 
         range(0, count)
             .boxed()
-            .forEach(value -> plain.completeQuery("INSERT INTO PC_TEST_1 VALUES($1)", value).await());
+            .forEach(value -> block(plain.completeQuery("INSERT INTO PC_TEST_1 VALUES($1)", value)));
 
         assertEquals(count,
                      dbr.query("SELECT COUNT(*) FROM PC_TEST_1")
@@ -76,7 +76,7 @@ public class PlainConnectionTest {
     @Test
     public void shouldRunScript() {
         final int count = 25;
-        range(0, count).forEach(value -> plain.completeScript(
+        range(0, count).forEach(value -> block(plain.completeScript(
             "INSERT INTO PC_TEST_2 VALUES('"
             + value
             + "');INSERT INTO PC_TEST_2 VALUES('_"
@@ -86,7 +86,7 @@ public class PlainConnectionTest {
             + "');INSERT INTO PC_TEST_2 VALUES('___"
             + value
             + "');"
-        ).await());
+        )));
 
         assertEquals(count * 4,
                      dbr.query("SELECT COUNT(*) FROM PC_TEST_2")

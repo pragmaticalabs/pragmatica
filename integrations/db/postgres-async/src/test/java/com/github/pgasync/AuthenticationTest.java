@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
+import static com.github.pgasync.DatabaseExtension.block;
 import static com.github.pgasync.SqlError.ServerErrorInvalidAuthorizationSpecification;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -23,20 +24,12 @@ public class AuthenticationTest {
                 .password("_invalid_")
                 .pool();
             try {
-                pool.completeQuery("SELECT 1")
-                    .await();
-            } catch (Exception ex) {
-                DatabaseExtension.ifCause(ex,
-                                     sqlException -> {
-                                         assertTrue(sqlException.error() instanceof ServerErrorInvalidAuthorizationSpecification);
-                                         throw sqlException;
-                                     },
-                                     () -> {
-                                         throw ex;
-                                     });
+                block(pool.completeQuery("SELECT 1"));
+            } catch (SqlException ex) {
+                assertTrue(ex.error() instanceof ServerErrorInvalidAuthorizationSpecification);
+                throw ex;
             } finally {
-                pool.close()
-                    .await();
+                block(pool.close());
             }
         });
     }
@@ -47,11 +40,10 @@ public class AuthenticationTest {
             .password(DatabaseExtension.postgres.getPassword())
             .pool();
         try {
-            var rs = pool.completeQuery("SELECT 1").await();
+            var rs = block(pool.completeQuery("SELECT 1"));
             assertEquals(1L, (long) rs.index(0).getInt(0));
         } finally {
-            pool.close()
-                .await();
+            block(pool.close());
         }
     }
 

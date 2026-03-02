@@ -1,9 +1,9 @@
 package com.github.pgasync;
 
-import com.github.pgasync.async.ThrowingPromise;
 import com.github.pgasync.net.*;
 import com.github.pgasync.net.netty.NettyConnectibleBuilder;
 import org.junit.jupiter.api.extension.*;
+import org.pragmatica.lang.Promise;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import java.util.Collection;
@@ -80,9 +80,7 @@ public class DatabaseExtension implements BeforeAllCallback, AfterAllCallback, B
     private void cleanup() {
         if (pool != null) {
             try {
-                pool.close();
-            } catch (Exception e) {
-                throw new RuntimeException(e);
+                pool.close().await();
             } finally {
                 pool = null;
                 postgres.stop();
@@ -127,12 +125,12 @@ public class DatabaseExtension implements BeforeAllCallback, AfterAllCallback, B
         return block(pool().completeScript(sql));
     }
 
-    private <T> T block(ThrowingPromise<T> promise) {
-        try {
-            return promise.await();
-        } catch (Throwable th) {
-            throw new RuntimeException(th);
-        }
+    static <T> T block(Promise<T> promise) {
+        return promise.await()
+                      .fold(
+                          cause -> { throw new SqlException(cause); },
+                          value -> value
+                      );
     }
 
     Connectible pool() {

@@ -15,6 +15,7 @@
 package com.github.pgasync.net;
 
 import com.github.pgasync.SqlError.ServerError;
+import org.pragmatica.lang.Cause;
 
 import java.io.Serial;
 
@@ -39,6 +40,11 @@ public class SqlException extends RuntimeException {
     public SqlException(String message) {
         super(message);
         this.serverError = null;
+    }
+
+    public SqlException(Cause cause) {
+        super(cause.message());
+        this.serverError = cause instanceof ServerError se ? se : null;
     }
 
     public ServerError error() {

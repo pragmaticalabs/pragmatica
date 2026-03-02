@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
+import static com.github.pgasync.DatabaseExtension.block;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -129,11 +130,10 @@ public class QueryResultTest {
 
     @Test
     public void shouldStreamResultRows() {
-        List<Integer> series = dbr.pool().completeQuery("select generate_series(1, 5)")
+        List<Integer> series = block(dbr.pool().completeQuery("select generate_series(1, 5)")
                 .map(rs -> StreamSupport.stream(rs.spliterator(), false)
                                         .map(r -> r.getInt(0))
-                                        .collect(Collectors.toList()))
-                .await();
+                                        .collect(Collectors.toList())));
 
         assertEquals(List.of(1, 2, 3, 4, 5), series);
     }

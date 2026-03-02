@@ -17,13 +17,13 @@ package com.github.pgasync.net.netty;
 import com.github.pgasync.PgConnectionPool;
 import com.github.pgasync.PgDatabase;
 import com.github.pgasync.ProtocolStream;
-import com.github.pgasync.async.ThrowableCause;
-import com.github.pgasync.async.ThrowingPromise;
+import com.github.pgasync.SqlError;
 import com.github.pgasync.net.Connectible;
 import com.github.pgasync.net.ConnectibleBuilder;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
+import org.pragmatica.lang.Promise;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -38,15 +38,15 @@ import java.nio.charset.Charset;
 public class NettyConnectibleBuilder extends ConnectibleBuilder {
     private final EventLoopGroup eventLoopGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
 
-    private ThrowingPromise<ProtocolStream> obtainStream() {
+    private Promise<ProtocolStream> obtainStream() {
         try {
             var address = InetAddress.getByName(properties.hostname());
             var sockAddr = new InetSocketAddress(address, properties.port());
-            return ThrowingPromise.successful(
+            return Promise.success(
                 new NettyPgProtocolStream(sockAddr, properties.useSsl(),
                     Charset.forName(properties.encoding()), eventLoopGroup));
         } catch (Exception e) {
-            return ThrowingPromise.failed(ThrowableCause.asCause(e));
+            return Promise.failure(SqlError.fromThrowable(e));
         }
     }
 

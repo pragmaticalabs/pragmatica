@@ -14,7 +14,6 @@
 
 package com.github.pgasync;
 
-import com.github.pgasync.async.ThrowingPromise;
 import com.github.pgasync.net.Connectible;
 import com.github.pgasync.net.Connection;
 import com.github.pgasync.net.SqlException;
@@ -23,18 +22,23 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 import java.util.Deque;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
+import static com.github.pgasync.DatabaseExtension.block;
 import static java.lang.System.currentTimeMillis;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.pragmatica.lang.Unit.unit;
 
 /**
  * Tests for statements pipelining.
@@ -59,10 +63,10 @@ public class PipelineTest {
     @AfterEach
     public void closePool() {
         if (c != null) {
-            c.close().await();
+            block(c.close());
         }
         if (pool != null) {
-            pool.close().await();
+            block(pool.close());
         }
     }
 
@@ -74,9 +78,9 @@ public class PipelineTest {
         long startWrite = currentTimeMillis();
         for (int i = 0; i < count; ++i) {
             pool.completeQuery("select " + i + ", pg_sleep(" + sleep + ")")
-                .onSuccess(_ -> results.add(currentTimeMillis()))
-                .tryRecover(th -> {
-                    throw new AssertionError("failed", th.throwable());
+                .withSuccess(_ -> results.add(currentTimeMillis()))
+                .recover(cause -> {
+                    throw new AssertionError("failed", new Exception(cause.message()));
                 });
         }
         long writeTime = currentTimeMillis() - startWrite;
@@ -105,11 +109,31 @@ public class PipelineTest {
             var connection = getConnection();
 
             try {
-                ThrowingPromise.allOf(IntStream.range(0, 10)
-                                               .mapToObj(i -> connection.completeQuery("select " + i + ", pg_sleep(10)")
-                                                                              .tryRecover(th -> {
-                                                                                  throw new IllegalStateException(new SqlException(th.message()));
-                                                                              }))).await();
+                var promises = IntStream.range(0, 10)
+                    .mapToObj(i -> connection.completeQuery("select " + i + ", pg_sleep(10)")
+                                            .recover(cause -> {
+                                                throw new IllegalStateException(new SqlException(cause.message()));
+                                            }))
+                    .toList();
+                var result = Promise.<Unit>promise();
+                var remaining = new AtomicInteger(promises.size());
+                for (var p : promises) {
+                    p.onResult(r -> r.fold(
+                        cause -> {
+                            result.fail(cause);
+                            return null;
+                        },
+                        _ -> {
+                            if (remaining.decrementAndGet() == 0) {
+                                result.succeed(unit());
+                            }
+                            return null;
+                        }
+                    ));
+                }
+                block(result);
+            } catch (SqlException ex) {
+                throw ex;
             } catch (Exception ex) {
                 DatabaseExtension.ifCause(ex, sqlException -> {
                     throw sqlException;
