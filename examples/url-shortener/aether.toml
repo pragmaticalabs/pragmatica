@@ -8,7 +8,8 @@ port = 5432
 database = "forge"
 username = "forge"
 password = "forge"
-r2dbc_url = "r2dbc:postgresql://localhost:5432/forge"
+# r2dbc_url = "r2dbc:postgresql://localhost:5432/forge"
+async_url = "postgresql://localhost:5432/forge"
 
 [database.pool_config]
 min_connections = 10

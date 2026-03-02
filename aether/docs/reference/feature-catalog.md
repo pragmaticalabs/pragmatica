@@ -102,7 +102,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
 | 44 | SPI resource factories | Complete | ServiceLoader discovery, config-driven provisioning, type-safe qualifiers |
-| 45 | Database resources | Complete | JDBC, R2DBC, jOOQ, jOOQ-R2DBC, JPA with connection pooling and transaction management |
+| 45 | Database resources | Complete | JDBC, R2DBC, jOOQ, jOOQ-R2DBC, JPA, postgres-async (native async + R2DBC adapter) with connection pooling, transaction management, and LISTEN/NOTIFY |
 | 46 | HTTP client resource | Complete | Configurable outbound HTTP with timeouts, retries, SSL/TLS, Jackson integration |
 | 47 | Interceptor framework | Complete | Method-level interceptors: retry, circuit breaker, rate limit, logging, metrics. Runtime enable/disable |
 | 48 | Runtime extensions | Complete | `registerExtension()` for injecting runtime components into resource factories |

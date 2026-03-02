@@ -133,7 +133,9 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 - **R2DBC** — Reactive/async SQL with connection pooling
 - **jOOQ sync** — Type-safe queries via JDBC-backed jOOQ
 - **jOOQ async** — Type-safe queries via R2DBC-backed jOOQ
-- **`DatabaseConnectorConfig`** — Rich config with JDBC/R2DBC URL overrides, pool settings, properties
+- **postgres-async native** — Direct async SQL via postgres-async driver (zero adapter overhead), LISTEN/NOTIFY support
+- **postgres-async R2DBC adapter** — R2DBC SPI wrapper enabling jOOQ async via postgres-async transport
+- **`DatabaseConnectorConfig`** — Rich config with JDBC/R2DBC/async URL overrides, pool settings, properties
 - **`DatabaseConnectorError`** — Sealed error types, `@Sql` qualifier annotation
 
 ---

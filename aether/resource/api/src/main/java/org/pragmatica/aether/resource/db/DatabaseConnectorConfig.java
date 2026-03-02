@@ -26,6 +26,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// @param properties     Additional driver-specific properties
 /// @param jdbcUrl        Override JDBC URL (optional, overrides host/port/database)
 /// @param r2dbcUrl       Override R2DBC URL (optional, overrides host/port/database)
+/// @param asyncUrl       Override async URL (optional, selects postgres-async transport)
 public record DatabaseConnectorConfig(String name,
                                       DatabaseType type,
                                       String host,
@@ -36,14 +37,15 @@ public record DatabaseConnectorConfig(String name,
                                       PoolConfig poolConfig,
                                       Map<String, String> properties,
                                       Option<String> jdbcUrl,
-                                      Option<String> r2dbcUrl) {
+                                      Option<String> r2dbcUrl,
+                                      Option<String> asyncUrl) {
     /// Override toString() to mask password for security.
     @Override
     public String toString() {
         return "DatabaseConnectorConfig[name=" + name + ", type=" + type + ", host=" + host + ", port=" + port
                + ", database=" + database + ", username=[REDACTED]" + ", password=[REDACTED]" + ", poolConfig=" + poolConfig
                + ", properties=" + properties + ", jdbcUrl=" + sanitizeUrl(jdbcUrl) + ", r2dbcUrl=" + sanitizeUrl(r2dbcUrl)
-               + "]";
+               + ", asyncUrl=" + sanitizeUrl(asyncUrl) + "]";
     }
 
     private static String sanitizeUrl(Option<String> url) {
@@ -68,6 +70,7 @@ public record DatabaseConnectorConfig(String name,
     /// @param properties Additional properties
     /// @param jdbcUrl    Override JDBC URL
     /// @param r2dbcUrl   Override R2DBC URL
+    /// @param asyncUrl   Override async URL
     /// @return Result with config or validation error
     public static Result<DatabaseConnectorConfig> databaseConnectorConfig(String name,
                                                                           DatabaseType type,
@@ -79,7 +82,8 @@ public record DatabaseConnectorConfig(String name,
                                                                           PoolConfig poolConfig,
                                                                           Map<String, String> properties,
                                                                           Option<String> jdbcUrl,
-                                                                          Option<String> r2dbcUrl) {
+                                                                          Option<String> r2dbcUrl,
+                                                                          Option<String> asyncUrl) {
         return success(new DatabaseConnectorConfig(name,
                                                    type,
                                                    host,
@@ -90,7 +94,8 @@ public record DatabaseConnectorConfig(String name,
                                                    poolConfig,
                                                    properties,
                                                    jdbcUrl,
-                                                   r2dbcUrl));
+                                                   r2dbcUrl,
+                                                   asyncUrl));
     }
 
     /// Creates a config with required parameters.
@@ -118,6 +123,7 @@ public record DatabaseConnectorConfig(String name,
                                               option(password),
                                               PoolConfig.DEFAULT,
                                               Map.of(),
+                                              none(),
                                               none(),
                                               none()));
     }
@@ -161,6 +167,7 @@ public record DatabaseConnectorConfig(String name,
                                        PoolConfig.DEFAULT,
                                        Map.of(),
                                        some(url),
+                                       none(),
                                        none());
     }
 
@@ -193,6 +200,20 @@ public record DatabaseConnectorConfig(String name,
     /// @return R2DBC connection URL
     public String effectiveR2dbcUrl() {
         return r2dbcUrl.or(() -> type.buildR2dbcUrl(host, port, database));
+    }
+
+    /// Returns the effective async URL, either from override or constructed from components.
+    ///
+    /// @return Async connection URL (postgresql://host:port/database format)
+    public String effectiveAsyncUrl() {
+        return asyncUrl.or(() -> buildAsyncUrl(host, port, database, type));
+    }
+
+    private static String buildAsyncUrl(String host, int port, String database, DatabaseType type) {
+        var actualPort = port > 0
+                         ? port
+                         : type.defaultPort();
+        return "postgresql://" + host + ":" + actualPort + "/" + database;
     }
 
     /// Converts additional properties to java.util.Properties for JDBC drivers.
@@ -242,6 +263,7 @@ public record DatabaseConnectorConfig(String name,
         private Map<String, String> properties = Map.of();
         private Option<String> jdbcUrl = none();
         private Option<String> r2dbcUrl = none();
+        private Option<String> asyncUrl = none();
 
         private Builder() {}
 
@@ -300,6 +322,11 @@ public record DatabaseConnectorConfig(String name,
             return this;
         }
 
+        public Builder withAsyncUrl(String value) {
+            this.asyncUrl = option(value);
+            return this;
+        }
+
         public Result<DatabaseConnectorConfig> build() {
             return ensureRequired(name, type, host, database)
             .flatMap(_ -> databaseConnectorConfig(name,
@@ -312,7 +339,8 @@ public record DatabaseConnectorConfig(String name,
                                                   poolConfig,
                                                   properties,
                                                   jdbcUrl,
-                                                  r2dbcUrl));
+                                                  r2dbcUrl,
+                                                  asyncUrl));
         }
     }
 }

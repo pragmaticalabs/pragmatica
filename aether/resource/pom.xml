@@ -21,6 +21,8 @@
         <module>db-jooq-api</module>
         <module>db-jooq</module>
         <module>db-jooq-r2dbc</module>
+        <module>db-async</module>
+        <module>db-jooq-async</module>
         <module>http</module>
         <module>interceptors</module>
         <module>services</module>

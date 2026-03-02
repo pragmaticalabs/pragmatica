@@ -76,6 +76,12 @@
             <artifactId>resource-db-r2dbc</artifactId>
         </dependency>
 
+        <!-- Resource: Async Database Connector (ServiceLoader provider) -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-db-async</artifactId>
+        </dependency>
+
         <!-- R2DBC Pool (optional in resource-db-r2dbc, required at runtime) -->
         <dependency>
             <groupId>io.r2dbc</groupId>

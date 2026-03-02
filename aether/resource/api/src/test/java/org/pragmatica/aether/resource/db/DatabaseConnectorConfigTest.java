@@ -129,6 +129,7 @@ class DatabaseConnectorConfigTest {
                                                   PoolConfig.DEFAULT,
                                                   Map.of("useSSL", "true"),
                                                   none(),
+                                                  none(),
                                                   none())
                 .unwrap();
 
@@ -221,6 +222,7 @@ class DatabaseConnectorConfigTest {
                                                   PoolConfig.DEFAULT,
                                                   Map.of(),
                                                   some(overrideUrl),
+                                                  none(),
                                                   none())
                 .unwrap();
 
@@ -273,6 +275,7 @@ class DatabaseConnectorConfigTest {
                                                   PoolConfig.DEFAULT,
                                                   Map.of("useSSL", "true", "serverTimezone", "UTC"),
                                                   none(),
+                                                  none(),
                                                   none())
                 .unwrap();
 
@@ -309,6 +312,7 @@ class DatabaseConnectorConfigTest {
                                                   PoolConfig.DEFAULT,
                                                   Map.of(),
                                                   some("jdbc:postgresql://user:pass@host/db"),
+                                                  none(),
                                                   none())
                 .unwrap();
 

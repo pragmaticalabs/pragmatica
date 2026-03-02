@@ -22,6 +22,7 @@
         <module>r2dbc</module>
         <module>jooq-r2dbc</module>
         <module>postgres-async</module>
+        <module>postgres-r2dbc-adapter</module>
     </modules>
 
     <properties>
