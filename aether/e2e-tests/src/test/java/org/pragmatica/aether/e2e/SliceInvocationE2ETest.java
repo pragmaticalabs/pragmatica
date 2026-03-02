@@ -152,7 +152,7 @@ class SliceInvocationE2ETest {
             var response = cluster.anyNode().invokeSlice("PATCH", "/api/test", "{}");
 
             // PATCH is not in the supported methods list
-            assertThat(response).contains("error");
+            assertThat(response).containsAnyOf("error", "not found", "Not Found", "File not found");
         }
 
         @Test

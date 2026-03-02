@@ -291,6 +291,22 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         return super.getMappedPort(originalPort);
     }
 
+    /// Returns exposed ports for Testcontainers wait strategies.
+    ///
+    ///
+    /// In host networking mode, returns only the management port. This is separate from
+    /// `containerDef.getExposedPorts()` (used by tryStart's port binding check) which
+    /// stays empty — Docker has no port bindings in host mode, so the binding check
+    /// would fail if containerDef had exposed ports. HttpWaitStrategy uses this method
+    /// (via WaitStrategyTarget interface) to find the target port for health checks.
+    @Override
+    public List<Integer> getExposedPorts() {
+        if (HOST_NETWORKING_SUPPORTED) {
+            return List.of(managementPortValue);
+        }
+        return super.getExposedPorts();
+    }
+
     /// Returns the node ID for this container.
     public String nodeId() {
         return nodeId;

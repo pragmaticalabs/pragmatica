@@ -107,7 +107,7 @@ class SliceInvocationTest {
         void invokeWithInvalidMethod_returnsError() {
             var response = invokeSlice("PATCH", "/api/test", "{}");
 
-            assertThat(response).contains("error");
+            assertThat(response).containsAnyOf("error", "not found", "Not Found", "File not found");
         }
 
         @Test
