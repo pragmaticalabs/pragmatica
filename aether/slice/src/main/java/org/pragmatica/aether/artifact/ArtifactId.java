@@ -2,11 +2,13 @@ package org.pragmatica.aether.artifact;
 
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
+import org.pragmatica.serialization.Codec;
 
 import java.util.regex.Pattern;
 
 import static org.pragmatica.lang.Verify.ensure;
 
+@Codec
 public record ArtifactId(String id) {
     public static Result<ArtifactId> artifactId(String id) {
         return Result.all(ensure(id, Verify.Is::matches, ARTIFACT_ID_PATTERN))

@@ -17,12 +17,14 @@
 package org.pragmatica.consensus.rabia;
 
 import org.pragmatica.consensus.Command;
+import org.pragmatica.serialization.Codec;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /// Represents a proposal value (batch of commands) in the Rabia protocol.
 /// BatchId is content-based (hash of commands) to enable consolidation of identical batches.
+@Codec
 public record Batch<C extends Command>(BatchId id,
                                        List<CorrelationId> correlationIds,
                                        long timestamp,
@@ -34,12 +36,11 @@ public record Batch<C extends Command>(BatchId id,
 
     @Override
     public int compareTo(Batch<C> o) {
-        var timestampCompare = Long.compare(timestamp, o.timestamp);
-        if (timestampCompare != 0) {
-            return timestampCompare;
+        var idCompare = id.id().compareTo(o.id.id());
+        if (idCompare != 0) {
+            return idCompare;
         }
-        return id.id()
-                 .compareTo(o.id.id());
+        return Long.compare(timestamp, o.timestamp);
     }
 
     public static <C extends Command> Batch<C> batch(List<C> commands) {

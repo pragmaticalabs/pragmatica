@@ -677,7 +677,7 @@ class RabiaConsensusIntegrationTest {
         private final int clusterSize;
 
         SimulatedTopologyManager(NodeId selfId, int clusterSize) {
-            this.self = new NodeInfo(selfId, NodeAddress.nodeAddress("localhost", 5000).unwrap());
+            this.self = NodeInfo.nodeInfo(selfId, NodeAddress.nodeAddress("localhost", 5000).unwrap());
             this.clusterSize = clusterSize;
         }
 
@@ -688,7 +688,7 @@ class RabiaConsensusIntegrationTest {
 
         @Override
         public Option<NodeInfo> get(NodeId id) {
-            return Option.option(new NodeInfo(id, NodeAddress.nodeAddress("localhost", 5000).unwrap()));
+            return Option.option(NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("localhost", 5000).unwrap()));
         }
 
         @Override

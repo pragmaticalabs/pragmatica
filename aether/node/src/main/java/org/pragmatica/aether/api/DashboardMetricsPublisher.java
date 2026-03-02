@@ -231,8 +231,9 @@ public class DashboardMetricsPublisher {
             totalFailure += metrics.failureCount();
             weightedLatency += metrics.averageLatencyNs() / 1_000_000.0 * metrics.count();
         }
-        long deltaInvocations = totalInvocations - lastTotalInvocations;
-        long deltaSuccess = totalSuccess - lastTotalSuccess;
+        // Clamp to 0: counters can decrease when nodes restart and metrics reset
+        long deltaInvocations = Math.max(0, totalInvocations - lastTotalInvocations);
+        long deltaSuccess = Math.max(0, totalSuccess - lastTotalSuccess);
         double instantRps = deltaInvocations / (BROADCAST_INTERVAL_MS / 1000.0);
         double instantSuccessRate = deltaInvocations > 0
                                     ? (double) deltaSuccess / deltaInvocations

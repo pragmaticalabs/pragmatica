@@ -152,11 +152,31 @@ final class ConnectionFactoryR2dbcOperations implements R2dbcOperations {
     }
 
     private Statement createStatement(Connection conn, String sql, Object[] params) {
-        var stmt = conn.createStatement(sql);
+        var stmt = conn.createStatement(toPositionalParams(sql, params.length));
         for (int i = 0; i < params.length; i++) {
             stmt.bind(i, params[i]);
         }
         return stmt;
+    }
+
+    /// Converts JDBC-style `?` placeholders to R2DBC positional `$1, $2, ...` placeholders.
+    private static String toPositionalParams(String sql, int paramCount) {
+        if (paramCount == 0 || sql.indexOf('?') == -1) {
+            return sql;
+        }
+
+        var sb = new StringBuilder(sql.length() + paramCount * 2);
+        int index = 1;
+
+        for (int i = 0; i < sql.length(); i++) {
+            if (sql.charAt(i) == '?') {
+                sb.append('$').append(index++);
+            } else {
+                sb.append(sql.charAt(i));
+            }
+        }
+
+        return sb.toString();
     }
 
     private <T> Publisher<T> flatMapResult(Publisher<? extends io.r2dbc.spi.Result> resultPublisher,

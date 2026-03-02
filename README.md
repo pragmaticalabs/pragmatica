@@ -13,16 +13,116 @@ A unified monorepo containing the Pragmatica ecosystem for modern functional Jav
 
 ## Version
 
-Current version: **0.18.0**
+Current version: **0.19.0**
 
 ### Pre-Monorepo Versions
 - pragmatica-lite: 0.11.3
 - jbct-cli: 0.6.1
 - aetherx: 0.8.2
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/aether/install.sh | sh
+```
+
+## Prerequisites
+
+| Tool | Version | Purpose |
+|------|---------|---------|
+| Java | 25+ | Runtime and build |
+| Maven | 3.9+ | Build system |
+| Podman | Latest | Container runtime for PostgreSQL |
+| k6 | Latest | Load testing (optional) |
+
 ## Quick Start
 
-### Build
+### Pricing Engine (with PostgreSQL)
+
+```bash
+cd examples/pricing-engine
+./start-postgres.sh
+./run-forge.sh
+```
+
+```bash
+curl -s -X POST http://localhost:8070/api/v1/pricing/calculate \
+  -H 'Content-Type: application/json' \
+  -d '{"productId":"WIDGET-D","quantity":3,"regionCode":"US-CA","couponCode":"SAVE20"}' | jq
+```
+
+### URL Shortener (with PostgreSQL)
+
+```bash
+cd examples/url-shortener
+./start-postgres.sh
+./run-forge.sh
+```
+
+```bash
+curl -s -X POST http://localhost:8070/api/v1/urls/ \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.com/hello-world"}' | jq
+```
+
+### Ecommerce (with PostgreSQL)
+
+A multi-slice application with pricing, inventory, payment, fulfillment, and order placement.
+
+```bash
+curl -s -X POST http://localhost:8070/api/v1/orders/ \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "customerId": "customer-42",
+    "items": [
+      {"productId": "LAPTOP-PRO", "quantity": 1},
+      {"productId": "MOUSE-WIRELESS", "quantity": 2}
+    ],
+    "shippingAddress": {
+      "street": "123 Main St",
+      "city": "San Francisco",
+      "state": "CA",
+      "postalCode": "94105",
+      "country": "US"
+    },
+    "paymentMethod": {
+      "cardNumber": "4111111111111111",
+      "expiryMonth": "12",
+      "expiryYear": "2027",
+      "cvv": "123",
+      "cardholderName": "Jane Smith"
+    },
+    "shippingOption": "STANDARD",
+    "discountCode": "SAVE10"
+  }' | jq
+```
+
+## Load Testing
+
+Each example includes k6 load testing scripts:
+
+| Example | Script | Description |
+|---------|--------|-------------|
+| pricing-engine | `k6/load-test.js` | Steady-state load test |
+| pricing-engine | `k6/ramp-up.js` | Find saturation point |
+| pricing-engine | `k6/per-node.js` | Per-node comparison |
+| pricing-engine | `k6/spike.js` | Spike recovery test |
+| url-shortener | `k6/load-test.js` | Steady-state load test |
+| url-shortener | `k6/ramp-up.js` | Find saturation point |
+| url-shortener | `k6/per-node.js` | Per-node comparison |
+| url-shortener | `k6/spike.js` | Spike recovery test |
+
+Helper shell scripts are provided for common scenarios:
+
+```bash
+cd examples/pricing-engine
+k6/run-steady.sh      # Steady-state load
+k6/run-ramp.sh        # Ramp-up to find limits
+k6/run-per-node.sh    # Per-node comparison
+k6/run-spike.sh       # Spike recovery
+```
+
+## Build
 
 ```bash
 # Build all modules (skip tests for speed)
@@ -38,7 +138,7 @@ mvn verify
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>core</artifactId>
-    <version>0.18.0</version>
+    <version>0.19.0</version>
 </dependency>
 ```
 
@@ -48,7 +148,7 @@ mvn verify
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>0.18.0</version>
+    <version>0.19.0</version>
     <executions>
         <execution>
             <goals>
@@ -65,7 +165,7 @@ mvn verify
 <dependency>
     <groupId>org.pragmatica-lite.aether</groupId>
     <artifactId>slice-api</artifactId>
-    <version>0.18.0</version>
+    <version>0.19.0</version>
     <scope>provided</scope>
 </dependency>
 ```
@@ -96,11 +196,18 @@ pragmatica/
 │   ├── node/                # Runtime node
 │   ├── forge/               # Simulator for testing
 │   ├── cli/                 # Aether CLI
-│   └── infra-slices/        # Infrastructure slices
+│   ├── ember/               # Embeddable runtime
+│   ├── lb/                  # Load balancer
+│   ├── dashboard/           # Web dashboard
+│   ├── environment/         # Environment management
+│   ├── resource/            # Resource handling
+│   └── slice/               # Slice loading and management
 ├── examples/                # Example projects
 │   ├── pragmatica-lite/     # Core library examples
-│   ├── url-shortener/       # Aether slice example
-│   └── ecommerce/           # Multi-slice example
+│   ├── url-shortener/       # URL shortener with PostgreSQL
+│   ├── ecommerce/           # Multi-slice ecommerce app
+│   ├── pricing-engine/      # Dynamic pricing with PostgreSQL
+│   └── banking/             # Banking domain example
 ├── docs/                    # Documentation
 └── scripts/                 # Build and release scripts
 ```
@@ -111,11 +218,6 @@ pragmatica/
 - [JBCT Tools](jbct/README.md) - Formatting and linting
 - [Aether Runtime](aether/README.md) - Distributed runtime
 - [Aether Documentation](aether/docs/README.md) - Full Aether docs
-
-## Requirements
-
-- Java 25+
-- Maven 3.9+
 
 ## License
 

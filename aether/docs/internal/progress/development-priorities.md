@@ -1,8 +1,8 @@
 # Development Priorities
 
-## Current Status (v0.18.0)
+## Current Status (v0.19.0)
 
-Release 0.18.0 delivers six major themes: unified invocation observability (RFC-0010), production-grade DHT (anti-entropy repair, re-replication, per-use-case config), pub-sub messaging infrastructure (RFC-0011), blueprint-only deployment model, node lifecycle with disruption budget and graceful drain, and pricing-engine multi-slice example with cross-slice invocations.
+Release 0.18.0 delivered six major themes: unified invocation observability (RFC-0010), production-grade DHT (anti-entropy repair, re-replication, per-use-case config), pub-sub messaging infrastructure (RFC-0011), blueprint-only deployment model, node lifecycle with disruption budget and graceful drain, and pricing-engine multi-slice example with cross-slice invocations.
 
 ## Completed ✅
 
@@ -158,7 +158,7 @@ Release 0.18.0 delivers six major themes: unified invocation observability (RFC-
      - Drain connections before node removal (graceful deregistration delay)
      - TLS termination configuration (certificate ARN/ID passthrough)
    - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
-   - **Enables:** Spot Instance Support (#23), Expense Tracking (#24) in FUTURE section
+   - **Enables:** Spot Instance Support (#26), Expense Tracking (#27) in FUTURE section
 
 2. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
     - Cluster-level schema migration managed by Aether runtime, not individual nodes
@@ -233,15 +233,43 @@ Release 0.18.0 delivers six major themes: unified invocation observability (RFC-
     - Rollback: if upgraded node fails health check, revert to previous version before continuing
     - Prerequisite: Official Container (#5) or Official Binaries (#6)
 
+### MEDIUM PRIORITY - PassiveNode Use Cases
+
+The `PassiveNode<K,V>` abstraction (`integrations/cluster/.../node/passive/PassiveNode.java`) provides reusable cluster infrastructure for non-voting observers. The passive load balancer (`AetherPassiveLB`) is the first consumer. Additional use cases:
+
+11. **Management API Proxy**
+    - Passive node exposes management endpoints externally, forwards mutations to active leader
+    - Use case: operators access cluster management without direct node exposure
+    - Consumer adds: HTTP server with management routes, leader-forwarding logic
+    - PassiveNode provides: cluster connectivity, route table via Decisions, topology awareness
+
+12. **Read Replica / Query Gateway**
+    - Passive node maintains full KV-Store replica, serves read-only queries directly
+    - Use case: offload read traffic from consensus-participating nodes
+    - Consumer adds: HTTP query API, cache layer, staleness tolerance config
+    - PassiveNode provides: KV-Store with all committed Decisions applied, zero consensus overhead
+
+13. **Multi-Cluster Bridge**
+    - Passive node joins cluster A, forwards selected Decisions/events to cluster B
+    - Use case: cross-region replication, event streaming between independent clusters
+    - Consumer adds: bridge logic (filter + transform + forward), second cluster connection
+    - PassiveNode provides: full Decision stream from source cluster
+
+14. **DHT Client Node**
+    - Passive node with DHT read access for external systems needing artifact/data retrieval
+    - Use case: CI/CD pipelines, monitoring tools that need cluster data without joining consensus
+    - Consumer adds: DHT client wiring, external API
+    - PassiveNode provides: cluster network membership, topology for DHT partition routing
+
 ### MEDIUM PRIORITY - Reliability
 
-12. **Placement Hints**
+15. **Placement Hints**
     - Affinity/anti-affinity rules for slice placement
     - Spread: distribute instances across nodes/zones
     - Co-locate: place related slices on same node
     - Zone-aware scheduling for high availability
 
-15. **Dead Letter Handling**
+16. **Dead Letter Handling**
     - Failed pub-sub messages and failed scheduled task invocations currently logged and lost
     - DLQ storage: KV-Store backed dead letter queue per topic/task
     - Retry policy: configurable max attempts with exponential backoff before dead-lettering
@@ -250,18 +278,18 @@ Release 0.18.0 delivers six major themes: unified invocation observability (RFC-
 
 ### LOWER PRIORITY - Security & Operations
 
-16. **TLS Certificate Management**
+17. **TLS Certificate Management**
      - Certificate provisioning and rotation
      - Mutual TLS between nodes
      - Integration with external CA or self-signed
 
-17. **Canary & Blue-Green Deployment Strategies**
+18. **Canary & Blue-Green Deployment Strategies**
      - Current: Rolling updates with weighted routing exist
      - Add explicit canary deployment with automatic rollback on error threshold
      - Add blue-green deployment with instant switchover
      - A/B testing support with traffic splitting by criteria
 
-18. **Topology in KV Store**
+19. **Topology in KV Store**
      - Leader maintains cluster topology in consensus KV store
      - Best-effort updates on membership changes
      - Enables external observability without direct node queries
@@ -272,7 +300,7 @@ Release 0.18.0 delivers six major themes: unified invocation observability (RFC-
      - Auth failure rate limiting
      - Currently all authenticated keys have equivalent access; Tier 2 differentiates by role
 
-20. **Configurable Rate Limiting per HTTP Route**
+21. **Configurable Rate Limiting per HTTP Route**
      - Per-route rate limiting configuration in blueprint or management API
      - Token bucket or sliding window algorithm
      - Configurable limits: requests/second, burst size
@@ -280,14 +308,14 @@ Release 0.18.0 delivers six major themes: unified invocation observability (RFC-
      - Cluster-aware: distributed counters via consensus or per-node local limits
      - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
 
-21. **KV-Store State Backup/Snapshot**
+22. **KV-Store State Backup/Snapshot**
     - Periodic snapshot of consensus KV-Store state to durable external storage
     - Recovery: bootstrap a new cluster from snapshot when quorum is permanently lost
     - Storage targets: local filesystem, S3-compatible object storage
     - Configurable snapshot interval and retention policy
     - Complements re-replication (handles single-node failures) with full disaster recovery
 
-22. **Email Messaging Resource**
+23. **Email Messaging Resource**
     - Facade with pluggable backends via SPI (same `@ResourceQualifier` pattern as other resources)
     - **Sending:** plain text + HTML body, To/CC/BCC, attachments, configurable sender identity
     - **Receiving:** inbound email processing for automated conversations (webhook-based or polling)
@@ -300,6 +328,18 @@ Release 0.18.0 delivers six major themes: unified invocation observability (RFC-
     - **Config:** per-backend TOML section (`[email.smtp]`, `[email.ses]`, etc.)
     - **Scope exclusions:** no template engine (slices own their content), no mailing list management
     - **Depends on:** Cloud Integration (#1) for SES/cloud-based backends; SMTP backend standalone
+
+24. **Forge Scaffold Generation**
+     - slice-processor auto-generates `forge.toml` and `run-forge.sh` alongside `blueprint.toml`
+     - Derives node count default, DB enabled flag (from `@Sql` presence), and test curl commands (from `routes.toml`)
+     - Eliminates manual boilerplate for new examples
+
+25. **Investigate Feasibility of Resurrecting Asynchronous Postgres Driver from pragmatica-lite**
+     - pragmatica-lite had a custom async PostgreSQL driver built on Netty — non-blocking, zero-copy, no reactor overhead
+     - R2DBC PostgreSQL works but adds reactor-core dependency and scheduling overhead (~8x latency penalty at low load vs JDBC)
+     - Under sustained high load (3K+ req/s) the gap narrows; R2DBC shows flatter latency distribution
+     - Evaluate: resurrect the native driver as an alternative `SqlConnector` SPI implementation, bypassing both JDBC and R2DBC
+     - Would eliminate HikariCP thread pool and reactor-core from the hot path
 
 ### Cloud Provider Support
 
@@ -327,7 +367,7 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### FUTURE
 
-23. **Spot Instance Support for Elastic Scaling**
+26. **Spot Instance Support for Elastic Scaling**
     - Cost-optimized scaling using cloud spot/preemptible instances
     - 60-90% cost savings for traffic spike handling
 
@@ -380,7 +420,7 @@ Part of Cloud Integration (#1). Per-provider status:
     **Complexity:** Low - just configuration and cloud API flag
     **Prerequisite:** Cloud Integration (#1)
 
-24. **Cluster Expense Tracking**
+27. **Cluster Expense Tracking**
 
     - Real-time cost visibility for cluster operations
     - Enables cost-aware scaling decisions
@@ -413,18 +453,18 @@ Part of Cloud Integration (#1). Per-provider status:
     **Complexity:** Medium - cloud billing APIs have quirks, data aggregation needed
     **Prerequisite:** Cloud Integration (#1)
 
-25. **LLM Integration (Layer 3)**
+28. **LLM Integration (Layer 3)**
     - Claude/GPT API integration
     - Complex reasoning workflows
     - Multi-cloud decision support
 
-26. **Mini-Kafka (Message Streaming)**
+29. **Mini-Kafka (Message Streaming)**
     - Ordered message streaming with partitions (differs from pub/sub)
     - In-memory storage (initial implementation)
     - Consumer group coordination
     - Retention policies
 
-27. **Cross-Slice Transaction Support (2PC)**
+30. **Cross-Slice Transaction Support (2PC)**
     - Distributed transactions via Transaction aspect
     - Scope: DB transactions + internal services (pub-sub, queues, streaming)
     - NOT Saga pattern (user-unfriendly compensation design)
@@ -451,14 +491,14 @@ Part of Cloud Integration (#1). Per-provider status:
     - Aether's "each call eventually succeeds, if cluster is alive" applies
     - DB failure = transaction failure (expected behavior)
 
-28. **Distributed Saga Orchestration**
+31. **Distributed Saga Orchestration**
     - Long-running transaction orchestration (saga pattern)
     - Durable state transitions with compensation on failure
     - Differs from local state machine — coordinates across multiple slices
     - Automatic retry, timeout, and dead-letter handling
     - Visualization of in-flight sagas and their states
 
-29. **Compile-Time Serde Code Generation**
+32. **Compile-Time Serde Code Generation**
     - Replace Fory/Kryo with generated serializer/deserializer code emitted by the slice-processor
     - Eliminates external serialization dependency and all classloader-related issues
     - **Supported types:** records, primitives, String, enums, List, Set, Map, nested records
@@ -494,6 +534,39 @@ All infrastructure modules transition to unified `@ResourceQualifier(type, confi
 ## Deprecated
 
 - **MCP Server** - Replaced by direct agent API (see [metrics-control.md](../../contributors/metrics-control.md))
+
+---
+
+## Tech Debt — Hardcoded Values
+
+The following values are compile-time constants that should eventually be externalized to configuration (TOML or management API). Listed by module and priority.
+
+**Should be configurable (operator-facing):**
+
+| Location | Constant | Value | Notes |
+|----------|----------|-------|-------|
+| `AppHttpServer` | `MAX_CONTENT_LENGTH` | 16 MB | App HTTP request size limit |
+| `ManagementServer` | `MAX_CONTENT_LENGTH` | 64 MB | Management API request size limit (artifact uploads) |
+| `WebSocketAuthenticator` | `AUTH_TIMEOUT_MS` | 5s | WebSocket auth deadline |
+| `DashboardMetricsPublisher` | `BROADCAST_INTERVAL_MS` | 1000 ms | WebSocket push frequency |
+| `AlertManager` | `MAX_ALERT_HISTORY` | 100 | Alert history ring buffer |
+| `ScalingConfig` | `DEFAULT_EVALUATION_INTERVAL_MS` | 5000 ms | Auto-scaler evaluation tick |
+| `ScalingConfig` | `DEFAULT_WINDOW_SIZE` | 10 | Metric smoothing window |
+| `ArtifactStore` | `CHUNK_SIZE` | 64 KB | DHT chunk size for artifact storage |
+| `InvocationTraceStore` | `DEFAULT_CAPACITY` | 50,000 | Trace ring buffer size |
+| `MetricsCollector` | `SLIDING_WINDOW_MS` | 2 hours | Metric retention window |
+
+**Reasonable defaults (low priority):**
+
+| Location | Constant | Value | Notes |
+|----------|----------|-------|-------|
+| `AppHttpServer` | `RETRY_DELAY_MS` | 200 ms | Forward retry backoff |
+| `SliceInvoker` | `CLEANUP_INTERVAL_MS` | 60s | Stale invocation cleanup |
+| `NodeDeploymentManager` | `MAX_LIFECYCLE_RETRIES` | 10 | Slice start/stop retries |
+| `EventLoopMetricsCollector` | `PROBE_INTERVAL_MS` | 100 ms | Event loop lag probe |
+| `RollingUpdateManager` | `TERMINAL_RETENTION_MS` | 1 hour | Completed update cleanup |
+| `CronExpression` | `MAX_SEARCH_YEARS` | 4 | Cron next-fire search bound |
+| `ForgeCluster` | `ROLLING_RESTART_DELAY_MS` | 5s | Forge rolling restart pace |
 
 ---
 

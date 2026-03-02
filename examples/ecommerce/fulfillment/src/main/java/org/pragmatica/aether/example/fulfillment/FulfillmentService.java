@@ -4,10 +4,13 @@ import org.pragmatica.aether.example.shared.Address;
 import org.pragmatica.aether.example.shared.LineItem;
 import org.pragmatica.aether.example.shared.Money;
 import org.pragmatica.aether.example.shared.OrderId;
+import org.pragmatica.aether.resource.db.RowMapper;
+import org.pragmatica.aether.resource.db.Sql;
+import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.utility.IdGenerator;
 
@@ -15,9 +18,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -182,15 +183,24 @@ public interface FulfillmentService {
 
     Promise<TrackingInfo> trackShipment(TrackShipmentRequest request);
 
+    // === SQL Constants ===
+    String INSERT_SHIPMENT = """
+        INSERT INTO shipments (shipment_id, order_id, tracking_number, shipping_option,
+            destination_street, destination_city, destination_state, destination_postal,
+            destination_country, status, estimated_delivery)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""";
+
+    String SELECT_SHIPMENT_BY_TRACKING = """
+        SELECT shipment_id, order_id, tracking_number, shipping_option,
+            destination_street, destination_city, destination_state, destination_postal,
+            destination_country, status, estimated_delivery, created_at
+        FROM shipments WHERE tracking_number = ?""";
+
     // === Factory ===
-    static FulfillmentService fulfillmentService() {
-        record fulfillmentService(Map<String, Shipment> shipments) implements FulfillmentService {
+    static FulfillmentService fulfillmentService(@Sql SqlConnector db) {
+        record fulfillmentService(SqlConnector db) implements FulfillmentService {
             private static final Set<String> NO_SAME_DAY_STATES = Set.of("AK", "HI", "PR", "VI");
             private static final BigDecimal FREE_SHIPPING_THRESHOLD = BigDecimal.valueOf(100);
-
-            fulfillmentService() {
-                this(new ConcurrentHashMap<>());
-            }
 
             @Override
             public Promise<ShippingQuote> calculateShipping(CalculateShippingRequest request) {
@@ -200,23 +210,86 @@ public interface FulfillmentService {
 
             @Override
             public Promise<Shipment> createShipment(CreateShipmentRequest request) {
-                if (request.shippingOption() == ShippingOption.SAME_DAY && NO_SAME_DAY_STATES.contains(request.shippingAddress()
-                                                                                                              .state()
-                                                                                                              .toUpperCase())) {
+                if (isSameDayRestricted(request)) {
                     return new FulfillmentError.SameDayNotAvailable(request.shippingAddress()
                                                                            .state()).promise();
                 }
                 var shipment = Shipment.shipment(request.orderId(), request.shippingAddress(), request.shippingOption());
-                shipments.put(shipment.trackingNumber(), shipment);
-                return Promise.success(shipment);
+                return persistShipment(shipment);
             }
 
             @Override
             public Promise<TrackingInfo> trackShipment(TrackShipmentRequest request) {
-                return Option.option(shipments.get(request.trackingNumber()))
-                             .toResult(new FulfillmentError.ShipmentNotFound(request.trackingNumber()))
-                             .map(TrackingInfo::trackingInfo)
-                             .async();
+                return db.queryOptional(SELECT_SHIPMENT_BY_TRACKING,
+                                        fulfillmentService::mapShipment,
+                                        request.trackingNumber())
+                         .flatMap(opt -> opt.toResult(new FulfillmentError.ShipmentNotFound(request.trackingNumber()))
+                                            .async())
+                         .map(TrackingInfo::trackingInfo);
+            }
+
+            private static boolean isSameDayRestricted(CreateShipmentRequest request) {
+                return request.shippingOption() == ShippingOption.SAME_DAY && NO_SAME_DAY_STATES.contains(request.shippingAddress()
+                                                                                                                 .state()
+                                                                                                                 .toUpperCase());
+            }
+
+            private Promise<Shipment> persistShipment(Shipment shipment) {
+                return db.update(INSERT_SHIPMENT,
+                                 shipment.shipmentId(),
+                                 shipment.orderId()
+                                         .value(),
+                                 shipment.trackingNumber(),
+                                 shipment.shippingOption()
+                                         .name(),
+                                 shipment.destination()
+                                         .street(),
+                                 shipment.destination()
+                                         .city(),
+                                 shipment.destination()
+                                         .state(),
+                                 shipment.destination()
+                                         .postalCode(),
+                                 shipment.destination()
+                                         .country(),
+                                 shipment.status()
+                                         .name(),
+                                 shipment.estimatedDelivery())
+                         .map(_ -> shipment);
+            }
+
+            private static Result<Shipment> mapShipment(RowMapper.RowAccessor row) {
+                return Result.all(row.getString("shipment_id"),
+                                  row.getString("order_id"),
+                                  row.getString("tracking_number"),
+                                  row.getString("shipping_option"),
+                                  row.getString("destination_street"),
+                                  row.getString("destination_city"),
+                                  row.getString("destination_state"),
+                                  row.getString("destination_postal"),
+                                  row.getString("destination_country"))
+                             .flatMap(fulfillmentService::buildShipmentFromRow);
+            }
+
+            private static Result<Shipment> buildShipmentFromRow(String shipmentId,
+                                                                 String orderId,
+                                                                 String trackingNumber,
+                                                                 String shippingOption,
+                                                                 String street,
+                                                                 String city,
+                                                                 String state,
+                                                                 String postal,
+                                                                 String country) {
+                return Result.all(Address.address(street, city, state, postal, country),
+                                  OrderId.orderId(orderId))
+                             .map((addr, oid) -> new Shipment(shipmentId,
+                                                              oid,
+                                                              trackingNumber,
+                                                              ShippingOption.valueOf(shippingOption),
+                                                              addr,
+                                                              Shipment.ShipmentStatus.LABEL_CREATED,
+                                                              Instant.now(),
+                                                              Instant.now()));
             }
 
             private List<ShippingQuote.ShippingOptionQuote> calculateAvailableOptions(List<LineItem> items,
@@ -271,6 +344,6 @@ public interface FulfillmentService {
                 return baseCost;
             }
         }
-        return new fulfillmentService();
+        return new fulfillmentService(db);
     }
 }

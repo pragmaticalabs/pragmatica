@@ -7,6 +7,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.serialization.Codec;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -14,6 +15,7 @@ import java.util.Set;
 import static org.pragmatica.lang.Option.none;
 
 /// Value type stored in the consensus KVStore
+@Codec
 @SuppressWarnings("JBCT-NAM-01")
 public sealed interface AetherValue {
     /// Slice target stores runtime scaling configuration for a slice.

@@ -1,6 +1,7 @@
 package org.pragmatica.aether.forge;
 
-import org.pragmatica.aether.forge.ForgeCluster.EventLogEntry;
+import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.ember.EmberCluster.EventLogEntry;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.ForgeEvent;
 import org.pragmatica.aether.forge.api.ForgeRouter;
 import org.pragmatica.aether.forge.api.SimulatorRoutes.InventoryState;
@@ -21,7 +22,6 @@ import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.server.RequestContext;
 import org.pragmatica.http.server.ResponseWriter;
 
-import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Deque;
@@ -55,14 +55,13 @@ public final class ForgeApiHandler {
     private final ChaosController chaosController;
     private final InventoryState inventoryState;
 
-    private ForgeApiHandler(ForgeCluster cluster,
+    private ForgeApiHandler(EmberCluster cluster,
                             ForgeMetrics metrics,
                             ConfigurableLoadRunner configurableLoadRunner,
                             ChaosController chaosController,
                             InventoryState inventoryState,
                             Deque<ForgeEvent> events,
-                            long startTime,
-                            Option<Path> loadConfigPath) {
+                            long startTime) {
         this.chaosController = chaosController;
         this.inventoryState = inventoryState;
         this.events = events;
@@ -77,14 +76,12 @@ public final class ForgeApiHandler {
                                               metrics,
                                               events,
                                               startTime,
-                                              this::logEvent,
-                                              loadConfigPath);
+                                              this::logEvent);
     }
 
-    public static ForgeApiHandler forgeApiHandler(ForgeCluster cluster,
+    public static ForgeApiHandler forgeApiHandler(EmberCluster cluster,
                                                   ForgeMetrics metrics,
-                                                  ConfigurableLoadRunner configurableLoadRunner,
-                                                  Option<Path> loadConfigPath) {
+                                                  ConfigurableLoadRunner configurableLoadRunner) {
         var chaosController = ChaosController.chaosController(event -> executeChaosEvent(cluster, event));
         var inventoryState = InventoryState.inventoryState();
         var events = new ConcurrentLinkedDeque<ForgeEvent>();
@@ -95,11 +92,10 @@ public final class ForgeApiHandler {
                                    chaosController,
                                    inventoryState,
                                    events,
-                                   startTime,
-                                   loadConfigPath);
+                                   startTime);
     }
 
-    private static void executeChaosEvent(ForgeCluster cluster, ChaosEvent event) {
+    private static void executeChaosEvent(EmberCluster cluster, ChaosEvent event) {
         switch (event) {
             case ChaosEvent.NodeKill kill -> cluster.killNode(kill.nodeId(), false);
             case ChaosEvent.LatencySpike _ -> {}
@@ -262,12 +258,21 @@ public final class ForgeApiHandler {
         var event = new ForgeEvent(Instant.now()
                                           .toString(),
                                    type,
+                                   "INFO",
                                    message);
         events.addLast(event);
         while (events.size() > MAX_EVENTS) {
             events.pollFirst();
         }
         log.info("[EVENT] {}: {}", type, message);
+    }
+
+    public void addNodeEvent(String timestamp, String type, String severity, String message) {
+        var event = new ForgeEvent(timestamp, type, severity, message);
+        events.addLast(event);
+        while (events.size() > MAX_EVENTS) {
+            events.pollFirst();
+        }
     }
 
     private String escapeJson(String str) {

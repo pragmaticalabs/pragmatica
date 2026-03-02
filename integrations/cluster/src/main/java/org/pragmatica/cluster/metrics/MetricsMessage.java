@@ -2,12 +2,14 @@ package org.pragmatica.cluster.metrics;
 
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.serialization.Codec;
 
 import java.util.Map;
 
 /// Messages for metrics exchange between nodes.
 /// Uses Ping-Pong pattern: leader pings nodes with aggregated cluster metrics,
 /// nodes respond with their own metrics.
+@Codec
 public sealed interface MetricsMessage extends ProtocolMessage {
     /// Metrics ping sent by leader to all nodes.
     /// Contains the full aggregated cluster metrics map so every node

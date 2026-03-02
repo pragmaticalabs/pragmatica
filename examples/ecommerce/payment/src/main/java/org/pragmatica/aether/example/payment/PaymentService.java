@@ -3,6 +3,9 @@ package org.pragmatica.aether.example.payment;
 import org.pragmatica.aether.example.shared.CustomerId;
 import org.pragmatica.aether.example.shared.Money;
 import org.pragmatica.aether.example.shared.OrderId;
+import org.pragmatica.aether.resource.db.RowMapper;
+import org.pragmatica.aether.resource.db.Sql;
+import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -16,9 +19,8 @@ import org.pragmatica.utility.IdGenerator;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.Map;
+import java.util.Currency;
 import java.util.Random;
-import java.util.concurrent.ConcurrentHashMap;
 
 /// Payment processing slice.
 /// Handles credit card authorization, capture, and refunds.
@@ -100,7 +102,7 @@ public interface PaymentService {
                               validateCvv(cvv),
                               Verify.ensure(cardholderName,
                                             Verify.Is::notBlank,
-                                            Causes.forOneValue("Invalid cardholder name: {}")))
+                                            Causes.forOneValue("Invalid cardholder name: %s")))
                          .map((card, _, validCvv, name) -> new PaymentMethod(card,
                                                                              expiryMonth,
                                                                              expiryYear,
@@ -214,26 +216,68 @@ public interface PaymentService {
 
     Promise<RefundResult> processRefund(RefundRequest request);
 
+    // === SQL Constants ===
+    String INSERT_TRANSACTION = """
+        INSERT INTO transactions (transaction_id, order_id, customer_id, amount_cents, currency, card_type, masked_card, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""";
+
+    String SELECT_TRANSACTION = """
+        SELECT transaction_id, order_id, customer_id, amount_cents, currency, card_type, masked_card, status
+        FROM transactions WHERE transaction_id = ?""";
+
     // === Factory ===
-    static PaymentService paymentService() {
-        record paymentService(Map<String, PaymentResult> transactions, Random random) implements PaymentService {
+    static PaymentService paymentService(@Sql SqlConnector db) {
+        record paymentService(SqlConnector db, Random random) implements PaymentService {
             private static final double DECLINE_RATE = 0.05;
             private static final long FRAUD_CHECK_DELAY_MS = 100;
 
             @Override
             public Promise<PaymentResult> processPayment(ProcessPaymentRequest request) {
                 return simulateFraudCheck().flatMap(_ -> validatePaymentAmount(request.amount()))
-                                         .flatMap(_ -> simulateAuthorization(request));
+                                         .flatMap(_ -> simulateAuthorization(request))
+                                         .flatMap(this::persistTransaction);
             }
 
             @Override
             public Promise<RefundResult> processRefund(RefundRequest request) {
-                return Option.option(transactions.get(request.transactionId()))
-                             .toResult(new PaymentError.TransactionNotFound(request.transactionId()))
-                             .flatMap(original -> validateRefundAmount(request, original))
-                             .map(refund -> RefundResult.refundResult(request.transactionId(),
-                                                                      refund))
-                             .async();
+                return db.queryOptional(SELECT_TRANSACTION,
+                                        paymentService::mapTransaction,
+                                        request.transactionId())
+                         .flatMap(opt -> opt.toResult(new PaymentError.TransactionNotFound(request.transactionId()))
+                                            .async())
+                         .flatMap(original -> validateRefundAmount(request, original).async())
+                         .flatMap(refundAmount -> persistRefund(request.transactionId(),
+                                                                refundAmount));
+            }
+
+            private static Result<PaymentResult> mapTransaction(RowMapper.RowAccessor row) {
+                return Result.all(row.getString("transaction_id"),
+                                  row.getString("order_id"),
+                                  row.getInt("amount_cents"),
+                                  row.getString("currency"),
+                                  row.getString("card_type"),
+                                  row.getString("masked_card"),
+                                  row.getString("status"))
+                             .flatMap(paymentService::buildPaymentResult);
+            }
+
+            private static Result<PaymentResult> buildPaymentResult(String txnId,
+                                                                    String orderId,
+                                                                    int amountCents,
+                                                                    String currency,
+                                                                    String cardType,
+                                                                    String maskedCard,
+                                                                    String status) {
+                return Result.all(OrderId.orderId(orderId),
+                                  Money.money(BigDecimal.valueOf(amountCents, 2),
+                                              Currency.getInstance(currency)))
+                             .map((oid, amount) -> new PaymentResult(txnId,
+                                                                     oid,
+                                                                     amount,
+                                                                     cardType,
+                                                                     maskedCard,
+                                                                     Instant.now(),
+                                                                     PaymentResult.PaymentStatus.valueOf(status)));
             }
 
             private Result<Money> validateRefundAmount(RefundRequest request, PaymentResult original) {
@@ -250,12 +294,14 @@ public interface PaymentService {
             }
 
             private Promise<Unit> simulateFraudCheck() {
-                return Promise.lift(PaymentError.ProcessingFailed::new, this::performFraudCheckDelay);
-            }
-
-            private Unit performFraudCheckDelay() throws InterruptedException {
-                Thread.sleep(FRAUD_CHECK_DELAY_MS);
-                return Unit.unit();
+                try{
+                    Thread.sleep(FRAUD_CHECK_DELAY_MS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread()
+                          .interrupt();
+                    return new PaymentError.ProcessingFailed(e).promise();
+                }
+                return Promise.success(Unit.unit());
             }
 
             private Promise<Money> validatePaymentAmount(Money amount) {
@@ -273,6 +319,10 @@ public interface PaymentService {
                 if (random.nextDouble() < DECLINE_RATE) {
                     return new PaymentError.Declined("Card declined by issuer").promise();
                 }
+                return checkCardNumber(request);
+            }
+
+            private Promise<PaymentResult> checkCardNumber(ProcessPaymentRequest request) {
                 var cardNumber = request.paymentMethod()
                                         .cardNumber();
                 if (cardNumber.endsWith("0000")) {
@@ -284,14 +334,51 @@ public interface PaymentService {
                 if (cardNumber.endsWith("2222")) {
                     return new PaymentError.FraudSuspected().promise();
                 }
-                var result = PaymentResult.authorized(request.orderId(),
-                                                      request.amount(),
-                                                      request.paymentMethod())
-                                          .capture();
-                transactions.put(result.transactionId(), result);
-                return Promise.success(result);
+                return Promise.success(PaymentResult.authorized(request.orderId(),
+                                                                request.amount(),
+                                                                request.paymentMethod())
+                                                    .capture());
+            }
+
+            private Promise<PaymentResult> persistTransaction(PaymentResult result) {
+                var amountCents = result.amount()
+                                        .amount()
+                                        .movePointRight(2)
+                                        .intValue();
+                return db.update(INSERT_TRANSACTION,
+                                 result.transactionId(),
+                                 result.orderId()
+                                       .value(),
+                                 "",
+                                 amountCents,
+                                 result.amount()
+                                       .currency()
+                                       .getCurrencyCode(),
+                                 result.cardType(),
+                                 result.maskedCard(),
+                                 result.status()
+                                       .name())
+                         .map(_ -> result);
+            }
+
+            private Promise<RefundResult> persistRefund(String originalTransactionId, Money refundAmount) {
+                var refund = RefundResult.refundResult(originalTransactionId, refundAmount);
+                var amountCents = refundAmount.amount()
+                                              .movePointRight(2)
+                                              .intValue();
+                return db.update(INSERT_TRANSACTION,
+                                 refund.refundId(),
+                                 "",
+                                 "",
+                                 amountCents,
+                                 refundAmount.currency()
+                                             .getCurrencyCode(),
+                                 "REFUND",
+                                 "",
+                                 "REFUNDED")
+                         .map(_ -> refund);
             }
         }
-        return new paymentService(new ConcurrentHashMap<>(), new Random());
+        return new paymentService(db, new Random());
     }
 }

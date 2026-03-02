@@ -21,6 +21,7 @@ import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.serialization.Codec;
 
 import java.util.Arrays;
 import java.util.Collection;
@@ -61,6 +62,7 @@ public interface RabiaPersistence<C extends Command> {
     }
 
     /// Saved consensus state.
+    @Codec
     record SavedState<C extends Command>(byte[] snapshot,
                                          Phase lastCommittedPhase,
                                          List<Batch<C>> pendingBatches) {

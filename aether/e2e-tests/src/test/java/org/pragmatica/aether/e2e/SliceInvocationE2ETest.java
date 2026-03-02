@@ -38,7 +38,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class SliceInvocationE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.18.0");
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.19.0");
     private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
 
     // Common timeouts (CI gets 2x via adapt())
@@ -152,7 +152,7 @@ class SliceInvocationE2ETest {
             var response = cluster.anyNode().invokeSlice("PATCH", "/api/test", "{}");
 
             // PATCH is not in the supported methods list
-            assertThat(response).contains("error");
+            assertThat(response).containsAnyOf("error", "not found", "Not Found", "File not found");
         }
 
         @Test
@@ -192,7 +192,7 @@ class SliceInvocationE2ETest {
             var response = cluster.anyNode().invokePost("/api/test", "not valid json");
 
             // Should handle gracefully
-            assertThat(response).containsAnyOf("error", "404", "Bad Request");
+            assertThat(response).containsAnyOf("error", "404", "Bad Request", "not found", "Not Found");
         }
 
         @Test

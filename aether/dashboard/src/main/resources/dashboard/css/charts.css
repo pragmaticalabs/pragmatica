@@ -1,0 +1,36 @@
+.chart-panel {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--space-md);
+    margin-bottom: var(--space-md);
+}
+
+.chart-panel h3 {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    margin-bottom: var(--space-sm);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.chart-panel.half { min-height: 200px; }
+
+.chart-container {
+    width: 100%;
+    min-height: 160px;
+    position: relative;
+}
+
+.sparkline {
+    width: 100%;
+    height: 30px;
+}
+
+/* uPlot dark theme overrides */
+.uplot { font-family: var(--font-sans); }
+.u-title { font-size: var(--font-size-sm) !important; color: var(--text-secondary) !important; }
+.u-legend { font-size: var(--font-size-xs) !important; }
+.u-legend th { color: var(--text-secondary) !important; }
+.u-legend td { color: var(--text-primary) !important; }
+.u-series > * { padding: 2px 6px !important; }

@@ -8,8 +8,8 @@ Aether includes:
 
 | Component | Purpose | Audience |
 |-----------|---------|----------|
-| **Aether Forge** (`forge/`) | Cluster simulator with visual dashboard for resilience testing | Developers, DevOps, executives |
-| **Real Cluster Demo** (`script/demo-cluster.sh`) | Multi-process cluster with slice deployment | Developers, DevOps |
+| **Aether Forge** (`aether/forge/`) | Cluster simulator with visual dashboard for resilience testing | Developers, DevOps, executives |
+| **Real Cluster Demo** (`aether/script/demo-cluster.sh`) | Multi-process cluster with slice deployment | Developers, DevOps |
 | **E-commerce Example** (`examples/ecommerce/`) | Multi-slice business domain example | Developers, architects |
 
 ---
@@ -63,12 +63,12 @@ Aether's distributed capabilities. It provides:
 
 | Component | File | Description |
 |-----------|------|-------------|
-| `ForgeServer` | `forge/src/.../ForgeServer.java` | Main entry point, starts HTTP server and cluster |
-| `ForgeCluster` | `forge/src/.../ForgeCluster.java` | Manages multiple AetherNodes in-process |
-| `ConfigurableLoadRunner` | `forge/forge-load/src/.../ConfigurableLoadRunner.java` | Generates configurable HTTP load against the cluster |
-| `ForgeMetrics` | `forge/src/.../ForgeMetrics.java` | Aggregates success/failure/latency metrics |
-| `ForgeApiHandler` | `forge/src/.../ForgeApiHandler.java` | REST API for dashboard interactions |
-| `StaticFileHandler` | `forge/src/.../StaticFileHandler.java` | Serves web dashboard files |
+| `ForgeServer` | `aether/forge/forge-core/src/.../ForgeServer.java` | Main entry point, starts HTTP server and cluster |
+| `ForgeCluster` | `aether/forge/forge-core/src/.../ForgeCluster.java` | Manages multiple AetherNodes in-process |
+| `ConfigurableLoadRunner` | `aether/forge/forge-load/src/.../ConfigurableLoadRunner.java` | Generates configurable HTTP load against the cluster |
+| `ForgeMetrics` | `aether/forge/forge-core/src/.../ForgeMetrics.java` | Aggregates success/failure/latency metrics |
+| `ForgeApiHandler` | `aether/forge/forge-api/src/.../ForgeApiHandler.java` | REST API for dashboard interactions |
+| `StaticFileHandler` | `aether/forge/forge-core/src/.../StaticFileHandler.java` | Serves web dashboard files |
 
 ### Dashboard Features
 
@@ -93,13 +93,13 @@ The web dashboard (`index.html`) provides:
 
 ```bash
 # Build Forge
-mvn package -pl forge/forge-core -am -DskipTests
+mvn package -pl aether/forge/forge-core -am -DskipTests
 
 # Run with defaults (5 nodes, 1000 req/sec)
-java -jar forge/forge-core/target/aether-forge.jar
+java -jar aether/forge/forge-core/target/aether-forge.jar
 
 # Or with custom settings
-CLUSTER_SIZE=7 LOAD_RATE=2000 java -jar forge/forge-core/target/aether-forge.jar
+CLUSTER_SIZE=7 LOAD_RATE=2000 java -jar aether/forge/forge-core/target/aether-forge.jar
 ```
 
 The dashboard opens automatically at `http://localhost:8888`.
@@ -108,7 +108,7 @@ The dashboard opens automatically at `http://localhost:8888`.
 
 ```bash
 # Build image
-cd forge
+cd aether/forge
 podman build -t aether-forge .
 
 # Run container
@@ -124,7 +124,7 @@ podman run -p 8888:8888 \
 ### Running with Podman Compose
 
 ```bash
-cd forge
+cd aether/forge
 podman-compose up
 ```
 
@@ -307,19 +307,19 @@ Run a **real multi-process cluster** on your local machine with actual slice dep
 mvn package -DskipTests
 
 # Start 5-node cluster
-./script/demo-cluster.sh start
+./aether/script/demo-cluster.sh start
 
 # Deploy ecommerce slices
-./script/demo-cluster.sh deploy
+./aether/script/demo-cluster.sh deploy
 
 # Check status
-./script/demo-cluster.sh status
+./aether/script/demo-cluster.sh status
 
 # View logs (all nodes)
-./script/demo-cluster.sh logs
+./aether/script/demo-cluster.sh logs
 
 # Stop and cleanup
-./script/demo-cluster.sh clean
+./aether/script/demo-cluster.sh clean
 ```
 
 ### Architecture
@@ -370,7 +370,7 @@ After starting, access these endpoints:
 **1. Start the cluster:**
 
 ```bash
-./script/demo-cluster.sh start
+./aether/script/demo-cluster.sh start
 ```
 
 Output:
@@ -395,13 +395,13 @@ curl http://localhost:8081/health
 **3. Deploy slices:**
 
 ```bash
-./script/demo-cluster.sh deploy
+./aether/script/demo-cluster.sh deploy
 ```
 
 **4. Check deployed slices:**
 
 ```bash
-./script/demo-cluster.sh status
+./aether/script/demo-cluster.sh status
 ```
 
 Shows slice distribution across nodes.
@@ -413,7 +413,7 @@ Navigate to http://localhost:8081/dashboard for real-time metrics.
 **6. Clean up:**
 
 ```bash
-./script/demo-cluster.sh clean
+./aether/script/demo-cluster.sh clean
 ```
 
 ### Logs
@@ -422,7 +422,7 @@ Node logs are written to `logs/` directory:
 
 ```bash
 # Follow all logs
-./script/demo-cluster.sh logs
+./aether/script/demo-cluster.sh logs
 
 # Or individual nodes
 tail -f logs/node-1.log
@@ -438,8 +438,8 @@ lsof -i :8081-8095  # Check for processes using these ports
 
 **Cluster won't form:**
 ```bash
-./script/demo-cluster.sh logs  # Check for errors
-./script/demo-cluster.sh clean  # Reset and try again
+./aether/script/demo-cluster.sh logs  # Check for errors
+./aether/script/demo-cluster.sh clean  # Reset and try again
 ```
 
 **Slice deployment fails:**
@@ -472,8 +472,8 @@ cd examples/ecommerce && mvn install -DskipTests
 {
   "cluster": {
     "nodes": [
-      {"id": "node-1", "port": 5050, "state": "healthy", "isLeader": true},
-      {"id": "node-2", "port": 5051, "state": "healthy", "isLeader": false}
+      {"id": "node-1", "port": 6000, "state": "healthy", "isLeader": true},
+      {"id": "node-2", "port": 6001, "state": "healthy", "isLeader": false}
     ],
     "leaderId": "node-1",
     "nodeCount": 5
@@ -504,8 +504,8 @@ cd examples/ecommerce && mvn install -DskipTests
 
 **Solutions**:
 
-1. Ensure ports 5050-5060 are available
-2. Check for other Aether processes: `lsof -i :5050`
+1. Ensure ports 5150-5160 (management) and 6000-6005 (cluster) are available
+2. Check for other Aether processes: `lsof -i :5150` or `lsof -i :6000`
 3. Increase startup timeout if slow machine
 
 ### Dashboard Not Loading

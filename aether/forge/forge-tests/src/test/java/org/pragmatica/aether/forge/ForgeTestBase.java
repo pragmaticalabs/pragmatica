@@ -1,5 +1,7 @@
 package org.pragmatica.aether.forge;
 
+import org.pragmatica.aether.ember.EmberCluster;
+
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -16,10 +18,10 @@ public abstract class ForgeTestBase {
 
     /// Check if all nodes in the cluster are healthy.
     ///
-    /// @param cluster the ForgeCluster to check
+    /// @param cluster the EmberCluster to check
     /// @param httpClient the HTTP client to use for health checks
     /// @return true if all nodes report healthy with quorum
-    protected boolean allNodesHealthy(ForgeCluster cluster, HttpClient httpClient) {
+    protected boolean allNodesHealthy(EmberCluster cluster, HttpClient httpClient) {
         var status = cluster.status();
         return status.nodes().stream()
                      .allMatch(node -> checkNodeHealth(node.mgmtPort(), httpClient));
@@ -88,10 +90,10 @@ public abstract class ForgeTestBase {
 
     /// Get health status from any available node in the cluster.
     ///
-    /// @param cluster the ForgeCluster
+    /// @param cluster the EmberCluster
     /// @param httpClient the HTTP client to use
     /// @return the health response or empty string if no nodes available
-    protected String getHealthFromAnyNode(ForgeCluster cluster, HttpClient httpClient) {
+    protected String getHealthFromAnyNode(EmberCluster cluster, HttpClient httpClient) {
         var status = cluster.status();
         if (status.nodes().isEmpty()) {
             return "";
@@ -113,10 +115,10 @@ public abstract class ForgeTestBase {
 
     /// Wait for a leader to be elected in the cluster.
     ///
-    /// @param cluster the ForgeCluster
+    /// @param cluster the EmberCluster
     /// @param timeout maximum time to wait
     /// @param pollInterval interval between checks
-    protected void awaitLeader(ForgeCluster cluster, Duration timeout, Duration pollInterval) {
+    protected void awaitLeader(EmberCluster cluster, Duration timeout, Duration pollInterval) {
         var deadline = System.currentTimeMillis() + timeout.toMillis();
         while (System.currentTimeMillis() < deadline) {
             if (cluster.currentLeader().isPresent()) {
@@ -129,10 +131,10 @@ public abstract class ForgeTestBase {
 
     /// Wait for the cluster to achieve quorum with a leader.
     ///
-    /// @param cluster the ForgeCluster
+    /// @param cluster the EmberCluster
     /// @param timeout maximum time to wait
     /// @param pollInterval interval between checks
-    protected void awaitQuorum(ForgeCluster cluster, Duration timeout, Duration pollInterval) {
+    protected void awaitQuorum(EmberCluster cluster, Duration timeout, Duration pollInterval) {
         var deadline = System.currentTimeMillis() + timeout.toMillis();
         while (System.currentTimeMillis() < deadline) {
             if (cluster.nodeCount() >= 3 && cluster.currentLeader().isPresent()) {

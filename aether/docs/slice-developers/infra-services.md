@@ -38,7 +38,7 @@ The artifact repository is integrated directly into AetherNode, providing Maven-
 - No external Nexus/Artifactory required
 - Self-contained deployment story
 - Enables air-gapped deployments
-- First-run experience: `aether artifact deploy my-app.jar` just works
+- First-run experience: deploy via `curl -X PUT` to the `/repository/` endpoint
 
 **Replication Configuration:**
 
@@ -59,30 +59,20 @@ AetherNodeConfig.aetherNodeConfig(self, port, coreNodes, sliceConfig,
 AetherNodeConfig.testConfig(self, port, coreNodes);  // Uses DHTConfig.FULL
 ```
 
-**CLI Usage:**
+**Deployment via Management API:**
+
+The repository supports standard Maven GET/PUT operations on the management port (default 5150):
 
 ```bash
-# Deploy artifact
-aether artifact deploy target/my-slice.jar -g com.example -a my-slice -v 1.0.0
-
-# List artifacts
-aether artifact list
-
-# List versions
-aether artifact versions com.example:my-slice
-```
-
-**Maven Protocol:**
-
-The repository supports standard Maven GET/PUT operations:
-
-```bash
-# Deploy via Maven
-mvn deploy -DaltDeploymentRepository=aether::default::http://localhost:8080/repository
-
-# Or curl
-curl -X PUT http://localhost:8080/repository/com/example/my-slice/1.0.0/my-slice-1.0.0.jar \
+# Deploy artifact via curl
+curl -X PUT http://localhost:5150/repository/com/example/my-slice/1.0.0/my-slice-1.0.0.jar \
   --data-binary @target/my-slice-1.0.0.jar
+
+# List artifact info
+curl http://localhost:5150/repository/info/com/example/my-slice/1.0.0
+
+# Deploy via Maven
+mvn deploy -DaltDeploymentRepository=aether::default::http://localhost:5150/repository
 ```
 
 ### Forge Integration
@@ -98,9 +88,13 @@ curl -X PUT http://localhost:8888/repository/com/example/test/1.0.0/test-1.0.0.j
   --data-binary @test.jar
 ```
 
-## InfraStore: Instance Sharing
+## InfraStore: Instance Sharing (Planned -- Not Yet Implemented)
 
-Infrastructure services share instances across slices via `InfraStore`. This enables:
+> **Note:** The `InfraStore` API described below is part of the planned design and has not been
+> implemented yet. The interfaces and usage patterns shown here represent the intended API and
+> may change before implementation.
+
+Infrastructure services will share instances across slices via `InfraStore`. This will enable:
 - Singleton services (cache, database connections)
 - Resource pooling
 - Configuration sharing

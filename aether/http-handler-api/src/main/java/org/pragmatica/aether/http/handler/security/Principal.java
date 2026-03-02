@@ -3,6 +3,7 @@ package org.pragmatica.aether.http.handler.security;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
+import org.pragmatica.serialization.Codec;
 
 /// Principal identity - who is making the request.
 ///
@@ -10,6 +11,7 @@ import org.pragmatica.lang.Verify;
 /// Represents the authenticated entity making a request.
 ///
 /// @param value the principal identifier
+@Codec
 public record Principal(String value) {
     /// Validation errors for Principal.
     public sealed interface PrincipalError extends Cause {

@@ -46,8 +46,8 @@ class TcpTopologyManagerIT {
         socketAddress2 = new InetSocketAddress("127.0.0.1", 8082);
         socketAddress3 = new InetSocketAddress("127.0.0.1", 8083);
 
-        nodeInfo1 = new NodeInfo(nodeId1, NodeAddress.nodeAddress(socketAddress1).unwrap());
-        nodeInfo2 = new NodeInfo(nodeId2, NodeAddress.nodeAddress(socketAddress2).unwrap());
+        nodeInfo1 = NodeInfo.nodeInfo(nodeId1, NodeAddress.nodeAddress(socketAddress1).unwrap());
+        nodeInfo2 = NodeInfo.nodeInfo(nodeId2, NodeAddress.nodeAddress(socketAddress2).unwrap());
 
         var config = new TopologyConfig(nodeId1,
                                         2,

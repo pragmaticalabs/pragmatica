@@ -735,7 +735,7 @@ public final class SliceProjectInitializer {
             <Loggers>
                 <Root level="info"><AppenderRef ref="Console"/></Root>
                 <Logger name="io.netty" level="error"/>
-                <Logger name="org.apache.fury" level="error"/>
+
                 <Logger name="org.h2" level="error"/>
             </Loggers>
         </Configuration>

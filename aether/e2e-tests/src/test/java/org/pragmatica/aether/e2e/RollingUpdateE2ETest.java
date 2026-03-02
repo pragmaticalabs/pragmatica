@@ -40,7 +40,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class RollingUpdateE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.18.0");
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.19.0");
     private static final String ARTIFACT_BASE = "org.pragmatica-lite.aether.test:echo-slice-echo-service";
     private static final String OLD_VERSION = ARTIFACT_BASE + ":" + TEST_ARTIFACT_VERSION;
     private static final String NEW_VERSION = ARTIFACT_BASE + ":" + AetherCluster.ROLLING_UPDATE_NEW_VERSION;

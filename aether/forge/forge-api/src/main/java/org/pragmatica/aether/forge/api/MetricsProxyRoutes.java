@@ -1,6 +1,6 @@
 package org.pragmatica.aether.forge.api;
 
-import org.pragmatica.aether.forge.ForgeCluster;
+import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -22,12 +22,12 @@ public sealed interface MetricsProxyRoutes {
 
     record HistoryResponse(String body) {}
 
-    static RouteSource metricsProxyRoutes(ForgeCluster cluster) {
+    static RouteSource metricsProxyRoutes(EmberCluster cluster) {
         var http = JdkHttpOperations.jdkHttpOperations();
         return in("/api/metrics").serve(historyRoute(cluster, http));
     }
 
-    private static Route<HistoryResponse> historyRoute(ForgeCluster cluster,
+    private static Route<HistoryResponse> historyRoute(EmberCluster cluster,
                                                        JdkHttpOperations http) {
         return Route.<HistoryResponse> get("/history")
                     .withQuery(aString("range"))
@@ -35,7 +35,7 @@ public sealed interface MetricsProxyRoutes {
                     .asJson();
     }
 
-    private static Promise<HistoryResponse> proxyHistory(ForgeCluster cluster,
+    private static Promise<HistoryResponse> proxyHistory(EmberCluster cluster,
                                                          JdkHttpOperations http,
                                                          Option<String> range) {
         var rangeParam = range.or("1h");

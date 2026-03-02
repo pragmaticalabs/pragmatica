@@ -7,9 +7,11 @@ app_http_port = 8070
 [observability]
 depth_threshold = -1
 
+# H2 embedded database (disabled — using external PostgreSQL)
+# To revert to H2: set enabled = true and uncomment init_script
 [database]
-enabled = true
-port = 9092
-name = "forge"
-persistent = true
-init_script = "./schema/pricing-engine.sql"
+enabled = false
+#port = 9092
+#name = "forge"
+#persistent = true
+#init_script = "./schema/pricing-engine.sql"

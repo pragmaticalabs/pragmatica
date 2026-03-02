@@ -15,9 +15,13 @@
  */
 
 package org.pragmatica.consensus.rabia;
+
+import org.pragmatica.serialization.Codec;
+
 /// Represents a protocol phase as defined in the Rabia formal specification.
 /// Note: The constructor validation throw is intentional - negative phase values
 /// represent a programming error, not a business validation failure.
+@Codec
 public record Phase(long value) implements Comparable<Phase> {
     public static final Phase ZERO = new Phase(0);
 

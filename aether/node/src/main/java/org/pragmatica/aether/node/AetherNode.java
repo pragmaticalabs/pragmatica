@@ -14,6 +14,7 @@ import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.DecisionTreeController;
 import org.pragmatica.aether.controller.RollbackManager;
+import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
@@ -94,6 +95,8 @@ import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 
 import java.util.ArrayList;
@@ -102,14 +105,11 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.serialization.fury.FuryDeserializer.furyDeserializer;
-import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
-
 /// Main entry point for an Aether cluster node.
 /// Assembles all components: consensus, KV-store, slice management, deployment managers.
 @SuppressWarnings("JBCT-RET-01")
 public interface AetherNode {
-    String VERSION = "0.18.0";
+    String VERSION = "0.19.0";
     NodeId self();
 
     Promise<Unit> start();
@@ -220,23 +220,23 @@ public interface AetherNode {
 
     static Result<AetherNode> aetherNode(AetherNodeConfig config) {
         var delegateRouter = MessageRouter.DelegateRouter.delegate();
-        var serializer = furySerializer(AetherCustomClasses.INSTANCE);
-        var deserializer = furyDeserializer(AetherCustomClasses.INSTANCE);
-        return aetherNode(config, delegateRouter, serializer, deserializer);
+        var nodeCodec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
+        return aetherNode(config, delegateRouter, nodeCodec);
     }
 
     static Result<AetherNode> aetherNode(AetherNodeConfig config,
                                          MessageRouter.DelegateRouter delegateRouter,
-                                         Serializer serializer,
-                                         Deserializer deserializer) {
+                                         SliceCodec nodeCodec) {
         return config.validate()
-                     .flatMap(_ -> createNode(config, delegateRouter, serializer, deserializer));
+                     .flatMap(_ -> createNode(config, delegateRouter, nodeCodec));
     }
 
     private static Result<AetherNode> createNode(AetherNodeConfig config,
                                                  MessageRouter.DelegateRouter delegateRouter,
-                                                 Serializer serializer,
-                                                 Deserializer deserializer) {
+                                                 SliceCodec nodeCodec) {
+        // SliceCodec implements both Serializer and Deserializer
+        Serializer serializer = nodeCodec;
+        Deserializer deserializer = nodeCodec;
         // Create KVStore (state machine for consensus)
         var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter, serializer, deserializer);
         // Create DHT node (local storage engine + hash ring)
@@ -276,6 +276,7 @@ public interface AetherNode {
                                                              networkMetricsHandler,
                                                              serializer,
                                                              deserializer,
+                                                             nodeCodec,
                                                              dhtNode));
     }
 
@@ -289,6 +290,7 @@ public interface AetherNode {
                                                    NetworkMetricsHandler networkMetricsHandler,
                                                    Serializer serializer,
                                                    Deserializer deserializer,
+                                                   SliceCodec nodeCodec,
                                                    DHTNode dhtNode) {
         // Create distributed DHT client with quorum-based reads/writes via ClusterNetwork
         var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode, clusterNode.network(), config.artifactRepo());
@@ -609,8 +611,8 @@ public interface AetherNode {
         metricsCollector.setInvocationMetricsProvider(invocationMetrics);
         metricsCollector.recordCustom("mgmt.port", config.managementPort());
         var metricsScheduler = MetricsScheduler.metricsScheduler(config.self(), clusterNode.network(), metricsCollector);
-        // Create base decision tree controller
-        var controller = DecisionTreeController.decisionTreeController();
+        // Create base decision tree controller (uses node config — Forge disables CPU-based scaling)
+        var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         // Create blueprint service using composite repository from configuration
         var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, compositeRepository(repositories));
         // Create Maven protocol handler from artifact store (DHT created in createNode)
@@ -662,7 +664,8 @@ public interface AetherNode {
                                                                           .scalingConfig()
                                                                           .evaluationIntervalMs())
                                                           .millis(),
-                                                  config.controllerConfig());
+                                                  config.controllerConfig(),
+                                                  delegateRouter::route);
         // Create rollback manager for automatic version rollback on persistent failures
         var rollbackManager = config.rollback()
                                     .enabled()
@@ -697,6 +700,7 @@ public interface AetherNode {
                                                                                 kvStore,
                                                                                 invocationHandler,
                                                                                 config.sliceAction(),
+                                                                                nodeCodec,
                                                                                 Option.some(httpRoutePublisher),
                                                                                 Option.some(sliceInvoker));
         // Create application HTTP server for slice-provided routes (with HTTP forwarding support)
@@ -707,7 +711,8 @@ public interface AetherNode {
                                                         Option.some(clusterNode.network()),
                                                         Option.some(serializer),
                                                         Option.some(deserializer),
-                                                        config.tls());
+                                                        config.tls(),
+                                                        Option.some(invocationMetrics));
         // Collect all route entries from RabiaNode and AetherNode components
         var aetherEntries = collectRouteEntries(kvStore,
                                                 nodeDeploymentManager,
@@ -1104,6 +1109,8 @@ public interface AetherNode {
                                               eventAggregator::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               eventAggregator::onSliceFailure));
+        entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledUp.class, eventAggregator::onScaledUp));
+        entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledDown.class, eventAggregator::onScaledDown));
         entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                               eventAggregator::onConnectionEstablished));
         entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionFailed.class,

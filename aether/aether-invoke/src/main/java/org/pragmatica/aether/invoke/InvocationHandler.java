@@ -65,9 +65,10 @@ public interface InvocationHandler {
     /// @return Option containing the metrics collector
     Option<InvocationMetricsCollector> metricsCollector();
 
-    /// Default invocation timeout (5 minutes).
-    /// Long timeout to allow operations that may trigger rebalance/node launch.
-    TimeSpan DEFAULT_INVOCATION_TIMEOUT = timeSpan(5).minutes();
+    /// Default invocation timeout (25 seconds).
+    /// Must be shorter than client-side SliceInvoker timeout (30s) so the server
+    /// responds with a proper error before the client's timeout fires and orphans the correlationId.
+    TimeSpan DEFAULT_INVOCATION_TIMEOUT = timeSpan(25).seconds();
 
     /// Create a new InvocationHandler without metrics or HTTP routing.
     static InvocationHandler invocationHandler(NodeId self, ClusterNetwork network) {

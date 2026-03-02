@@ -52,8 +52,8 @@ public record PoolConfig(int minConnections,
     }
 
     /// Default pool configuration suitable for most applications.
-    public static final PoolConfig DEFAULT = poolConfig(2,
-                                                        10,
+    public static final PoolConfig DEFAULT = poolConfig(4,
+                                                        20,
                                                         Duration.ofSeconds(30),
                                                         Duration.ofMinutes(10),
                                                         Duration.ofMinutes(30),

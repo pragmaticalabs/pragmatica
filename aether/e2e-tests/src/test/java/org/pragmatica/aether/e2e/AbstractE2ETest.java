@@ -31,7 +31,7 @@ public abstract class AbstractE2ETest {
 
     // Common artifact for slice deployment tests - pure function echo slice
     // Note: Uses slice artifact ID (echo-slice-echo-service), not module artifact ID (echo-slice)
-    protected static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.18.0");
+    protected static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.19.0");
     protected static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
 
     protected AetherCluster cluster;

@@ -158,19 +158,21 @@ class AetherConfigTest {
         var config = AetherConfig.aetherConfig(Environment.DOCKER);
 
         assertThat(config.slice()).isNotNull();
-        assertThat(config.slice().repositories()).containsExactly(RepositoryType.LOCAL);
+        assertThat(config.slice().repositories()).hasSize(1);
+        assertThat(config.slice().repositories().getFirst()).isInstanceOf(RepositoryType.Local.class);
     }
 
     @Test
     void builder_overridesSliceConfig() {
-        var customSlice = SliceConfig.sliceConfig(RepositoryType.BUILTIN, RepositoryType.LOCAL);
+        var customSlice = SliceConfig.sliceConfig(new RepositoryType.Builtin(), new RepositoryType.Local());
         var config = AetherConfig.builder()
             .withEnvironment(Environment.DOCKER)
             .sliceConfig(customSlice)
             .build();
 
-        assertThat(config.slice().repositories())
-            .containsExactly(RepositoryType.BUILTIN, RepositoryType.LOCAL);
+        assertThat(config.slice().repositories()).hasSize(2);
+        assertThat(config.slice().repositories().get(0)).isInstanceOf(RepositoryType.Builtin.class);
+        assertThat(config.slice().repositories().get(1)).isInstanceOf(RepositoryType.Local.class);
     }
 
     @Test
@@ -180,6 +182,7 @@ class AetherConfigTest {
             .build();
 
         assertThat(config.slice()).isNotNull();
-        assertThat(config.slice().repositories()).containsExactly(RepositoryType.LOCAL);
+        assertThat(config.slice().repositories()).hasSize(1);
+        assertThat(config.slice().repositories().getFirst()).isInstanceOf(RepositoryType.Local.class);
     }
 }

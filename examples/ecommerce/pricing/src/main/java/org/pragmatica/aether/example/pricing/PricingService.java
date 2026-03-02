@@ -62,6 +62,16 @@ public interface PricingService {
             }
         }
 
+        public static Result<PriceBreakdown> priceBreakdown(Map<ProductId, LinePrice> linePrices,
+                                                            Money subtotal,
+                                                            Money discountAmount,
+                                                            Money taxAmount,
+                                                            Money shippingCost,
+                                                            Money total) {
+            return Result.success(total)
+                         .map(t -> new PriceBreakdown(linePrices, subtotal, discountAmount, taxAmount, shippingCost, t));
+        }
+
         public static Builder builder() {
             return new Builder();
         }
@@ -110,7 +120,7 @@ public interface PricingService {
                 return subtotal.subtract(discountAmount)
                                .flatMap(afterDiscount -> afterDiscount.add(taxAmount))
                                .flatMap(afterTax -> afterTax.add(shippingCost))
-                               .map(total -> new PriceBreakdown(linePrices,
+                               .flatMap(total -> priceBreakdown(linePrices,
                                                                 subtotal,
                                                                 discountAmount,
                                                                 taxAmount,

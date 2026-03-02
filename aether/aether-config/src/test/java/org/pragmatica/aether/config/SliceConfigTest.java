@@ -13,37 +13,50 @@ class SliceConfigTest {
     void sliceConfig_returnsLocalRepository() {
         var config = SliceConfig.sliceConfig();
 
-        assertThat(config.repositories()).containsExactly(RepositoryType.LOCAL);
+        assertThat(config.repositories()).hasSize(1);
+        assertThat(config.repositories().getFirst()).isInstanceOf(RepositoryType.Local.class);
     }
 
     @Test
     void sliceConfig_succeeds_forSingleRepository() {
         SliceConfig.sliceConfigFromNames(List.of("local"))
                    .onFailureRun(Assertions::fail)
-                   .onSuccess(config -> assertThat(config.repositories()).containsExactly(RepositoryType.LOCAL));
+                   .onSuccess(config -> {
+                       assertThat(config.repositories()).hasSize(1);
+                       assertThat(config.repositories().getFirst()).isInstanceOf(RepositoryType.Local.class);
+                   });
     }
 
     @Test
     void sliceConfig_succeeds_forMultipleRepositories() {
         SliceConfig.sliceConfigFromNames(List.of("local", "builtin"))
                    .onFailureRun(Assertions::fail)
-                   .onSuccess(config -> assertThat(config.repositories())
-                       .containsExactly(RepositoryType.LOCAL, RepositoryType.BUILTIN));
+                   .onSuccess(config -> {
+                       assertThat(config.repositories()).hasSize(2);
+                       assertThat(config.repositories().get(0)).isInstanceOf(RepositoryType.Local.class);
+                       assertThat(config.repositories().get(1)).isInstanceOf(RepositoryType.Builtin.class);
+                   });
     }
 
     @Test
     void sliceConfig_succeeds_forBuiltinOnly() {
         SliceConfig.sliceConfigFromNames(List.of("builtin"))
                    .onFailureRun(Assertions::fail)
-                   .onSuccess(config -> assertThat(config.repositories()).containsExactly(RepositoryType.BUILTIN));
+                   .onSuccess(config -> {
+                       assertThat(config.repositories()).hasSize(1);
+                       assertThat(config.repositories().getFirst()).isInstanceOf(RepositoryType.Builtin.class);
+                   });
     }
 
     @Test
     void sliceConfig_preservesOrder() {
         SliceConfig.sliceConfigFromNames(List.of("builtin", "local"))
                    .onFailureRun(Assertions::fail)
-                   .onSuccess(config -> assertThat(config.repositories())
-                       .containsExactly(RepositoryType.BUILTIN, RepositoryType.LOCAL));
+                   .onSuccess(config -> {
+                       assertThat(config.repositories()).hasSize(2);
+                       assertThat(config.repositories().get(0)).isInstanceOf(RepositoryType.Builtin.class);
+                       assertThat(config.repositories().get(1)).isInstanceOf(RepositoryType.Local.class);
+                   });
     }
 
     @Test
@@ -69,17 +82,34 @@ class SliceConfigTest {
 
     @Test
     void sliceConfig_createsConfigWithSpecifiedTypes() {
-        var config = SliceConfig.sliceConfig(RepositoryType.BUILTIN, RepositoryType.LOCAL);
+        var config = SliceConfig.sliceConfig(new RepositoryType.Builtin(), new RepositoryType.Local());
 
-        assertThat(config.repositories()).containsExactly(RepositoryType.BUILTIN, RepositoryType.LOCAL);
+        assertThat(config.repositories()).hasSize(2);
+        assertThat(config.repositories().get(0)).isInstanceOf(RepositoryType.Builtin.class);
+        assertThat(config.repositories().get(1)).isInstanceOf(RepositoryType.Local.class);
     }
 
     @Test
     void withRepositories_createsNewConfigWithNewTypes() {
         var original = SliceConfig.sliceConfig();
-        var updated = original.withRepositories(List.of(RepositoryType.BUILTIN));
+        var updated = original.withRepositories(List.of(new RepositoryType.Builtin()));
 
-        assertThat(original.repositories()).containsExactly(RepositoryType.LOCAL);
-        assertThat(updated.repositories()).containsExactly(RepositoryType.BUILTIN);
+        assertThat(original.repositories()).hasSize(1);
+        assertThat(original.repositories().getFirst()).isInstanceOf(RepositoryType.Local.class);
+        assertThat(updated.repositories()).hasSize(1);
+        assertThat(updated.repositories().getFirst()).isInstanceOf(RepositoryType.Builtin.class);
+    }
+
+    @Test
+    void sliceConfig_succeeds_forRemoteRepository() {
+        SliceConfig.sliceConfigFromNames(List.of("local", "remote:central"))
+                   .onFailureRun(Assertions::fail)
+                   .onSuccess(config -> {
+                       assertThat(config.repositories()).hasSize(2);
+                       assertThat(config.repositories().get(0)).isInstanceOf(RepositoryType.Local.class);
+                       assertThat(config.repositories().get(1)).isInstanceOf(RepositoryType.Remote.class);
+                       var remote = (RepositoryType.Remote) config.repositories().get(1);
+                       assertThat(remote.id()).isEqualTo("central");
+                   });
     }
 }

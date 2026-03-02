@@ -1,6 +1,7 @@
 package org.pragmatica.aether.http.handler.security;
 
 import org.pragmatica.lang.Result;
+import org.pragmatica.serialization.Codec;
 
 import java.util.Map;
 import java.util.Objects;
@@ -17,6 +18,7 @@ import static org.pragmatica.lang.Result.success;
 /// @param principal the authenticated identity
 /// @param roles     assigned roles/permissions
 /// @param claims    additional metadata (e.g., JWT claims)
+@Codec
 public record SecurityContext(Principal principal,
                               Set<Role> roles,
                               Map<String, String> claims) {

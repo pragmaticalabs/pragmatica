@@ -21,7 +21,10 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
+import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.ember.EmberH2Config;
+import org.pragmatica.aether.ember.EmberH2Server;
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// Tests for invocation metrics accuracy after real traffic through a multi-slice deployment.
@@ -44,13 +47,13 @@ class InvocationMetricsTest extends ForgeTestBase {
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
 
-    private static final String URL_SHORTENER_ARTIFACT = "org.pragmatica.aether.example:url-shortener-url-shortener:0.18.0";
-    private static final String ANALYTICS_ARTIFACT = "org.pragmatica.aether.example:url-shortener-analytics:0.18.0";
+    private static final String URL_SHORTENER_ARTIFACT = "org.pragmatica.aether.example:url-shortener-url-shortener:0.19.0";
+    private static final String ANALYTICS_ARTIFACT = "org.pragmatica.aether.example:url-shortener-analytics:0.19.0";
     private static final String BLUEPRINT_ID = "forge.test:url-shortener-metrics:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
-    private ForgeH2Server h2Server;
-    private ForgeCluster cluster;
+    private EmberH2Server h2Server;
+    private EmberCluster cluster;
     private JdkHttpOperations httpOps;
 
     @BeforeAll
@@ -59,8 +62,8 @@ class InvocationMetricsTest extends ForgeTestBase {
                              .resolve("../../../examples/url-shortener/schema/url-shortener.sql")
                              .normalize()
                              .toString();
-        var h2Config = ForgeH2Config.forgeH2Config(true, H2_PORT, "forge", false, Option.some(schemaPath));
-        h2Server = ForgeH2Server.forgeH2Server(h2Config);
+        var h2Config = EmberH2Config.emberH2Config(true, H2_PORT, "forge", false, Option.some(schemaPath));
+        h2Server = EmberH2Server.emberH2Server(h2Config);
         h2Server.start()
                 .await()
                 .onFailure(cause -> {
@@ -68,7 +71,7 @@ class InvocationMetricsTest extends ForgeTestBase {
                 });
 
         var configProvider = buildConfigurationProvider(h2Server);
-        cluster = forgeCluster(5, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "im", Option.some(configProvider));
+        cluster = emberCluster(5, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "im", Option.some(configProvider));
         httpOps = jdkHttpOperations(Duration.ofSeconds(5), java.net.http.HttpClient.Redirect.NORMAL, Option.empty());
         cluster.start()
                .await()
@@ -134,7 +137,7 @@ class InvocationMetricsTest extends ForgeTestBase {
         }
     }
 
-    private static ConfigurationProvider buildConfigurationProvider(ForgeH2Server server) {
+    private static ConfigurationProvider buildConfigurationProvider(EmberH2Server server) {
         var runtimeValues = Map.of("database.name", "forge-h2",
                                    "database.type", "H2",
                                    "database.host", "localhost",

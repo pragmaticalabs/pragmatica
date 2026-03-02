@@ -1,7 +1,18 @@
 package org.pragmatica.aether.forge;
 
+import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.ember.EmberConfig;
+import org.pragmatica.aether.ember.EmberH2Config;
+import org.pragmatica.aether.ember.EmberH2Server;
+import org.pragmatica.aether.lb.AetherPassiveLB;
+import org.pragmatica.aether.lb.PassiveLBConfig;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.NodeRole;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.source.MapConfigSource;
+import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
 import org.pragmatica.aether.forge.load.LoadConfigLoader;
 import org.pragmatica.aether.forge.simulator.EntryPointMetrics;
@@ -26,7 +37,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -67,22 +80,28 @@ public final class ForgeServer {
     private static final String FORGE_H2_PASSWORD = "";
 
     private final StartupConfig startupConfig;
-    private final ForgeConfig forgeConfig;
+    private final EmberConfig forgeConfig;
 
-    private volatile Option<ForgeCluster> cluster = Option.empty();
+    private volatile Option<EmberCluster> cluster = Option.empty();
+    private volatile Option<AetherPassiveLB> loadBalancer = Option.empty();
     private volatile Option<ConfigurableLoadRunner> configurableLoadRunner = Option.empty();
     private volatile Option<ForgeMetrics> metrics = Option.empty();
     private volatile Option<ForgeApiHandler> apiHandler = Option.empty();
     private volatile Option<StaticFileHandler> staticHandler = Option.empty();
-    private volatile Option<ForgeH2Server> h2Server = Option.empty();
+    private volatile Option<EmberH2Server> h2Server = Option.empty();
     private volatile Option<HttpServer> httpServer = Option.empty();
     private volatile Option<ScheduledExecutorService> metricsScheduler = Option.empty();
     private volatile Option<StatusWebSocketPublisher> wsPublisher = Option.empty();
     private final StatusWebSocketHandler wsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
                                                                                                                               false));
+    private final StatusWebSocketHandler dashboardWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
+                                                                                                                                       false));
+    private final StatusWebSocketHandler eventWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
+                                                                                                                                   false));
     private final long startTime = System.currentTimeMillis();
+    private volatile String lastEventTimestamp = "";
 
-    private ForgeServer(StartupConfig startupConfig, ForgeConfig forgeConfig) {
+    private ForgeServer(StartupConfig startupConfig, EmberConfig forgeConfig) {
         this.startupConfig = startupConfig;
         this.forgeConfig = forgeConfig;
     }
@@ -114,30 +133,33 @@ public final class ForgeServer {
         }
     }
 
-    private static ForgeConfig loadForgeConfig(StartupConfig startupConfig) {
+    private static EmberConfig loadForgeConfig(StartupConfig startupConfig) {
         return startupConfig.forgeConfig()
-                            .map(ForgeConfig::load)
+                            .map(EmberConfig::load)
                             .map(r -> r.onFailure(c -> log.error("Failed to load forge config: {}",
                                                                  c.message()))
-                                       .or(ForgeConfig.DEFAULT))
+                                       .or(EmberConfig.DEFAULT))
                             .or(createDefaultForgeConfig(startupConfig));
     }
 
-    private static ForgeConfig createDefaultForgeConfig(StartupConfig startupConfig) {
+    private static EmberConfig createDefaultForgeConfig(StartupConfig startupConfig) {
         // Validation already done in StartupConfig, safe to unwrap
-        return ForgeConfig.forgeConfig(startupConfig.clusterSize(),
-                                       ForgeConfig.DEFAULT_MANAGEMENT_PORT,
+        return EmberConfig.emberConfig(startupConfig.clusterSize(),
+                                       EmberConfig.DEFAULT_MANAGEMENT_PORT,
                                        startupConfig.port())
-                          .or(ForgeConfig.DEFAULT);
+                          .or(EmberConfig.DEFAULT);
     }
 
-    private static void printBanner(ForgeConfig forgeConfig, StartupConfig startupConfig) {
+    private static void printBanner(EmberConfig forgeConfig, StartupConfig startupConfig) {
         log.info("=".repeat(60));
         log.info("    AETHER FORGE");
         log.info("=".repeat(60));
         log.info("  Dashboard: http://localhost:{}", forgeConfig.dashboardPort());
         log.info("  Cluster size: {} nodes", forgeConfig.nodes());
         log.info("  App HTTP port: {} (load target)", forgeConfig.appHttpPort());
+        if (forgeConfig.lbEnabled()) {
+            log.info("  Load balancer: http://localhost:{}", forgeConfig.lbPort());
+        }
         if (forgeConfig.h2Config()
                        .enabled()) {
             log.info("  H2 Database: port {} ({})",
@@ -164,6 +186,7 @@ public final class ForgeServer {
         var configProvider = buildConfigurationProvider();
         initializeComponents(configProvider);
         startCluster();
+        startLoadBalancer();
         startMetricsCollection();
         deployAndStartLoad();
         apiHandler.onPresent(h -> h.addEvent("CLUSTER_STARTED",
@@ -176,21 +199,23 @@ public final class ForgeServer {
 
     private void initializeComponents(Option<ConfigurationProvider> configProvider) {
         var metricsInstance = ForgeMetrics.forgeMetrics();
-        var clusterInstance = ForgeCluster.forgeCluster(forgeConfig.nodes(),
-                                                        ForgeCluster.DEFAULT_BASE_PORT,
+        var clusterInstance = EmberCluster.emberCluster(forgeConfig.nodes(),
+                                                        EmberCluster.DEFAULT_BASE_PORT,
                                                         forgeConfig.managementPort(),
                                                         forgeConfig.appHttpPort(),
                                                         "node",
                                                         configProvider,
                                                         forgeConfig.observability());
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
-        var configurableLoadRunnerInstance = ConfigurableLoadRunner.configurableLoadRunner(clusterInstance::getAvailableAppHttpPorts,
+        Supplier<List<Integer>> portSupplier = forgeConfig.lbEnabled()
+                                               ? () -> List.of(forgeConfig.lbPort())
+                                               : clusterInstance::getAvailableAppHttpPorts;
+        var configurableLoadRunnerInstance = ConfigurableLoadRunner.configurableLoadRunner(portSupplier,
                                                                                            metricsInstance,
                                                                                            entryPointMetrics);
         var apiHandlerInstance = ForgeApiHandler.forgeApiHandler(clusterInstance,
                                                                  metricsInstance,
-                                                                 configurableLoadRunnerInstance,
-                                                                 startupConfig.loadConfig());
+                                                                 configurableLoadRunnerInstance);
         metrics = Option.some(metricsInstance);
         cluster = Option.some(clusterInstance);
         configurableLoadRunner = Option.some(configurableLoadRunnerInstance);
@@ -204,7 +229,7 @@ public final class ForgeServer {
         wsPublisher = Option.some(wsPublisherInstance);
     }
 
-    private static String serializeStatus(ForgeCluster cluster,
+    private static String serializeStatus(EmberCluster cluster,
                                           ForgeMetrics metrics,
                                           long startTime,
                                           ConfigurableLoadRunner loadRunner) {
@@ -235,11 +260,135 @@ public final class ForgeServer {
                 .sleep();
     }
 
+    private void startLoadBalancer() {
+        if (!forgeConfig.lbEnabled()) {
+            return;
+        }
+        var clusterNodeInfos = cluster.map(EmberCluster::getNodeInfos)
+                                      .or(List.of());
+        if (clusterNodeInfos.isEmpty()) {
+            log.warn("No cluster nodes available, skipping load balancer start");
+            return;
+        }
+        var selfNodeId = NodeId.nodeId("lb-passive")
+                               .unwrap();
+        var lbClusterPort = EmberCluster.DEFAULT_BASE_PORT + forgeConfig.nodes() + 10;
+        var selfInfo = NodeInfo.nodeInfo(selfNodeId,
+                                         NodeAddress.nodeAddress("localhost", lbClusterPort)
+                                                    .unwrap(),
+                                         NodeRole.PASSIVE);
+        var lbConfig = PassiveLBConfig.passiveLBConfig(forgeConfig.lbPort(),
+                                                       selfInfo,
+                                                       clusterNodeInfos,
+                                                       forgeConfig.nodes());
+        var lb = AetherPassiveLB.aetherPassiveLB(lbConfig);
+        lb.start()
+          .await(TimeSpan.timeSpan(30)
+                         .seconds())
+          .onSuccess(_ -> registerLoadBalancer(lb, lbClusterPort))
+          .onFailure(cause -> log.error("Failed to start passive LB: {}",
+                                        cause.message()));
+    }
+
+    private void registerLoadBalancer(AetherPassiveLB lb, int lbClusterPort) {
+        loadBalancer = Option.some(lb);
+        log.info("Passive LB started on port {} (cluster port {})", forgeConfig.lbPort(), lbClusterPort);
+    }
+
     private void startMetricsCollection() {
         var scheduler = Executors.newSingleThreadScheduledExecutor();
         metrics.onPresent(m -> scheduler.scheduleAtFixedRate(m::snapshot, 500, 500, TimeUnit.MILLISECONDS));
+        scheduler.scheduleAtFixedRate(this::pollNodeEvents, 2, 2, TimeUnit.SECONDS);
         metricsScheduler = Option.some(scheduler);
         wsPublisher.onPresent(StatusWebSocketPublisher::start);
+    }
+
+    private void pollNodeEvents() {
+        try{
+            var port = cluster.flatMap(EmberCluster::getLeaderManagementPort)
+                              .or(forgeConfig.managementPort());
+            var uriStr = "http://localhost:" + port + "/api/events";
+            if (!lastEventTimestamp.isEmpty()) {
+                uriStr += "?since=" + java.net.URLEncoder.encode(lastEventTimestamp,
+                                                                 java.nio.charset.StandardCharsets.UTF_8);
+            }
+            try (var client = HttpClient.newHttpClient()) {
+                var request = HttpRequest.newBuilder()
+                                         .uri(URI.create(uriStr))
+                                         .GET()
+                                         .timeout(java.time.Duration.ofSeconds(2))
+                                         .build();
+                var response = client.send(request, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() == 200) {
+                    parseAndMergeEvents(response.body());
+                }
+            }
+        } catch (Exception e) {
+            log.trace("Event polling failed: {}", e.getMessage());
+        }
+    }
+
+    private void parseAndMergeEvents(String json) {
+        if (json == null || json.length() < 3 || !json.startsWith("[")) {
+            return;
+        }
+        var content = json.substring(1,
+                                     json.length() - 1)
+                          .trim();
+        if (content.isEmpty()) {
+            return;
+        }
+        var events = splitJsonObjects(content);
+        for (var eventJson : events) {
+            mergeEvent(eventJson);
+        }
+    }
+
+    private void mergeEvent(String eventJson) {
+        extractJsonString(eventJson, "timestamp")
+        .onPresent(timestamp -> extractJsonString(eventJson, "type")
+        .onPresent(type -> {
+                       var severity = extractJsonString(eventJson, "severity").or("INFO");
+                       var summary = extractJsonString(eventJson, "summary").or("");
+                       apiHandler.onPresent(h -> h.addNodeEvent(timestamp, type, severity, summary));
+                       lastEventTimestamp = timestamp;
+                   }));
+    }
+
+    private static List<String> splitJsonObjects(String content) {
+        var objects = new java.util.ArrayList<String>();
+        var depth = 0;
+        var start = - 1;
+        for (int i = 0; i < content.length(); i++) {
+            var ch = content.charAt(i);
+            if (ch == '{') {
+                if (depth == 0) {
+                    start = i;
+                }
+                depth++;
+            } else if (ch == '}') {
+                depth--;
+                if (depth == 0 && start >= 0) {
+                    objects.add(content.substring(start, i + 1));
+                    start = - 1;
+                }
+            }
+        }
+        return objects;
+    }
+
+    private static Option<String> extractJsonString(String json, String key) {
+        var search = "\"" + key + "\":\"";
+        var idx = json.indexOf(search);
+        if (idx < 0) {
+            return Option.empty();
+        }
+        var valStart = idx + search.length();
+        var valEnd = json.indexOf("\"", valStart);
+        if (valEnd < 0) {
+            return Option.empty();
+        }
+        return Option.some(json.substring(valStart, valEnd));
     }
 
     private void deployAndStartLoad() {
@@ -318,6 +467,11 @@ public final class ForgeServer {
                                                             .seconds())
                                              .onFailure(cause -> log.warn("Error stopping HTTP server: {}",
                                                                           cause.message())));
+        loadBalancer.onPresent(lb -> lb.stop()
+                                       .await(TimeSpan.timeSpan(10)
+                                                      .seconds())
+                                       .onFailure(cause -> log.warn("Error stopping load balancer: {}",
+                                                                    cause.message())));
         cluster.onPresent(c -> c.stop()
                                 .await(TimeSpan.timeSpan(30)
                                                .seconds())
@@ -332,7 +486,7 @@ public final class ForgeServer {
                         .enabled()) {
             return;
         }
-        var server = ForgeH2Server.forgeH2Server(forgeConfig.h2Config());
+        var server = EmberH2Server.emberH2Server(forgeConfig.h2Config());
         server.start()
               .await(TimeSpan.timeSpan(10)
                              .seconds())
@@ -377,7 +531,7 @@ public final class ForgeServer {
         return Option.some(builder.build());
     }
 
-    private void injectH2Config(ForgeH2Server server, ConfigurationProvider.Builder builder) {
+    private void injectH2Config(EmberH2Server server, ConfigurationProvider.Builder builder) {
         var runtimeValues = Map.of("database.name",
                                    "forge-h2",
                                    "database.type",
@@ -409,8 +563,8 @@ public final class ForgeServer {
 
     /// Get the H2 JDBC URL if H2 is enabled and running.
     public Option<String> h2JdbcUrl() {
-        return h2Server.filter(ForgeH2Server::isRunning)
-                       .map(ForgeH2Server::jdbcUrl);
+        return h2Server.filter(EmberH2Server::isRunning)
+                       .map(EmberH2Server::jdbcUrl);
     }
 
     private void startHttpServer() {
@@ -421,11 +575,15 @@ public final class ForgeServer {
 
     private void launchHttpServer(ForgeRequestHandler requestHandler) {
         var wsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/status", wsHandler);
+        var dashboardWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/dashboard", dashboardWsHandler);
+        var eventWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/events", eventWsHandler);
         var config = HttpServerConfig.httpServerConfig("forge-dashboard",
                                                        forgeConfig.dashboardPort())
                                      .withMaxContentLength(MAX_CONTENT_LENGTH)
                                      .withChunkedWrite()
-                                     .withWebSocket(wsEndpoint);
+                                     .withWebSocket(wsEndpoint)
+                                     .withWebSocket(dashboardWsEndpoint)
+                                     .withWebSocket(eventWsEndpoint);
         HttpServer.httpServer(config, requestHandler::handle)
                   .await(TimeSpan.timeSpan(10)
                                  .seconds())

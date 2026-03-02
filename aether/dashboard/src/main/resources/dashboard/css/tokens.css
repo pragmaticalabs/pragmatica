@@ -1,0 +1,72 @@
+:root {
+    /* Colors */
+    --bg-primary: #0d1117;
+    --bg-secondary: #161b22;
+    --bg-tertiary: #21262d;
+    --bg-hover: #30363d;
+    --border: #30363d;
+    --border-light: #21262d;
+
+    --text-primary: #e6edf3;
+    --text-secondary: #8b949e;
+    --text-muted: #484f58;
+
+    --accent-blue: #58a6ff;
+    --accent-green: #3fb950;
+    --accent-red: #f85149;
+    --accent-orange: #d29922;
+    --accent-purple: #bc8cff;
+    --accent-cyan: #39d2c0;
+
+    /* Semantic */
+    --success: var(--accent-green);
+    --warning: var(--accent-orange);
+    --danger: var(--accent-red);
+    --info: var(--accent-blue);
+
+    /* Severity */
+    --severity-critical: var(--accent-red);
+    --severity-warning: var(--accent-orange);
+    --severity-info: var(--accent-blue);
+
+    /* Health */
+    --health-healthy: var(--accent-green);
+    --health-unhealthy: var(--accent-red);
+
+    /* Node states */
+    --state-on-duty: var(--accent-green);
+    --state-joining: var(--accent-orange);
+    --state-draining: var(--accent-purple);
+
+    /* Spacing */
+    --space-xs: 4px;
+    --space-sm: 8px;
+    --space-md: 16px;
+    --space-lg: 24px;
+    --space-xl: 32px;
+
+    /* Typography */
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    --font-size-xs: 10px;
+    --font-size-sm: 11px;
+    --font-size-md: 13px;
+    --font-size-lg: 15px;
+    --font-size-xl: 18px;
+    --font-size-xxl: 22px;
+
+    /* Borders */
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+
+    /* Charts */
+    --chart-line-1: var(--accent-blue);
+    --chart-line-2: var(--accent-green);
+    --chart-line-3: var(--accent-orange);
+    --chart-line-4: var(--accent-purple);
+    --chart-line-5: var(--accent-cyan);
+    --chart-grid: rgba(48, 54, 61, 0.5);
+}
+
+[x-cloak] { display: none !important; }

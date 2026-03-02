@@ -1,0 +1,19 @@
+# Aether runtime configuration
+
+[database]
+type = "POSTGRESQL"
+name = "ecommerce"
+host = "localhost"
+port = 5432
+database = "forge"
+username = "forge"
+password = "forge"
+r2dbc_url = "r2dbc:postgresql://localhost:5432/forge"
+
+[database.pool_config]
+min_connections = 5
+max_connections = 30
+idle_timeout = "10m"
+connection_timeout = "5s"
+max_lifetime = "30m"
+leak_detection_timeout = "0s"

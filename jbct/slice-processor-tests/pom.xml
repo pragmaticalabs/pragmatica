@@ -8,7 +8,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>jbct-parent</artifactId>
-        <version>0.18.0</version>
+        <version>0.19.0</version>
     </parent>
 
     <artifactId>slice-processor-tests</artifactId>

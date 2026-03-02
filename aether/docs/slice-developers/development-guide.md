@@ -59,7 +59,7 @@ public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
     return inventory.checkStock(new StockRequest(request.items()))
                     .flatMap(stock -> {
                         if (!stock.available()) {
-                            return Promise.failed(Causes.cause("Out of stock"));
+                            return Promise.failure(Causes.cause("Out of stock"));
                         }
                         return processOrder(request);
                     });
@@ -340,7 +340,7 @@ Validate in your implementation, not in records:
 @Override
 public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
     if (request.items().isEmpty()) {
-        return Promise.failed(Causes.cause("Order must have items"));
+        return Promise.failure(Causes.cause("Order must have items"));
     }
     // ... process order
 }
@@ -407,7 +407,7 @@ class OrderServiceIntegrationTest {
 
 ## Error Handling
 
-### Use Promise.failed()
+### Use Promise.failure()
 
 For business errors, return failed promises using sealed `Cause` types:
 
@@ -415,13 +415,13 @@ For business errors, return failed promises using sealed `Cause` types:
 @Override
 public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
     if (request.items().isEmpty()) {
-        return Promise.failed(OrderCause.EMPTY_ORDER);
+        return Promise.failure(OrderCause.EMPTY_ORDER);
     }
 
     return inventory.checkStock(stockRequest)
                     .flatMap(stock -> {
                         if (!stock.sufficient()) {
-                            return Promise.failed(OrderCause.insufficientStock(stock));
+                            return Promise.failure(OrderCause.insufficientStock(stock));
                         }
                         return completeOrder(request);
                     });

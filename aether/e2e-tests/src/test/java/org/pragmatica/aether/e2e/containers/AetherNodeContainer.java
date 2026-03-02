@@ -91,7 +91,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // Test artifact paths relative to Maven repository
     // Note: Uses slice artifact IDs (echo-slice-echo-service), not module artifact IDs (echo-slice)
     private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
-    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.18.0");
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.19.0");
     private static final String[] TEST_ARTIFACTS = {
         "echo-slice-echo-service/" + TEST_ARTIFACT_VERSION + "/echo-slice-echo-service-" + TEST_ARTIFACT_VERSION + ".jar"
     };
@@ -149,9 +149,11 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
                  .withEnv("JAVA_OPTS", "-Xmx256m -XX:+UseZGC");
 
         if (HOST_NETWORKING_SUPPORTED) {
-            // Host networking: ports are directly on host, no mapping needed.
-            // Do NOT call addExposedPort — Testcontainers checks for port bindings
-            // which don't exist in host mode, causing a 5-second startup timeout.
+            // Host networking: ports are directly on host, no Docker port mapping needed.
+            // Do NOT add exposed ports here — Testcontainers' tryStart() checks that all
+            // containerDef exposed ports have actual network bindings, which are empty in
+            // host mode (no NAT). HttpWaitStrategy.forPort() calls getMappedPort() which
+            // is overridden to return the port directly, bypassing the exposed ports list.
             container.withNetworkMode("host");
         } else {
             // addExposedPort registers ports in the exposedPorts list so that
@@ -287,6 +289,22 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
             return originalPort;
         }
         return super.getMappedPort(originalPort);
+    }
+
+    /// Returns exposed ports for Testcontainers wait strategies.
+    ///
+    ///
+    /// In host networking mode, returns only the management port. This is separate from
+    /// `containerDef.getExposedPorts()` (used by tryStart's port binding check) which
+    /// stays empty — Docker has no port bindings in host mode, so the binding check
+    /// would fail if containerDef had exposed ports. HttpWaitStrategy uses this method
+    /// (via WaitStrategyTarget interface) to find the target port for health checks.
+    @Override
+    public List<Integer> getExposedPorts() {
+        if (HOST_NETWORKING_SUPPORTED) {
+            return List.of(managementPortValue);
+        }
+        return super.getExposedPorts();
     }
 
     /// Returns the node ID for this container.

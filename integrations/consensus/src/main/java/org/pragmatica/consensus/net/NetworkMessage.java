@@ -17,11 +17,15 @@
 package org.pragmatica.consensus.net;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.messaging.Message;
+import org.pragmatica.serialization.Codec;
 
+@Codec
 public sealed interface NetworkMessage extends Message.Wired {
-    /// Hello - connection handshake, sent by both sides on channel activation
-    record Hello(NodeId sender) implements NetworkMessage {}
+    /// Hello - connection handshake, sent by both sides on channel activation.
+    /// Carries the sender's role so receiving nodes can identify passive peers.
+    record Hello(NodeId sender, NodeRole role) implements NetworkMessage {}
 
     /// Ping - test connection request
     record Ping(NodeId sender) implements NetworkMessage {}

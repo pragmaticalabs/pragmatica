@@ -51,6 +51,9 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 19 | Endpoint registry | Complete | Artifact-to-node mapping for slice instance tracking and load balancing |
 | 20 | Service-to-service invocation | Battle-tested | SliceInvoker with HTTP routing, load balancer selection, timeout/retry, metrics |
 | 21 | Version routing | Battle-tested | Traffic splitting between old/new versions during rolling updates (configurable ratio) |
+| 67 | Passive load balancer | Complete | Cluster-aware LB node (NodeRole.PASSIVE) joins cluster network, receives route table via committed Decisions, forwards HTTP via binary protocol. Smart routing, automatic failover, live topology awareness. No HTTP re-serialization. Reusable `PassiveNode<K,V>` abstraction in `integrations/cluster` separates infrastructure from consumer-specific wiring |
+| 68 | NodeRole cluster membership | Complete | ACTIVE/PASSIVE roles in NodeInfo. Passive nodes excluded from quorum/leader election, receive only Decision messages via deliverToPassive() filtering |
+| 69 | HttpForwarder (reusable) | Complete | Extracted HTTP forwarding with round-robin selection, retry with backoff, node departure failover. Used by both AppHttpServer and passive LB |
 
 ## Messaging (Pub-Sub)
 
@@ -122,7 +125,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 55 | JBCT compliance | Complete | Format linting, return type validation, pattern checking, factory naming conventions. Maven plugin |
 | 56 | Envelope format versioning | Complete | `ENVELOPE_FORMAT_VERSION` in ManifestGenerator with runtime compatibility check |
 | 57 | Forge simulator | Battle-tested | Standalone cluster simulator with load generation (constant/ramp/spike), chaos injection, visual dashboard, REST API |
-| 58 | Web dashboard | Partial | Forge dashboard complete (cluster visualization, load generation, chaos injection, metrics). Node management dashboard needs modernization for production use |
+| 58 | Web dashboard | Partial (WIP) | Forge dashboard complete (cluster visualization, load generation, chaos injection, metrics, scaling events, deployment timing). Node management dashboard in active development — missing observability depth UI, invocation trace viewer, log level management |
 
 ## Node Operations
 
@@ -140,6 +143,14 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 60 | Blueprint membership guard | Complete | `POST /api/scale` rejects slices not deployed via blueprint |
 | 61 | Health check endpoint | Battle-tested | `/api/health` with ready flag, quorum status, connected peers, node count |
 | 62 | Orphaned entry cleanup | Complete | CDM `reconcile()` cleans up orphaned UNLOADING entries after blueprint removal |
+
+## Embeddable Runtime
+
+| # | Feature | Status | Description |
+|---|---------|--------|-------------|
+| 73 | Ember embeddable cluster | Complete | Headless cluster runtime extracted from Forge as `aether/ember/` module. Fluent builder API: `Ember.cluster(5).withH2().start()`. Programmatic lifecycle management via `EmberInstance` |
+| 74 | Remote Maven repositories | Complete | Resolve slices from Maven Central or private Nexus. SHA-1 verification, local `~/.m2/repository` cache, `settings.xml` auth. Config: `repositories = ["local", "remote:central"]` |
+| 75 | Load Balancer | Complete | Standalone `aether/lb/` module. Round-robin routing, active health checking (GET /health/ready), automatic retry, X-Forwarded-* headers, hop-by-hop stripping. Integrated into Ember lifecycle |
 
 ## Known Limitations
 
@@ -174,10 +185,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 21 |
-| Complete | 43 |
+| Complete | 46 |
 | Partial | 2 |
 | Planned | 11 |
-| Total | 77 |
+| Total | 80 |
 
 **Battle-tested features (21):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint
 
@@ -186,7 +197,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Feature | Key Gap |
 |---------|---------|
 | TTM predictive scaling | Disabled by default, no live model training |
-| Web dashboard | Node management dashboard needs modernization for production use |
+| Web dashboard | Node management dashboard in active development (v0.19.0) — observability UI, trace viewer, log levels pending |
 
 **Planned features:**
 
@@ -206,4 +217,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-02-25 (v0.18.0)*
+*Last updated: 2026-03-01 (v0.19.0)*

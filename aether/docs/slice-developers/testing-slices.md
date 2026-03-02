@@ -189,21 +189,23 @@ cluster.size();                // Total cluster size
 
 ## Test Suite Overview
 
-The E2E test suite contains **80 tests** across **12 test classes**:
+The E2E test suite contains **85 tests** across **13 test classes**:
 
 | Test Class | Tests | Coverage |
 |------------|-------|----------|
 | ClusterFormationE2ETest | 4 | Cluster bootstrap, quorum, leader election |
 | SliceDeploymentE2ETest | 6 | Deploy, scale, undeploy, blueprints |
 | RollingUpdateE2ETest | 6 | Two-stage updates, traffic shifting |
-| NodeFailureE2ETest | 6 | Failure modes, recovery |
+| NodeFailureE2ETest | 3 | Failure modes, recovery |
 | ManagementApiE2ETest | 19 | Status, metrics, thresholds, alerts, controller |
 | SliceInvocationE2ETest | 9 | Route handling, error cases, distribution |
 | MetricsE2ETest | 6 | Collection, Prometheus, distribution |
 | ControllerE2ETest | 7 | Configuration, status, leader behavior |
-| TtmE2ETest | 8 | TTM status, cluster behavior, leader failover |
+| TtmE2ETest | 7 | TTM status, cluster behavior, leader failover |
 | GracefulShutdownE2ETest | 4 | Peer detection, leader failover |
 | NetworkPartitionE2ETest | 4 | Quorum behavior, partition healing |
+| NodeDrainE2ETest | 4 | Drain, activate, shutdown lifecycle |
+| ArtifactRepositoryE2ETest | 6 | Artifact storage, retrieval, validation |
 
 ## Test Categories
 
@@ -370,19 +372,19 @@ void rollingUpdate_shiftsTraffic_gradually() {
 ### Run All E2E Tests
 
 ```bash
-mvn test -pl e2e-tests
+mvn test -pl aether/e2e-tests
 ```
 
 ### Run Specific Test Class
 
 ```bash
-mvn test -pl e2e-tests -Dtest=ClusterFormationE2ETest
+mvn test -pl aether/e2e-tests -Dtest=ClusterFormationE2ETest
 ```
 
 ### Run Specific Test Method
 
 ```bash
-mvn test -pl e2e-tests -Dtest=ClusterFormationE2ETest#threeNodeCluster_formsQuorum
+mvn test -pl aether/e2e-tests -Dtest=ClusterFormationE2ETest#threeNodeCluster_formsQuorum
 ```
 
 ### CI Configuration
@@ -400,7 +402,7 @@ e2e-tests:
     - name: Build
       run: mvn package -DskipTests
     - name: E2E Tests
-      run: mvn test -pl e2e-tests
+      run: mvn test -pl aether/e2e-tests
 ```
 
 ## Best Practices

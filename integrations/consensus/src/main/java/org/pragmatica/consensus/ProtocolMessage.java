@@ -22,4 +22,10 @@ import org.pragmatica.messaging.Message;
 public interface ProtocolMessage extends Message.Wired {
     /// The node that sent this message.
     NodeId sender();
+
+    /// Whether this message should be delivered to passive nodes.
+    /// By default, protocol messages are NOT delivered to passive nodes.
+    default boolean deliverToPassive() {
+        return false;
+    }
 }

@@ -1,6 +1,6 @@
 package org.pragmatica.aether.forge.api;
 
-import org.pragmatica.aether.forge.ForgeCluster;
+import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -29,7 +29,7 @@ public sealed interface AlertProxyRoutes {
 
     record ThresholdDeleteResponse(boolean success, String body) {}
 
-    static RouteSource alertProxyRoutes(ForgeCluster cluster) {
+    static RouteSource alertProxyRoutes(EmberCluster cluster) {
         var http = JdkHttpOperations.jdkHttpOperations();
         return in("/api/alerts")
         .serve(activeAlertsRoute(cluster, http),
@@ -40,27 +40,27 @@ public sealed interface AlertProxyRoutes {
                thresholdsDeleteRoute(cluster, http));
     }
 
-    private static Route<AlertListResponse> activeAlertsRoute(ForgeCluster cluster,
+    private static Route<AlertListResponse> activeAlertsRoute(EmberCluster cluster,
                                                               JdkHttpOperations http) {
         return Route.<AlertListResponse> get("/active")
                     .to(_ -> proxyGet(cluster, http, "/api/alerts/active"))
                     .asJson();
     }
 
-    private static Route<AlertListResponse> alertHistoryRoute(ForgeCluster cluster,
+    private static Route<AlertListResponse> alertHistoryRoute(EmberCluster cluster,
                                                               JdkHttpOperations http) {
         return Route.<AlertListResponse> get("/history")
                     .to(_ -> proxyGet(cluster, http, "/api/alerts/history"))
                     .asJson();
     }
 
-    private static Route<AlertClearResponse> clearAlertsRoute(ForgeCluster cluster,
+    private static Route<AlertClearResponse> clearAlertsRoute(EmberCluster cluster,
                                                               JdkHttpOperations http) {
         return Route.<AlertClearResponse> post("/clear")
                     .toJson(_ -> proxyClear(cluster, http));
     }
 
-    private static Promise<AlertListResponse> proxyGet(ForgeCluster cluster,
+    private static Promise<AlertListResponse> proxyGet(EmberCluster cluster,
                                                        JdkHttpOperations http,
                                                        String path) {
         return cluster.getLeaderManagementPort()
@@ -69,7 +69,7 @@ public sealed interface AlertProxyRoutes {
                       .map(AlertListResponse::new);
     }
 
-    private static Promise<AlertClearResponse> proxyClear(ForgeCluster cluster,
+    private static Promise<AlertClearResponse> proxyClear(EmberCluster cluster,
                                                           JdkHttpOperations http) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
@@ -77,14 +77,14 @@ public sealed interface AlertProxyRoutes {
                       .map(body -> new AlertClearResponse(true, body));
     }
 
-    private static Route<ThresholdListResponse> thresholdsGetRoute(ForgeCluster cluster,
+    private static Route<ThresholdListResponse> thresholdsGetRoute(EmberCluster cluster,
                                                                    JdkHttpOperations http) {
         return Route.<ThresholdListResponse> get("/thresholds")
                     .to(_ -> proxyGetThresholds(cluster, http))
                     .asJson();
     }
 
-    private static Route<ThresholdSetResponse> thresholdsSetRoute(ForgeCluster cluster,
+    private static Route<ThresholdSetResponse> thresholdsSetRoute(EmberCluster cluster,
                                                                   JdkHttpOperations http) {
         return Route.<ThresholdSetResponse> post("/thresholds")
                     .to(request -> proxySetThreshold(cluster,
@@ -93,7 +93,7 @@ public sealed interface AlertProxyRoutes {
                     .asJson();
     }
 
-    private static Route<ThresholdDeleteResponse> thresholdsDeleteRoute(ForgeCluster cluster,
+    private static Route<ThresholdDeleteResponse> thresholdsDeleteRoute(EmberCluster cluster,
                                                                         JdkHttpOperations http) {
         return Route.<ThresholdDeleteResponse> delete("/thresholds")
                     .withPath(aString())
@@ -101,7 +101,7 @@ public sealed interface AlertProxyRoutes {
                     .asJson();
     }
 
-    private static Promise<ThresholdListResponse> proxyGetThresholds(ForgeCluster cluster,
+    private static Promise<ThresholdListResponse> proxyGetThresholds(EmberCluster cluster,
                                                                      JdkHttpOperations http) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
@@ -109,7 +109,7 @@ public sealed interface AlertProxyRoutes {
                       .map(ThresholdListResponse::new);
     }
 
-    private static Promise<ThresholdSetResponse> proxySetThreshold(ForgeCluster cluster,
+    private static Promise<ThresholdSetResponse> proxySetThreshold(EmberCluster cluster,
                                                                    JdkHttpOperations http,
                                                                    String body) {
         return cluster.getLeaderManagementPort()
@@ -118,7 +118,7 @@ public sealed interface AlertProxyRoutes {
                       .map(resp -> new ThresholdSetResponse(true, resp));
     }
 
-    private static Promise<ThresholdDeleteResponse> proxyDeleteThreshold(ForgeCluster cluster,
+    private static Promise<ThresholdDeleteResponse> proxyDeleteThreshold(EmberCluster cluster,
                                                                          JdkHttpOperations http,
                                                                          String metric) {
         return cluster.getLeaderManagementPort()

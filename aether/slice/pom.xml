@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>0.18.0</version>
+        <version>0.19.0</version>
     </parent>
 
     <artifactId>slice</artifactId>
@@ -24,11 +24,12 @@
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
-            <artifactId>serialization-kryo</artifactId>
+            <artifactId>serialization-api</artifactId>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
-            <artifactId>serialization-fury</artifactId>
+            <artifactId>serialization-codec-processor</artifactId>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>

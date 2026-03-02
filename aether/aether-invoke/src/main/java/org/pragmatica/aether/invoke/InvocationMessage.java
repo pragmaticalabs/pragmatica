@@ -4,6 +4,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.serialization.Codec;
 
 /// Messages for inter-slice remote invocation.
 ///
@@ -26,6 +27,7 @@ import org.pragmatica.consensus.NodeId;
 ///   - hops: number of network hops traversed
 ///   - sampled: whether this request is sampled for detailed tracing
 ///
+@Codec
 public sealed interface InvocationMessage extends ProtocolMessage {
     /// Request to invoke a method on a remote slice.
     ///

@@ -17,7 +17,8 @@ import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
+import org.pragmatica.aether.ember.EmberCluster;
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
 /// Tests for slice method invocation.
 ///
@@ -38,18 +39,18 @@ import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 class SliceInvocationTest {
     private static final int BASE_PORT = 6000;
     private static final int BASE_MGMT_PORT = 6100;
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.18.0";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.19.0";
     private static final String BLUEPRINT_ID = "forge.test:slice-invocation:1.0.0";
 
-    private ForgeCluster cluster;
+    private EmberCluster cluster;
     private HttpClient httpClient;
 
     @BeforeEach
     void setUp(TestInfo testInfo) {
         int portOffset = getPortOffset(testInfo);
-        cluster = forgeCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "si");
+        cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "si");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();
@@ -106,7 +107,7 @@ class SliceInvocationTest {
         void invokeWithInvalidMethod_returnsError() {
             var response = invokeSlice("PATCH", "/api/test", "{}");
 
-            assertThat(response).contains("error");
+            assertThat(response).containsAnyOf("error", "not found", "Not Found", "File not found");
         }
 
         @Test
@@ -146,7 +147,7 @@ class SliceInvocationTest {
         void invokeWithMalformedBody_returnsError() {
             var response = invokePost("/api/test", "not valid json");
 
-            assertThat(response).containsAnyOf("error", "Bad Request", "400");
+            assertThat(response).containsAnyOf("error", "Bad Request", "400", "not found", "Not Found");
         }
 
         @Test

@@ -248,7 +248,8 @@ class ConfigLoaderTest {
         ConfigLoader.loadFromString(toml)
             .onFailure(cause -> Assertions.fail(cause.message()))
             .onSuccess(config -> {
-                assertThat(config.slice().repositories()).containsExactly(RepositoryType.BUILTIN);
+                assertThat(config.slice().repositories()).hasSize(1);
+                assertThat(config.slice().repositories().getFirst()).isInstanceOf(RepositoryType.Builtin.class);
             });
     }
 
@@ -266,8 +267,9 @@ class ConfigLoaderTest {
         ConfigLoader.loadFromString(toml)
             .onFailure(cause -> Assertions.fail(cause.message()))
             .onSuccess(config -> {
-                assertThat(config.slice().repositories())
-                    .containsExactly(RepositoryType.LOCAL, RepositoryType.BUILTIN);
+                assertThat(config.slice().repositories()).hasSize(2);
+                assertThat(config.slice().repositories().get(0)).isInstanceOf(RepositoryType.Local.class);
+                assertThat(config.slice().repositories().get(1)).isInstanceOf(RepositoryType.Builtin.class);
             });
     }
 
@@ -282,7 +284,8 @@ class ConfigLoaderTest {
         ConfigLoader.loadFromString(toml)
             .onFailure(cause -> Assertions.fail(cause.message()))
             .onSuccess(config -> {
-                assertThat(config.slice().repositories()).containsExactly(RepositoryType.LOCAL);
+                assertThat(config.slice().repositories()).hasSize(1);
+                assertThat(config.slice().repositories().getFirst()).isInstanceOf(RepositoryType.Local.class);
             });
     }
 }

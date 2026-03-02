@@ -4,7 +4,9 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.serialization.Codec;
 
+@Codec
 public record Artifact(GroupId groupId, ArtifactId artifactId, Version version) {
     private static final Fn1<Cause, String> INVALID_FORMAT = Causes.forOneValue("Invalid artifact format %s");
 

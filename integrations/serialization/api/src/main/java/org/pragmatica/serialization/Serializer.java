@@ -17,7 +17,7 @@
 package org.pragmatica.serialization;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
+import io.netty.buffer.PooledByteBufAllocator;
 
 /// Basic serialization interface for encoding objects to binary format.
 ///
@@ -33,13 +33,14 @@ public interface Serializer {
     /// @param <T>    the type of the object
     /// @return serialized bytes
     default <T> byte[] encode(T object) {
-        var byteBuf = Unpooled.buffer();
-        try{
+        var byteBuf = PooledByteBufAllocator.DEFAULT.heapBuffer(256);
+
+        try {
             write(byteBuf, object);
             var bytes = new byte[byteBuf.readableBytes()];
             byteBuf.readBytes(bytes);
             return bytes;
-        } finally{
+        } finally {
             byteBuf.release();
         }
     }

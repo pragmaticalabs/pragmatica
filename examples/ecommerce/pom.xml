@@ -6,12 +6,16 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>examples</artifactId>
-        <version>0.18.0</version>
+        <version>0.19.0</version>
     </parent>
 
     <groupId>org.pragmatica-lite.aether.example</groupId>
     <artifactId>ecommerce</artifactId>
     <packaging>pom</packaging>
+
+    <properties>
+        <jbct.skip>false</jbct.skip>
+    </properties>
     <name>Aether Example Slices - E-Commerce Order Domain</name>
     <description>
         Multi-module demo showing @Slice annotation pattern with inter-slice dependencies,
@@ -46,6 +50,11 @@
             <scope>provided</scope>
         </dependency>
         <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
             <scope>provided</scope>
@@ -63,7 +72,7 @@
                 <plugin>
                     <groupId>org.pragmatica-lite</groupId>
                     <artifactId>jbct-maven-plugin</artifactId>
-                    <version>0.18.0</version>
+                    <version>0.19.0</version>
                     <executions>
                         <execution>
                             <id>package-slices</id>

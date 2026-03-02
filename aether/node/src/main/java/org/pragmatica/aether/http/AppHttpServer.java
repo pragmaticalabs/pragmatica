@@ -1,9 +1,12 @@
 package org.pragmatica.aether.http;
 
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
+import org.pragmatica.aether.http.forward.HttpForwarder;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
@@ -12,13 +15,15 @@ import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationContext;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.routing.HttpStatus;
 import org.pragmatica.http.routing.ProblemDetail;
@@ -31,28 +36,22 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
-import org.pragmatica.utility.KSUID;
 
 import java.nio.charset.StandardCharsets;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Application HTTP server for cluster-wide HTTP routing.
 ///
@@ -60,7 +59,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// Handles HTTP requests by:
 /// <ol>
 ///   - Looking up routes locally via HttpRoutePublisher
-///   - If not local, forwarding to remote nodes via HttpForwardRequest/Response
+///   - If not local, forwarding to remote nodes via HttpForwarder
 /// </ol>
 ///
 ///
@@ -104,6 +103,9 @@ public interface AppHttpServer {
     @MessageReceiver
     void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
 
+    /// Get the HttpForwarder used by this server, if configured.
+    Option<HttpForwarder> httpForwarder();
+
     static AppHttpServer appHttpServer(AppHttpConfig config,
                                        NodeId selfNodeId,
                                        HttpRouteRegistry routeRegistry,
@@ -111,7 +113,8 @@ public interface AppHttpServer {
                                        Option<ClusterNetwork> clusterNetwork,
                                        Option<Serializer> serializer,
                                        Option<Deserializer> deserializer,
-                                       Option<TlsConfig> tls) {
+                                       Option<TlsConfig> tls,
+                                       Option<InvocationMetricsCollector> metricsCollector) {
         return new AppHttpServerImpl(config,
                                      selfNodeId,
                                      routeRegistry,
@@ -119,7 +122,8 @@ public interface AppHttpServer {
                                      clusterNetwork,
                                      serializer,
                                      deserializer,
-                                     tls);
+                                     tls,
+                                     metricsCollector);
     }
 }
 
@@ -127,7 +131,6 @@ public interface AppHttpServer {
 class AppHttpServerImpl implements AppHttpServer {
     private static final Logger log = LoggerFactory.getLogger(AppHttpServerImpl.class);
     private static final int MAX_CONTENT_LENGTH = 16 * 1024 * 1024;
-    private static final long RETRY_DELAY_MS = 200;
 
     private final AppHttpConfig config;
     private final NodeId selfNodeId;
@@ -138,24 +141,11 @@ class AppHttpServerImpl implements AppHttpServer {
     private final Option<Deserializer> deserializer;
     private final SecurityValidator securityValidator;
     private final Option<TlsConfig> tls;
+    private final Option<InvocationMetricsCollector> metricsCollector;
+    private final Option<HttpForwarder> httpForwarder;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
     private final AtomicReference<RouteTable> routeTableRef = new AtomicReference<>(RouteTable.empty());
     private final AtomicBoolean routeSyncReceived = new AtomicBoolean(false);
-
-    // Pending HTTP forward requests awaiting responses
-    private final Map<String, PendingForward> pendingForwards = new ConcurrentHashMap<>();
-
-    // Secondary index: NodeId -> Set of correlationIds for that node (for fast lookup on node departure)
-    private final Map<NodeId, Set<String>> pendingForwardsByNode = new ConcurrentHashMap<>();
-
-    // Round-robin counter per route for load balancing
-    private final Map<HttpRouteKey, AtomicInteger> roundRobinCounters = new ConcurrentHashMap<>();
-
-    record PendingForward(Promise<HttpResponseData> promise,
-                          long createdAtMs,
-                          String requestId,
-                          NodeId targetNode,
-                          Runnable onFailure) {}
 
     AppHttpServerImpl(AppHttpConfig config,
                       NodeId selfNodeId,
@@ -164,7 +154,8 @@ class AppHttpServerImpl implements AppHttpServer {
                       Option<ClusterNetwork> clusterNetwork,
                       Option<Serializer> serializer,
                       Option<Deserializer> deserializer,
-                      Option<TlsConfig> tls) {
+                      Option<TlsConfig> tls,
+                      Option<InvocationMetricsCollector> metricsCollector) {
         this.config = config;
         this.selfNodeId = selfNodeId;
         this.routeRegistry = routeRegistry;
@@ -176,6 +167,35 @@ class AppHttpServerImpl implements AppHttpServer {
                                  ? SecurityValidator.apiKeyValidator(config.apiKeyValues())
                                  : SecurityValidator.noOpValidator();
         this.tls = tls;
+        this.metricsCollector = metricsCollector;
+        this.httpForwarder = buildHttpForwarder(selfNodeId,
+                                                routeRegistry,
+                                                clusterNetwork,
+                                                serializer,
+                                                deserializer,
+                                                config);
+    }
+
+    private static Option<HttpForwarder> buildHttpForwarder(NodeId selfNodeId,
+                                                            HttpRouteRegistry routeRegistry,
+                                                            Option<ClusterNetwork> clusterNetwork,
+                                                            Option<Serializer> serializer,
+                                                            Option<Deserializer> deserializer,
+                                                            AppHttpConfig config) {
+        if (clusterNetwork.isEmpty() || serializer.isEmpty() || deserializer.isEmpty()) {
+            return Option.none();
+        }
+        return Option.some(HttpForwarder.httpForwarder(selfNodeId,
+                                                       routeRegistry,
+                                                       clusterNetwork.unwrap(),
+                                                       serializer.unwrap(),
+                                                       deserializer.unwrap(),
+                                                       config.forwardTimeoutMs()));
+    }
+
+    @Override
+    public Option<HttpForwarder> httpForwarder() {
+        return httpForwarder;
     }
 
     @Override
@@ -451,7 +471,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                                                   request.path(),
                                                                   routeKey,
                                                                   requestId))
-                          .onPresent(router -> invokeLocalRouter(request, response, router, requestId));
+                          .onPresent(router -> invokeLocalRouter(request, response, router, routeKey, requestId));
     }
 
     private void handleMissingLocalRouter(ResponseWriter response,
@@ -465,14 +485,50 @@ class AppHttpServerImpl implements AppHttpServer {
     private void invokeLocalRouter(RequestContext request,
                                    ResponseWriter response,
                                    SliceRouter router,
+                                   HttpRouteKey routeKey,
                                    String requestId) {
         var context = toHttpRequestContext(request, requestId);
+        var routeInfo = resolveRouteInfo(routeKey.httpMethod(), routeKey.pathPrefix());
+        var startTime = System.nanoTime();
+        routeInfo.onPresent(info -> recordMetricsStart(info));
         router.handle(context)
-              .onSuccess(responseData -> sendResponse(response, responseData, requestId))
-              .onFailure(cause -> handleLocalRouteFailure(response,
-                                                          request.path(),
-                                                          requestId,
-                                                          cause));
+              .onSuccess(responseData -> handleLocalRouterSuccess(response,
+                                                                  responseData,
+                                                                  requestId,
+                                                                  routeInfo,
+                                                                  startTime,
+                                                                  context))
+              .onFailure(cause -> handleLocalRouterFailure(response,
+                                                           request.path(),
+                                                           requestId,
+                                                           cause,
+                                                           routeInfo,
+                                                           startTime,
+                                                           context));
+    }
+
+    private void handleLocalRouterSuccess(ResponseWriter response,
+                                          HttpResponseData responseData,
+                                          String requestId,
+                                          Option<ResolvedRoute> routeInfo,
+                                          long startTime,
+                                          HttpRequestContext context) {
+        routeInfo.onPresent(info -> recordMetricsSuccess(info,
+                                                         startTime,
+                                                         context.body().length,
+                                                         responseData.body().length));
+        sendResponse(response, responseData, requestId);
+    }
+
+    private void handleLocalRouterFailure(ResponseWriter response,
+                                          String path,
+                                          String requestId,
+                                          Cause cause,
+                                          Option<ResolvedRoute> routeInfo,
+                                          long startTime,
+                                          HttpRequestContext context) {
+        routeInfo.onPresent(info -> recordMetricsFailure(info, startTime, context.body().length, cause));
+        handleLocalRouteFailure(response, path, requestId, cause);
     }
 
     private void handleLocalRouteFailure(ResponseWriter response, String path, String requestId, Cause cause) {
@@ -496,7 +552,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                                      requestId);
     }
 
-    // ================== Remote Route Handling ==================
+    // ================== Remote Route Handling (delegated to HttpForwarder) ==================
     private void handleRemoteRoute(RequestContext request,
                                    ResponseWriter response,
                                    HttpRouteRegistry.RouteInfo route,
@@ -507,8 +563,7 @@ class AppHttpServerImpl implements AppHttpServer {
                   route.nodes()
                        .size(),
                   requestId);
-        // Check prerequisites
-        if (clusterNetwork.isEmpty() || serializer.isEmpty() || deserializer.isEmpty()) {
+        if (httpForwarder.isEmpty()) {
             log.error("HTTP forwarding not configured [{}]", requestId);
             sendProblem(response,
                         HttpStatus.SERVICE_UNAVAILABLE,
@@ -517,207 +572,18 @@ class AppHttpServerImpl implements AppHttpServer {
                         requestId);
             return;
         }
-        // Filter to connected nodes only
-        var connectedNodes = filterConnectedNodes(route.nodes());
-        if (connectedNodes.isEmpty()) {
-            log.warn("No connected nodes available for route {} {} [{}]",
-                     route.httpMethod(),
-                     route.pathPrefix(),
-                     requestId);
-            sendProblem(response,
-                        HttpStatus.SERVICE_UNAVAILABLE,
-                        "No available nodes for route",
-                        request.path(),
-                        requestId);
-            return;
-        }
-        // Start forwarding with retry support
-        forwardRequestWithRetry(request,
-                                response,
-                                connectedNodes,
-                                Set.of(),
-                                route.toKey(),
-                                requestId,
-                                config.forwardMaxRetries());
-    }
-
-    private List<NodeId> filterConnectedNodes(Set<NodeId> nodes) {
-        if (clusterNetwork.isEmpty()) {
-            return List.of();
-        }
-        var connected = clusterNetwork.unwrap()
-                                      .connectedPeers();
-        return nodes.stream()
-                    .filter(connected::contains)
-                    .toList();
-    }
-
-    private List<NodeId> freshCandidatesForRoute(HttpRouteKey routeKey) {
-        return Option.from(routeRegistry.allRoutes()
-                                        .stream()
-                                        .filter(r -> r.toKey()
-                                                      .equals(routeKey))
-                                        .findFirst())
-                     .map(r -> filterConnectedNodes(r.nodes()))
-                     .or(List.of());
-    }
-
-    private NodeId selectNodeRoundRobin(HttpRouteKey routeKey, List<NodeId> nodes) {
-        var counter = roundRobinCounters.computeIfAbsent(routeKey, _ -> new AtomicInteger(0));
-        var index = Math.abs(counter.getAndIncrement() % nodes.size());
-        return nodes.get(index);
-    }
-
-    private NodeId selectNodeFromCandidates(HttpRouteKey routeKey, List<NodeId> candidates) {
-        // Use round-robin selection from candidates list
-        var counter = roundRobinCounters.computeIfAbsent(routeKey, _ -> new AtomicInteger(0));
-        var index = Math.abs(counter.getAndIncrement() % candidates.size());
-        return candidates.get(index);
-    }
-
-    private void forwardRequestWithRetry(RequestContext request,
-                                         ResponseWriter response,
-                                         List<NodeId> availableNodes,
-                                         Set<NodeId> triedNodes,
-                                         HttpRouteKey routeKey,
-                                         String requestId,
-                                         int retriesRemaining) {
-        // Filter out already tried nodes
-        var candidates = availableNodes.stream()
-                                       .filter(n -> !triedNodes.contains(n))
-                                       .toList();
-        if (candidates.isEmpty()) {
-            if (retriesRemaining > 0) {
-                // No candidates now — wait briefly for route table to heal, then re-query
-                log.debug("No candidates for {} {} [{}], waiting {}ms before re-query ({} retries remaining)",
-                          routeKey.httpMethod(),
-                          routeKey.pathPrefix(),
-                          requestId,
-                          RETRY_DELAY_MS,
-                          retriesRemaining);
-                Promise.<Unit> promise()
-                       .timeout(timeSpan(RETRY_DELAY_MS).millis())
-                       .onResult(_ -> retryAfterDelay(request, response, routeKey, requestId, retriesRemaining));
-                return;
-            }
-            log.error("No more nodes to try for {} {} [{}] after all retries exhausted",
-                      routeKey.httpMethod(),
-                      routeKey.pathPrefix(),
-                      requestId);
-            sendProblem(response,
-                        HttpStatus.GATEWAY_TIMEOUT,
-                        "All nodes failed or unavailable",
-                        request.path(),
-                        requestId);
-            return;
-        }
-        // Select next node (round-robin from candidates)
-        var targetNode = selectNodeFromCandidates(routeKey, candidates);
-        var newTriedNodes = new HashSet<>(triedNodes);
-        newTriedNodes.add(targetNode);
-        // Forward with retry callback
-        forwardRequestInternal(request,
-                               response,
-                               targetNode,
-                               requestId,
-                               () -> handleRetryOrExhausted(request,
-                                                            response,
-                                                            newTriedNodes,
-                                                            routeKey,
-                                                            requestId,
-                                                            retriesRemaining));
-    }
-
-    private void retryAfterDelay(RequestContext request,
-                                 ResponseWriter response,
-                                 HttpRouteKey routeKey,
-                                 String requestId,
-                                 int retriesRemaining) {
-        var freshNodes = freshCandidatesForRoute(routeKey);
-        forwardRequestWithRetry(request, response, freshNodes, Set.of(), routeKey, requestId, retriesRemaining - 1);
-    }
-
-    private void handleRetryOrExhausted(RequestContext request,
-                                        ResponseWriter response,
-                                        Set<NodeId> triedNodes,
-                                        HttpRouteKey routeKey,
-                                        String requestId,
-                                        int retriesRemaining) {
-        if (retriesRemaining > 0) {
-            log.debug("Retrying request [{}], {} retries remaining, re-querying route", requestId, retriesRemaining);
-            var freshNodes = freshCandidatesForRoute(routeKey);
-            forwardRequestWithRetry(request, response, freshNodes, triedNodes, routeKey, requestId, retriesRemaining - 1);
-        } else {
-            log.error("All retries exhausted for [{}]", requestId);
-            sendProblem(response,
-                        HttpStatus.GATEWAY_TIMEOUT,
-                        "Request failed after all retries",
-                        request.path(),
-                        requestId);
-        }
-    }
-
-    private void forwardRequestInternal(RequestContext request,
-                                        ResponseWriter response,
-                                        NodeId targetNode,
-                                        String requestId,
-                                        Runnable onFailure) {
-        var network = clusterNetwork.unwrap();
-        // Fast path: if the target is already known to be disconnected, fail immediately
-        if (!network.connectedPeers()
-                    .contains(targetNode)) {
-            log.debug("Target node {} already disconnected, immediate retry [{}]", targetNode, requestId);
-            onFailure.run();
-            return;
-        }
-        var ser = serializer.unwrap();
-        var correlationId = KSUID.ksuid()
-                                 .toString();
         var context = toHttpRequestContext(request, requestId);
-        // Serialize the request context
-        byte[] requestData;
-        try{
-            requestData = ser.encode(context);
-        } catch (Exception e) {
-            log.error("Failed to serialize request [{}]: {}", requestId, e.getMessage());
-            sendProblem(response,
-                        HttpStatus.INTERNAL_SERVER_ERROR,
-                        "Request serialization failed",
-                        request.path(),
-                        requestId);
-            return;
-        }
-        // Create pending forward entry with onFailure callback
-        var promise = Promise.<HttpResponseData>promise();
-        var pending = new PendingForward(promise, System.currentTimeMillis(), requestId, targetNode, onFailure);
-        pendingForwards.put(correlationId, pending);
-        // Add to secondary index for fast lookup on node departure
-        pendingForwardsByNode.computeIfAbsent(targetNode,
-                                              _ -> ConcurrentHashMap.newKeySet())
-                             .add(correlationId);
-        // Set up timeout
-        promise.timeout(timeSpan(config.forwardTimeoutMs()).millis())
-               .onResult(_ -> removePendingForward(correlationId, targetNode));
-        // Send forward request
-        var forwardRequest = new HttpForwardRequest(selfNodeId, correlationId, requestId, requestData);
-        network.send(targetNode, forwardRequest);
-        log.trace("Forwarded request to {} [{}] correlationId={}", targetNode, requestId, correlationId);
-        // Handle response
-        promise.onSuccess(responseData -> sendResponse(response, responseData, requestId))
-               .onFailure(cause -> handleForwardFailure(response,
-                                                        request.path(),
-                                                        requestId,
-                                                        targetNode,
-                                                        onFailure));
-    }
-
-    private void handleForwardFailure(ResponseWriter response,
-                                      String path,
-                                      String requestId,
-                                      NodeId targetNode,
-                                      Runnable onFailure) {
-        log.warn("Failed to forward request [{}] to {}, attempting retry", requestId, targetNode);
-        onFailure.run();
+        httpForwarder.unwrap()
+                     .forward(context,
+                              route.toKey(),
+                              requestId,
+                              config.forwardMaxRetries())
+                     .onSuccess(responseData -> sendResponse(response, responseData, requestId))
+                     .onFailure(cause -> sendProblem(response,
+                                                     HttpStatus.GATEWAY_TIMEOUT,
+                                                     cause.message(),
+                                                     request.path(),
+                                                     requestId));
     }
 
     // ================== Forward Message Handlers ==================
@@ -750,13 +616,44 @@ class AppHttpServerImpl implements AppHttpServer {
             sendForwardError(network, request, "Route not found locally");
             return;
         }
-        // Handle the request locally
+        // Handle the request locally with metrics
+        var routeInfo = resolveRouteInfo(method, normalizedPath);
+        var startTime = System.nanoTime();
+        routeInfo.onPresent(info -> recordMetricsStart(info));
         routerOpt.unwrap()
                  .handle(context)
-                 .onSuccess(responseData -> sendForwardSuccess(network, request, ser, responseData))
-                 .onFailure(cause -> sendForwardError(network,
-                                                      request,
-                                                      cause.message()));
+                 .onSuccess(responseData -> handleForwardSuccess(network,
+                                                                 request,
+                                                                 ser,
+                                                                 responseData,
+                                                                 routeInfo,
+                                                                 startTime,
+                                                                 context))
+                 .onFailure(cause -> handleForwardFailure(network, request, cause, routeInfo, startTime, context));
+    }
+
+    private void handleForwardSuccess(ClusterNetwork network,
+                                      HttpForwardRequest request,
+                                      Serializer ser,
+                                      HttpResponseData responseData,
+                                      Option<ResolvedRoute> routeInfo,
+                                      long startTime,
+                                      HttpRequestContext context) {
+        routeInfo.onPresent(info -> recordMetricsSuccess(info,
+                                                         startTime,
+                                                         context.body().length,
+                                                         responseData.body().length));
+        sendForwardSuccess(network, request, ser, responseData);
+    }
+
+    private void handleForwardFailure(ClusterNetwork network,
+                                      HttpForwardRequest request,
+                                      Cause cause,
+                                      Option<ResolvedRoute> routeInfo,
+                                      long startTime,
+                                      HttpRequestContext context) {
+        routeInfo.onPresent(info -> recordMetricsFailure(info, startTime, context.body().length, cause));
+        sendForwardError(network, request, cause.message());
     }
 
     private Option<SliceRouter> findLocalRouterForPath(HttpRoutePublisher pub,
@@ -799,108 +696,17 @@ class AppHttpServerImpl implements AppHttpServer {
 
     @Override
     public void onHttpForwardResponse(HttpForwardResponse response) {
-        log.trace("Received HttpForwardResponse [{}] correlationId={} success={}",
-                  response.requestId(),
-                  response.correlationId(),
-                  response.success());
-        Option.option(pendingForwards.remove(response.correlationId()))
-              .onEmpty(() -> log.warn("[{}] Received forward response for unknown correlationId: {}",
-                                      response.requestId(),
-                                      response.correlationId()))
-              .onPresent(pending -> processForwardResponse(pending, response));
-    }
-
-    private void processForwardResponse(PendingForward pending, HttpForwardResponse response) {
-        removeFromNodeIndex(response.correlationId(), pending.targetNode());
-        if (response.success()) {
-            handleSuccessfulForwardResponse(pending, response);
-        } else {
-            handleFailedForwardResponse(pending, response);
-        }
+        httpForwarder.onPresent(fwd -> fwd.onHttpForwardResponse(response));
     }
 
     @Override
     public void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved) {
-        handleNodeDeparture(nodeRemoved.nodeId());
+        httpForwarder.onPresent(fwd -> fwd.onNodeRemoved(nodeRemoved));
     }
 
     @Override
     public void onNodeDown(TopologyChangeNotification.NodeDown nodeDown) {
-        handleNodeDeparture(nodeDown.nodeId());
-    }
-
-    private void handleNodeDeparture(NodeId departedNode) {
-        routeRegistry.evictNode(departedNode);
-        Option.option(pendingForwardsByNode.remove(departedNode))
-              .filter(ids -> !ids.isEmpty())
-              .onPresent(correlationIds -> retryPendingForwards(departedNode, correlationIds));
-    }
-
-    private void retryPendingForwards(NodeId departedNode, Set<String> correlationIds) {
-        var affectedRequestIds = correlationIds.stream()
-                                               .map(pendingForwards::get)
-                                               .flatMap(p -> Option.option(p)
-                                                                   .stream())
-                                               .map(PendingForward::requestId)
-                                               .limit(5)
-                                               .toList();
-        log.debug("Node {} departed, triggering immediate retry for {} pending forwards, requestIds={}",
-                  departedNode,
-                  correlationIds.size(),
-                  affectedRequestIds);
-        for (var correlationId : correlationIds) {
-            Option.option(pendingForwards.remove(correlationId))
-                  .onPresent(pending -> failPendingForwardOnDeparture(pending, departedNode));
-        }
-    }
-
-    private void failPendingForwardOnDeparture(PendingForward pending, NodeId departedNode) {
-        log.debug("Triggering retry for request [{}] due to node {} departure", pending.requestId(), departedNode);
-        pending.promise()
-               .fail(Causes.cause("Target node " + departedNode + " departed"));
-    }
-
-    private void removePendingForward(String correlationId, NodeId targetNode) {
-        pendingForwards.remove(correlationId);
-        removeFromNodeIndex(correlationId, targetNode);
-    }
-
-    private void removeFromNodeIndex(String correlationId, NodeId targetNode) {
-        Option.option(pendingForwardsByNode.get(targetNode))
-              .onPresent(nodeCorrelations -> cleanupNodeCorrelation(nodeCorrelations, correlationId, targetNode));
-    }
-
-    private void cleanupNodeCorrelation(Set<String> nodeCorrelations, String correlationId, NodeId targetNode) {
-        nodeCorrelations.remove(correlationId);
-        if (nodeCorrelations.isEmpty()) {
-            pendingForwardsByNode.remove(targetNode, nodeCorrelations);
-        }
-    }
-
-    private void handleSuccessfulForwardResponse(PendingForward pending, HttpForwardResponse response) {
-        if (deserializer.isEmpty()) {
-            pending.promise()
-                   .fail(Causes.cause("Deserializer not available"));
-            return;
-        }
-        try{
-            HttpResponseData responseData = deserializer.unwrap()
-                                                        .decode(response.payload());
-            pending.promise()
-                   .succeed(responseData);
-            log.trace("Completed forward request [{}]", pending.requestId());
-        } catch (Exception e) {
-            log.error("Failed to deserialize forward response [{}]: {}", pending.requestId(), e.getMessage());
-            pending.promise()
-                   .fail(Causes.cause("Response deserialization failed: " + e.getMessage()));
-        }
-    }
-
-    private void handleFailedForwardResponse(PendingForward pending, HttpForwardResponse response) {
-        var errorMessage = new String(response.payload(), StandardCharsets.UTF_8);
-        log.warn("Failed to forward request [{}]: {}", pending.requestId(), errorMessage);
-        pending.promise()
-               .fail(Causes.cause("Remote processing failed: " + errorMessage));
+        httpForwarder.onPresent(fwd -> fwd.onNodeDown(nodeDown));
     }
 
     // ================== Response Helpers ==================
@@ -1011,6 +817,56 @@ class AppHttpServerImpl implements AppHttpServer {
     private static org.pragmatica.http.HttpStatus toServerStatus(int code) {
         return Option.option(STATUS_MAP.get(code))
                      .or(org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    // ================== Invocation Metrics ==================
+    /// Resolved artifact and method name for metrics recording.
+    record ResolvedRoute(Artifact artifact, MethodName method) {}
+
+    private Option<ResolvedRoute> resolveRouteInfo(String httpMethod, String path) {
+        return metricsCollector.flatMap(_ -> httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(httpMethod, path))
+                                                               .flatMap(this::toResolvedRoute));
+    }
+
+    private Option<ResolvedRoute> toResolvedRoute(LocalRouteInfo info) {
+        return Artifact.artifact(info.artifactCoord())
+                       .flatMap(artifact -> MethodName.methodName(info.sliceMethod())
+                                                      .map(method -> new ResolvedRoute(artifact, method)))
+                       .option();
+    }
+
+    private void recordMetricsStart(ResolvedRoute route) {
+        metricsCollector.onPresent(mc -> mc.recordStart(route.artifact(), route.method()));
+    }
+
+    private void recordMetricsSuccess(ResolvedRoute route, long startTime, int requestBytes, int responseBytes) {
+        var durationNs = System.nanoTime() - startTime;
+        metricsCollector.onPresent(mc -> recordSuccessMetrics(mc, route, durationNs, requestBytes, responseBytes));
+    }
+
+    private void recordSuccessMetrics(InvocationMetricsCollector mc,
+                                      ResolvedRoute route,
+                                      long durationNs,
+                                      int requestBytes,
+                                      int responseBytes) {
+        mc.recordComplete(route.artifact(), route.method());
+        mc.recordSuccess(route.artifact(), route.method(), durationNs, requestBytes, responseBytes);
+    }
+
+    private void recordMetricsFailure(ResolvedRoute route, long startTime, int requestBytes, Cause cause) {
+        var durationNs = System.nanoTime() - startTime;
+        var errorType = cause.getClass()
+                             .getSimpleName();
+        metricsCollector.onPresent(mc -> recordFailureMetrics(mc, route, durationNs, requestBytes, errorType));
+    }
+
+    private void recordFailureMetrics(InvocationMetricsCollector mc,
+                                      ResolvedRoute route,
+                                      long durationNs,
+                                      int requestBytes,
+                                      String errorType) {
+        mc.recordComplete(route.artifact(), route.method());
+        mc.recordFailure(route.artifact(), route.method(), durationNs, requestBytes, errorType);
     }
 
     // ================== Route Table ==================

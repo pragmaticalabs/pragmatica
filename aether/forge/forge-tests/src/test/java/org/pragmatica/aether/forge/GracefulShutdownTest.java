@@ -17,7 +17,8 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
-import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
+import org.pragmatica.aether.ember.EmberCluster;
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
 /// Tests for graceful shutdown scenarios.
 ///
@@ -35,7 +36,7 @@ class GracefulShutdownTest {
     private static final int BASE_MGMT_PORT = 12100;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.18.0";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.19.0";
     private static final String BLUEPRINT_ID = "forge.test:graceful-shutdown:1.0.0";
 
     // Per-method port offsets to avoid TIME_WAIT conflicts between test methods
@@ -46,7 +47,7 @@ class GracefulShutdownTest {
         "leaderShutdown_newLeaderElected", 60
     );
 
-    private ForgeCluster cluster;
+    private EmberCluster cluster;
     private HttpClient httpClient;
 
     @BeforeEach
@@ -54,7 +55,7 @@ class GracefulShutdownTest {
         var methodName = testInfo.getTestMethod().orElseThrow().getName();
         var portOffset = METHOD_PORT_OFFSETS.getOrDefault(methodName, 0);
 
-        cluster = forgeCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "gs");
+        cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "gs");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();

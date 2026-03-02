@@ -1,6 +1,7 @@
 package org.pragmatica.aether.http.handler;
 
 import org.pragmatica.lang.Result;
+import org.pragmatica.serialization.Codec;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -15,6 +16,7 @@ import static org.pragmatica.lang.Result.success;
 /// @param statusCode HTTP status code (e.g., 200, 404, 500)
 /// @param headers    response headers
 /// @param body       response body bytes
+@Codec
 public record HttpResponseData(int statusCode,
                                Map<String, String> headers,
                                byte[] body) {

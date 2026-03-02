@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>pragmatica</artifactId>
-        <version>0.18.0</version>
+        <version>0.19.0</version>
     </parent>
 
     <groupId>org.pragmatica-lite.aether</groupId>
@@ -53,6 +53,8 @@
         <module>resource</module>
         <module>slice</module>
         <module>cli</module>
+        <module>lb</module>
+        <module>ember</module>
         <module>forge</module>
         <!-- e2e-tests requires examples to be installed first, enabled via -Pwith-e2e profile -->
         <module>http-handler-api</module>
@@ -139,16 +141,6 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
-                <artifactId>serialization-kryo</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite</groupId>
-                <artifactId>serialization-fury</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite</groupId>
                 <artifactId>micrometer</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -174,6 +166,11 @@
             </dependency>
 
             <!-- Internal -->
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>dashboard</artifactId>
+                <version>${project.version}</version>
+            </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>slice-annotations</artifactId>
@@ -239,6 +236,14 @@
                 <artifactId>resource-db-jooq-r2dbc</artifactId>
                 <version>${project.version}</version>
             </dependency>
+
+            <!-- R2DBC Pool -->
+            <dependency>
+                <groupId>io.r2dbc</groupId>
+                <artifactId>r2dbc-pool</artifactId>
+                <version>1.0.2.RELEASE</version>
+            </dependency>
+
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>resource-http</artifactId>
@@ -318,7 +323,12 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>forge-cluster</artifactId>
+                <artifactId>lb</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>ember</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -408,19 +418,6 @@
                 <groupId>io.netty</groupId>
                 <artifactId>netty-all</artifactId>
                 <version>${netty.version}</version>
-            </dependency>
-
-            <!-- Serialization -->
-            <dependency>
-                <groupId>com.esotericsoftware</groupId>
-                <artifactId>kryo</artifactId>
-                <version>${kryo.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.apache.fory</groupId>
-                <artifactId>fory-core</artifactId>
-                <version>${fory-core.version}</version>
             </dependency>
 
             <!-- CLI -->

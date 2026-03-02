@@ -18,9 +18,11 @@ package org.pragmatica.consensus;
 
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
+import org.pragmatica.serialization.Codec;
 import org.pragmatica.utility.IdGenerator;
 
 /// Unique identifier for a node in the consensus cluster.
+@Codec
 public record NodeId(String id) implements Comparable<NodeId> {
     /// Create a node ID from the given string with validation.
     public static Result<NodeId> nodeId(String id) {

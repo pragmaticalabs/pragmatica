@@ -1,6 +1,6 @@
 package org.pragmatica.aether.forge.api;
 
-import org.pragmatica.aether.forge.ForgeCluster.EventLogEntry;
+import org.pragmatica.aether.ember.EmberCluster.EventLogEntry;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.*;
 import org.pragmatica.aether.forge.simulator.DataGenerator;
 import org.pragmatica.aether.forge.simulator.SimulatorConfig;

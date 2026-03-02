@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>integrations</artifactId>
-        <version>0.18.0</version>
+        <version>0.19.0</version>
     </parent>
 
     <artifactId>cluster</artifactId>
@@ -37,15 +37,12 @@
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
-            <artifactId>serialization-fury</artifactId>
+            <artifactId>serialization-api</artifactId>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
-            <artifactId>serialization-kryo</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.fory</groupId>
-            <artifactId>fory-core</artifactId>
+            <artifactId>serialization-codec-processor</artifactId>
+            <scope>provided</scope>
         </dependency>
 
         <!-- Logging -->

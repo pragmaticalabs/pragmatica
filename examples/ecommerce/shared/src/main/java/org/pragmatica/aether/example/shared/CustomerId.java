@@ -17,6 +17,6 @@ public record CustomerId(String value) {
     }
 
     public static CustomerId generate() {
-        return new CustomerId(IdGenerator.generate("CUST"));
+        return customerId(IdGenerator.generate("CUST")).expect("CustomerId.generate");
     }
 }

@@ -484,4 +484,4 @@ public class OrderServiceImpl implements OrderService {
 1. Check logs: `tail -f ~/.aether/logs/forge.log`
 2. Enable debug: `mvn compile -X`
 3. Verify configuration: `mvn jbct:verify-slice`
-4. Report issues: https://github.com/pragmatica/jbct-cli/issues
+4. Report issues: https://github.com/pragmaticalabs/pragmatica/issues

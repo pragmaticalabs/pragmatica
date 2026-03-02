@@ -29,7 +29,7 @@ public record VersionRouting(int newWeight, int oldWeight) {
     private static final Cause NEGATIVE_WEIGHTS = Causes.cause("Weights must be non-negative");
     private static final Cause NO_POSITIVE_WEIGHT = Causes.cause("At least one weight must be positive");
 
-    private static final Fn1<Cause, String> INVALID_RATIO_FORMAT = Causes.forOneValue("Invalid ratio format. Expected 'new:old', got: {}");
+    private static final Fn1<Cause, String> INVALID_RATIO_FORMAT = Causes.forOneValue("Invalid ratio format. Expected 'new:old', got: %s");
 
     /// Initial routing: all traffic to old version.
     public static final VersionRouting ALL_OLD = versionRouting(0, 1).unwrap();

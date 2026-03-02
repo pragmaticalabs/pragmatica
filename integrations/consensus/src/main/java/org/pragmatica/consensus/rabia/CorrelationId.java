@@ -18,9 +18,11 @@ package org.pragmatica.consensus.rabia;
 
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
+import org.pragmatica.serialization.Codec;
 import org.pragmatica.utility.IdGenerator;
 
 /// Correlation identifier for tracking command batches through consensus.
+@Codec
 public record CorrelationId(String id) {
     public static Result<CorrelationId> correlationId(String id) {
         return Verify.ensure(id, Verify.Is::notBlank)

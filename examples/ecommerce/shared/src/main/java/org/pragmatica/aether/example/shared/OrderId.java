@@ -17,6 +17,6 @@ public record OrderId(String value) {
     }
 
     public static OrderId generate() {
-        return new OrderId(IdGenerator.generate("ORD"));
+        return orderId(IdGenerator.generate("ORD")).expect("OrderId.generate");
     }
 }

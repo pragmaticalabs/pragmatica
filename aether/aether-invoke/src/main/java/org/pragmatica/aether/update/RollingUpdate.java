@@ -42,7 +42,7 @@ public record RollingUpdate(String updateId,
                             int newInstances,
                             long createdAt,
                             long updatedAt) {
-    private static final Fn1<Cause, String> INVALID_TRANSITION = Causes.forOneValue("Invalid state transition: {}");
+    private static final Fn1<Cause, String> INVALID_TRANSITION = Causes.forOneValue("Invalid state transition: %s");
 
     /// Creates a new rolling update in PENDING state.
     ///

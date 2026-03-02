@@ -2,6 +2,7 @@ package org.pragmatica.cluster.metrics;
 
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.serialization.Codec;
 
 import java.util.List;
 import java.util.Map;
@@ -9,6 +10,7 @@ import java.util.Map;
 /// Messages for deployment metrics exchange between nodes.
 /// Uses Ping-Pong pattern: leader pings nodes with aggregated metrics,
 /// nodes respond with their local metrics.
+@Codec
 public sealed interface DeploymentMetricsMessage extends ProtocolMessage {
     /// Single deployment metrics entry using primitive types for serialization.
     record DeploymentMetricsEntry(String artifact,

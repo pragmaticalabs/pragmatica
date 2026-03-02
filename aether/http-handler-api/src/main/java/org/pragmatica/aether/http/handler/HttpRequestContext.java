@@ -3,6 +3,7 @@ package org.pragmatica.aether.http.handler;
 import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.lang.Result;
+import org.pragmatica.serialization.Codec;
 
 import java.util.List;
 import java.util.Map;
@@ -24,6 +25,7 @@ import static org.pragmatica.lang.Result.success;
 /// @param body        request body bytes (empty for GET)
 /// @param requestId   unique request identifier for tracing
 /// @param security    security context with authentication info
+@Codec
 public record HttpRequestContext(String path,
                                  String method,
                                  Map<String, List<String>> queryParams,

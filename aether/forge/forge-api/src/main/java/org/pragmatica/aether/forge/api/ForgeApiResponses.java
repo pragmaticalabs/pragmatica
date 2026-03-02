@@ -43,7 +43,17 @@ public final class ForgeApiResponses {
                                      int targetClusterSize,
                                      List<NodeMetricsResponse> nodeMetrics,
                                      List<SliceStatusInfo> slices,
-                                     List<LoadRunnerTargetInfo> loadTargets) {}
+                                     List<LoadRunnerTargetInfo> loadTargets,
+                                     List<InvocationInfo> invocations) {}
+
+    /// Per-method invocation metrics from Aether gossip data.
+    public record InvocationInfo(String artifact,
+                                 String method,
+                                 long count,
+                                 long successCount,
+                                 long failureCount,
+                                 double avgDurationMs,
+                                 double errorRate) {}
 
     /// Cluster information including all nodes.
     public record ClusterInfo(List<NodeInfo> nodes,
@@ -238,9 +248,14 @@ public final class ForgeApiResponses {
     /// Forge event for event log.
     public record ForgeEvent(String timestamp,
                              String type,
+                             String severity,
                              String message) {}
 
     // ========== Multiplier/Config Responses ==========
     /// Response from multiplier set operation.
     public record MultiplierSetResponse(boolean success, double multiplier) {}
+
+    // ========== Forge Detection ==========
+    /// Response from /api/forge/status endpoint indicating this is a Forge instance.
+    public record ForgeStatusResponse(boolean forge) {}
 }

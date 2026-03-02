@@ -29,7 +29,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 ///     ↑
 /// Platform (JDK modules)
 ///     ↑
-/// FrameworkClassLoader (pragmatica-lite, slice-api, Fury) ← THIS
+/// FrameworkClassLoader (pragmatica-lite, slice-api, serialization) ← THIS
 ///     ↑
 /// SharedLibraryClassLoader ([shared] deps)
 ///     ↑
@@ -41,7 +41,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 ///
 ///   - Class version conflicts between Node and Slice
 ///   - Accidental leakage of Node internals to Slices
-///   - Framework serialization issues (Fury/Kryo class identity)
+///   - Framework serialization issues (class identity across classloaders)
 ///
 ///
 /// The framework JARs are loaded from a dedicated directory (e.g., lib/framework/).
@@ -50,7 +50,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 ///
 ///   - pragmatica-lite:core - Result, Promise, Option, etc.
 ///   - aether:slice-api - Slice, SliceBridge, SliceMethod, etc.
-///   - fury-core - Serialization library
+///   - serialization-api - Serialization library
 ///   - slf4j-api - Logging facade
 ///
 ///

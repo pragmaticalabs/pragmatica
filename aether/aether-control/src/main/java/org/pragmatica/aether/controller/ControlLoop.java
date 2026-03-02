@@ -36,6 +36,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -98,7 +99,8 @@ public interface ControlLoop {
                                    Option<InvocationMetricsCollector> invocationMetricsCollector,
                                    ClusterNode<KVCommand<AetherKey>> cluster,
                                    TimeSpan interval,
-                                   ControllerConfig config) {
+                                   ControllerConfig config,
+                                   Consumer<ScalingEvent> eventPublisher) {
         record controlLoop(NodeId self,
                            ClusterController controller,
                            MetricsCollector metricsCollector,
@@ -113,7 +115,8 @@ public interface ControlLoop {
                            ConcurrentHashMap<SliceNodeKey, SliceState> sliceStates,
                            AtomicReference<Long> activationTime,
                            ConcurrentHashMap<Artifact, Long> sliceActivationTimes,
-                           AtomicLong quorumSequence) implements ControlLoop {
+                           AtomicLong quorumSequence,
+                           Consumer<ScalingEvent> eventPublisher) implements ControlLoop {
             private static final Logger log = LoggerFactory.getLogger(ControlLoop.class);
 
             @Override
@@ -494,9 +497,25 @@ public interface ControlLoop {
                          newInstances);
                 blueprints.put(artifact,
                                new ClusterController.Blueprint(artifact, newInstances, currentBlueprint.minInstances()));
+                publishScalingEvent(change, artifact, currentBlueprint.instances(), newInstances);
                 var key = SliceTargetKey.sliceTargetKey(artifact.base());
                 var value = SliceTargetValue.sliceTargetValue(artifact.version(), newInstances);
                 return Option.some(new KVCommand.Put<>(key, value));
+            }
+
+            private void publishScalingEvent(BlueprintChange change,
+                                             Artifact artifact,
+                                             int previousInstances,
+                                             int newInstances) {
+                var scalingEvent = switch (change) {
+                    case BlueprintChange.ScaleUp _ -> ScalingEvent.ScaledUp.scaledUp(artifact,
+                                                                                     previousInstances,
+                                                                                     newInstances);
+                    case BlueprintChange.ScaleDown _ -> ScalingEvent.ScaledDown.scaledDown(artifact,
+                                                                                           previousInstances,
+                                                                                           newInstances);
+                };
+                eventPublisher.accept(scalingEvent);
             }
 
             private void resetProtectionState() {
@@ -537,6 +556,7 @@ public interface ControlLoop {
                                new ConcurrentHashMap<>(),
                                new AtomicReference<>(null),
                                new ConcurrentHashMap<>(),
-                               new AtomicLong(0));
+                               new AtomicLong(0),
+                               eventPublisher);
     }
 }

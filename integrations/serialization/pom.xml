@@ -5,7 +5,7 @@
     <parent>
         <artifactId>integrations</artifactId>
         <groupId>org.pragmatica-lite</groupId>
-        <version>0.18.0</version>
+        <version>0.19.0</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -17,27 +17,15 @@
 
     <modules>
         <module>api</module>
-        <module>kryo</module>
-        <module>fury</module>
+        <module>codec-processor</module>
     </modules>
 
-    <properties>
-        <kryo.version>5.6.2</kryo.version>
-        <fory.version>0.16.0-SNAPSHOT</fory.version>
-    </properties>
-
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>com.esotericsoftware</groupId>
-                <artifactId>kryo</artifactId>
-                <version>${kryo.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.apache.fory</groupId>
-                <artifactId>fory-core</artifactId>
-                <version>${fory.version}</version>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
+    <profiles>
+        <profile>
+            <id>benchmark</id>
+            <modules>
+                <module>benchmark</module>
+            </modules>
+        </profile>
+    </profiles>
 </project>

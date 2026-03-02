@@ -147,181 +147,274 @@ Create a new Maven module for the slice:
     <properties>
         <maven.compiler.source>25</maven.compiler.source>
         <maven.compiler.target>25</maven.compiler.target>
+        <pragmatica.version>0.19.0</pragmatica.version>
+        <jbct.skip>false</jbct.skip>
     </properties>
 
     <dependencies>
+        <!-- Aether slice API (provided by runtime) -->
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>slice-api</artifactId>
-            <version>0.18.0</version>
+            <version>${pragmatica.version}</version>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
-            <version>0.18.0</version>
+            <version>${pragmatica.version}</version>
+            <scope>provided</scope>
         </dependency>
+
+        <!-- Annotation processor (compile-time only) -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>slice-processor</artifactId>
+            <version>${pragmatica.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Resource API for @Sql, @Http qualifiers -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-api</artifactId>
+            <version>${pragmatica.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
         <!-- Your existing dependencies for database, etc. -->
     </dependencies>
+
+    <build>
+        <plugins>
+            <!-- JBCT formatting and linting -->
+            <plugin>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jbct-maven-plugin</artifactId>
+                <version>${pragmatica.version}</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>check</goal>
+                            <goal>package-slices</goal>
+                            <goal>generate-blueprint</goal>
+                            <goal>verify-slice</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>
 ```
 
 ### Option A: Wrap Existing Code (Fastest)
 
-If you want minimal changes, wrap the existing service:
+If you want minimal changes, wrap the existing service using `@Slice` and `Promise.lift()`:
 
 ```java
 package com.example.order;
 
-import org.pragmatica.aether.slice.Slice;
-import org.pragmatica.aether.slice.SliceMethod;
+import org.pragmatica.aether.slice.annotation.Slice;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
-import java.util.List;
+/// Wraps the legacy OrderService as an Aether slice.
+/// The legacy code runs inside Promise.lift(), which captures any
+/// exceptions and converts them to Cause failures automatically.
+@Slice
+public interface OrderProcessor {
 
-public class OrderProcessorSlice implements Slice {
+    record ProcessRequest(String idempotencyKey, String customerId, List<String> items) {}
+    record ProcessResult(String orderId, String status) {}
 
-    private final OrderService legacyService;  // Your existing code
-
-    public OrderProcessorSlice() {
-        // Initialize your existing service
-        // This could use Spring context, manual wiring, etc.
-        this.legacyService = createLegacyService();
+    sealed interface OrderProcessorError extends Cause {
+        record ProcessingFailed(Throwable cause) implements OrderProcessorError {
+            @Override
+            public String message() {
+                return "Order processing failed: " + Causes.fromThrowable(cause);
+            }
+        }
     }
 
-    @Override
-    public List<SliceMethod<?, ?>> methods() {
-        return List.of(
-            SliceMethod.sliceMethod(
-                "processOrder",
-                OrderRequest.class,
-                OrderResult.class,
-                this::processOrder
-            )
+    Promise<ProcessResult> process(ProcessRequest request);
+
+    static OrderProcessor orderProcessor() {
+        var legacyService = createLegacyService();
+
+        return request -> Promise.lift(
+            OrderProcessorError.ProcessingFailed::new,
+            () -> callLegacy(legacyService, request)
         );
     }
 
-    private Promise<OrderResult> processOrder(OrderRequest request) {
-        return Promise.lift(
-            cause -> OrderResult.error("Processing failed: " + cause.getMessage()),
-            () -> legacyService.processOrder(request)
+    private static ProcessResult callLegacy(OrderService legacyService,
+                                             ProcessRequest request) {
+        var legacyRequest = new OrderRequest(
+            request.idempotencyKey(), request.customerId(), request.items()
         );
+        var result = legacyService.processOrder(legacyRequest);
+        return new ProcessResult(result.getOrderId(), result.getStatus());
     }
 
-    @Override
-    public Promise<Unit> start() {
-        // Initialize connections, warm caches, etc.
-        return Promise.success(Unit.unit());
-    }
-
-    @Override
-    public Promise<Unit> stop() {
-        // Cleanup
-        return Promise.success(Unit.unit());
-    }
-
-    private OrderService createLegacyService() {
-        // Wire up your existing service
-        // Could be Spring ApplicationContext, manual construction, etc.
-        var inventory = InventoryRepositoryImpl.inventoryRepositoryImpl(dataSource);
-        var pricing = PricingServiceImpl.pricingServiceImpl();
-        var payments = PaymentGatewayImpl.paymentGatewayImpl(stripeApiKey);
-        var notifications = NotificationServiceImpl.notificationServiceImpl(emailConfig);
-        var orderRepo = OrderRepositoryImpl.orderRepositoryImpl(dataSource);
-
-        return new OrderService(inventory, pricing, payments, notifications, orderRepo);
+    private static OrderService createLegacyService() {
+        // Wire up your existing service manually
+        // Could use Spring ApplicationContext, manual construction, etc.
+        var inventory = new InventoryRepository(/* datasource */);
+        var pricing = new PricingService();
+        var payments = new PaymentGateway(/* stripe key */);
+        var notifications = new NotificationService(/* email config */);
+        return new OrderService(inventory, pricing, payments, notifications);
     }
 }
 ```
+
+`Promise.lift()` wraps any exception-throwing code. The legacy service runs as-is;
+exceptions become `Cause` failures automatically via the constructor reference
+`ProcessingFailed::new`.
 
 ### Option B: Rewrite with JBCT (Cleaner)
 
-For a cleaner result, rewrite using JBCT patterns:
+For a cleaner result, rewrite using `@Slice` with the inline record pattern and
+JBCT functional pipelines:
 
 ```java
 package com.example.order;
 
-import org.pragmatica.aether.slice.Slice;
-import org.pragmatica.aether.slice.SliceMethod;
+import org.pragmatica.aether.resource.db.Sql;
+import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.aether.slice.annotation.Slice;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
-import java.util.List;
+/// Order processor slice — full JBCT rewrite.
+/// Each step is a named method implementing a single pattern.
+@Slice
+public interface OrderProcessor {
 
-public class OrderProcessorSlice implements Slice {
-
-    private final CheckInventory checkInventory;
-    private final CalculatePricing calculatePricing;
-    private final ProcessPayment processPayment;
-    private final CreateOrder createOrder;
-    private final SendConfirmation sendConfirmation;
-
-    public OrderProcessorSlice(
-            CheckInventory checkInventory,
-            CalculatePricing calculatePricing,
-            ProcessPayment processPayment,
-            CreateOrder createOrder,
-            SendConfirmation sendConfirmation) {
-        this.checkInventory = checkInventory;
-        this.calculatePricing = calculatePricing;
-        this.processPayment = processPayment;
-        this.createOrder = createOrder;
-        this.sendConfirmation = sendConfirmation;
+    record ProcessRequest(String idempotencyKey, String customerId, List<String> items) {
+        public static Result<ProcessRequest> processRequest(String idempotencyKey,
+                                                             String customerId,
+                                                             List<String> items) {
+            var validKey = Verify.ensure(idempotencyKey, Verify.Is::present,
+                                         OrderError.missingIdempotencyKey());
+            var validCustomer = Verify.ensure(customerId, Verify.Is::present,
+                                              OrderError.missingCustomerId());
+            var validItems = Verify.ensure(items, list -> !list.isEmpty(),
+                                           OrderError.emptyItems());
+            return Result.all(validKey, validCustomer, validItems)
+                         .map(ProcessRequest::new);
+        }
     }
 
-    @Override
-    public List<SliceMethod<?, ?>> methods() {
-        return List.of(
-            SliceMethod.sliceMethod("process", OrderRequest.class, OrderResult.class, this::process)
-        );
+    record ProcessResult(String orderId, String status) {}
+
+    sealed interface OrderError extends Cause {
+        enum General implements OrderError {
+            MISSING_IDEMPOTENCY_KEY("Idempotency key is required"),
+            MISSING_CUSTOMER_ID("Customer ID is required"),
+            EMPTY_ITEMS("Order must have at least one item"),
+            OUT_OF_STOCK("Insufficient stock for order"),
+            PAYMENT_DECLINED("Payment was declined");
+
+            private final String message;
+            General(String message) { this.message = message; }
+            @Override public String message() { return message; }
+        }
+
+        static OrderError missingIdempotencyKey() { return General.MISSING_IDEMPOTENCY_KEY; }
+        static OrderError missingCustomerId() { return General.MISSING_CUSTOMER_ID; }
+        static OrderError emptyItems() { return General.EMPTY_ITEMS; }
+        static OrderError outOfStock() { return General.OUT_OF_STOCK; }
+        static OrderError paymentDeclined() { return General.PAYMENT_DECLINED; }
     }
 
-    // Clean functional pipeline
-    private Promise<OrderResult> process(OrderRequest request) {
-        return checkInventory.apply(request)
-            .flatMap(availability ->
-                availability.isAvailable()
-                    ? calculatePricing.apply(request)
-                    : Promise.success(OrderResult.outOfStock(availability.missing())))
-            .flatMap(quote -> processPayment.apply(request.idempotencyKey(), quote))
-            .flatMap(payment -> createOrder.apply(request, payment))
-            .flatMap(order -> sendConfirmation.apply(order).map(_ -> OrderResult.success(order)));
+    Promise<ProcessResult> process(ProcessRequest request);
+
+    static OrderProcessor orderProcessor(@Sql SqlConnector db) {
+        record orderProcessor(SqlConnector db) implements OrderProcessor {
+            @Override
+            public Promise<ProcessResult> process(ProcessRequest request) {
+                return checkInventory(request)
+                    .flatMap(avail -> calculatePricing(request))
+                    .flatMap(quote -> processPayment(request, quote))
+                    .flatMap(payment -> createOrder(request, payment));
+            }
+
+            private Promise<Boolean> checkInventory(ProcessRequest request) {
+                return db.query("SELECT available FROM inventory WHERE item IN (?)",
+                                String.join(",", request.items()))
+                         .map(OrderProcessor::toAvailability);
+            }
+
+            private Promise<String> calculatePricing(ProcessRequest request) {
+                return db.query("SELECT price FROM products WHERE id IN (?)",
+                                String.join(",", request.items()))
+                         .map(OrderProcessor::toQuote);
+            }
+
+            private Promise<String> processPayment(ProcessRequest request, String quote) {
+                return db.update("INSERT INTO payments (key, customer, amount) VALUES (?, ?, ?)",
+                                 request.idempotencyKey(), request.customerId(), quote)
+                         .map(OrderProcessor::toPaymentId);
+            }
+
+            private Promise<ProcessResult> createOrder(ProcessRequest request, String paymentId) {
+                return db.update("INSERT INTO orders (customer, payment_id) VALUES (?, ?)",
+                                 request.customerId(), paymentId)
+                         .map(rowCount -> new ProcessResult(paymentId, "PLACED"));
+            }
+        }
+        return new orderProcessor(db);
     }
 
-    @Override
-    public Promise<Unit> start() {
-        return Promise.success(Unit.unit());
-    }
-
-    @Override
-    public Promise<Unit> stop() {
-        return Promise.success(Unit.unit());
-    }
+    private static Boolean toAvailability(/* row */) { /* ... */ }
+    private static String toQuote(/* row */) { /* ... */ }
+    private static String toPaymentId(/* row */) { /* ... */ }
 }
-
-// Each step is a simple functional interface
-@FunctionalInterface
-interface CheckInventory {
-    Promise<Availability> apply(OrderRequest request);
-}
-
-@FunctionalInterface
-interface CalculatePricing {
-    Promise<Quote> apply(OrderRequest request);
-}
-
-// etc.
 ```
+
+Each pipeline step is a named method implementing a single Leaf pattern. The `@Sql`
+resource qualifier injects the database connector from `aether.toml` configuration.
 
 ### Option C: The Peeling Pattern (Incremental)
 
-The peeling pattern bridges Options A and B. Start with a wrapped legacy call, then incrementally refactor layer by layer. Working code at every step.
+The peeling pattern bridges Options A and B. Start with a wrapped legacy call, then
+incrementally refactor layer by layer. Working code at every step.
 
 **Phase 1: Wrap everything**
 
 ```java
-private Promise<OrderResult> process(OrderRequest request) {
-    return Promise.lift(() -> legacyOrderService.processOrder(request));
+@Slice
+public interface OrderProcessor {
+
+    record ProcessRequest(String idempotencyKey, String customerId, List<String> items) {}
+    record ProcessResult(String orderId, String status) {}
+
+    sealed interface OrderProcessorError extends Cause {
+        record ProcessingFailed(Throwable cause) implements OrderProcessorError {
+            @Override
+            public String message() {
+                return "Processing failed: " + Causes.fromThrowable(cause);
+            }
+        }
+    }
+
+    Promise<ProcessResult> process(ProcessRequest request);
+
+    static OrderProcessor orderProcessor() {
+        var legacyService = createLegacyService();
+
+        return request -> Promise.lift(
+            OrderProcessorError.ProcessingFailed::new,
+            () -> callLegacy(legacyService, request)
+        );
+    }
+
+    // ... legacy wiring helpers ...
 }
 ```
 
@@ -330,26 +423,47 @@ private Promise<OrderResult> process(OrderRequest request) {
 Refactor the structure, but keep each step wrapped:
 
 ```java
-private Promise<OrderResult> process(OrderRequest request) {
-    return validateRequest(request)                                    // JBCT
-        .flatMap(valid -> Promise.lift(() -> legacyCheckInventory(valid)))  // wrapped
-        .flatMap(inv -> Promise.lift(() -> legacyCalculatePricing(inv)))    // wrapped
-        .flatMap(quote -> Promise.lift(() -> legacyProcessPayment(quote)))  // wrapped
-        .flatMap(payment -> Promise.lift(() -> legacyCreateOrder(payment))) // wrapped
-        .flatMap(order -> Promise.lift(() -> legacySendConfirmation(order))); // wrapped
+static OrderProcessor orderProcessor() {
+    var legacyService = createLegacyService();
+
+    record orderProcessor(OrderService legacy) implements OrderProcessor {
+        @Override
+        public Promise<ProcessResult> process(ProcessRequest request) {
+            return validateRequest(request)
+                .flatMap(valid -> liftCheckInventory(valid))
+                .flatMap(inv -> liftCalculatePricing(inv))
+                .flatMap(quote -> liftProcessPayment(request, quote))
+                .flatMap(payment -> liftCreateOrder(request, payment));
+        }
+
+        private Result<ProcessRequest> validateRequest(ProcessRequest request) {
+            // New JBCT validation
+            return Verify.ensure(request.customerId(), Verify.Is::present,
+                                 OrderError.missingCustomerId())
+                         .map(id -> request);
+        }
+
+        private Promise<Availability> liftCheckInventory(ProcessRequest request) {
+            return Promise.lift(LegacyError::new,
+                                () -> legacy.checkInventory(request.items()));
+        }
+
+        // ... other lifted steps ...
+    }
+    return new orderProcessor(legacyService);
 }
 ```
 
 **Phase 3: Peel one step deeper**
 
-Take `legacyCheckInventory` and expand it:
+Take `liftCheckInventory` and expand it, replacing the legacy call with native JBCT:
 
 ```java
-private Promise<Availability> checkInventory(ValidRequest request) {
+private Promise<Availability> checkInventory(ProcessRequest request) {
     return Promise.all(
-        Promise.lift(() -> legacyCheckWarehouse(request)),
-        Promise.lift(() -> legacyCheckSupplier(request))
-    ).map(this::combineAvailability);  // JBCT
+        Promise.lift(LegacyError::new, () -> legacy.checkWarehouse(request.items())),
+        Promise.lift(LegacyError::new, () -> legacy.checkSupplier(request.items()))
+    ).map(OrderProcessor::combineAvailability);
 }
 ```
 
@@ -358,36 +472,72 @@ private Promise<Availability> checkInventory(ValidRequest request) {
 Repeat for each step. Eventually all `lift()` calls disappear:
 
 ```java
-private Promise<OrderResult> process(OrderRequest request) {
+@Override
+public Promise<ProcessResult> process(ProcessRequest request) {
     return validateRequest(request)
         .flatMap(this::checkInventory)
         .flatMap(this::calculatePricing)
         .flatMap(this::processPayment)
-        .flatMap(this::createOrder)
-        .flatMap(this::sendConfirmation);
+        .flatMap(this::createOrder);
 }
 ```
 
 **Benefits:**
 - Working code at every phase
 - Tests pass continuously
-- Stop anywhere—mixed JBCT and legacy works fine
+- Stop anywhere -- mixed JBCT and legacy works fine
 - `lift()` calls mark remaining legacy code
 - Progress is visible and measurable
 
 ## Step 4: Deploy the Slice
 
+### Local Development with Forge
+
+For local development, install your slice to the local Maven repository and start Forge:
+
 ```bash
-# Build the slice
+# Build and install the slice
 cd slices/order-processor
 mvn clean install
 
-# Deploy to Aether cluster
-aether deploy com.example:order-processor:1.0.0
+# Start Forge (if not already running)
+./script/aether-forge.sh
+```
 
-# Verify it's running
-aether status
-# Slices: order-processor (1 instance on node-1)
+If Forge is configured with `repositories=["local"]`, it automatically discovers slices
+from `~/.m2/repository`.
+
+### Deploy to a Running Cluster
+
+For deployment to a running Aether cluster, use the CLI or Management API:
+
+```bash
+# Push artifact from local Maven repo to the cluster's artifact repository
+aether artifact push com.example:order-processor:1.0.0
+
+# Apply a blueprint that includes the slice
+aether blueprint apply order-system.toml
+```
+
+The blueprint file declares the slices and their instance counts:
+
+```toml
+# order-system.toml
+id = "order-system:1.0.0"
+
+[slices.order_processor]
+artifact = "com.example:order-processor:1.0.0"
+instances = 3
+```
+
+Verify the deployment:
+
+```bash
+# Check blueprint status
+aether blueprint status order-system:1.0.0
+
+# Or use the Management API directly
+curl http://localhost:8080/api/blueprint/order-system:1.0.0/status
 ```
 
 ## Step 5: Route Traffic
@@ -415,19 +565,25 @@ public class OrderService {
 }
 ```
 
-### Option B: Use HTTP Router
+### Option B: Use HTTP Routing
 
-If your slice defines HTTP routes, update your load balancer:
+If your slice defines HTTP routes via `routes.toml`, update your load balancer to route
+matching traffic to the Aether cluster:
 
-```java
-// In the slice
-@Override
-public List<SliceRoute> routes() {
-    return List.of(
-        SliceRoute.post("/api/orders", "process")
-    );
-}
+Create `src/main/resources/routes.toml` in your slice module:
+
+```toml
+prefix = "/api/orders"
+
+[routes]
+process = "POST /"
+
+[errors]
+default = 500
+HTTP_400 = ["*Missing*", "*Empty*"]
 ```
+
+Then configure your reverse proxy:
 
 ```nginx
 # nginx.conf - route order traffic to Aether
@@ -443,44 +599,79 @@ location / {
 
 ## Step 6: Scale Independently
 
-Now you can scale the extracted slice:
+Now you can scale the extracted slice using the CLI or Management API:
 
 ```bash
-# Scale based on load
-aether scale order-processor --instances 5
+# Scale via CLI (slice must be part of an active blueprint)
+aether scale com.example:order-processor:1.0.0 -n 5
 
-# Add more nodes for capacity
-aether node add --address node-4.example.com:4040
-aether node add --address node-5.example.com:4040
+# Or scale via Management API
+curl -X POST http://localhost:8080/api/scale \
+  -H "Content-Type: application/json" \
+  -d '{"artifact": "com.example:order-processor:1.0.0", "instances": 5}'
+```
 
-# Aether distributes slice instances across nodes
+Check cluster status:
+
+```bash
+# Via CLI
 aether status
-# Nodes: 5
-# Slices:
-#   order-processor: 5 instances (distributed across 5 nodes)
+
+# Via Management API
+curl http://localhost:8080/api/status
+curl http://localhost:8080/api/slices/status
+```
+
+Adding more nodes for capacity:
+
+```bash
+# Start additional nodes and point them to existing peers
+./script/aether-node.sh \
+  --node-id=node-4 \
+  --port=8094 \
+  --peers=localhost:8091,localhost:8092,localhost:8093,localhost:8094
+
+# Aether distributes slice instances across all nodes automatically
 ```
 
 ## Common Migration Patterns
 
 ### Pattern 1: Database Sharing
 
-Initially, the slice can share the monolith's database:
+Initially, the slice can share the monolith's database using a resource qualifier:
 
 ```java
-// Slice uses same database as monolith
-public class OrderProcessorSlice implements Slice {
-    private final DataSource sharedDataSource;
+@ResourceQualifier(type = SqlConnector.class, config = "database.shared")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+@interface SharedDb {}
 
-    public OrderProcessorSlice() {
-        // Connect to monolith's database
-        this.sharedDataSource = createDataSource(
-            System.getenv("DATABASE_URL")
-        );
+@Slice
+public interface OrderProcessor {
+
+    // ... request/response records ...
+
+    Promise<ProcessResult> process(ProcessRequest request);
+
+    static OrderProcessor orderProcessor(@SharedDb SqlConnector db) {
+        return request -> db.query("SELECT * FROM orders WHERE id = ?", request.orderId())
+                            .map(OrderProcessor::toProcessResult);
     }
+
+    private static ProcessResult toProcessResult(/* row */) { /* ... */ }
 }
 ```
 
-Later, you can migrate to a separate database if needed.
+Configure the shared database in `aether.toml`:
+
+```toml
+[database.shared]
+jdbc_url = "jdbc:postgresql://localhost:5432/monolith_db"
+username = "app"
+password = "secret"
+```
+
+Later, you can migrate to a separate database by changing the config section.
 
 ### Pattern 2: Event Bridge
 
@@ -488,8 +679,9 @@ Use events to decouple from the monolith:
 
 ```java
 // Slice publishes events
-private Promise<OrderResult> process(OrderRequest request) {
-    return createOrder.apply(request)
+@Override
+public Promise<ProcessResult> process(ProcessRequest request) {
+    return createOrder(request)
         .onSuccess(order -> eventBus.publish(new OrderCreatedEvent(order)));
 }
 
@@ -522,18 +714,26 @@ Distributed transactions are complex. Aether recommends:
 ### Saga Pattern
 
 ```java
-// Each step is compensatable
-private Promise<OrderResult> process(OrderRequest request) {
-    return reserveInventory.apply(request)
-        .flatMap(reservation ->
-            processPayment.apply(request)
-                .recoverWith(error -> {
-                    // Compensate: release inventory
-                    return releaseInventory.apply(reservation)
-                        .flatMap(_ -> Promise.failure(error));
-                })
-        )
-        .flatMap(payment -> createOrder.apply(request, payment));
+@Override
+public Promise<ProcessResult> process(ProcessRequest request) {
+    return reserveInventory(request)
+        .flatMap(reservation -> processPayment(request, reservation))
+        .flatMap(payment -> createOrder(request, payment));
+}
+
+private Promise<Reservation> reserveInventory(ProcessRequest request) {
+    return db.update("INSERT INTO reservations ...")
+             .map(OrderProcessor::toReservation);
+}
+
+private Promise<Payment> processPayment(ProcessRequest request, Reservation reservation) {
+    return db.update("INSERT INTO payments ...")
+             .map(OrderProcessor::toPayment)
+             .onFailure(error -> releaseInventory(reservation));
+}
+
+private void releaseInventory(Reservation reservation) {
+    db.update("DELETE FROM reservations WHERE id = ?", reservation.id());
 }
 ```
 
@@ -577,25 +777,33 @@ public OrderResult processOrder(OrderRequest request) {
 }
 ```
 
-### Forge Chaos Testing
+### Forge Testing
+
+Start Forge for local testing with simulated cluster conditions:
 
 ```bash
-# Start Forge with your slice
-aether forge start
+# Start Forge
+./script/aether-forge.sh
 
-# Generate load
-# Kill nodes
-# Watch recovery
-# Verify no data loss
+# Generate load, kill nodes, watch recovery, verify no data loss
+# Forge dashboard is available at http://localhost:8888
 ```
 
 ## Rollback Strategy
 
-If something goes wrong:
+If something goes wrong, scale the slice down via CLI or Management API:
 
 ```bash
-# Scale down the slice
-aether scale order-processor --instances 0
+# Scale to zero instances via CLI
+aether scale com.example:order-processor:1.0.0 -n 0
+
+# Or via Management API
+curl -X POST http://localhost:8080/api/scale \
+  -H "Content-Type: application/json" \
+  -d '{"artifact": "com.example:order-processor:1.0.0", "instances": 0}'
+
+# Or remove the blueprint entirely
+aether blueprint delete order-system:1.0.0
 
 # Traffic automatically falls back to monolith
 # (if you kept the feature flag or fallback logic)
@@ -603,6 +811,6 @@ aether scale order-processor --instances 0
 
 ## Next Steps
 
-- [Scaling Guide](../operators/scaling.md) - Configure auto-scaling
-- [Forge Guide](forge-guide.md) - Chaos testing
+- [Slice Patterns](slice-patterns.md) - Advanced slice patterns
+- [Forge Guide](forge-guide.md) - Chaos testing with Forge
 - [Architecture](../contributors/architecture.md) - Deep dive into Aether internals

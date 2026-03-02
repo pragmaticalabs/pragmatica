@@ -4,7 +4,29 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.18.0] - Unreleased
+## [0.19.0] - Unreleased
+
+### Added
+- **Ember** — embeddable headless cluster runtime extracted from `forge-cluster` into `aether/ember/` module with fluent builder API (`Ember.cluster(5).withH2().start()`)
+- **Remote Maven repositories** — resolve slices from Maven Central or private Nexus repos (`repositories = ["local", "remote:central"]`). SHA-1 verification, local cache to `~/.m2/repository`, auth from `settings.xml`
+- **Passive Load Balancer** — cluster-aware `aether/lb/` module: passive node joins cluster network, receives route table via committed Decisions, forwards HTTP requests via internal binary protocol (no HTTP re-serialization). Smart routing to correct node, automatic failover on node departure, live topology awareness
+- Load balancer integration in Ember/Forge — auto-starts passive LB on cluster boot, configurable via `[lb]` TOML section
+- **NodeRole** — `ACTIVE`/`PASSIVE` roles in `NodeInfo` for cluster membership. Passive nodes excluded from quorum and leader election but receive committed Decisions
+- **HttpForwarder** — extracted reusable HTTP request forwarding from `AppHttpServer` into `aether-invoke` module with round-robin selection, retry with backoff, and node departure failover
+
+### Fixed
+- `InvocationMetricsTest` — fixed stale factory name `forgeH2Server` → `emberH2Server`
+- Passive LB topology bootstrap — self node now included in `coreNodes` list (required by `TcpTopologyManager`)
+- Passive LB topology manager lifecycle — `start()` now activates topology manager reconciliation loop, enabling cluster peer connections and Decision delivery
+
+### Changed
+- **PassiveNode abstraction** — extracted reusable passive cluster node infrastructure (`DelegateRouter`, `TcpTopologyManager`, `NettyClusterNetwork`, `KVStore`, message wiring) from `AetherPassiveLB` into `integrations/cluster` module (`PassiveNode<K,V>` interface). Follows `RabiaNode` pattern: interface + factory + inline record + `SealedBuilder` routes
+- k6 test scripts default to routing through passive LB (`FORGE_NODES` → LB URL). Per-node scripts use `FORGE_ALL_NODES`
+- `RepositoryType` converted from enum to sealed interface with `Local`, `Builtin`, and `Remote` record variants
+- `forge-cluster` module deleted — all cluster management code now in `aether/ember/` with `Ember*` naming
+- `ForgeCluster` → `EmberCluster`, `ForgeConfig` → `EmberConfig`, `ForgeH2Server` → `EmberH2Server`, `ForgeH2Config` → `EmberH2Config`
+
+## [0.18.0] - 2026-02-26
 
 ### Added
 - **Unified Invocation Observability (RFC-0010)** — sampling-based distributed tracing with depth-to-SLF4J bridge

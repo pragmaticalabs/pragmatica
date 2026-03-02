@@ -6,6 +6,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.serialization.Codec;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -17,6 +18,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 // Note: Enum timeouts are default values. SliceActionConfig is the single source of truth
 // for actual timeout configuration and can override these defaults.
+@Codec
 @SuppressWarnings("JBCT-SEQ-01")
 public enum SliceState {
     LOAD,
@@ -109,6 +111,6 @@ public enum SliceState {
     public static Result<SliceState> sliceState(String stateString) {
         return option(STRING_TO_STATE.get(stateString.toUpperCase())).toResult(UNKNOWN_STATE.apply(stateString));
     }
-    private static final Fn1<Cause, String> UNKNOWN_STATE = Causes.forOneValue("Unknown slice state [{}]");
+    private static final Fn1<Cause, String> UNKNOWN_STATE = Causes.forOneValue("Unknown slice state [%s]");
     private static final Cause TERMINAL_STATE_ERROR = Causes.cause("Cannot transition from UNLOADING terminal state");
 }

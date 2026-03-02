@@ -5,12 +5,14 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.serialization.Codec;
 
 import java.util.Set;
 
 import static org.pragmatica.lang.Verify.Is;
 import static org.pragmatica.lang.Verify.ensure;
 
+@Codec
 @SuppressWarnings({"JBCT-NAM-01", "JBCT-UTIL-02"})
 public record ResolvedSlice(Artifact artifact,
                             int instances,

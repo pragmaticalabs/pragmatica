@@ -82,6 +82,7 @@ jobs:
           AETHER_E2E_IMAGE: aether-node-e2e:latest
 
       - name: Run Forge tests
+        if: '!cancelled()'
         run: mvn verify -B -Pwith-e2e -pl aether/forge/forge-tests
         timeout-minutes: 60
 
