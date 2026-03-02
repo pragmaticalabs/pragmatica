@@ -21,6 +21,7 @@
         <module>jdbc</module>
         <module>r2dbc</module>
         <module>jooq-r2dbc</module>
+        <module>postgres-async</module>
     </modules>
 
     <properties>

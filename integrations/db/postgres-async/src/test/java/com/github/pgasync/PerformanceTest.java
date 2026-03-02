@@ -1,0 +1,209 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.github.pgasync;
+
+import com.github.pgasync.async.ThrowingPromise;
+import com.github.pgasync.net.Connectible;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+
+import java.util.List;
+import java.util.SortedMap;
+import java.util.TreeMap;
+import java.util.function.IntFunction;
+import java.util.stream.IntStream;
+import java.util.stream.LongStream;
+import java.util.stream.Stream;
+
+import static java.lang.System.currentTimeMillis;
+import static java.lang.System.out;
+import static org.pragmatica.lang.Unit.unit;
+
+@Tag("Slow")
+public class PerformanceTest {
+    private static final DatabaseExtension dbr;
+    private static final boolean IS_MAC = System.getProperty("os.name").toLowerCase().startsWith("mac");
+
+    static {
+        // Uncomment to run with single event loop thread, although I see no big value in it
+//        System.setProperty("io.netty.eventLoopThreads", "1");
+        dbr = DatabaseExtension.withMaxConnections(1);
+    }
+
+    private static final String SELECT_42 = "select 42";
+
+    static Stream<Arguments> data() {
+        var numbers = IS_MAC ? List.of(1, 4, 8) : List.of(1, 6, 12);
+        return numbers.stream()
+            .flatMap(poolSize -> numbers.stream()
+                .map(threads -> Arguments.of(poolSize, threads)));
+    }
+
+    private static final int batchSize = IS_MAC ? 300 : 400;
+    private static final int repeats = IS_MAC ? 3 : 4;
+    private static final SortedMap<Integer, SortedMap<Integer, Long>> simpleQueryResults = new TreeMap<>();
+    private static final SortedMap<Integer, SortedMap<Integer, Long>> preparedStatementResults = new TreeMap<>();
+
+    @ParameterizedTest(name = "{index}: maxConnections={0}, threads={1}")
+    @MethodSource("data")
+    public void observeBatches(int poolSize, int numThreads) {
+        // Setup
+        DatabaseExtension.postgres.start();
+        Connectible pool = dbr.builder
+            .maxConnections(poolSize)
+            .port(DatabaseExtension.postgres.getMappedPort(5432))
+            .hostname(DatabaseExtension.postgres.getHost())
+            .password(DatabaseExtension.postgres.getPassword())
+            .database(DatabaseExtension.postgres.getDatabaseName())
+            .username(DatabaseExtension.postgres.getUsername())
+            .pool();
+        var connections = IntStream.range(0, poolSize)
+                                   .mapToObj(_ -> pool.getConnection().await()).toList();
+        connections.forEach(connection -> {
+            connection.prepareStatement(SELECT_42).await().close().await();
+            connection.close().await();
+        });
+
+        try {
+            performBatches(simpleQueryResults, poolSize, numThreads, pool, _ -> new Batch(batchSize, pool).startWithSimpleQuery());
+            performBatches(preparedStatementResults, poolSize, numThreads, pool, _ -> new Batch(batchSize, pool).startWithPreparedStatement());
+        } finally {
+            // Teardown
+            pool.close().await();
+        }
+    }
+
+    @SuppressWarnings("OptionalGetWithoutIsPresent")
+    private void performBatches(SortedMap<Integer, SortedMap<Integer, Long>> results, int poolSize, int numThreads, Connectible pool, IntFunction<ThrowingPromise<Long>> batchStarter) {
+        double mean = LongStream.range(0, repeats)
+                                .map(_ -> {
+                                    try {
+                                        var batches = IntStream.range(0, poolSize)
+                                                               .mapToObj(batchStarter)
+                                                               .toList();
+                                        ThrowingPromise.allOf(batches.stream())
+                                                       .await();
+                                        return batches.stream()
+                                                      .map(ThrowingPromise::await)
+                                                      .max(Long::compare)
+                                                      .get();
+                                    } catch (Exception ex) {
+                                        throw new RuntimeException(ex);
+                                    }
+                                })
+                                .average()
+                                .getAsDouble();
+        results.computeIfAbsent(poolSize, _ -> new TreeMap<>())
+               .put(numThreads, Math.round(mean));
+    }
+
+    private static class Batch {
+        private final long batchSize;
+        private final Connectible pool;
+        private long performed;
+        private long startedAt;
+        private ThrowingPromise<Long> onBatch;
+
+        Batch(long batchSize, Connectible pool) {
+            this.batchSize = batchSize;
+            this.pool = pool;
+        }
+
+        private ThrowingPromise<Long> startWithPreparedStatement() {
+            onBatch = ThrowingPromise.create();
+            startedAt = System.currentTimeMillis();
+            nextSamplePreparedStatement();
+            return onBatch;
+        }
+
+        private ThrowingPromise<Long> startWithSimpleQuery() {
+            onBatch = ThrowingPromise.create();
+            startedAt = System.currentTimeMillis();
+            nextSampleSimpleQuery();
+            return onBatch;
+        }
+
+        private void nextSamplePreparedStatement() {
+            pool.getConnection()
+                .flatMap(connection ->
+                             connection.prepareStatement(SELECT_42)
+                                       .flatMap(stmt ->
+                                                    stmt.query()
+                                                        .fold(_ -> stmt.close())
+                                                        .fold(_ -> connection.close())))
+
+                .onSuccess(_ -> {
+                    if (++performed < batchSize) {
+                        nextSamplePreparedStatement();
+                    } else {
+                        long duration = currentTimeMillis() - startedAt;
+                        onBatch.succeed(duration);
+                    }
+                })
+                .tryRecover(th -> {
+                    onBatch.fail(th);
+                    return unit();
+                });
+
+        }
+
+        private void nextSampleSimpleQuery() {
+            pool.completeScript(SELECT_42)
+                .onSuccess(_ -> {
+                    if (++performed < batchSize) {
+                        nextSamplePreparedStatement();
+                    } else {
+                        long duration = currentTimeMillis() - startedAt;
+                        onBatch.succeed(duration);
+                    }
+                })
+                .withFailure(th -> onBatch.fail(th));
+        }
+    }
+
+    @AfterAll
+    public static void printResults() {
+        out.println();
+        out.println("Requests per second, Hz:");
+        out.println();
+        out.println("Simple query protocol");
+        printResults(simpleQueryResults);
+        out.println();
+        out.println("Extended query protocol (reusing prepared statement)");
+        printResults(preparedStatementResults);
+    }
+
+    private static void printResults(SortedMap<Integer, SortedMap<Integer, Long>> results) {
+        if (results.isEmpty()) {
+            return;
+        }
+        out.print(" threads");
+        results.keySet().forEach(i -> out.printf("\t%d conn\t", i));
+        out.println();
+
+        results.values().iterator().next().keySet().forEach(threads -> {
+            out.print("    " + threads);
+            results.keySet().forEach(connections -> {
+                long batchDuration = results.get(connections).get(threads);
+                double rps = 1000 * batchSize * connections / (double) batchDuration;
+                out.printf("\t\t%d", Math.round(rps));
+            });
+            out.println();
+        });
+    }
+}
