@@ -11,7 +11,7 @@
 
 2. **Create blueprint (first time only)**
    ```bash
-   aether-cli --host node1:8080
+   aether-cli --connect node1:8080
    aether> blueprint create org.example:my-slice:1.0.0 --instances=3
    ```
 
@@ -40,7 +40,7 @@
 
 3. **Monitor rollout**
    ```bash
-   watch -n 2 'aether-cli --host node1:8080 -c "slices list" | grep my-slice'
+   watch -n 2 'aether-cli --connect node1:8080 -c "slices list" | grep my-slice'
    ```
 
    The cluster will:

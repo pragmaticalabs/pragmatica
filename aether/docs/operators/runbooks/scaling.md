@@ -101,7 +101,7 @@
 2. **Verify deactivation**
    ```bash
    # Watch instances decrease
-   watch -n 2 'aether-cli --host node1:8080 -c "slices list" | grep my-slice'
+   watch -n 2 'aether-cli --connect node1:8080 -c "slices list" | grep my-slice'
    ```
 
 ## Capacity Planning

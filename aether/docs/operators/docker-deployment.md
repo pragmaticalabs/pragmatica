@@ -255,7 +255,7 @@ spec:
     spec:
       containers:
       - name: aether-node
-        image: ghcr.io/siy/aether-node:latest
+        image: ghcr.io/pragmaticalabs/aether-node:latest
         ports:
         - containerPort: 8080
           name: api

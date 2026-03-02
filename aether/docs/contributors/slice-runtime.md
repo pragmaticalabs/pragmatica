@@ -197,10 +197,10 @@ Failures are wrapped for network transport using sealed `Cause` types:
 
 ```java
 // Slice returns failure
-Promise.failed(Causes.cause("Item out of stock"));
+Promise.failure(Causes.cause("Item out of stock"));
 
 // Client receives
-Promise.failed(SliceCause.sliceCause(
+Promise.failure(SliceCause.sliceCause(
     "org.example:inventory:1.0.0",
     "reserve",
     "Item out of stock"
@@ -420,7 +420,7 @@ rolling_update.delay_ms = 5000
 Attach debugger to Forge:
 
 ```bash
-aether-forge start --debug-port 5005
+java -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005 -jar aether/forge/forge-core/target/aether-forge.jar
 ```
 
 Then attach IDE debugger to port 5005.
@@ -430,7 +430,7 @@ Then attach IDE debugger to port 5005.
 Enable in production (with caution):
 
 ```bash
-aether-admin enable-debug org.example:order-service:1.0.0 --port 5005
+curl -X POST http://localhost:5150/api/controller/config -H "Content-Type: application/json" -d '{"logLevel": "DEBUG"}'
 ```
 
 ### Request Tracing

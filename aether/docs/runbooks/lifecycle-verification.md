@@ -11,8 +11,8 @@ This runbook verifies the slice lifecycle implementation matches the design in `
 
 2. Verify jars exist:
    ```bash
-   ls forge/forge-core/target/aether-forge.jar
-   ls cli/target/aether.jar
+   ls aether/forge/forge-core/target/aether-forge.jar
+   ls aether/cli/target/aether.jar
    ```
 
 ---
@@ -22,7 +22,7 @@ This runbook verifies the slice lifecycle implementation matches the design in `
 ### 1. Start Forge
 
 ```bash
-java -jar forge/forge-core/target/aether-forge.jar
+java -jar aether/forge/forge-core/target/aether-forge.jar
 ```
 
 Expected output:
@@ -54,12 +54,12 @@ Expected: `{"nodes":["node-1"]}`
 ### 4. Deploy a Slice
 
 ```bash
-curl -s -X POST http://localhost:5150/api/deploy \
+curl -s -X POST http://localhost:5150/api/blueprint \
   -H "Content-Type: application/json" \
-  -d '{"artifact": "org.example:test-slice:1.0.0", "instances": 1}'
+  -d '{"id": "test-blueprint", "slices": [{"artifact": "org.example:test-slice:1.0.0", "instances": 1}]}'
 ```
 
-Expected: `{"status":"deployed","artifact":"org.example:test-slice:1.0.0","instances":1}`
+Expected: `{"status":"accepted","id":"test-blueprint"}`
 
 ### 5. Verify Lifecycle States in Logs
 
@@ -100,7 +100,7 @@ pkill -f "aether-forge.jar"
 ### 1. Start Forge (as cluster backend)
 
 ```bash
-java -jar forge/forge-core/target/aether-forge.jar > /tmp/forge.log 2>&1 &
+java -jar aether/forge/forge-core/target/aether-forge.jar > /tmp/forge.log 2>&1 &
 sleep 8
 ```
 
@@ -126,9 +126,9 @@ curl -s http://localhost:5150/api/health
 ### 3. Deploy via API
 
 ```bash
-curl -s -X POST http://localhost:5150/api/deploy \
+curl -s -X POST http://localhost:5150/api/blueprint \
   -H "Content-Type: application/json" \
-  -d '{"artifact": "org.pragmatica-lite.aether.demo:inventory-service:0.1.0", "instances": 1}'
+  -d '{"id": "test-blueprint", "slices": [{"artifact": "org.pragmatica-lite.aether.demo:inventory-service:0.1.0", "instances": 1}]}'
 ```
 
 ### 4. Monitor Lifecycle
@@ -144,9 +144,7 @@ grep -E "LOAD|LOADING|LOADED|ACTIVATE|ACTIVATING|ACTIVE|FAILED" /tmp/forge.log
 ### 5. Undeploy
 
 ```bash
-curl -s -X POST http://localhost:5150/api/undeploy \
-  -H "Content-Type: application/json" \
-  -d '{"artifact": "org.example:test-slice:1.0.0"}'
+curl -s -X DELETE http://localhost:5150/api/blueprint/test-blueprint
 ```
 
 Expected lifecycle: `DEACTIVATE → DEACTIVATING → LOADED → UNLOAD → UNLOADING → (deleted)`
@@ -172,12 +170,12 @@ Expected lifecycle: `DEACTIVATE → DEACTIVATING → LOADED → UNLOAD → UNLOA
 
 ### Key Fixes Verified
 
-1. **SliceStoreImpl**: Uses `ConcurrentHashMap<Artifact, Promise<LoadedSliceEntry>>` with `computeIfAbsent` for atomic loading
-2. **handleLoading**: Writes LOADING state before starting load operation
-3. **handleLoaded**: No auto-activation (requires explicit ACTIVATE from ClusterDeploymentManager)
-4. **handleActivating**: Registers + publishes BEFORE transitioning to ACTIVE
-5. **handleFailed**: Logs "entered FAILED state" message
-6. **handleUnloading**: Writes UNLOADING + deletes KV key
+1. **sliceStore** (record): Uses `ConcurrentHashMap<Artifact, Promise<LoadedSliceEntry>>` with `computeIfAbsent` for atomic loading
+2. **NodeDeploymentManager.handleLoading**: Writes LOADING state before calling `SliceStore.loadSlice()`
+3. **NodeDeploymentManager.handleLoaded**: No auto-activation (requires explicit ACTIVATE from ClusterDeploymentManager)
+4. **NodeDeploymentManager.handleActivating**: Calls `SliceStore.activateSlice()`, registers + publishes BEFORE transitioning to ACTIVE
+5. **NodeDeploymentManager.handleFailed**: Logs "entered FAILED state" message
+6. **NodeDeploymentManager.handleUnloading**: Writes UNLOADING, calls `SliceStore.unloadSlice()`, then deletes KV key
 
 ---
 
@@ -201,6 +199,6 @@ Expected lifecycle: `DEACTIVATE → DEACTIVATING → LOADED → UNLOAD → UNLOA
 - Management API is at http://localhost:5150
 
 ### Dashboard not showing slice status
-- Fixed in release 0.7.3: Dashboard now queries KV store directly via ForgeCluster.slicesStatus()
+- Fixed in release 0.19.0: Dashboard now queries KV store directly via ForgeCluster.slicesStatus()
 - Slices should appear on both Overview page (node cards) and Cluster page (slices table)
 - Verify slice state by checking KV store entries for `slices/{nodeId}/{artifact}` keys

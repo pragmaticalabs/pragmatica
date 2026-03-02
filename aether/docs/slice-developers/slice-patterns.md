@@ -1,616 +1,687 @@
-# Slice Developer Guide
+# Slice Patterns
 
-## Introduction
+Advanced patterns for building real-world Aether slices with the `@Slice` annotation.
 
-This guide explains how to develop Slices for the Aether runtime. A Slice is a deployable unit of business logic that
-can be loaded, activated, scaled, and managed by the Aether cluster.
+This guide assumes you have completed the [Getting Started](getting-started.md) tutorial and
+are familiar with the basics: `@Slice`, factory methods, `Promise<T>`, and sealed `Cause` types.
+Each pattern here builds on those fundamentals.
 
-## Slice Interface
+## Single-Method Slices (Lambda Implementation)
 
-The `Slice` interface is the contract every deployable component must implement:
-
-```java
-public interface Slice {
-    default Promise<Unit> start();
-    default Promise<Unit> stop();
-    List<SliceMethod<?, ?>> methods();
-    default List<SliceRoute> routes();
-}
-```
-
-### Lifecycle Methods
-
-#### start()
-
-**Purpose**: Initialize resources needed by the slice.
-
-**When called**: Exactly once after the slice is loaded and before any method invocations.
-
-**Default implementation**: Returns successfully resolved Promise.
-
-**Custom implementation example**:
+When a slice has exactly one method, the interface is a functional interface. The factory
+method returns a lambda that directly implements the method.
 
 ```java
-@Override
-public Promise<Unit> start() {
-    return Promise.lift(
-        Causes::fromThrowable,
-        () -> {
-            // Initialize database connection pool
-            this.dataSource = createDataSource();
+@Slice
+public interface GreetingService {
 
-            // Initialize caches
-            this.cache = createCache();
+    record Request(String name) {
+        private static final Fn1<Cause, String> NAME_REQUIRED =
+            Causes.forOneValue("Name is required, got: '%s'");
 
-            return Unit.unit();
+        public static Result<Request> request(String name) {
+            return Verify.ensure(name, Verify.Is::present, NAME_REQUIRED.apply(name))
+                         .map(String::trim)
+                         .map(Request::new);
         }
-    );
+    }
+
+    record Response(String greeting) {}
+
+    Promise<Response> greet(Request request);
+
+    static GreetingService greetingService() {
+        return request -> Promise.success(new Response("Hello, " + request.name() + "!"));
+    }
 }
 ```
 
-**Timeout**: Configurable via `SliceActionConfig.startStopTimeout` (default: 5 seconds).
+This is the simplest slice form. Use it when:
+- The slice exposes a single operation
+- No infrastructure dependencies are needed
+- The logic fits in a single expression or a call to a named method
 
-**Failure handling**:
+## Multi-Method Slices (Inline Record Implementation)
 
-- If `start()` fails (Promise resolves to failure), the slice moves to FAILED state
-- The runtime does NOT call `stop()` - your `start()` method must cleanup partial initialization
-- No retry - slice must be unloaded and loaded again
-
-#### stop()
-
-**Purpose**: Cleanup resources allocated by the slice.
-
-**When called**: Exactly once during graceful shutdown, after all pending method invocations complete.
-
-**Default implementation**: Returns successfully resolved Promise.
-
-**Custom implementation example**:
+When a slice has two or more methods, lambdas cannot work because they implement exactly
+one method. Use an **inline record** inside the factory method:
 
 ```java
-@Override
-public Promise<Unit> stop() {
-    return Promise.lift(
-        Causes::fromThrowable,
-        () -> {
-            // Close database connections
-            if (this.dataSource != null) {
-                this.dataSource.close();
-            }
+@Slice
+public interface CatalogService {
 
-            // Clear caches
-            if (this.cache != null) {
-                this.cache.invalidateAll();
-            }
-
-            return Unit.unit();
+    record ProductRequest(String productId) {
+        public static Result<ProductRequest> productRequest(String productId) {
+            return Verify.ensure(productId, Verify.Is::present, CatalogError.missingProductId())
+                         .map(ProductRequest::new);
         }
-    );
-}
-```
-
-**Timeout**: Configurable via `SliceActionConfig.startStopTimeout` (default: 5 seconds).
-
-**Failure handling**:
-
-- `stop()` failures are logged but don't prevent slice unloading
-- Slice is removed from cluster regardless of stop() outcome
-
-**Important**: Use `stop()` for cleanup, not the constructor or finalizers.
-
-### Method Registry
-
-#### methods()
-
-**Purpose**: Declare all callable methods exposed by this slice.
-
-**Returns**: List of `SliceMethod<?, ?>` descriptors.
-
-**Example**:
-
-```java
-@Override
-public List<SliceMethod<?, ?>> methods() {
-    return List.of(
-        new SliceMethod<>(
-            MethodName.methodName("processString").unsafe(),
-            this::processString,
-            TypeToken.of(ProcessedString.class),
-            TypeToken.of(InputString.class)
-        ),
-        new SliceMethod<>(
-            MethodName.methodName("validateEmail").unsafe(),
-            this::validateEmail,
-            TypeToken.of(ValidationResult.class),
-            TypeToken.of(EmailAddress.class)
-        )
-    );
-}
-
-private Promise<ProcessedString> processString(InputString input) {
-    // Implementation
-}
-
-private Promise<ValidationResult> validateEmail(EmailAddress email) {
-    // Implementation
-}
-```
-
-### HTTP Routes
-
-#### routes()
-
-**Purpose**: Declare HTTP routes this slice handles. Routes are automatically registered when the slice activates and
-unregistered when it deactivates.
-
-**Returns**: List of `SliceRoute` descriptors.
-
-**Default implementation**: Returns empty list (no HTTP routes).
-
-**Example**:
-
-```java
-@Override
-public List<SliceRoute> routes() {
-    return List.of(
-        SliceRoute.get("/api/users/{id}", "getUser")
-            .withPathVar("id")
-            .build(),
-        SliceRoute.post("/api/users", "createUser")
-            .withBody()
-            .build(),
-        SliceRoute.put("/api/users/{id}", "updateUser")
-            .withPathVar("id")
-            .withBody()
-            .build(),
-        SliceRoute.delete("/api/users/{id}", "deleteUser")
-            .withPathVar("id")
-            .build()
-    );
-}
-```
-
-#### SliceRoute Builder API
-
-Create routes using the static factory methods:
-
-```java
-SliceRoute.get(pathPattern, methodName)    // HTTP GET
-SliceRoute.post(pathPattern, methodName)   // HTTP POST
-SliceRoute.put(pathPattern, methodName)    // HTTP PUT
-SliceRoute.delete(pathPattern, methodName) // HTTP DELETE
-SliceRoute.patch(pathPattern, methodName)  // HTTP PATCH
-```
-
-Add bindings to specify how request data maps to method parameters:
-
-```java
-.withBody()                    // Request body → parameter
-.withBody("customParamName")   // Request body → named parameter
-.withPathVar("id")             // Path variable → parameter
-.withQueryVar("page")          // Query parameter → parameter
-.withHeader("userId", "X-User-Id")  // Header → parameter
-```
-
-Finalize with `.build()`:
-
-```java
-SliceRoute.post("/api/orders", "placeOrder")
-    .withBody()
-    .withHeader("requestId", "X-Request-Id")
-    .build()
-```
-
-#### Path Patterns
-
-Path patterns support variables using `{name}` syntax:
-
-- `/api/users` - literal path
-- `/api/users/{id}` - path with variable
-- `/api/users/{userId}/orders/{orderId}` - multiple variables
-
-#### Route Registration Lifecycle
-
-1. **Activation**: When slice becomes ACTIVE, runtime registers all routes
-2. **Request handling**: HTTP requests matching routes invoke the corresponding method
-3. **Deactivation**: When last instance of slice deactivates, routes are unregistered
-
-**Note**: Multiple instances of the same slice share routes. Routes are only unregistered when the last instance
-deactivates.
-
-## Lifecycle Contract
-
-### State Transitions
-
-From the Slice's perspective:
-
-```
-[Constructed] → start() called → [Serving] → stop() called → [Terminated]
-```
-
-### Guarantees
-
-1. **start() called exactly once** before any method invocation
-2. **Methods can be invoked concurrently** after start() succeeds
-3. **stop() called exactly once** after start() succeeds and all methods complete
-4. **No method calls during start() or stop()**
-5. **Timeouts enforced** on both start() and stop() (default 5 seconds)
-
-### Failure Scenarios
-
-**start() fails:**
-
-- Slice moves to FAILED state
-- stop() is NOT called
-- Your start() must cleanup partial initialization
-- Slice must be unloaded and reloaded to retry
-
-**stop() fails:**
-
-- Failure is logged
-- Slice is unloaded anyway
-- Resources may leak (design stop() to be best-effort)
-
-**Method invocation fails:**
-
-- Failure returned to caller via Promise
-- Slice remains ACTIVE
-- Other concurrent calls unaffected
-
-### Shutdown Sequence
-
-When slice receives shutdown request:
-
-1. **Stop accepting new requests immediately**
-2. **Wait for all in-flight method calls to complete** (with timeout)
-3. **Call stop()** (with timeout)
-4. **Unload slice** (regardless of stop() outcome)
-
-## Thread Safety Requirements
-
-### All methods must be thread-safe
-
-After `start()` succeeds, multiple methods can be invoked concurrently. Your implementation must handle:
-
-- Concurrent reads
-- Concurrent writes
-- Concurrent read-write access
-
-**Thread-safe example**:
-
-```java
-public record UserService(ConcurrentHashMap<UserId, User> cache) implements Slice {
-
-    private Promise<User> getUser(UserId id) {
-        return Promise.lift(
-            Causes::fromThrowable,
-            () -> cache.computeIfAbsent(id, this::loadUser)
-        );
     }
 
-    private User loadUser(UserId id) {
-        // Load from database
-    }
-}
-```
+    record Product(String id, String name, String price) {}
+    record CategoryList(List<String> categories) {}
 
-### Immutability Preferred
-
-Best practice: Use immutable data structures and functional programming patterns:
-
-```java
-public record OrderProcessor(OrderRepository repository) implements Slice {
-
-    private Promise<OrderConfirmation> processOrder(OrderRequest request) {
-        return validateOrder(request)
-            .flatMap(repository::save)
-            .map(this::createConfirmation);
-    }
-
-    private Result<ValidatedOrder> validateOrder(OrderRequest request) {
-        // Pure function, no shared state
-    }
-}
-```
-
-## Resource Management
-
-### Use start() and stop(), Not Constructors
-
-**Wrong**:
-
-```java
-public record MySlice() implements Slice {
-    private final DataSource dataSource = createDataSource(); // ❌ BAD
-
-    public MySlice() {
-        // ❌ Don't initialize resources in constructor
-        initializeCache();
-    }
-}
-```
-
-**Correct**:
-
-```java
-public record MySlice(
-    AtomicReference<DataSource> dataSource,
-    AtomicReference<Cache> cache
-) implements Slice {
-
-    @Override
-    public Promise<Unit> start() {
-        return Promise.lift(
-            Causes::fromThrowable,
-            () -> {
-                dataSource.set(createDataSource());
-                cache.set(createCache());
-                return Unit.unit();
+    sealed interface CatalogError extends Cause {
+        record MissingProductId() implements CatalogError {
+            @Override
+            public String message() {
+                return "Product ID is required";
             }
-        );
-    }
+        }
 
-    @Override
-    public Promise<Unit> stop() {
-        return Promise.lift(
-            Causes::fromThrowable,
-            () -> {
-                var ds = dataSource.getAndSet(null);
-                if (ds != null) ds.close();
-
-                var c = cache.getAndSet(null);
-                if (c != null) c.invalidateAll();
-
-                return Unit.unit();
+        record ProductNotFound(String id) implements CatalogError {
+            @Override
+            public String message() {
+                return "Product not found: " + id;
             }
-        );
-    }
-}
-```
+        }
 
-### Why?
+        static CatalogError missingProductId() {
+            return new MissingProductId();
+        }
 
-1. **Constructors run during class loading** - before cluster is ready
-2. **start() runs when slice is activated** - cluster is ready, configuration available
-3. **stop() ensures cleanup** - constructors have no cleanup hook
-4. **Timeout protection** - start()/stop() have timeouts, constructors don't
-
-## Serialization
-
-### Automatic Serialization
-
-The runtime automatically serializes/deserializes method parameters and return values using the configured
-`SerializerFactoryProvider`.
-
-**You don't need to handle serialization** - just declare your types:
-
-```java
-public record ProcessStringMethod() implements SliceMethod<ProcessedString, InputString> {
-    @Override
-    public Promise<ProcessedString> apply(InputString input) {
-        // Work with typed objects - runtime handles serialization
-        return Promise.success(new ProcessedString(input.value().toUpperCase()));
-    }
-}
-```
-
-### Type Requirements
-
-All parameter and return types must be:
-
-- Serializable by Fury or Kryo (default providers)
-- Registered with the serializer (if using custom types)
-- Immutable (strongly recommended)
-
-### Custom Serialization
-
-If you need custom serialization (e.g., Protocol Buffers, JSON):
-
-1. Implement `SerializerFactoryProvider`
-2. Configure via `SliceActionConfig.serializerProvider`
-3. Runtime calls your provider during slice loading
-
-## Dependencies
-
-### No Dependency Discovery Yet
-
-**Current limitation**: Slices cannot discover or call other slices during `start()`.
-
-**Workaround**: Initialize lazily on first method call:
-
-```java
-private Promise<Result> callOtherSlice(Input input) {
-    return discoverOtherSlice()  // Lazy discovery
-        .flatMap(otherSlice -> otherSlice.call(input));
-}
-```
-
-**Future**: Dependency injection and discovery mechanism planned.
-
-## Best Practices
-
-### 1. Keep start() and stop() Fast
-
-Target < 1 second for lifecycle methods:
-
-```java
-@Override
-public Promise<Unit> start() {
-    // ✅ GOOD: Quick initialization
-    return Promise.success(Unit.unit());
-}
-
-@Override
-public Promise<Unit> start() {
-    // ❌ BAD: Slow network operation
-    return fetchRemoteConfiguration()
-        .flatMap(this::initializeWithConfig);
-}
-```
-
-### 2. Use Default Implementations When Possible
-
-Most slices don't need custom start()/stop():
-
-```java
-public record SimpleSlice() implements Slice {
-    // ✅ Uses default start()/stop() - no resources to manage
-
-    @Override
-    public List<SliceMethod<?, ?>> methods() {
-        return List.of(/* ... */);
-    }
-}
-```
-
-### 3. Handle Failures Gracefully
-
-```java
-private Promise<User> getUser(UserId id) {
-    return repository.find(id)
-        .flatMap(option -> option
-            .toResult(USER_NOT_FOUND.apply(id))
-            .async()
-        );
-}
-
-private static final Fn1<Cause, UserId> USER_NOT_FOUND =
-    Causes.forOneValue("User not found: {}");
-```
-
-### 4. Use Records for Immutability
-
-```java
-public record OrderProcessorSlice(
-    OrderValidator validator,
-    OrderRepository repository,
-    NotificationService notifications
-) implements Slice {
-    // Immutable by design
-}
-```
-
-### 5. Follow JBCT Patterns
-
-Use the `/jbct` skill for detailed guidance on:
-
-- Four return kinds (T, Option<T>, Result<T>, Promise<T>)
-- Parse, don't validate
-- No business exceptions
-- Single pattern per function
-
-## Example: Complete Slice
-
-```java
-public record UserService(
-    AtomicReference<UserRepository> repository
-) implements Slice {
-
-    @Override
-    public Promise<Unit> start() {
-        return Promise.lift(
-            Causes::fromThrowable,
-            () -> {
-                repository.set(UserRepository.create());
-                return Unit.unit();
-            }
-        );
+        static CatalogError productNotFound(String id) {
+            return new ProductNotFound(id);
+        }
     }
 
-    @Override
-    public Promise<Unit> stop() {
-        return Promise.lift(
-            Causes::fromThrowable,
-            () -> {
-                var repo = repository.getAndSet(null);
-                if (repo != null) {
-                    repo.close();
-                }
-                return Unit.unit();
-            }
-        );
-    }
+    Promise<Product> getProduct(ProductRequest request);
+    Promise<CategoryList> listCategories();
 
-    @Override
-    public List<SliceMethod<?, ?>> methods() {
-        return List.of(
-            new SliceMethod<>(
-                MethodName.methodName("getUser").unsafe(),
-                this::getUser,
-                TypeToken.of(User.class),
-                TypeToken.of(UserId.class)
-            ),
-            new SliceMethod<>(
-                MethodName.methodName("createUser").unsafe(),
-                this::createUser,
-                TypeToken.of(UserId.class),
-                TypeToken.of(CreateUserRequest.class)
-            )
-        );
-    }
-
-    private Promise<User> getUser(UserId id) {
-        return Promise.lift(
-            Causes::fromThrowable,
-            () -> repository.get().findById(id)
-        ).flatMap(option -> option
-            .toResult(USER_NOT_FOUND.apply(id))
-            .async()
-        );
-    }
-
-    private Promise<UserId> createUser(CreateUserRequest request) {
-        return validateRequest(request)
-            .async()
-            .flatMap(validated ->
-                Promise.lift(
-                    Causes::fromThrowable,
-                    () -> repository.get().save(validated.toUser())
-                )
+    static CatalogService catalogService() {
+        record catalogService() implements CatalogService {
+            private static final Map<String, Product> PRODUCTS = Map.of(
+                "P001", new Product("P001", "Widget", "9.99"),
+                "P002", new Product("P002", "Gadget", "19.99")
             );
-    }
 
-    private Result<ValidatedRequest> validateRequest(CreateUserRequest request) {
-        // Validation logic
-    }
+            @Override
+            public Promise<Product> getProduct(ProductRequest request) {
+                return Option.option(PRODUCTS.get(request.productId()))
+                             .async(CatalogError.productNotFound(request.productId()));
+            }
 
-    private static final Fn1<Cause, UserId> USER_NOT_FOUND =
-        Causes.forValue("User not found: {0}");
+            @Override
+            public Promise<CategoryList> listCategories() {
+                return Promise.success(new CategoryList(List.of("Electronics", "Home")));
+            }
+        }
+        return new catalogService();
+    }
 }
 ```
 
-## Troubleshooting
+Key points about the inline record pattern:
+- The record name matches the factory method name (lowercase first letter)
+- The record is private to the factory method — no one can instantiate it directly
+- Static fields and helper methods live inside the record
+- Each method override follows the one-pattern-per-function rule
 
-### start() timeout
+## Resource Injection
 
-**Symptom**: Slice fails to activate with timeout error.
+Slices access infrastructure — databases, HTTP clients, caches — through **resource qualifiers**.
+You annotate factory method parameters, and the annotation processor generates the provisioning code.
 
-**Solutions**:
+### Built-In Qualifiers
 
-- Move slow initialization to lazy loading
-- Increase `SliceActionConfig.startStopTimeout`
-- Check for blocking operations in start()
+Aether ships two built-in qualifiers:
 
-### Concurrent modification errors
+| Annotation | Resource Type | Config Section |
+|------------|--------------|----------------|
+| `@Sql` | `SqlConnector` | `"database"` |
+| `@Http` | `HttpClient` | `"http"` |
 
-**Symptom**: Race conditions, inconsistent state.
+```java
+import org.pragmatica.aether.resource.db.Sql;
+import org.pragmatica.aether.resource.db.SqlConnector;
 
-**Solutions**:
+@Slice
+public interface UserRepository {
 
-- Use concurrent collections (`ConcurrentHashMap`, `CopyOnWriteArrayList`)
-- Make methods stateless
-- Use immutable data structures
+    record FindRequest(long userId) {}
+    record User(long id, String name, String email) {}
 
-### Memory leaks after stop()
+    Promise<User> findUser(FindRequest request);
 
-**Symptom**: Resources not released after slice unload.
+    static UserRepository userRepository(@Sql SqlConnector db) {
+        return request -> db.query(
+            "SELECT id, name, email FROM users WHERE id = ?",
+            request.userId()
+        ).map(UserRepository::toUser);
+    }
 
-**Solutions**:
+    private static User toUser(/* row mapping */) {
+        // Map database row to User record
+    }
+}
+```
 
-- Implement stop() properly
-- Use try-with-resources in stop()
-- Set references to null in stop()
+The `@Sql` annotation tells the processor this parameter is a resource dependency configured
+from the `"database"` section of `aether.toml`. At runtime, the generated factory calls
+`ctx.resources().provide(SqlConnector.class, "database")` and passes the result to your factory.
+
+### Custom Qualifiers
+
+When you need multiple databases or want descriptive naming, create custom qualifier annotations:
+
+```java
+@ResourceQualifier(type = SqlConnector.class, config = "database.orders")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+@interface OrderDb {}
+
+@ResourceQualifier(type = SqlConnector.class, config = "database.analytics")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+@interface AnalyticsDb {}
+```
+
+Use them on factory parameters:
+
+```java
+@Slice
+public interface OrderAnalytics {
+
+    record ReportRequest(String period) {}
+    record Report(int orderCount, double totalRevenue) {}
+
+    Promise<Report> generateReport(ReportRequest request);
+
+    static OrderAnalytics orderAnalytics(@OrderDb SqlConnector orders,
+                                         @AnalyticsDb SqlConnector analytics) {
+        record orderAnalytics(SqlConnector orders,
+                              SqlConnector analytics) implements OrderAnalytics {
+            @Override
+            public Promise<Report> generateReport(ReportRequest request) {
+                return Promise.all(
+                    countOrders(request.period()),
+                    sumRevenue(request.period())
+                ).map(Report::new);
+            }
+
+            private Promise<Integer> countOrders(String period) {
+                return orders.query("SELECT count(*) FROM orders WHERE period = ?", period)
+                             .map(OrderAnalytics::extractCount);
+            }
+
+            private Promise<Double> sumRevenue(String period) {
+                return analytics.query("SELECT sum(revenue) FROM sales WHERE period = ?", period)
+                                .map(OrderAnalytics::extractSum);
+            }
+        }
+        return new orderAnalytics(orders, analytics);
+    }
+
+    private static Integer extractCount(/* row */) { /* ... */ }
+    private static Double extractSum(/* row */) { /* ... */ }
+}
+```
+
+Each qualifier maps to a separate configuration section in `aether.toml`:
+
+```toml
+[database.orders]
+jdbc_url = "jdbc:postgresql://localhost:5432/orders"
+username = "app"
+password = "secret"
+
+[database.analytics]
+jdbc_url = "jdbc:postgresql://localhost:5432/analytics"
+username = "app"
+password = "secret"
+```
+
+### HTTP Client Resources
+
+For external API calls, use `@Http` or a custom qualifier:
+
+```java
+@ResourceQualifier(type = HttpClient.class, config = "http.payment-gateway")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+@interface PaymentApi {}
+
+@Slice
+public interface PaymentService {
+
+    record ChargeRequest(String customerId, long amountCents) {}
+    record ChargeResult(String transactionId) {}
+
+    Promise<ChargeResult> charge(ChargeRequest request);
+
+    static PaymentService paymentService(@PaymentApi HttpClient http) {
+        return request -> http.post("/charges", request)
+                              .map(PaymentService::toChargeResult);
+    }
+
+    private static ChargeResult toChargeResult(/* response */) { /* ... */ }
+}
+```
+
+## HTTP Routing via routes.toml
+
+Slices communicate over Aether's internal protocol. To expose a slice as an HTTP API,
+add a `routes.toml` file. The annotation processor reads it at compile time and generates
+type-safe route bindings — no hand-written controllers.
+
+### Basic Routing
+
+Create `src/main/resources/routes.toml`:
+
+```toml
+prefix = "/api/v1/orders"
+
+[routes]
+placeOrder  = "POST /"
+getOrder    = "GET /{orderId:Long}"
+listOrders  = "GET /list?status&limit:Integer"
+
+[errors]
+default = 500
+HTTP_400 = ["*Invalid*", "*Empty*"]
+HTTP_404 = ["*NotFound*"]
+```
+
+### Route DSL
+
+The format is `METHOD /path/{param:Type}?queryParam:Type&anotherQuery`:
+
+- **Path parameters** use `{name}` (defaults to `String`) or `{name:Type}`
+- **Query parameters** appear after `?`, separated by `&` — always optional (`Option<T>`)
+- **Body** is implicit for POST, PUT, and PATCH — the request record is deserialized from JSON
+
+Supported types: `String`, `Integer`, `Long`, `Double`, `Float`, `Boolean`,
+`BigDecimal`, `LocalDate`, `LocalDateTime`, `LocalTime`, `OffsetDateTime`, `Duration`.
+
+### Error Mapping
+
+The `[errors]` section maps sealed `Cause` type names to HTTP status codes using glob patterns:
+
+```toml
+[errors]
+default = 500
+HTTP_404 = ["*NotFound*", "*Missing*"]
+HTTP_400 = ["*Invalid*", "*Empty*", "*Unsupported*"]
+HTTP_409 = ["*Duplicate*", "*AlreadyExists*"]
+```
+
+Patterns support `*` wildcards: `*Suffix`, `Prefix*`, `*Contains*`, or `ExactMatch`.
+For ambiguous types, use explicit overrides:
+
+```toml
+[errors.explicit]
+SomeAmbiguousType = 404
+```
+
+### Inheriting Common Configuration
+
+Multiple slices can share error mappings via `src/main/resources/routes-base.toml`:
+
+```toml
+[errors]
+default = 500
+HTTP_404 = ["*NotFound*"]
+HTTP_400 = ["*Invalid*"]
+```
+
+Each slice's `routes.toml` inherits from the base. Child settings take precedence.
+
+## Service Slices (Dependencies on Other Slices)
+
+Slices can depend on other slices. Add the dependency's API JAR as a `provided` dependency,
+then include the interface as a factory method parameter (without a resource qualifier annotation).
+
+```xml
+<dependency>
+    <groupId>com.example</groupId>
+    <artifactId>inventory-service-api</artifactId>
+    <version>1.0.0</version>
+    <scope>provided</scope>
+</dependency>
+```
+
+```java
+@Slice
+public interface OrderService {
+
+    record PlaceOrderRequest(String customerId, List<String> items) {
+        public static Result<PlaceOrderRequest> placeOrderRequest(String customerId,
+                                                                   List<String> items) {
+            var validCustomer = Verify.ensure(customerId, Verify.Is::present,
+                                              OrderError.missingCustomerId());
+            var validItems = Verify.ensure(items, list -> !list.isEmpty(),
+                                           OrderError.emptyItems());
+            return Result.all(validCustomer, validItems)
+                         .map(PlaceOrderRequest::new);
+        }
+    }
+
+    record OrderResult(String orderId, String status) {}
+
+    sealed interface OrderError extends Cause {
+        record MissingCustomerId() implements OrderError {
+            @Override
+            public String message() {
+                return "Customer ID is required";
+            }
+        }
+
+        record EmptyItems() implements OrderError {
+            @Override
+            public String message() {
+                return "Order must have at least one item";
+            }
+        }
+
+        record InsufficientStock(String item) implements OrderError {
+            @Override
+            public String message() {
+                return "Insufficient stock for item: " + item;
+            }
+        }
+
+        static OrderError missingCustomerId() {
+            return new MissingCustomerId();
+        }
+
+        static OrderError emptyItems() {
+            return new EmptyItems();
+        }
+
+        static OrderError insufficientStock(String item) {
+            return new InsufficientStock(item);
+        }
+    }
+
+    Promise<OrderResult> placeOrder(PlaceOrderRequest request);
+
+    static OrderService orderService(InventoryService inventory, PricingService pricing) {
+        record orderService(InventoryService inventory,
+                            PricingService pricing) implements OrderService {
+            @Override
+            public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
+                return inventory.checkStock(new InventoryService.StockRequest(request.items()))
+                                .flatMap(stock -> applyPricing(request, stock));
+            }
+
+            private Promise<OrderResult> applyPricing(PlaceOrderRequest request,
+                                                       InventoryService.StockResult stock) {
+                return pricing.calculate(new PricingService.PriceRequest(request.items()))
+                              .map(price -> new OrderResult("ORD-" + System.nanoTime(), "PLACED"));
+            }
+        }
+        return new orderService(inventory, pricing);
+    }
+}
+```
+
+The annotation processor detects that `InventoryService` and `PricingService` are external
+slice interfaces (no `@ResourceQualifier`, different package). It generates proxy records
+that delegate to `SliceInvokerFacade` for transparent remote invocation.
+
+### Dependency Classification
+
+The processor classifies factory parameters automatically:
+
+| Parameter Pattern | Classification | What Happens |
+|-------------------|----------------|--------------|
+| `@Sql SqlConnector db` | Resource dependency | Provisioned from `aether.toml` |
+| `InventoryService inventory` | Slice dependency | Proxy generated for remote calls |
+| `OrderValidator validator` | Plain interface | Factory method called directly |
+
+## Lean Slices (Pure Computation)
+
+Slices that need no dependencies at all — pure functions, validation services, computation
+engines — are the simplest to write:
+
+```java
+@Slice
+public interface HashService {
+
+    record HashRequest(String algorithm, String input) {
+        private static final Set<String> SUPPORTED = Set.of("md5", "sha256", "sha512");
+        private static final Fn1<Cause, String> UNSUPPORTED_ALGORITHM =
+            Causes.forOneValue("Unsupported algorithm: '%s'");
+
+        public static Result<HashRequest> hashRequest(String algorithm, String input) {
+            var validAlgorithm = Verify.ensure(algorithm, Verify.Is::present,
+                                               HashError.missingAlgorithm())
+                                       .map(String::toLowerCase)
+                                       .flatMap(alg -> Verify.ensure(alg, SUPPORTED::contains,
+                                                                     UNSUPPORTED_ALGORITHM.apply(alg)));
+            var validInput = Verify.ensure(input, Verify.Is::present, HashError.missingInput());
+            return Result.all(validAlgorithm, validInput)
+                         .map(HashRequest::new);
+        }
+    }
+
+    record HashResponse(String hash, String algorithm) {}
+
+    sealed interface HashError extends Cause {
+        record MissingAlgorithm() implements HashError {
+            @Override
+            public String message() {
+                return "Algorithm is required";
+            }
+        }
+
+        record MissingInput() implements HashError {
+            @Override
+            public String message() {
+                return "Input is required";
+            }
+        }
+
+        static HashError missingAlgorithm() {
+            return new MissingAlgorithm();
+        }
+
+        static HashError missingInput() {
+            return new MissingInput();
+        }
+    }
+
+    Promise<HashResponse> computeHash(HashRequest request);
+
+    static HashService hashService() {
+        return request -> Result.lift1(Causes::fromThrowable, HashService::digest,
+                                       request)
+                                .map(hash -> new HashResponse(hash, request.algorithm()))
+                                .async();
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static String digest(HashRequest request) throws Exception {
+        var md = java.security.MessageDigest.getInstance(request.algorithm().toUpperCase());
+        var bytes = md.digest(request.input().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return java.util.HexFormat.of().formatHex(bytes);
+    }
+}
+```
+
+Lean slices have no factory parameters. They are pure computation units that scale
+horizontally without any infrastructure setup.
+
+## Error Modeling
+
+All failures in slice code are modeled as sealed `Cause` types — never exceptions.
+
+### Enum Variants for Fixed Messages
+
+When error messages are constants, use an enum:
+
+```java
+sealed interface RegistrationError extends Cause {
+    enum General implements RegistrationError {
+        EMAIL_ALREADY_REGISTERED("Email already registered"),
+        TOKEN_GENERATION_FAILED("Token generation failed");
+
+        private final String message;
+        General(String message) { this.message = message; }
+        @Override public String message() { return message; }
+    }
+}
+```
+
+### Record Variants for Parameterized Messages
+
+When errors carry context, use records:
+
+```java
+sealed interface OrderError extends Cause {
+    record ItemNotFound(String itemId) implements OrderError {
+        @Override
+        public String message() {
+            return "Item not found: " + itemId;
+        }
+    }
+
+    record InsufficientFunds(long required, long available) implements OrderError {
+        @Override
+        public String message() {
+            return "Insufficient funds: required " + required + ", available " + available;
+        }
+    }
+}
+```
+
+### Using Causes.forOneValue
+
+For reusable error factories that accept a single parameter, use `Causes.forOneValue`
+with `%s` format placeholders:
+
+```java
+private static final Fn1<Cause, String> USER_NOT_FOUND =
+    Causes.forOneValue("User not found: %s");
+
+// Usage
+return USER_NOT_FOUND.apply(userId).result();   // Result<T>
+return USER_NOT_FOUND.apply(userId).promise();  // Promise<T>
+```
+
+### cause.result() and cause.promise()
+
+Always prefer `cause.result()` over `Result.failure(cause)`, and `cause.promise()` over
+`Promise.failure(cause)`:
+
+```java
+// Preferred
+return OrderError.itemNotFound(itemId).result();
+return OrderError.itemNotFound(itemId).promise();
+
+// Avoid
+return Result.failure(OrderError.itemNotFound(itemId));
+return Promise.failure(OrderError.itemNotFound(itemId));
+```
+
+## Multi-Parameter Methods
+
+Slice methods can have any number of parameters. At the transport layer, the annotation
+processor handles the mapping:
+
+- **0 parameters**: `Unit` at transport layer
+- **1 parameter (record)**: passed directly
+- **1 parameter (primitive/simple type)**: wrapped in synthetic `{MethodName}Request`
+- **N parameters**: wrapped in synthetic `{MethodName}Request` with all fields
+
+```java
+@Slice
+public interface TransferService {
+
+    record Account(String id) {}
+    record TransferResult(String transactionId, String status) {}
+
+    // Zero parameters
+    Promise<List<Account>> listAccounts();
+
+    // Single record parameter
+    Promise<Account> getAccount(Account request);
+
+    // Multiple parameters — processor generates TransferRequest(String from, String to, long amount)
+    Promise<TransferResult> transfer(String from, String to, long amount);
+
+    static TransferService transferService(@Sql SqlConnector db) {
+        record transferService(SqlConnector db) implements TransferService {
+            @Override
+            public Promise<List<Account>> listAccounts() {
+                return db.query("SELECT id FROM accounts")
+                         .map(TransferService::toAccountList);
+            }
+
+            @Override
+            public Promise<Account> getAccount(Account request) {
+                return db.query("SELECT id FROM accounts WHERE id = ?", request.id())
+                         .map(TransferService::toAccount);
+            }
+
+            @Override
+            public Promise<TransferResult> transfer(String from, String to, long amount) {
+                return db.update("INSERT INTO transfers (from_id, to_id, amount) VALUES (?, ?, ?)",
+                                 from, to, amount)
+                         .map(rowCount -> new TransferResult("TXN-" + System.nanoTime(), "COMPLETED"));
+            }
+        }
+        return new transferService(db);
+    }
+
+    private static List<Account> toAccountList(/* rows */) { /* ... */ }
+    private static Account toAccount(/* row */) { /* ... */ }
+}
+```
+
+Method overloads are rejected at compile time. Use distinct method names instead.
+
+## Inline Record Pattern for Dependency Capture
+
+The inline record pattern is the standard way to capture dependencies when the slice
+has multiple methods or needs shared state:
+
+```java
+static NotificationService notificationService(@Sql SqlConnector db,
+                                                @Http HttpClient http,
+                                                EmailGateway emailGateway) {
+    record notificationService(SqlConnector db,
+                                HttpClient http,
+                                EmailGateway emailGateway) implements NotificationService {
+        @Override
+        public Promise<SendResult> sendEmail(EmailRequest request) {
+            return emailGateway.send(request.to(), request.subject(), request.body())
+                               .flatMap(sent -> logNotification(request, sent));
+        }
+
+        @Override
+        public Promise<SendResult> sendSms(SmsRequest request) {
+            return http.post("/sms", request)
+                       .flatMap(sent -> logNotification(request, sent));
+        }
+
+        private Promise<SendResult> logNotification(Object request, Object result) {
+            return db.update("INSERT INTO notifications (type, payload) VALUES (?, ?)",
+                             request.getClass().getSimpleName(), result.toString())
+                     .map(rowCount -> new SendResult("OK"));
+        }
+    }
+    return new notificationService(db, http, emailGateway);
+}
+```
+
+The record captures all dependencies as fields. Each method has access to `db`, `http`, and
+`emailGateway` through the record's accessor methods. The record is private to the factory —
+callers only see the `NotificationService` interface.
+
+## Pattern Summary
+
+| Pattern | When to Use | Implementation |
+|---------|-------------|----------------|
+| Lambda | Single method, no deps | `return request -> ...;` |
+| Lambda with deps | Single method, has deps | `return request -> dep.call(...);` |
+| Inline record, no deps | Multiple methods | `record impl() implements MySlice { ... }` |
+| Inline record with deps | Multiple methods + deps | `record impl(Dep dep) implements MySlice { ... }` |
+| Resource qualifier | Infrastructure access | `@Sql`, `@Http`, or custom `@ResourceQualifier` |
+| Slice dependency | Cross-slice calls | Plain interface parameter (proxy generated) |
 
 ## See Also
 
-- [Slice Lifecycle](../contributors/slice-lifecycle.md) - Runtime perspective
-- [Architecture Overview](../contributors/architecture.md) - System design
+- [Getting Started](getting-started.md) — build your first slice from scratch
+- [Development Guide](development-guide.md) — complete development workflow
+- [Testing Slices](testing-slices.md) — unit and integration testing
+- [Migration Guide](migration-guide.md) — migrating existing applications to Aether

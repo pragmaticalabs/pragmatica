@@ -49,80 +49,101 @@ class AetherClient:
     # Cluster Status
     def status(self) -> dict:
         """Get cluster status."""
-        return self._get("/status")
+        return self._get("/api/status")
 
     def health(self) -> dict:
         """Get health status."""
-        return self._get("/health")
+        return self._get("/api/health")
 
     def nodes(self) -> dict:
         """List cluster nodes."""
-        return self._get("/nodes")
+        return self._get("/api/nodes")
 
     # Slice Management
     def slices(self) -> dict:
         """List deployed slices."""
-        return self._get("/slices")
+        return self._get("/api/slices")
 
-    def deploy(self, artifact: str, instances: int = 1) -> dict:
-        """Deploy a slice."""
-        return self._post("/deploy", {"artifact": artifact, "instances": instances})
+    def apply_blueprint(self, blueprint_content: str) -> dict:
+        """Apply a blueprint (deploy slices)."""
+        url = f"{self.base_url}/api/blueprint"
+        try:
+            req = urllib.request.Request(
+                url,
+                data=blueprint_content.encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req) as response:
+                return json.loads(response.read().decode())
+        except urllib.error.HTTPError as e:
+            return {"error": f"HTTP {e.code}: {e.read().decode()}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def delete_blueprint(self, blueprint_id: str) -> dict:
+        """Delete a blueprint (undeploy slices)."""
+        url = f"{self.base_url}/api/blueprint/{blueprint_id}"
+        try:
+            req = urllib.request.Request(url, method="DELETE")
+            with urllib.request.urlopen(req) as response:
+                return json.loads(response.read().decode())
+        except urllib.error.HTTPError as e:
+            return {"error": f"HTTP {e.code}: {e.read().decode()}"}
+        except Exception as e:
+            return {"error": str(e)}
 
     def scale(self, artifact: str, instances: int) -> dict:
         """Scale a slice."""
-        return self._post("/scale", {"artifact": artifact, "instances": instances})
-
-    def undeploy(self, artifact: str) -> dict:
-        """Undeploy a slice."""
-        return self._post("/undeploy", {"artifact": artifact})
+        return self._post("/api/scale", {"artifact": artifact, "instances": instances})
 
     # Metrics
     def metrics(self) -> dict:
         """Get cluster metrics."""
-        return self._get("/metrics")
+        return self._get("/api/metrics")
 
     def invocation_metrics(self) -> dict:
         """Get invocation metrics."""
-        return self._get("/invocation-metrics")
+        return self._get("/api/invocation-metrics")
 
     def slow_invocations(self) -> dict:
         """Get slow invocations."""
-        return self._get("/invocation-metrics/slow")
+        return self._get("/api/invocation-metrics/slow")
 
     # Controller
     def controller_config(self) -> dict:
         """Get controller configuration."""
-        return self._get("/controller/config")
+        return self._get("/api/controller/config")
 
     def update_controller_config(self, **kwargs) -> dict:
         """Update controller configuration."""
-        return self._post("/controller/config", kwargs)
+        return self._post("/api/controller/config", kwargs)
 
     def controller_status(self) -> dict:
         """Get controller status."""
-        return self._get("/controller/status")
+        return self._get("/api/controller/status")
 
     # Alerts
     def alerts(self) -> dict:
         """Get all alerts."""
-        return self._get("/alerts")
+        return self._get("/api/alerts")
 
     def active_alerts(self) -> dict:
         """Get active alerts."""
-        return self._get("/alerts/active")
+        return self._get("/api/alerts/active")
 
     def clear_alerts(self) -> dict:
         """Clear all alerts."""
-        return self._post("/alerts/clear", {})
+        return self._post("/api/alerts/clear", {})
 
     # Thresholds
     def thresholds(self) -> dict:
         """Get all thresholds."""
-        return self._get("/thresholds")
+        return self._get("/api/thresholds")
 
     def set_threshold(self, metric: str, warning: float, critical: float) -> dict:
         """Set a threshold."""
-        return self._post("/thresholds", {
+        return self._post("/api/thresholds", {
             "metric": metric,
             "warning": warning,
             "critical": critical
@@ -138,27 +159,27 @@ class AetherClient:
             "instances": instances,
             **kwargs
         }
-        return self._post("/rolling-update/start", data)
+        return self._post("/api/rolling-update/start", data)
 
     def rolling_updates(self) -> dict:
         """List active rolling updates."""
-        return self._get("/rolling-updates")
+        return self._get("/api/rolling-updates")
 
     def rolling_update_status(self, update_id: str) -> dict:
         """Get rolling update status."""
-        return self._get(f"/rolling-update/{update_id}")
+        return self._get(f"/api/rolling-update/{update_id}")
 
     def adjust_routing(self, update_id: str, routing: str) -> dict:
         """Adjust traffic routing."""
-        return self._post(f"/rolling-update/{update_id}/routing", {"routing": routing})
+        return self._post(f"/api/rolling-update/{update_id}/routing", {"routing": routing})
 
     def complete_update(self, update_id: str) -> dict:
         """Complete rolling update."""
-        return self._post(f"/rolling-update/{update_id}/complete", {})
+        return self._post(f"/api/rolling-update/{update_id}/complete", {})
 
     def rollback_update(self, update_id: str) -> dict:
         """Rollback rolling update."""
-        return self._post(f"/rolling-update/{update_id}/rollback", {})
+        return self._post(f"/api/rolling-update/{update_id}/rollback", {})
 
 
 def main():

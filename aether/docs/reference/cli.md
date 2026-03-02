@@ -15,7 +15,7 @@ Aether provides three command-line tools:
 ### Build from Source
 
 ```bash
-git clone https://github.com/pragmatica-lite/aether.git
+git clone https://github.com/pragmaticalabs/pragmatica.git
 cd aether
 mvn package -DskipTests
 ```
@@ -358,10 +358,13 @@ aether invocation-metrics list
 # Show slow invocations
 aether invocation-metrics slow
 
-# Show or set threshold strategy
+# Show threshold strategy
 aether invocation-metrics strategy              # Show current
-aether invocation-metrics strategy fixed 100    # Fixed 100ms threshold
-aether invocation-metrics strategy adaptive 10 1000  # Adaptive 10-1000ms
+
+# Note: Strategy changes via API are not currently supported at runtime.
+# The following commands will return an error:
+# aether invocation-metrics strategy fixed 100
+# aether invocation-metrics strategy adaptive 10 1000
 ```
 
 #### controller
