@@ -66,8 +66,9 @@ public class NettyMessageEncoder extends MessageToByteEncoder<Message> {
     protected void encode(ChannelHandlerContext ctx, Message msg, ByteBuf out) {
         Encoder<Message> encoder = (Encoder<Message>) ENCODERS.get(msg.getClass());
 
-        buffer.clear();
-        ByteBuffer msgbuf = buffer;
+        int estimated = encoder.estimateSize(msg, encoding);
+        ByteBuffer msgbuf = estimated <= buffer.capacity() ? buffer : ByteBuffer.allocate(estimated);
+        msgbuf.clear();
         try {
             while (true) {
                 try {

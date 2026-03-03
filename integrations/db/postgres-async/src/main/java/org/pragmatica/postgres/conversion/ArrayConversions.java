@@ -3,6 +3,7 @@ package org.pragmatica.postgres.conversion;
 import org.pragmatica.postgres.Oid;
 
 import java.lang.reflect.Array;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BiFunction;
@@ -207,6 +208,90 @@ final class ArrayConversions {
 
         for (int i = 0; i < arr.length; i++) {
             arr[i] = list.get(i);
+        }
+        return arr;
+    }
+
+    @SuppressWarnings("unchecked")
+    static <T> T toBinaryArray(Class<T> arrayType, Oid oid, byte[] value) {
+        if (value == null) {
+            return null;
+        }
+
+        var buf = ByteBuffer.wrap(value);
+        int ndim = buf.getInt();
+        buf.getInt(); // has_null flag (we handle NULL via length == -1)
+        int elemTypeOid = buf.getInt();
+
+        if (ndim == 0) {
+            return (T) Array.newInstance(resolveLeafType(arrayType), 0);
+        }
+
+        int[] dims = new int[ndim];
+        for (int d = 0; d < ndim; d++) {
+            dims[d] = buf.getInt();
+            buf.getInt(); // lower_bound
+        }
+
+        var elementOid = Oid.valueOfId(elemTypeOid);
+        var elementCodec = BinaryCodecs.forOid(elementOid);
+        Class elementType = resolveLeafType(arrayType);
+
+        if (ndim == 1) {
+            var arr = (Object[]) Array.newInstance(elementType, dims[0]);
+            for (int i = 0; i < dims[0]; i++) {
+                arr[i] = readBinaryElement(buf, elementCodec);
+            }
+            return (T) arr;
+        }
+
+        return (T) readMultiDimArray(buf, dims, 0, elementType, elementCodec);
+    }
+
+    private static Class resolveLeafType(Class arrayType) {
+        Class elementType = arrayType.getComponentType();
+
+        while (elementType.getComponentType() != null && elementType != byte[].class) {
+            elementType = elementType.getComponentType();
+        }
+
+        return elementType;
+    }
+
+    private static Object readBinaryElement(ByteBuffer buf, BinaryCodec<?> codec) {
+        int len = buf.getInt();
+
+        if (len == -1) {
+            return null;
+        }
+
+        if (codec != null) {
+            return codec.decode(buf, len);
+        }
+
+        var bytes = new byte[len];
+        buf.get(bytes);
+        return bytes;
+    }
+
+    private static Object[] readMultiDimArray(ByteBuffer buf, int[] dims, int dimIndex,
+                                               Class<?> elementType, BinaryCodec<?> codec) {
+        int size = dims[dimIndex];
+
+        if (dimIndex == dims.length - 1) {
+            var arr = (Object[]) Array.newInstance(elementType, size);
+            for (int i = 0; i < size; i++) {
+                arr[i] = readBinaryElement(buf, codec);
+            }
+            return arr;
+        }
+
+        int[] subDims = new int[dims.length - dimIndex - 1];
+        System.arraycopy(dims, dimIndex + 1, subDims, 0, subDims.length);
+        var subArrayType = Array.newInstance(elementType, subDims).getClass();
+        var arr = (Object[]) Array.newInstance(subArrayType, size);
+        for (int i = 0; i < size; i++) {
+            arr[i] = readMultiDimArray(buf, dims, dimIndex + 1, elementType, codec);
         }
         return arr;
     }

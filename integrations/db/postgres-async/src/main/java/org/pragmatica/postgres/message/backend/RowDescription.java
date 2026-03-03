@@ -26,10 +26,12 @@ public final class RowDescription implements BackendMessage {
 
         final String name;
         final Oid type;
+        final short formatCode;
 
-        public ColumnDescription(String name, Oid type) {
+        public ColumnDescription(String name, Oid type, short formatCode) {
             this.name = name;
             this.type = type;
+            this.formatCode = formatCode;
         }
 
         public String getName() {
@@ -38,6 +40,14 @@ public final class RowDescription implements BackendMessage {
 
         public Oid getType() {
             return type;
+        }
+
+        public short getFormatCode() {
+            return formatCode;
+        }
+
+        public boolean isBinary() {
+            return formatCode == 1;
         }
     }
 

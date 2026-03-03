@@ -66,8 +66,9 @@ public class RowDescriptionDecoder implements Decoder<RowDescription> {
             String name = IO.getCString(buffer, encoding);
             buffer.position(buffer.position() + 6);
             Oid type = Oid.valueOfId(buffer.getInt());
-            buffer.position(buffer.position() + 8);
-            columns[i] = new RowDescription.ColumnDescription(name, type);
+            buffer.position(buffer.position() + 6);
+            short formatCode = buffer.getShort();
+            columns[i] = new RowDescription.ColumnDescription(name, type, formatCode);
         }
 
         return new RowDescription(columns);

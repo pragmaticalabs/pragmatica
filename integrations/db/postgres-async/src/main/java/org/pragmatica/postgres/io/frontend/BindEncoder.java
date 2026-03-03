@@ -80,13 +80,38 @@ public class BindEncoder extends ExtendedQueryEncoder<Bind> {
     public void writeBody(Bind msg, ByteBuffer buffer, Charset encoding) {
         IO.putCString(buffer, "", encoding); // portal
         IO.putCString(buffer, msg.sname(), encoding); // prepared statement
-        buffer.putShort((short) 0); // number of format codes
-        buffer.putShort((short) msg.params().length); // number of parameters
 
+        // Parameter format codes
+        buffer.putShort((short) msg.paramFormatCodes().length);
+        for (short code : msg.paramFormatCodes()) {
+            buffer.putShort(code);
+        }
+
+        // Parameter values
+        buffer.putShort((short) msg.params().length);
         for (byte[] param : msg.params()) {
             writeParameter(buffer, param);
         }
-        buffer.putShort((short) 0);
+
+        // Result format codes
+        buffer.putShort((short) msg.resultFormatCodes().length);
+        for (short code : msg.resultFormatCodes()) {
+            buffer.putShort(code);
+        }
+    }
+
+    @Override
+    public int estimateSize(Bind msg, Charset encoding) {
+        int size = 1 + 4; // message ID + length
+        size += 1; // empty portal name
+        size += msg.sname().getBytes(encoding).length + 1; // statement name + null
+        size += 2 + msg.paramFormatCodes().length * 2; // param format codes
+        size += 2; // param count
+        for (byte[] param : msg.params()) {
+            size += 4 + (param != null ? param.length : 0);
+        }
+        size += 2 + msg.resultFormatCodes().length * 2; // result format codes
+        return size;
     }
 
     void writeParameter(ByteBuffer buffer, byte[] param) {

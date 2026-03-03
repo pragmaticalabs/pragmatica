@@ -1,11 +1,13 @@
 package org.pragmatica.postgres.conversion;
 
 import org.pragmatica.postgres.Oid;
+import org.pragmatica.postgres.PgColumn;
 import org.pragmatica.postgres.net.Converter;
 import org.pragmatica.lang.Functions.Fn2;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.time.*;
 import java.util.HashMap;
@@ -92,9 +94,147 @@ public class DataConverter {
         return value == null ? null : BooleanConversions.toBoolean(oid, new String(value, encoding));
     }
 
+    // Binary-aware overloads
+
+    public String toString(Oid oid, byte[] value, boolean binary) {
+        if (value == null) return null;
+        if (binary) return new String(value, encoding);
+        return StringConversions.asString(oid, new String(value, encoding));
+    }
+
+    public Character toChar(Oid oid, byte[] value, boolean binary) {
+        if (value == null) return null;
+        if (binary) return (char) value[0];
+        return StringConversions.toChar(oid, new String(value, encoding));
+    }
+
+    public Long toLong(Oid oid, byte[] value, boolean binary) {
+        if (value == null) return null;
+        if (binary) return ByteBuffer.wrap(value).getLong();
+        return NumericConversions.toLong(oid, new String(value, encoding));
+    }
+
+    public Integer toInteger(Oid oid, byte[] value, boolean binary) {
+        if (value == null) return null;
+        if (binary) return ByteBuffer.wrap(value).getInt();
+        return NumericConversions.toInteger(oid, new String(value, encoding));
+    }
+
+    public Short toShort(Oid oid, byte[] value, boolean binary) {
+        if (value == null) return null;
+        if (binary) return ByteBuffer.wrap(value).getShort();
+        return NumericConversions.toShort(oid, new String(value, encoding));
+    }
+
+    public Byte toByte(Oid oid, byte[] value, boolean binary) {
+        if (value == null) return null;
+        if (binary) return value[0];
+        return NumericConversions.toByte(oid, new String(value, encoding));
+    }
+
+    public BigInteger toBigInteger(Oid oid, byte[] value, boolean binary) {
+        if (value == null) return null;
+        if (binary) return BigInteger.valueOf(ByteBuffer.wrap(value).getLong());
+        return NumericConversions.toBigInteger(oid, new String(value, encoding));
+    }
+
+    public BigDecimal toBigDecimal(Oid oid, byte[] value, boolean binary) {
+        if (value == null) return null;
+        if (binary) {
+            var buf = ByteBuffer.wrap(value);
+            return value.length == 4 ? BigDecimal.valueOf(buf.getFloat())
+                 : value.length == 8 ? BigDecimal.valueOf(buf.getDouble())
+                 : new BigDecimal(new String(value, encoding));
+        }
+        return NumericConversions.toBigDecimal(oid, new String(value, encoding));
+    }
+
+    public Double toDouble(Oid oid, byte[] value, boolean binary) {
+        if (value == null) return null;
+        if (binary) {
+            var buf = ByteBuffer.wrap(value);
+            return value.length == 4 ? (double) buf.getFloat() : buf.getDouble();
+        }
+        return NumericConversions.toDouble(oid, new String(value, encoding));
+    }
+
+    public LocalDate toLocalDate(Oid oid, byte[] value, boolean binary) {
+        if (value == null) return null;
+        if (binary) {
+            int days = ByteBuffer.wrap(value).getInt();
+            return LocalDate.of(2000, 1, 1).plusDays(days);
+        }
+        return TemporalConversions.toLocalDate(oid, new String(value, encoding));
+    }
+
+    public LocalDateTime toLocalDateTime(Oid oid, byte[] value, boolean binary) {
+        if (value == null) return null;
+        if (binary) {
+            long pgMicros = ByteBuffer.wrap(value).getLong();
+            long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
+            long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
+            int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+            return LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC);
+        }
+        return TemporalConversions.toLocalDateTime(oid, new String(value, encoding));
+    }
+
+    public LocalTime toLocalTime(Oid oid, byte[] value, boolean binary) {
+        if (value == null) return null;
+        if (binary) {
+            long micros = ByteBuffer.wrap(value).getLong();
+            return LocalTime.ofNanoOfDay(micros * 1000);
+        }
+        return TemporalConversions.toLocalTime(oid, new String(value, encoding));
+    }
+
+    public Instant toInstant(Oid oid, byte[] value, boolean binary) {
+        if (value == null) return null;
+        if (binary) {
+            long pgMicros = ByteBuffer.wrap(value).getLong();
+            long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
+            long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
+            int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+            return Instant.ofEpochSecond(epochSecs, nanoAdj);
+        }
+        return TemporalConversions.toInstant(oid, new String(value, encoding));
+    }
+
+    public byte[] toBytes(Oid oid, byte[] value, boolean binary) {
+        if (value == null) return null;
+        if (binary) return value;
+        return BlobConversions.toBytes(oid, new String(value, 2, value.length - 2, encoding));
+    }
+
+    public Boolean toBoolean(Oid oid, byte[] value, boolean binary) {
+        if (value == null) return null;
+        if (binary) return value[0] != 0;
+        return BooleanConversions.toBoolean(oid, new String(value, encoding));
+    }
+
+    public static short[] resultFormatCodes(PgColumn[] columns) {
+        var codes = new short[columns.length];
+        for (int i = 0; i < columns.length; i++) {
+            codes[i] = (short) (columns[i].type().supportsBinary() ? 1 : 0);
+        }
+        return codes;
+    }
+
     public <T> T toArray(Class<T> arrayType, Oid oid, byte[] value) {
         if (value == null) {
             return null;
+        }
+
+        return ArrayConversions.toArray(arrayType, oid, new String(value, encoding), lookupParser(oid));
+    }
+
+    public <T> T toArray(Class<T> arrayType, Oid oid, byte[] value, boolean binary) {
+        if (value == null) {
+            return null;
+        }
+
+        if (binary) {
+            return ArrayConversions.toBinaryArray(arrayType, oid, value);
         }
 
         return ArrayConversions.toArray(arrayType, oid, new String(value, encoding), lookupParser(oid));
@@ -172,6 +312,55 @@ public class DataConverter {
             params[i++] = converted == null ? null : converted.getBytes(encoding);
         }
         return params;
+    }
+
+    public record EncodedParams(byte[][] values, short[] formatCodes) {}
+
+    @SuppressWarnings("unchecked")
+    public EncodedParams fromParametersBinary(Object[] parameters, Oid[] types) {
+        byte[][] values = new byte[parameters.length][];
+        short[] formatCodes = new short[parameters.length];
+
+        for (int i = 0; i < parameters.length; i++) {
+            if (parameters[i] == null) {
+                values[i] = null;
+                formatCodes[i] = 0;
+                continue;
+            }
+
+            var codec = (BinaryCodec<Object>) BinaryCodecs.forOid(types[i]);
+            if (codec != null && isBinaryEncodable(parameters[i], types[i])) {
+                var buf = ByteBuffer.allocate(codec.estimateSize(parameters[i]));
+                codec.encode(parameters[i], buf);
+                buf.flip();
+                values[i] = new byte[buf.remaining()];
+                buf.get(values[i]);
+                formatCodes[i] = 1;
+            } else {
+                var converted = fromObject(parameters[i]);
+                values[i] = converted == null ? null : converted.getBytes(encoding);
+                formatCodes[i] = 0;
+            }
+        }
+        return new EncodedParams(values, formatCodes);
+    }
+
+    private static boolean isBinaryEncodable(Object param, Oid type) {
+        return switch (type) {
+            case INT2 -> param instanceof Short || param instanceof Byte;
+            case INT4 -> param instanceof Integer;
+            case INT8 -> param instanceof Long;
+            case FLOAT4 -> param instanceof Float;
+            case FLOAT8 -> param instanceof Double;
+            case BOOL -> param instanceof Boolean;
+            case BYTEA -> param instanceof byte[];
+            case UUID -> param instanceof UUID;
+            case DATE -> param instanceof LocalDate;
+            case TIME -> param instanceof LocalTime;
+            case TIMESTAMP -> param instanceof LocalDateTime;
+            case TIMESTAMPTZ -> param instanceof Instant;
+            default -> false;
+        };
     }
 
     private static final Map<Class<?>, Fn2<?, Oid, String>> KNOWN_TYPES = new HashMap<>();

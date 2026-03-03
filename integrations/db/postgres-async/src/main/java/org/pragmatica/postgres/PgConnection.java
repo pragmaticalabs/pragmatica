@@ -23,6 +23,7 @@ import org.pragmatica.postgres.net.Connection;
 import org.pragmatica.postgres.net.Listening;
 import org.pragmatica.postgres.net.PreparedStatement;
 import org.pragmatica.postgres.net.Transaction;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -77,8 +78,12 @@ public class PgConnection implements Connection {
 
             if (columns != null) {
                 onColumns.accept(columns.byName, columns.ordered);
+                short[] resultFmtCodes = DataConverter.resultFormatCodes(columns.ordered);
+                var types = dataConverter.assumeTypes(params);
+                var encoded = dataConverter.fromParametersBinary(params, types);
+                var binaryBind = new Bind(sname, encoded.values(), encoded.formatCodes(), resultFmtCodes);
                 return stream
-                    .send(bind, rowProcessor);
+                    .send(binaryBind, rowProcessor);
             } else {
                 return stream
                     .send(bind, Describe.portal(), columnDescriptions -> {
@@ -254,8 +259,41 @@ public class PgConnection implements Connection {
                                   Object... params) {
         return prepareStatement(sql, dataConverter.assumeTypes(params))
             .flatMap(ps -> ps.fetch(onColumns, onRow, params)
+                             .fold(result -> result.fold(
+                                 cause -> handleQueryFailure(cause, onColumns, onRow, sql, params),
+                                 value -> isStatementCached(sql) ? Promise.success(value)
+                                                                 : closePreparedStatement(Result.success(value), ps))));
+    }
+
+    private Promise<Integer> handleQueryFailure(Cause cause,
+                                                BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
+                                                Consumer<PgRow> onRow,
+                                                String sql,
+                                                Object... params) {
+        if (isStaleStatementError(cause) && statementCache != null) {
+            var evicted = statementCache.remove(sql);
+            if (evicted != null) {
+                return evicted.closeOnServer()
+                              .flatMap(_ -> retryQuery(onColumns, onRow, sql, params));
+            }
+        }
+        return cause.promise();
+    }
+
+    private Promise<Integer> retryQuery(BiConsumer<Map<String, PgColumn>, PgColumn[]> onColumns,
+                                        Consumer<PgRow> onRow,
+                                        String sql,
+                                        Object... params) {
+        return preparedStatementOf(sql, dataConverter.assumeTypes(params))
+            .flatMap(ps -> ps.fetch(onColumns, onRow, params)
                              .fold(result -> isStatementCached(sql) ? Promise.resolved(result)
                                                                     : closePreparedStatement(result, ps)));
+    }
+
+    private static boolean isStaleStatementError(Cause cause) {
+        return cause instanceof SqlError.ServerError serverError
+               && ("42P05".equals(serverError.response().code())
+                   || "26000".equals(serverError.response().code()));
     }
 
     private boolean isStatementCached(String sql) {
@@ -308,7 +346,7 @@ public class PgConnection implements Connection {
         var ordered = new PgColumn[descriptions.length];
 
         for (int i = 0; i < descriptions.length; i++) {
-            var column = new PgColumn(i, descriptions[i].getName(), descriptions[i].getType());
+            var column = new PgColumn(i, descriptions[i].getName(), descriptions[i].getType(), descriptions[i].getFormatCode());
 
             byName.put(descriptions[i].getName(), column);
             ordered[i] = column;

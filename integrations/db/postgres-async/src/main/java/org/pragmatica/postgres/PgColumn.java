@@ -19,4 +19,8 @@ package org.pragmatica.postgres;
  *
  * @author Antti Laisi
  */
-public record PgColumn(int index, String name, Oid type) {}
+public record PgColumn(int index, String name, Oid type, short formatCode) {
+    public boolean isBinary() {
+        return formatCode == 1;
+    }
+}

@@ -37,4 +37,12 @@ public interface Encoder<T extends Message> {
      */
     void write(T msg, ByteBuffer buffer, Charset encoding);
 
+    /**
+     * Estimate the buffer size needed to encode the message.
+     * Default returns 256 bytes. Encoders should override for accuracy.
+     */
+    default int estimateSize(T msg, Charset encoding) {
+        return 256;
+    }
+
 }

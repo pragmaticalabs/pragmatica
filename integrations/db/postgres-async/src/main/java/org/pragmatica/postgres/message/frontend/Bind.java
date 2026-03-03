@@ -19,4 +19,10 @@ import org.pragmatica.postgres.message.ExtendedQueryMessage;
 /**
  * @author Antti Laisi
  */
-public record Bind(String sname, byte[][] params) implements ExtendedQueryMessage {}
+public record Bind(String sname, byte[][] params, short[] paramFormatCodes, short[] resultFormatCodes)
+    implements ExtendedQueryMessage {
+
+    public Bind(String sname, byte[][] params) {
+        this(sname, params, new short[0], new short[0]);
+    }
+}

@@ -55,6 +55,15 @@ public class ParseEncoder extends ExtendedQueryEncoder<Parse> {
     }
 
     @Override
+    public int estimateSize(Parse msg, Charset encoding) {
+        int size = 1 + 4; // message ID + length
+        size += msg.sname().getBytes(encoding).length + 1; // statement name + null
+        size += msg.query().getBytes(encoding).length + 1; // query + null
+        size += 2 + msg.types().length * 4; // param type count + OIDs
+        return size;
+    }
+
+    @Override
     public void writeBody(Parse msg, ByteBuffer buffer, Charset encoding) {
         IO.putCString(buffer, msg.sname(), encoding); // prepared statement
         IO.putCString(buffer, msg.query(), encoding);

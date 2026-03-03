@@ -14,9 +14,12 @@
 
 package org.pragmatica.postgres;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /**
  * Object identifiers, copied from org.postgresql.core.Oid.
- * 
+ *
  * @author Antti Laisi
  */
 public enum Oid {
@@ -81,6 +84,16 @@ public enum Oid {
     HSTORE(33670)
     ;
 
+    private static final Map<Integer, Oid> BY_ID;
+
+    static {
+        var map = new HashMap<Integer, Oid>();
+        for (var oid : values()) {
+            map.put(oid.id, oid);
+        }
+        BY_ID = Map.copyOf(map);
+    }
+
     final int id;
 
     Oid(int id) {
@@ -92,11 +105,25 @@ public enum Oid {
     }
 
     public static Oid valueOfId(int id) {
-        for (Oid oid : values()) {
-            if (oid.id == id) {
-                return oid;
-            }
-        }
-        return Oid.UNSPECIFIED;
+        return BY_ID.getOrDefault(id, UNSPECIFIED);
+    }
+
+    public boolean supportsBinary() {
+        return switch (this) {
+            case INT2, INT4, INT8, FLOAT4, FLOAT8, BOOL, BYTEA, UUID, DATE, TIME, TIMETZ, TIMESTAMP, TIMESTAMPTZ -> true;
+            default -> false;
+        };
+    }
+
+    public int binarySize() {
+        return switch (this) {
+            case BOOL -> 1;
+            case INT2 -> 2;
+            case INT4, FLOAT4, DATE -> 4;
+            case INT8, FLOAT8, TIME, TIMESTAMP, TIMESTAMPTZ -> 8;
+            case TIMETZ -> 12;
+            case UUID -> 16;
+            default -> -1;
+        };
     }
 }
