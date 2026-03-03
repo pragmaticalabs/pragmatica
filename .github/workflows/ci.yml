@@ -26,7 +26,7 @@ jobs:
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor -am
 
       - name: Build and test all modules
-        run: mvn verify -B
+        run: mvn install -B
 
       - name: Run Forge tests
         run: mvn verify -B -Pwith-e2e -pl aether/forge/forge-tests
