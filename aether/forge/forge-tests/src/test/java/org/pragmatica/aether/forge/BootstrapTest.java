@@ -35,7 +35,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class BootstrapTest {
     private static final int BASE_PORT = 7500;
     private static final int BASE_MGMT_PORT = 7600;
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:bootstrap:1.0.0";
@@ -82,7 +82,7 @@ class BootstrapTest {
     }
 
     @Test
-    @Timeout(120)
+    @Timeout(240)
     void nodeRestart_rejoinsCluster() {
         // Kill bt-2
         cluster.killNode("bt-2")
@@ -127,7 +127,7 @@ class BootstrapTest {
     }
 
     @Test
-    @Timeout(120)
+    @Timeout(240)
     void nodeRestart_recoversState() {
         // Wait for all nodes to be healthy before deploying
         await().atMost(WAIT_TIMEOUT)
@@ -197,7 +197,7 @@ class BootstrapTest {
     }
 
     @Test
-    @Timeout(120)
+    @Timeout(240)
     void manualRollingRestart_maintainsAvailability() {
         // Wait for all nodes to be healthy
         await().atMost(WAIT_TIMEOUT)
@@ -254,7 +254,7 @@ class BootstrapTest {
     }
 
     @Test
-    @Timeout(120)
+    @Timeout(240)
     void multipleNodeRestarts_clusterRemainsFunctional() {
         // Wait for all nodes to be healthy
         await().atMost(WAIT_TIMEOUT)

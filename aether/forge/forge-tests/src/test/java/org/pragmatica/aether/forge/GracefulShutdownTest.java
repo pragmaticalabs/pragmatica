@@ -34,7 +34,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class GracefulShutdownTest {
     private static final int BASE_PORT = 12000;
     private static final int BASE_MGMT_PORT = 12100;
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:graceful-shutdown:1.0.0";

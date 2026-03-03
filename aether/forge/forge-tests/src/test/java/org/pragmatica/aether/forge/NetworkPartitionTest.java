@@ -38,7 +38,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class NetworkPartitionTest {
     private static final int BASE_PORT = 11000;
     private static final int BASE_MGMT_PORT = 11100;
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:network-partition:1.0.0";

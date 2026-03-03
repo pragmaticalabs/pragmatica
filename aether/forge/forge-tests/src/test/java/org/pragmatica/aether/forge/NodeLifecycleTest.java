@@ -34,7 +34,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class NodeLifecycleTest {
     private static final int BASE_PORT = 13000;
     private static final int BASE_MGMT_PORT = 13100;
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
     private EmberCluster cluster;

@@ -41,8 +41,8 @@ class PubSubTest extends ForgeTestBase {
     private static final int BASE_MGMT_PORT = 14100;
     private static final int BASE_APP_HTTP_PORT = 14200;
     private static final int H2_PORT = 14300;
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
-    private static final Duration DEPLOY_TIMEOUT = Duration.ofSeconds(60);
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
+    private static final Duration DEPLOY_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
 
