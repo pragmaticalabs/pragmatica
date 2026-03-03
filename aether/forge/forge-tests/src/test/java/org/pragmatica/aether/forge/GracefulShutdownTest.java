@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -30,6 +31,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///   - Slices are handled appropriately during shutdown
 ///   - Shutdown during ongoing operations
 ///
+@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 class GracefulShutdownTest {
     private static final int BASE_PORT = 12000;
