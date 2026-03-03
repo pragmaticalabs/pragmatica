@@ -1,10 +1,11 @@
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -32,6 +33,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///   - Controller endpoints (/controller/*)
 ///
 @Execution(ExecutionMode.SAME_THREAD)
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ManagementApiTest {
     private static final int BASE_PORT = 10000;
     private static final int BASE_MGMT_PORT = 10100;
@@ -43,10 +45,9 @@ class ManagementApiTest {
     private EmberCluster cluster;
     private HttpClient httpClient;
 
-    @BeforeEach
-    void setUp(TestInfo testInfo) {
-        int portOffset = getPortOffset(testInfo);
-        cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "ma");
+    @BeforeAll
+    void setUp() {
+        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "ma");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();
@@ -64,46 +65,19 @@ class ManagementApiTest {
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
-
-        // Stabilization time for consensus
-        try {
-            Thread.sleep(5000);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
     }
 
-    private int getPortOffset(TestInfo testInfo) {
-        return switch (testInfo.getTestMethod().map(m -> m.getName()).orElse("")) {
-            case "health_returnsQuorumStatus_andConnectedPeers" -> 0;
-            case "status_showsLeaderInfo_andNodeState" -> 20;
-            case "nodes_listsAllClusterMembers" -> 40;
-            case "slices_listsDeployedSlices_withState" -> 60;
-            case "metrics_returnsNodeMetrics_andSliceMetrics" -> 80;
-            case "prometheusMetrics_validFormat_scrapable" -> 100;
-            case "invocationMetrics_tracksCallsPerMethod" -> 120;
-            case "invocationMetrics_filtering_byArtifactAndMethod" -> 140;
-            case "slowInvocations_capturedAboveThreshold" -> 160;
-            case "invocationStrategy_returnsCurrentConfig" -> 180;
-            case "thresholds_setAndGet_persisted" -> 200;
-            case "thresholds_delete_removesThreshold" -> 220;
-            case "alerts_active_reflectsCurrentState" -> 240;
-            case "alerts_history_recordsPastAlerts" -> 260;
-            case "alerts_clear_removesAllAlerts" -> 280;
-            case "controllerConfig_getAndUpdate" -> 300;
-            case "controllerStatus_showsEnabledState" -> 320;
-            case "controllerEvaluate_triggersImmediateCheck" -> 340;
-            case "slicesStatus_returnsDetailedHealth" -> 360;
-            default -> 380;
-        };
+    @BeforeEach
+    void cleanUp() {
+        // Undeploy any slices left by previous tests
+        delete(anyNodePort(), "/api/blueprint/" + BLUEPRINT_ID);
     }
 
-    @AfterEach
-    void tearDown() throws InterruptedException {
+    @AfterAll
+    void tearDown() {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            Thread.sleep(3000);
         }
     }
 

@@ -1,10 +1,10 @@
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -36,6 +36,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// Prediction accuracy testing requires a trained ONNX model and is better
 /// suited for unit tests with mocked predictors.
 @Execution(ExecutionMode.SAME_THREAD)
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class TtmTest {
     private static final int BASE_PORT = 11500;
     private static final int BASE_MGMT_PORT = 11600;
@@ -45,10 +46,9 @@ class TtmTest {
     private EmberCluster cluster;
     private HttpClient httpClient;
 
-    @BeforeEach
-    void setUp(TestInfo testInfo) {
-        int portOffset = getPortOffset(testInfo);
-        cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "tm");
+    @BeforeAll
+    void setUp() {
+        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "tm");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();
@@ -64,25 +64,11 @@ class TtmTest {
                .until(() -> cluster.currentLeader().isPresent());
     }
 
-    private int getPortOffset(TestInfo testInfo) {
-        return switch (testInfo.getTestMethod().map(m -> m.getName()).orElse("")) {
-            case "ttmStatus_returnsValidJson" -> 0;
-            case "ttmStatus_showsDisabledByDefault" -> 5;
-            case "ttmStatus_includesConfigurationDetails" -> 10;
-            case "ttmStatus_availableOnAllNodes" -> 15;
-            case "ttmStatus_consistentAcrossCluster" -> 20;
-            case "ttmStatus_survivesLeaderFailure" -> 25;
-            case "ttmStatus_showsNoForecastWhenDisabled" -> 30;
-            default -> 35;
-        };
-    }
-
-    @AfterEach
-    void tearDown() throws InterruptedException {
+    @AfterAll
+    void tearDown() {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            Thread.sleep(3000);
         }
     }
 

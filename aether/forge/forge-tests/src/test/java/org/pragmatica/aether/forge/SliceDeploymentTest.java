@@ -1,9 +1,10 @@
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.TestInstance;
 import org.pragmatica.aether.slice.SliceState;
 
 import java.io.IOException;
@@ -34,6 +35,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///   - Blueprint deployment
 ///
 @Execution(ExecutionMode.SAME_THREAD)
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class SliceDeploymentTest {
     private static final int BASE_PORT = 5500;
     private static final int BASE_MGMT_PORT = 5600;
@@ -46,10 +48,9 @@ class SliceDeploymentTest {
     private EmberCluster cluster;
     private HttpClient httpClient;
 
-    @BeforeEach
-    void setUp(TestInfo testInfo) {
-        int portOffset = getPortOffset(testInfo);
-        cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "sd");
+    @BeforeAll
+    void setUp() {
+        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "sd");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();
@@ -67,33 +68,37 @@ class SliceDeploymentTest {
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
+    }
 
-        // Stabilization time for consensus
-        try {
-            Thread.sleep(5000);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+    @BeforeEach
+    void cleanUp() {
+        // Undeploy any slices left by previous tests
+        delete(cluster.getLeaderManagementPort().or(cluster.status().nodes().getFirst().mgmtPort()),
+               "/api/blueprint/" + BLUEPRINT_ID);
+        // Also undeploy any blueprint from blueprintApply test
+        delete(cluster.getLeaderManagementPort().or(cluster.status().nodes().getFirst().mgmtPort()),
+               "/api/blueprint/org.test:blueprint:1.0.0");
+
+        // Restore killed node if any (from deploySlice_survivesNodeFailure)
+        if (cluster.nodeCount() < 3) {
+            cluster.addNode().await();
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(() -> cluster.nodeCount() == 3);
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(() -> cluster.currentLeader().isPresent());
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(this::allNodesHealthy);
         }
     }
 
-    private int getPortOffset(TestInfo testInfo) {
-        return switch (testInfo.getTestMethod().map(m -> m.getName()).orElse("")) {
-            case "deploySlice_becomesActive" -> 0;
-            case "deploySlice_multipleInstances_distributedAcrossNodes" -> 20;
-            case "scaleSlice_adjustsInstanceCount" -> 40;
-            case "undeploySlice_removesFromCluster" -> 60;
-            case "deploySlice_survivesNodeFailure" -> 80;
-            case "blueprintApply_deploysMultipleSlices" -> 100;
-            default -> 120;
-        };
-    }
-
-    @AfterEach
-    void tearDown() throws InterruptedException {
+    @AfterAll
+    void tearDown() {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            Thread.sleep(3000);
         }
     }
 

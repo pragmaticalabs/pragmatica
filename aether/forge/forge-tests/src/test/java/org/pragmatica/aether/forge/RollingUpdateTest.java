@@ -69,9 +69,6 @@ class RollingUpdateTest {
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
 
-        // Stabilization time for consensus
-        sleep(Duration.ofSeconds(5));
-
         // Deploy old version
         var deployResponse = deploy(OLD_VERSION, 3);
         assertDeploymentSucceeded(deployResponse);
@@ -103,11 +100,10 @@ class RollingUpdateTest {
     }
 
     @AfterEach
-    void tearDown() throws InterruptedException {
+    void tearDown() {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            Thread.sleep(3000);
         }
     }
 

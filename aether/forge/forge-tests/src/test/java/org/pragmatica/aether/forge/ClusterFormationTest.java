@@ -1,9 +1,9 @@
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -32,6 +32,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///   - Metrics availability
 ///
 @Execution(ExecutionMode.SAME_THREAD)
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ClusterFormationTest {
     private static final int BASE_PORT = 5050;
     private static final int BASE_MGMT_PORT = 5150;
@@ -41,53 +42,38 @@ class ClusterFormationTest {
     private EmberCluster cluster;
     private HttpClient httpClient;
 
-    @BeforeEach
-    void setUp(TestInfo testInfo) {
-        int portOffset = getPortOffset(testInfo);
-        cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "cf");
+    @BeforeAll
+    void setUp() {
+        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "cf");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();
-    }
 
-    private int getPortOffset(TestInfo testInfo) {
-        return switch (testInfo.getTestMethod().map(m -> m.getName()).orElse("")) {
-            case "threeNodeCluster_formsQuorum_andElectsLeader" -> 0;
-            case "cluster_nodesVisibleToAllMembers" -> 20;
-            case "cluster_statusConsistent_acrossNodes" -> 40;
-            case "cluster_metricsAvailable_afterFormation" -> 60;
-            default -> 80;
-        };
-    }
-
-    @AfterEach
-    void tearDown() throws InterruptedException {
-        if (cluster != null) {
-            cluster.stop()
-                   .await();
-            // Allow time for ports to be released before next test
-            Thread.sleep(3000);
-        }
-    }
-
-    @Test
-    void threeNodeCluster_formsQuorum_andElectsLeader() {
         cluster.start()
                .await()
                .onFailure(cause -> {
                    throw new AssertionError("Cluster start failed: " + cause.message());
                });
 
-        // Wait for leader election
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(() -> cluster.currentLeader().isPresent());
 
-        // Wait for all nodes to be healthy with quorum
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
+    }
 
+    @AfterAll
+    void tearDown() {
+        if (cluster != null) {
+            cluster.stop()
+                   .await();
+        }
+    }
+
+    @Test
+    void threeNodeCluster_formsQuorum_andElectsLeader() {
         // All nodes should be running
         assertThat(cluster.nodeCount()).isEqualTo(3);
 
@@ -103,20 +89,6 @@ class ClusterFormationTest {
 
     @Test
     void cluster_nodesVisibleToAllMembers() {
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(this::allNodesHealthy);
-
         // Each node should report 2 connected peers via /api/health endpoint
         for (var node : cluster.status().nodes()) {
             var health = getHealth(node.mgmtPort());
@@ -127,20 +99,6 @@ class ClusterFormationTest {
 
     @Test
     void cluster_statusConsistent_acrossNodes() {
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(this::allNodesHealthy);
-
         // Collect status from all nodes
         var leaderNode = cluster.currentLeader().unwrap();
 
@@ -153,20 +111,6 @@ class ClusterFormationTest {
 
     @Test
     void cluster_metricsAvailable_afterFormation() {
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(this::allNodesHealthy);
-
         var anyNodePort = cluster.status().nodes().getFirst().mgmtPort();
         var metrics = getMetrics(anyNodePort);
 

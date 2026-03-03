@@ -1,10 +1,11 @@
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -36,6 +37,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// The echo-slice has an echo method. Tests focus on infrastructure and error handling
 /// rather than successful invocations.
 @Execution(ExecutionMode.SAME_THREAD)
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class SliceInvocationTest {
     private static final int BASE_PORT = 6000;
     private static final int BASE_MGMT_PORT = 6100;
@@ -47,10 +49,9 @@ class SliceInvocationTest {
     private EmberCluster cluster;
     private HttpClient httpClient;
 
-    @BeforeEach
-    void setUp(TestInfo testInfo) {
-        int portOffset = getPortOffset(testInfo);
-        cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "si");
+    @BeforeAll
+    void setUp() {
+        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "si");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();
@@ -69,27 +70,18 @@ class SliceInvocationTest {
                .until(this::allNodesHealthy);
     }
 
-    private int getPortOffset(TestInfo testInfo) {
-        return switch (testInfo.getTestMethod().map(m -> m.getName()).orElse("")) {
-            case "invokeNonExistentRoute_returns404" -> 0;
-            case "invokeWithInvalidMethod_returnsError" -> 20;
-            case "routesEndpoint_returnsRegisteredRoutes" -> 40;
-            case "afterSliceDeployment_routesAreAvailable" -> 60;
-            case "invokeWithMalformedBody_returnsError" -> 80;
-            case "invokeWithEmptyBody_handledGracefully" -> 100;
-            case "invokeAfterSliceUndeploy_returnsNotFound" -> 120;
-            case "multipleNodes_allCanHandleRequests" -> 140;
-            case "requestToAnyNode_succeeds" -> 160;
-            default -> 180;
-        };
+    @BeforeEach
+    void cleanUp() {
+        // Undeploy any slices left by previous tests
+        var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
+        httpRequestDelete(leaderPort, "/api/blueprint/" + BLUEPRINT_ID);
     }
 
-    @AfterEach
-    void tearDown() throws InterruptedException {
+    @AfterAll
+    void tearDown() {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            Thread.sleep(3000);
         }
     }
 
