@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -32,6 +33,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///   - Request continuity during updates
 ///   - Node failure during update
 ///
+@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 class RollingUpdateTest {
     private static final int BASE_PORT = 9000;

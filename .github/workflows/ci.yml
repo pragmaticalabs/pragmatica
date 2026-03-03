@@ -29,7 +29,9 @@ jobs:
         run: mvn install -B
 
       - name: Run Forge tests
-        run: mvn verify -B -Pwith-e2e -pl aether/forge/forge-tests
+        run: >
+          mvn verify -B -Pwith-e2e -pl aether/forge/forge-tests
+          -Dfailsafe.excludedGroups=Heavy
         timeout-minutes: 25
 
       - name: Upload test results

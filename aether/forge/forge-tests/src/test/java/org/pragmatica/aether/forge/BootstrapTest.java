@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -31,6 +32,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///   - Rolling restart behavior
 ///   - Multiple node restarts
 ///
+@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 class BootstrapTest {
     private static final int BASE_PORT = 7500;

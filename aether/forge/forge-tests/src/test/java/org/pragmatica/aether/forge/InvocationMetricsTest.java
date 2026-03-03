@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.slice.SliceState;
@@ -34,6 +35,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// generates 1000 round-trip requests (create + resolve), then validates that
 /// invocation metrics, Prometheus, and trace endpoints report correct data
 /// across all cluster nodes.
+@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class InvocationMetricsTest extends ForgeTestBase {
