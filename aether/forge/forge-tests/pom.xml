@@ -64,6 +64,7 @@
                     <includes>
                         <include>**/*Test.java</include>
                     </includes>
+                    <excludedGroups>${failsafe.excludedGroups}</excludedGroups>
                     <forkCount>1</forkCount>
                     <reuseForks>true</reuseForks>
                     <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
