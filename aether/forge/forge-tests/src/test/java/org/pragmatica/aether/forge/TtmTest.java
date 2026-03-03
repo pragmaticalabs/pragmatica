@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -35,6 +36,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// Note: These tests verify TTM infrastructure, not prediction accuracy.
 /// Prediction accuracy testing requires a trained ONNX model and is better
 /// suited for unit tests with mocked predictors.
+@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class TtmTest {
