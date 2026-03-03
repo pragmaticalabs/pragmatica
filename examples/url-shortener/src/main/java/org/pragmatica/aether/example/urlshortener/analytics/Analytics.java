@@ -1,11 +1,13 @@
 package org.pragmatica.aether.example.urlshortener.analytics;
 
+import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.ClickEvent;
 import org.pragmatica.aether.resource.db.Sql;
 import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 
 import java.util.regex.Pattern;
@@ -13,6 +15,7 @@ import java.util.regex.Pattern;
 /// Analytics slice - tracks URL access statistics.
 ///
 /// Uses database storage with clicks table to track click counts per short code.
+/// Subscribes to click events published by UrlShortener via pub-sub.
 @Slice
 public interface Analytics {
     // === Requests ===
@@ -87,6 +90,9 @@ public interface Analytics {
 
     Promise<GetStatsResponse> getStats(GetStatsRequest request);
 
+    @ClickEventSubscription
+    Promise<Unit> onClickEvent(ClickEvent event);
+
     // === Factory ===
     static Analytics analytics(@Sql SqlConnector db) {
         return new analytics(db);
@@ -110,6 +116,13 @@ public interface Analytics {
             return getClickCount(shortCode).map(count -> GetStatsResponse.getStatsResponse(shortCode, count));
         }
 
+        @Override
+        public Promise<Unit> onClickEvent(ClickEvent event) {
+            return db.update(INSERT_CLICK,
+                             event.shortCode())
+                     .mapToUnit();
+        }
+
         private Promise<Long> getClickCount(String shortCode) {
             return db.queryOne(COUNT_CLICKS, row -> row.getLong("click_count"), shortCode);
         }
@@ -126,6 +139,11 @@ public interface Analytics {
             @Override
             public Promise<GetStatsResponse> getStats(GetStatsRequest request) {
                 return Promise.success(GetStatsResponse.getStatsResponse(request.shortCode(), 0));
+            }
+
+            @Override
+            public Promise<Unit> onClickEvent(ClickEvent event) {
+                return Promise.success(Unit.unit());
             }
         };
     }

@@ -1,5 +1,8 @@
 # Aether runtime configuration
 
+[messaging.click-events]
+topic_name = "click-events"
+
 [database]
 type = "POSTGRESQL"
 name = "url-shortener"

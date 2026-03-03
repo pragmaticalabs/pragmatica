@@ -3,7 +3,6 @@ package org.pragmatica.aether.example.urlshortener.shortener;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.example.urlshortener.analytics.Analytics;
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.ResolveRequest;
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.ShortenRequest;
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.UrlError;
@@ -13,14 +12,12 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 class UrlShortenerTest {
     private InMemoryDatabaseConnector db;
-    private Analytics analytics;
     private UrlShortener urlShortener;
 
     @BeforeEach
     void setup() {
         db = InMemoryDatabaseConnector.inMemoryDatabaseConnector();
-        analytics = Analytics.analytics(db);
-        urlShortener = UrlShortener.urlShortener(db, analytics);
+        urlShortener = UrlShortener.urlShortener(db);
     }
 
     @Nested
@@ -187,28 +184,6 @@ class UrlShortenerTest {
                         .await()
                         .onSuccessRun(() -> fail("Expected failure"))
                         .onFailure(cause -> assertThat(cause).isInstanceOf(UrlError.NotFound.class));
-        }
-
-        @Test
-        void resolve_recordsClick_forExistingCode() {
-            var url = "https://example.com/track-clicks";
-            var shortenedCode = urlShortener.shorten(ShortenRequest.shortenRequest(url).unwrap())
-                                            .await()
-                                            .unwrap()
-                                            .shortCode();
-
-            var resolveRequest = ResolveRequest.resolveRequest(shortenedCode).unwrap();
-
-            // Resolve multiple times
-            urlShortener.resolve(resolveRequest).await();
-            urlShortener.resolve(resolveRequest).await();
-            urlShortener.resolve(resolveRequest).await();
-
-            // Check analytics
-            analytics.getStats(Analytics.GetStatsRequest.getStatsRequest(shortenedCode).unwrap())
-                     .await()
-                     .onFailureRun(() -> fail("Expected success"))
-                     .onSuccess(stats -> assertThat(stats.clickCount()).isEqualTo(3));
         }
     }
 
