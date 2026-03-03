@@ -20,7 +20,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.LinkedList;
+import java.util.ArrayDeque;
 import java.util.Queue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
@@ -41,8 +41,8 @@ public class PgConnectionPool extends PgConnectible {
 
     private final Lock guard = new ReentrantLock();
     private int size;
-    private final Queue<Promise<Connection>> pending = new LinkedList<>();
-    private final Queue<PgConnection> connections = new LinkedList<>();
+    private final Queue<Promise<Connection>> pending = new ArrayDeque<>();
+    private final Queue<PgConnection> connections = new ArrayDeque<>();
     private Promise<Unit> closing;
 
     public PgConnectionPool(ConnectibleBuilder.ConnectibleConfiguration properties,

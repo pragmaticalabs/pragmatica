@@ -28,6 +28,7 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.charset.Charset;
 import java.util.*;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.function.Consumer;
 
 /**
@@ -38,7 +39,7 @@ import java.util.function.Consumer;
 public abstract class PgProtocolStream implements ProtocolStream {
     private static final Logger log = LoggerFactory.getLogger(PgProtocolStream.class);
 
-    sealed interface ActiveQuery {
+    protected sealed interface ActiveQuery {
         record SimpleQuery(
             Consumer<RowDescription.ColumnDescription[]> onColumns,
             Consumer<DataRow> onRow,
@@ -53,12 +54,12 @@ public abstract class PgProtocolStream implements ProtocolStream {
         record SingleMessage() implements ActiveQuery {}
     }
 
+    private record PendingQuery(Promise<? super Message> response, ActiveQuery query) {}
+
     protected final Charset encoding;
 
-    private volatile Promise<? super Message> onResponse;
+    private final Deque<PendingQuery> pipeline = new ConcurrentLinkedDeque<>();
     private final Map<String, Set<Consumer<String>>> subscriptions = new HashMap<>();
-
-    private ActiveQuery activeQuery;
 
     private boolean seenReadyForQuery;
     private Message readyForQueryPendingMessage;
@@ -67,15 +68,21 @@ public abstract class PgProtocolStream implements ProtocolStream {
         this.encoding = encoding;
     }
 
-    private void consumeOnResponse(Cause cause, Message message) {
-        var wasOnResponse = onResponse;
-        onResponse = null;
+    private void completeHead(Cause cause, Message message) {
+        var finished = pipeline.pollFirst();
 
-        if (cause != null) {
-            wasOnResponse.fail(cause);
-        } else {
-            wasOnResponse.succeed(message);
+        if (finished != null) {
+            if (cause != null) {
+                finished.response().fail(cause);
+            } else {
+                finished.response().succeed(message);
+            }
         }
+    }
+
+    private ActiveQuery currentQuery() {
+        var head = pipeline.peekFirst();
+        return head != null ? head.query() : null;
     }
 
     @Override
@@ -113,8 +120,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
 
     @Override
     public Promise<Message> send(Message message) {
-        return offerRoundTrip(() -> {
-            activeQuery = new ActiveQuery.SingleMessage();
+        return offerRoundTrip(new ActiveQuery.SingleMessage(), () -> {
             write(message);
             if (message instanceof ExtendedQueryMessage) {
                 write(FIndicators.SYNC);
@@ -127,8 +133,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
                               Consumer<RowDescription.ColumnDescription[]> onColumns,
                               Consumer<DataRow> onRow,
                               Consumer<CommandComplete> onAffected) {
-        return offerRoundTrip(() -> {
-            activeQuery = new ActiveQuery.SimpleQuery(onColumns, onRow, onAffected);
+        return offerRoundTrip(new ActiveQuery.SimpleQuery(onColumns, onRow, onAffected), () -> {
             write(query);
         }).mapToUnit();
     }
@@ -138,16 +143,14 @@ public abstract class PgProtocolStream implements ProtocolStream {
                                  Describe describe,
                                  Consumer<RowDescription.ColumnDescription[]> onColumns,
                                  Consumer<DataRow> onRow) {
-        return offerRoundTrip(() -> {
-            activeQuery = new ActiveQuery.ExtendedQuery(onColumns, onRow);
+        return offerRoundTrip(new ActiveQuery.ExtendedQuery(onColumns, onRow), () -> {
             write(bind, describe, new Execute(), FIndicators.SYNC);
         }).map(commandComplete -> ((CommandComplete) commandComplete).affectedRows());
     }
 
     @Override
     public Promise<Integer> send(Bind bind, Consumer<DataRow> onRow) {
-        return offerRoundTrip(() -> {
-            activeQuery = new ActiveQuery.ExtendedQuery(null, onRow);
+        return offerRoundTrip(new ActiveQuery.ExtendedQuery(null, onRow), () -> {
             write(bind, new Execute(), FIndicators.SYNC);
         }).map(commandComplete -> ((CommandComplete) commandComplete).affectedRows());
     }
@@ -165,11 +168,11 @@ public abstract class PgProtocolStream implements ProtocolStream {
     }
 
     protected void gotError(Cause cause) {
-        activeQuery = null;
         readyForQueryPendingMessage = null;
 
-        if (onResponse != null) {
-            consumeOnResponse(cause, null);
+        PendingQuery pending;
+        while ((pending = pipeline.pollFirst()) != null) {
+            pending.response().fail(cause);
         }
     }
 
@@ -179,7 +182,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
             case BIndicators.BindComplete _ -> {} // no-op since bulk message sequence
             case BIndicators.ParseComplete _, BIndicators.CloseComplete _ -> readyForQueryPendingMessage = message;
             case RowDescription rowDescription -> {
-                switch (activeQuery) {
+                switch (currentQuery()) {
                     case ActiveQuery.SimpleQuery sq -> sq.onColumns().accept(rowDescription.getColumns());
                     case ActiveQuery.ExtendedQuery eq -> eq.onColumns().accept(rowDescription.getColumns());
                     case ActiveQuery.SingleMessage _ -> {}
@@ -187,7 +190,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
                 }
             }
             case BIndicators.NoData _ -> {
-                switch (activeQuery) {
+                switch (currentQuery()) {
                     case ActiveQuery.SimpleQuery sq -> sq.onColumns().accept(new RowDescription.ColumnDescription[]{});
                     case ActiveQuery.ExtendedQuery eq -> eq.onColumns().accept(new RowDescription.ColumnDescription[]{});
                     case ActiveQuery.SingleMessage _ -> {}
@@ -195,7 +198,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
                 }
             }
             case DataRow dataRow -> {
-                switch (activeQuery) {
+                switch (currentQuery()) {
                     case ActiveQuery.SimpleQuery sq -> sq.onRow().accept(dataRow);
                     case ActiveQuery.ExtendedQuery eq -> eq.onRow().accept(dataRow);
                     case ActiveQuery.SingleMessage _ -> {}
@@ -210,7 +213,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
                 }
             }
             case CommandComplete commandComplete -> {
-                if (activeQuery instanceof ActiveQuery.SimpleQuery sq) {
+                if (currentQuery() instanceof ActiveQuery.SimpleQuery sq) {
                     sq.onAffected().accept(commandComplete);
                 } else {
                     readyForQueryPendingMessage = message;
@@ -220,48 +223,44 @@ public abstract class PgProtocolStream implements ProtocolStream {
                 if (authentication.authenticationOk() || authentication.saslServerFinalResponse()) {
                     readyForQueryPendingMessage = message;
                 } else {
-                    consumeOnResponse(null, message);
+                    completeHead(null, message);
                 }
             }
             case ReadyForQuery _ -> {
                 seenReadyForQuery = true;
                 if (readyForQueryPendingMessage instanceof ErrorResponse errorResponse) {
-                    gotError(toSqlCause(errorResponse));
+                    readyForQueryPendingMessage = null;
+                    completeHead(toSqlCause(errorResponse), null);
                 } else {
-                    activeQuery = null;
                     var response = readyForQueryPendingMessage != null ? readyForQueryPendingMessage : message;
-                    consumeOnResponse(null, response);
+                    readyForQueryPendingMessage = null;
+                    completeHead(null, response);
                 }
-                readyForQueryPendingMessage = null;
             }
             case ParameterStatus _, BackendKeyData _, UnknownMessage _ -> log.trace("{}", message);
             case NoticeResponse _ -> log.debug("{}", message);
-            case null, default -> consumeOnResponse(null, message);
+            case null, default -> completeHead(null, message);
         }
     }
 
-    private Promise<Message> offerRoundTrip(Runnable requestAction) {
-        return offerRoundTrip(requestAction, true);
+    private Promise<Message> offerRoundTrip(ActiveQuery query, Runnable writeAction) {
+        return offerRoundTrip(query, writeAction, true);
     }
 
-    protected Promise<Message> offerRoundTrip(Runnable requestAction, boolean assumeConnected) {
+    protected Promise<Message> offerRoundTrip(ActiveQuery query, Runnable writeAction, boolean assumeConnected) {
         var uponResponse = Promise.<Message>promise();
 
         if (!assumeConnected || isConnected()) {
-            if (onResponse == null) {
-                onResponse = uponResponse;
-                try {
-                    requestAction.run();
-                } catch (Throwable th) {
-                    gotError(SqlError.fromThrowable(th));
-                }
-            } else {
-                var error = new SqlError.SimultaneousUseDetected("Postgres messages stream simultaneous use detected");
-                uponResponse.fail(error);
+            var pending = new PendingQuery(uponResponse, query);
+            pipeline.addLast(pending);
+            try {
+                writeAction.run();
+            } catch (Throwable th) {
+                pipeline.remove(pending);
+                uponResponse.fail(SqlError.fromThrowable(th));
             }
         } else {
-            var error = new SqlError.ChannelClosed("Channel is closed");
-            uponResponse.fail(error);
+            uponResponse.fail(new SqlError.ChannelClosed("Channel is closed"));
         }
         return uponResponse;
     }

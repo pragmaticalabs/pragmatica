@@ -73,7 +73,8 @@ public class NettyPgProtocolStream extends PgProtocolStream {
     @Override
     public Promise<Message> connect(StartupMessage startup) {
         startupWith = startup;
-        return offerRoundTrip(() -> channelPipeline.connect(address).addListener(outboundErrorListener), false)
+        return offerRoundTrip(new ActiveQuery.SingleMessage(),
+                              () -> channelPipeline.connect(address).addListener(outboundErrorListener), false)
             .flatMap(this::send)
             .flatMap(message -> connectSslOrDirect(message, startup));
     }

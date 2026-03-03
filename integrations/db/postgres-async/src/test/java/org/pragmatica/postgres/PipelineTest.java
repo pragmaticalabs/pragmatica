@@ -16,7 +16,6 @@ package org.pragmatica.postgres;
 
 import org.pragmatica.postgres.net.Connectible;
 import org.pragmatica.postgres.net.Connection;
-import org.pragmatica.postgres.net.SqlException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -27,16 +26,13 @@ import org.pragmatica.lang.Unit;
 
 import java.util.Deque;
 import java.util.concurrent.LinkedBlockingDeque;
-import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.IntStream;
 
 import static org.pragmatica.postgres.DatabaseExtension.block;
 import static java.lang.System.currentTimeMillis;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.pragmatica.lang.Unit.unit;
 
@@ -52,7 +48,6 @@ public class PipelineTest {
     @RegisterExtension
     static final DatabaseExtension dbr = DatabaseExtension.defaultConfiguration();
 
-    private Connection c;
     private Connectible pool;
 
     @BeforeEach
@@ -62,9 +57,6 @@ public class PipelineTest {
 
     @AfterEach
     public void closePool() {
-        if (c != null) {
-            block(c.close());
-        }
         if (pool != null) {
             block(pool.close());
         }
@@ -94,54 +86,24 @@ public class PipelineTest {
         assertTrue(MILLISECONDS.toSeconds(readTime + 999) >= remoteWaitTimeSeconds);
     }
 
-    private Connection getConnection() throws InterruptedException {
-        var connQueue = new SynchronousQueue<Connection>();
-
-        pool.getConnection()
-            .onSuccess(connQueue::offer);
-
-        return c = connQueue.take();
-    }
-
     @Test
-    public void messageStreamEnsuresSequentialAccess() {
-        assertThrows(SqlException.class, () -> {
-            var connection = getConnection();
-
-            try {
-                var promises = IntStream.range(0, 10)
-                    .mapToObj(i -> connection.completeQuery("select " + i + ", pg_sleep(10)")
-                                            .recover(cause -> {
-                                                throw new IllegalStateException(new SqlException(cause.message()));
-                                            }))
-                    .toList();
-                var result = Promise.<Unit>promise();
-                var remaining = new AtomicInteger(promises.size());
-                for (var p : promises) {
-                    p.onResult(r -> r.fold(
-                        cause -> {
-                            result.fail(cause);
-                            return null;
-                        },
-                        _ -> {
-                            if (remaining.decrementAndGet() == 0) {
-                                result.succeed(unit());
-                            }
-                            return null;
-                        }
-                    ));
-                }
-                block(result);
-            } catch (SqlException ex) {
-                throw ex;
-            } catch (Exception ex) {
-                DatabaseExtension.ifCause(ex, sqlException -> {
-                    throw sqlException;
-                }, () -> {
-                    throw ex;
+    public void poolPipelinesMultipleConcurrentQueries() throws InterruptedException {
+        int count = 10;
+        Deque<Long> results = new LinkedBlockingDeque<>();
+        long startWrite = currentTimeMillis();
+        for (int i = 0; i < count; ++i) {
+            pool.completeQuery("select " + i)
+                .withSuccess(_ -> results.add(currentTimeMillis()))
+                .recover(cause -> {
+                    throw new AssertionError("failed", new Exception(cause.message()));
                 });
-            }
-        });
+        }
+        long writeTime = currentTimeMillis() - startWrite;
+
+        SECONDS.sleep(3);
+
+        assertEquals(count, results.size());
+        assertEquals(0L, MILLISECONDS.toSeconds(writeTime));
     }
 
 }

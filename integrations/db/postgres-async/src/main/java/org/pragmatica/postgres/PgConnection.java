@@ -97,6 +97,9 @@ public class PgConnection implements Connection {
         }
 
         private Promise<Unit> closeWithCache() {
+            if (statementCache.get(sql) == this) {
+                return Promise.success(unit());
+            }
             PgPreparedStatement already = statementCache.put(sql, this);
             if (evicted != null) {
                 try {
@@ -198,7 +201,7 @@ public class PgConnection implements Connection {
     @Override
     public Promise<? extends PreparedStatement> prepareStatement(String sql, Oid... parametersTypes) {
         if (statementCache != null) {
-            var cached = statementCache.remove(sql);
+            var cached = statementCache.get(sql);
             if (cached != null) {
                 return Promise.success(cached);
             }
@@ -251,7 +254,12 @@ public class PgConnection implements Connection {
                                   Object... params) {
         return prepareStatement(sql, dataConverter.assumeTypes(params))
             .flatMap(ps -> ps.fetch(onColumns, onRow, params)
-                             .fold(result -> closePreparedStatement(result, ps)));
+                             .fold(result -> isStatementCached(sql) ? Promise.resolved(result)
+                                                                    : closePreparedStatement(result, ps)));
+    }
+
+    private boolean isStatementCached(String sql) {
+        return statementCache != null && statementCache.containsKey(sql);
     }
 
     private static Promise<Integer> closePreparedStatement(Result<Integer> result, PreparedStatement ps) {
