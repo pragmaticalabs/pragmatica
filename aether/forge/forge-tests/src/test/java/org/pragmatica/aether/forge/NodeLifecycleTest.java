@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -27,6 +28,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///
 /// Validates that nodes register ON_DUTY lifecycle state after quorum,
 /// and that drain/activate/shutdown transitions work correctly via the management API.
+@Tag("Heavy")
 @SuppressWarnings("JBCT-NAM-01")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
