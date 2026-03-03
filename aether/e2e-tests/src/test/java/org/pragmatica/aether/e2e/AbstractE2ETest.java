@@ -24,9 +24,9 @@ public abstract class AbstractE2ETest {
 
     // Common timeouts as TimeSpan (use .duration() for awaitility compatibility)
     // CI environments get 2x multiplier via TestEnvironment.adapt()
-    protected static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(30).seconds().duration());
-    protected static final Duration DEPLOY_TIMEOUT = adapt(timeSpan(3).minutes().duration());
-    protected static final Duration RECOVERY_TIMEOUT = adapt(timeSpan(60).seconds().duration());
+    protected static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(15).seconds().duration());
+    protected static final Duration DEPLOY_TIMEOUT = adapt(timeSpan(90).seconds().duration());
+    protected static final Duration RECOVERY_TIMEOUT = adapt(timeSpan(30).seconds().duration());
     protected static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
 
     // Common artifact for slice deployment tests - pure function echo slice
@@ -37,9 +37,9 @@ public abstract class AbstractE2ETest {
     protected AetherCluster cluster;
 
     /// Returns the cluster size for this test class.
-    /// Override to specify a different size (default is 5).
+    /// Override to specify a different size (default is 3).
     protected int clusterSize() {
-        return 5;
+        return 3;
     }
 
     /// Hook for additional setup after cluster is ready.

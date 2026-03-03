@@ -51,7 +51,7 @@ import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 /// }```
 public class AetherCluster implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(AetherCluster.class);
-    private static final Duration QUORUM_TIMEOUT = adapt(Duration.ofSeconds(120));
+    private static final Duration QUORUM_TIMEOUT = adapt(Duration.ofSeconds(60));
     private static final Duration POLL_INTERVAL = Duration.ofSeconds(2);
 
     // Local Maven repository path and test artifacts
@@ -310,7 +310,7 @@ public class AetherCluster implements AutoCloseable {
 
     // Track stuck states to detect infrastructure issues early
     private final Map<String, Long> stuckStateStartTime = new java.util.concurrent.ConcurrentHashMap<>();
-    private static final Duration STUCK_STATE_THRESHOLD = adapt(Duration.ofSeconds(60));
+    private static final Duration STUCK_STATE_THRESHOLD = adapt(Duration.ofSeconds(30));
 
     /// Checks slice state, throwing exception on FAILED, returning true on ACTIVE.
     /// Also detects when a slice is stuck in an intermediate or NOT_FOUND state for too long.
