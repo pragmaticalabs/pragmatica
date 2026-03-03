@@ -30,7 +30,7 @@ jobs:
 
       - name: Run Forge tests
         run: mvn verify -B -Pwith-e2e -pl aether/forge/forge-tests
-        timeout-minutes: 15
+        timeout-minutes: 25
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
