@@ -10,6 +10,7 @@ import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.time.*;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -210,6 +211,124 @@ public class DataConverter {
         if (value == null) return null;
         if (binary) return value[0] != 0;
         return BooleanConversions.toBoolean(oid, new String(value, encoding));
+    }
+
+    // Binary-aware overloads with offset/length (zero-copy from DataRow buffer)
+
+    public String toString(Oid oid, byte[] data, int offset, int length, boolean binary) {
+        if (length == -1) return null;
+        if (binary) return new String(data, offset, length, encoding);
+        return StringConversions.asString(oid, new String(data, offset, length, encoding));
+    }
+
+    public Character toChar(Oid oid, byte[] data, int offset, int length, boolean binary) {
+        if (length == -1) return null;
+        if (binary) return (char) data[offset];
+        return StringConversions.toChar(oid, new String(data, offset, length, encoding));
+    }
+
+    public Long toLong(Oid oid, byte[] data, int offset, int length, boolean binary) {
+        if (length == -1) return null;
+        if (binary) return ByteBuffer.wrap(data, offset, 8).getLong();
+        return NumericConversions.toLong(oid, new String(data, offset, length, encoding));
+    }
+
+    public Integer toInteger(Oid oid, byte[] data, int offset, int length, boolean binary) {
+        if (length == -1) return null;
+        if (binary) return ByteBuffer.wrap(data, offset, 4).getInt();
+        return NumericConversions.toInteger(oid, new String(data, offset, length, encoding));
+    }
+
+    public Short toShort(Oid oid, byte[] data, int offset, int length, boolean binary) {
+        if (length == -1) return null;
+        if (binary) return ByteBuffer.wrap(data, offset, 2).getShort();
+        return NumericConversions.toShort(oid, new String(data, offset, length, encoding));
+    }
+
+    public Byte toByte(Oid oid, byte[] data, int offset, int length, boolean binary) {
+        if (length == -1) return null;
+        if (binary) return data[offset];
+        return NumericConversions.toByte(oid, new String(data, offset, length, encoding));
+    }
+
+    public BigInteger toBigInteger(Oid oid, byte[] data, int offset, int length, boolean binary) {
+        if (length == -1) return null;
+        if (binary) return BigInteger.valueOf(ByteBuffer.wrap(data, offset, 8).getLong());
+        return NumericConversions.toBigInteger(oid, new String(data, offset, length, encoding));
+    }
+
+    public BigDecimal toBigDecimal(Oid oid, byte[] data, int offset, int length, boolean binary) {
+        if (length == -1) return null;
+        if (binary) {
+            var buf = ByteBuffer.wrap(data, offset, length);
+            return length == 4 ? BigDecimal.valueOf(buf.getFloat())
+                 : length == 8 ? BigDecimal.valueOf(buf.getDouble())
+                 : new BigDecimal(new String(data, offset, length, encoding));
+        }
+        return NumericConversions.toBigDecimal(oid, new String(data, offset, length, encoding));
+    }
+
+    public Double toDouble(Oid oid, byte[] data, int offset, int length, boolean binary) {
+        if (length == -1) return null;
+        if (binary) {
+            var buf = ByteBuffer.wrap(data, offset, length);
+            return length == 4 ? (double) buf.getFloat() : buf.getDouble();
+        }
+        return NumericConversions.toDouble(oid, new String(data, offset, length, encoding));
+    }
+
+    public LocalDate toLocalDate(Oid oid, byte[] data, int offset, int length, boolean binary) {
+        if (length == -1) return null;
+        if (binary) {
+            int days = ByteBuffer.wrap(data, offset, 4).getInt();
+            return LocalDate.of(2000, 1, 1).plusDays(days);
+        }
+        return TemporalConversions.toLocalDate(oid, new String(data, offset, length, encoding));
+    }
+
+    public LocalDateTime toLocalDateTime(Oid oid, byte[] data, int offset, int length, boolean binary) {
+        if (length == -1) return null;
+        if (binary) {
+            long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
+            long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
+            long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
+            int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+            return LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC);
+        }
+        return TemporalConversions.toLocalDateTime(oid, new String(data, offset, length, encoding));
+    }
+
+    public LocalTime toLocalTime(Oid oid, byte[] data, int offset, int length, boolean binary) {
+        if (length == -1) return null;
+        if (binary) {
+            long micros = ByteBuffer.wrap(data, offset, 8).getLong();
+            return LocalTime.ofNanoOfDay(micros * 1000);
+        }
+        return TemporalConversions.toLocalTime(oid, new String(data, offset, length, encoding));
+    }
+
+    public Instant toInstant(Oid oid, byte[] data, int offset, int length, boolean binary) {
+        if (length == -1) return null;
+        if (binary) {
+            long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
+            long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
+            long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
+            int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+            return Instant.ofEpochSecond(epochSecs, nanoAdj);
+        }
+        return TemporalConversions.toInstant(oid, new String(data, offset, length, encoding));
+    }
+
+    public byte[] toBytes(Oid oid, byte[] data, int offset, int length, boolean binary) {
+        if (length == -1) return null;
+        if (binary) return Arrays.copyOfRange(data, offset, offset + length);
+        return BlobConversions.toBytes(oid, new String(data, offset + 2, length - 2, encoding));
+    }
+
+    public Boolean toBoolean(Oid oid, byte[] data, int offset, int length, boolean binary) {
+        if (length == -1) return null;
+        if (binary) return data[offset] != 0;
+        return BooleanConversions.toBoolean(oid, new String(data, offset, length, encoding));
     }
 
     public static short[] resultFormatCodes(PgColumn[] columns) {

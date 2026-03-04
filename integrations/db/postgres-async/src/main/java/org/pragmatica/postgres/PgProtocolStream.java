@@ -38,6 +38,8 @@ import java.util.function.Consumer;
  */
 public abstract class PgProtocolStream implements ProtocolStream {
     private static final Logger log = LoggerFactory.getLogger(PgProtocolStream.class);
+    private static final Execute EXECUTE = new Execute();
+    private static final RowDescription.ColumnDescription[] EMPTY_COLUMNS = {};
 
     protected sealed interface ActiveQuery {
         record SimpleQuery(
@@ -144,14 +146,14 @@ public abstract class PgProtocolStream implements ProtocolStream {
                                  Consumer<RowDescription.ColumnDescription[]> onColumns,
                                  Consumer<DataRow> onRow) {
         return offerRoundTrip(new ActiveQuery.ExtendedQuery(onColumns, onRow), () -> {
-            write(bind, describe, new Execute(), FIndicators.SYNC);
+            write(bind, describe, EXECUTE, FIndicators.SYNC);
         }).map(commandComplete -> ((CommandComplete) commandComplete).affectedRows());
     }
 
     @Override
     public Promise<Integer> send(Bind bind, Consumer<DataRow> onRow) {
         return offerRoundTrip(new ActiveQuery.ExtendedQuery(null, onRow), () -> {
-            write(bind, new Execute(), FIndicators.SYNC);
+            write(bind, EXECUTE, FIndicators.SYNC);
         }).map(commandComplete -> ((CommandComplete) commandComplete).affectedRows());
     }
 
@@ -191,8 +193,8 @@ public abstract class PgProtocolStream implements ProtocolStream {
             }
             case BIndicators.NoData _ -> {
                 switch (currentQuery()) {
-                    case ActiveQuery.SimpleQuery sq -> sq.onColumns().accept(new RowDescription.ColumnDescription[]{});
-                    case ActiveQuery.ExtendedQuery eq -> eq.onColumns().accept(new RowDescription.ColumnDescription[]{});
+                    case ActiveQuery.SimpleQuery sq -> sq.onColumns().accept(EMPTY_COLUMNS);
+                    case ActiveQuery.ExtendedQuery eq -> eq.onColumns().accept(EMPTY_COLUMNS);
                     case ActiveQuery.SingleMessage _ -> {}
                     case null -> {}
                 }

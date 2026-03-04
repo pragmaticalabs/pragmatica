@@ -48,17 +48,23 @@ public class DataRowDecoder implements Decoder<DataRow> {
 
     @Override
     public DataRow read(ByteBuffer buffer, int contentLength, Charset encoding) {
-        byte[][] values = new byte[buffer.getShort()][];
-        for (int i = 0; i < values.length; i++) {
+        int columnCount = buffer.getShort() & 0xFFFF;
+        int dataBytes = contentLength - 2 - (columnCount * 4);
+        byte[] data = new byte[Math.max(dataBytes, 0)];
+        int[] offsets = new int[columnCount];
+        int[] lengths = new int[columnCount];
+        int offset = 0;
+
+        for (int i = 0; i < columnCount; i++) {
             int length = buffer.getInt();
+            offsets[i] = offset;
+            lengths[i] = length;
             if (length != -1) {
-                values[i] = new byte[length];
-                buffer.get(values[i]);
-            } else {
-                values[i] = null;
+                buffer.get(data, offset, length);
+                offset += length;
             }
         }
-        return new DataRow(values);
+        return new DataRow(data, offsets, lengths);
     }
 
 }

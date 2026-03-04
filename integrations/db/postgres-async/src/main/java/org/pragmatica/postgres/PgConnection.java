@@ -62,7 +62,7 @@ public class PgConnection implements Connection {
 
         @Override
         public Promise<PgResultSet> query(Object... params) {
-            var rows = new ArrayList<PgRow>();
+            var rows = new ArrayList<PgRow>(16);
 
             return fetch((_, _) -> {}, rows::add, params)
                 .map(_ -> new PgResultSet(columns.byName, columns.ordered, rows, 0));
@@ -342,7 +342,7 @@ public class PgConnection implements Connection {
     }
 
     private static Columns calcColumns(ColumnDescription[] descriptions) {
-        var byName = new HashMap<String, PgColumn>();
+        var byName = new HashMap<String, PgColumn>(descriptions.length * 2);
         var ordered = new PgColumn[descriptions.length];
 
         for (int i = 0; i < descriptions.length; i++) {

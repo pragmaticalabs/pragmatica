@@ -104,7 +104,7 @@ public class BindEncoder extends ExtendedQueryEncoder<Bind> {
     public int estimateSize(Bind msg, Charset encoding) {
         int size = 1 + 4; // message ID + length
         size += 1; // empty portal name
-        size += msg.sname().getBytes(encoding).length + 1; // statement name + null
+        size += msg.sname().length() + 1; // statement name + null (ASCII names)
         size += 2 + msg.paramFormatCodes().length * 2; // param format codes
         size += 2; // param count
         for (byte[] param : msg.params()) {

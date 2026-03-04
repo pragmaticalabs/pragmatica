@@ -16,18 +16,36 @@ package org.pragmatica.postgres.message.backend;
 
 import org.pragmatica.postgres.message.BackendMessage;
 
-/**
- * @author  Antti Laisi
- */
+import java.util.Arrays;
+
 public final class DataRow implements BackendMessage {
+    private final byte[] data;
+    private final int[] offsets;
+    private final int[] lengths;
 
-    private final byte[][] values;
+    public DataRow(byte[] data, int[] offsets, int[] lengths) {
+        this.data = data;
+        this.offsets = offsets;
+        this.lengths = lengths;
+    }
 
-    public DataRow(byte[][] values) {
-        this.values = values;
+    public byte[] data() {
+        return data;
+    }
+
+    public int offset(int col) {
+        return offsets[col];
+    }
+
+    public int length(int col) {
+        return lengths[col];
     }
 
     public byte[] getValue(int i) {
-        return values[i];
+        int len = lengths[i];
+        if (len == -1) {
+            return null;
+        }
+        return Arrays.copyOfRange(data, offsets[i], offsets[i] + len);
     }
 }

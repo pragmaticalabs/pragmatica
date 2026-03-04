@@ -14,7 +14,6 @@
 
 package org.pragmatica.postgres.io;
 
-import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 
@@ -26,12 +25,17 @@ import java.nio.charset.Charset;
 public class IO {
 
     public static String getCString(ByteBuffer buffer, Charset charset) {
-        var readBuffer = new ByteArrayOutputStream(255);
-
-        for (int c = buffer.get(); c != 0; c = buffer.get()) {
-            readBuffer.write(c);
+        int start = buffer.position();
+        while (buffer.get() != 0) {}
+        int length = buffer.position() - start - 1;
+        if (length == 0) {
+            return "";
         }
-        return new String(readBuffer.toByteArray(), charset);
+        byte[] bytes = new byte[length];
+        buffer.position(start);
+        buffer.get(bytes);
+        buffer.get(); // consume null terminator
+        return new String(bytes, charset);
     }
 
     public static void putCString(ByteBuffer buffer, String value, Charset charset) {

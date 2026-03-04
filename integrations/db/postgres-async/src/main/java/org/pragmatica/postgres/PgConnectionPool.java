@@ -78,27 +78,45 @@ public class PgConnectionPool extends PgConnectible {
         Promise.async(lucky);
     }
 
+    private sealed interface PoolResult {
+        record Closed() implements PoolResult {}
+
+        record Available(Connection connection) implements PoolResult {}
+
+        record Pending(Promise<Connection> deferred, boolean makeNew) implements PoolResult {}
+    }
+
+    private static final PoolResult CLOSED_RESULT = new PoolResult.Closed();
+
     @Override
     public Promise<Connection> getConnection() {
-        if (locked(() -> closing != null)) {
-            return Promise.failure(new SqlError.ConnectionPoolClosed("Connection pool is closed"));
-        } else {
-            var cached = locked(this::firstAliveConnection);
+        var poolResult = locked(() -> {
+            if (closing != null) {
+                return CLOSED_RESULT;
+            }
 
-            if (cached != null) {
-                return Promise.success(cached);
-            } else {
-                var deferred = Promise.<Connection>promise();
-                boolean makeNewConnection = locked(() -> {
-                    pending.add(deferred);
-                    if (size < maxConnections) {
-                        size++;
-                        return true;
-                    } else {
-                        return false;
-                    }
-                });
-                if (makeNewConnection) {
+            var conn = firstAliveConnection();
+
+            if (conn != null) {
+                return new PoolResult.Available(conn);
+            }
+
+            var deferred = Promise.<Connection>promise();
+            pending.add(deferred);
+            boolean makeNew = size < maxConnections;
+
+            if (makeNew) {
+                size++;
+            }
+
+            return new PoolResult.Pending(deferred, makeNew);
+        });
+
+        return switch (poolResult) {
+            case PoolResult.Closed _ -> Promise.failure(new SqlError.ConnectionPoolClosed("Connection pool is closed"));
+            case PoolResult.Available available -> Promise.success(available.connection());
+            case PoolResult.Pending pendingResult -> {
+                if (pendingResult.makeNew()) {
                     obtainStream.get()
                                 .flatMap(stream -> {
                                     var conn = new PgConnection(stream, dataConverter, maxStatements);
@@ -116,9 +134,10 @@ public class PgConnectionPool extends PgConnectible {
                                         return null;
                                     }));
                 }
-                return deferred;
+
+                yield pendingResult.deferred();
             }
-        }
+        };
     }
 
     private void propagateFailure(Cause cause) {

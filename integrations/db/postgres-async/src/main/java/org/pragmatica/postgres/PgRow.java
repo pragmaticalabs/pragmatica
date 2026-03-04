@@ -54,7 +54,7 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public String getString(int index) {
-        return dataConverter.toString(columns[index].type(), data.getValue(index), columns[index].isBinary());
+        return dataConverter.toString(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
     }
 
     @Override
@@ -64,7 +64,7 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public Character getChar(int index) {
-        return dataConverter.toChar(columns[index].type(), data.getValue(index), columns[index].isBinary());
+        return dataConverter.toChar(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
     }
 
     @Override
@@ -74,7 +74,7 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public Byte getByte(int index) {
-        return dataConverter.toByte(columns[index].type(), data.getValue(index), columns[index].isBinary());
+        return dataConverter.toByte(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
     }
 
     @Override
@@ -84,7 +84,7 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public Short getShort(int index) {
-        return dataConverter.toShort(columns[index].type(), data.getValue(index), columns[index].isBinary());
+        return dataConverter.toShort(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
     }
 
     @Override
@@ -94,7 +94,7 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public Integer getInt(int index) {
-        return dataConverter.toInteger(columns[index].type(), data.getValue(index), columns[index].isBinary());
+        return dataConverter.toInteger(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
     }
 
     @Override
@@ -104,7 +104,7 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public Long getLong(int index) {
-        return dataConverter.toLong(columns[index].type(), data.getValue(index), columns[index].isBinary());
+        return dataConverter.toLong(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
     }
 
     @Override
@@ -114,7 +114,7 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public BigInteger getBigInteger(int index) {
-        return dataConverter.toBigInteger(columns[index].type(), data.getValue(index), columns[index].isBinary());
+        return dataConverter.toBigInteger(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
     }
 
     @Override
@@ -124,7 +124,7 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public BigDecimal getBigDecimal(int index) {
-        return dataConverter.toBigDecimal(columns[index].type(), data.getValue(index), columns[index].isBinary());
+        return dataConverter.toBigDecimal(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
     }
 
     @Override
@@ -134,7 +134,7 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public Double getDouble(int index) {
-        return dataConverter.toDouble(columns[index].type(), data.getValue(index), columns[index].isBinary());
+        return dataConverter.toDouble(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
     }
 
     @Override
@@ -144,7 +144,7 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public LocalDate getLocalDate(int index) {
-        return dataConverter.toLocalDate(columns[index].type(), data.getValue(index), columns[index].isBinary());
+        return dataConverter.toLocalDate(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
     }
 
     @Override
@@ -154,7 +154,7 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public LocalTime getLocalTime(int index) {
-        return dataConverter.toLocalTime(columns[index].type(), data.getValue(index), columns[index].isBinary());
+        return dataConverter.toLocalTime(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
     }
 
     @Override
@@ -164,7 +164,7 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public LocalDateTime getLocalDateTime(int index) {
-        return dataConverter.toLocalDateTime(columns[index].type(), data.getValue(index), columns[index].isBinary());
+        return dataConverter.toLocalDateTime(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
     }
 
     @Override
@@ -174,7 +174,7 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public Instant getInstant(int index) {
-        return dataConverter.toInstant(columns[index].type(), data.getValue(index), columns[index].isBinary());
+        return dataConverter.toInstant(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
     }
 
     @Override
@@ -184,7 +184,7 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public byte[] getBytes(int index) {
-        return dataConverter.toBytes(columns[index].type(), data.getValue(index), columns[index].isBinary());
+        return dataConverter.toBytes(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
     }
 
     @Override
@@ -194,7 +194,7 @@ public class PgRow implements Row, KeyToValue {
 
     @Override
     public Boolean getBoolean(int index) {
-        return dataConverter.toBoolean(columns[index].type(), data.getValue(index), columns[index].isBinary());
+        return dataConverter.toBoolean(columns[index].type(), data.data(), data.offset(index), data.length(index), columns[index].isBinary());
     }
 
     @Override
