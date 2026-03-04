@@ -218,16 +218,16 @@ var TopologyGraph = (function() {
             // Arrowhead pointing left into the sub node
             g += renderArrow(endX2, endY, -1, 0, color, '0.7');
         } else if (type === 'dependency') {
-            // Manhattan routing through left gutter
+            // Manhattan routing through mid-gutter (between col 0 and col 1)
             var slot2 = gutterSlots.leftSlots[edgeIndex] || 0;
-            var gutterX2 = leftOffset + PADDING_X - 10 - slot2 * 12;
+            var midGutterX = leftOffset + PADDING_X + NODE_WIDTH + (COLUMN_WIDTH - NODE_WIDTH) / 2 - slot2 * 12;
 
             var startX2 = from.x;
             var startY2 = from.y + NODE_HEIGHT / 2;
             var endX3 = to.x;
             var endY2 = to.y + NODE_HEIGHT / 2;
 
-            g += '<path d="M' + startX2 + ',' + startY2 + ' H' + gutterX2 + ' V' + endY2 + ' H' + endX3 + '"';
+            g += '<path d="M' + startX2 + ',' + startY2 + ' H' + midGutterX + ' V' + endY2 + ' H' + endX3 + '"';
             g += ' fill="none" stroke="#8b949e" stroke-width="1.5" opacity="0.5"/>';
             // Arrowhead pointing right into the target slice
             g += renderArrow(endX3, endY2, 1, 0, '#8b949e', '0.5');
@@ -410,18 +410,40 @@ var TopologyGraph = (function() {
                 dimAll();
                 node.style.opacity = '1';
 
-                allEdges.forEach(function(e) {
-                    var from = e.getAttribute('data-from');
-                    var to = e.getAttribute('data-to');
-                    if (from === nodeId || to === nodeId) {
-                        e.style.opacity = '1';
-                        // Boost the other end
-                        var otherId = (from === nodeId) ? to : from;
-                        allNodes.forEach(function(n) {
-                            if (n.getAttribute('data-node-id') === otherId) n.style.opacity = '1';
-                        });
-                    }
-                });
+                // For TOPIC_PUB/TOPIC_SUB nodes, highlight all nodes/edges with matching topic config
+                var isTopicNode = nodeId.startsWith('topic-pub:') || nodeId.startsWith('topic-sub:');
+                if (isTopicNode) {
+                    // Extract config: "topic-pub:artifact:config" or "topic-sub:artifact:config"
+                    var prefix = nodeId.startsWith('topic-pub:') ? 'topic-pub:' : 'topic-sub:';
+                    var topicConfig = nodeId.substring(nodeId.indexOf(':', prefix.length) + 1);
+
+                    // Highlight all edges with matching topicConfig and their connected nodes
+                    allEdges.forEach(function(e) {
+                        var tc = e.getAttribute('data-topic-config');
+                        var from = e.getAttribute('data-from');
+                        var to = e.getAttribute('data-to');
+                        if (tc === topicConfig || from === nodeId || to === nodeId) {
+                            e.style.opacity = '1';
+                            allNodes.forEach(function(n) {
+                                var nid = n.getAttribute('data-node-id');
+                                if (nid === from || nid === to) n.style.opacity = '1';
+                            });
+                        }
+                    });
+                } else {
+                    // Standard node hover — highlight directly connected edges/nodes
+                    allEdges.forEach(function(e) {
+                        var from = e.getAttribute('data-from');
+                        var to = e.getAttribute('data-to');
+                        if (from === nodeId || to === nodeId) {
+                            e.style.opacity = '1';
+                            var otherId = (from === nodeId) ? to : from;
+                            allNodes.forEach(function(n) {
+                                if (n.getAttribute('data-node-id') === otherId) n.style.opacity = '1';
+                            });
+                        }
+                    });
+                }
             });
             node.addEventListener('mouseleave', restoreDefaults);
         });
@@ -465,7 +487,9 @@ var TopologyGraph = (function() {
             }
             // Lane label (rotated, short artifact name)
             var labelY = (lane.yStart + lane.yEnd) / 2;
-            var shortName = lane.artifact.split(':').pop().split('-').pop() || lane.artifact;
+            // Extract artifact name: "org.example:catalog-slice:1.0.0" → "catalog-slice"
+            var parts = lane.artifact.split(':');
+            var shortName = parts.length >= 2 ? parts[parts.length - 2] : parts[0] || lane.artifact;
             svg += '<text x="' + (leftOffset - 5) + '" y="' + labelY + '" text-anchor="end" fill="#484f58" font-size="10" font-family="monospace" transform="rotate(-90,' + (leftOffset - 5) + ',' + labelY + ')">' + escapeHtml(shortName) + '</text>';
         });
 
