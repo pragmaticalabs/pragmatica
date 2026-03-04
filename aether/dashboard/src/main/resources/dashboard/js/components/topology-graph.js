@@ -488,10 +488,6 @@ var TopologyGraph = (function() {
                 var sepY = lane.yStart - LANE_GAP / 2;
                 svg += '<line x1="0" y1="' + sepY + '" x2="' + totalWidth + '" y2="' + sepY + '" stroke="#30363d" stroke-width="1" stroke-dasharray="4,4" opacity="0.5"/>';
             }
-            var labelY = (lane.yStart + lane.yEnd) / 2;
-            var parts = lane.artifact.split(':');
-            var shortName = parts.length >= 2 ? parts[parts.length - 2] : parts[0] || lane.artifact;
-            svg += '<text x="' + (leftOffset - 5) + '" y="' + labelY + '" text-anchor="end" fill="#484f58" font-size="10" font-family="monospace" transform="rotate(-90,' + (leftOffset - 5) + ',' + labelY + ')">' + escapeHtml(shortName) + '</text>';
         });
 
         (edges || []).forEach(function(e, i) {
