@@ -2,7 +2,8 @@ package org.pragmatica.jbct.slice.routing;
 
 import org.pragmatica.lang.Option;
 
-import java.util.HashMap;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /// Complete route configuration for a slice.
@@ -21,7 +22,7 @@ public record RouteConfig(String prefix,
                           Map<String, RouteDsl> routes,
                           ErrorPatternConfig errors) {
     public RouteConfig {
-        routes = Map.copyOf(routes);
+        routes = Collections.unmodifiableMap(new LinkedHashMap<>(routes));
     }
 
     /// Empty configuration.
@@ -66,9 +67,9 @@ public record RouteConfig(String prefix,
 
     private static Map<String, RouteDsl> mergeRoutes(Map<String, RouteDsl> base,
                                                      Map<String, RouteDsl> overlay) {
-        var merged = new HashMap<>(base);
+        var merged = new LinkedHashMap<>(base);
         merged.putAll(overlay);
-        return Map.copyOf(merged);
+        return Collections.unmodifiableMap(merged);
     }
 
     /// Check if configuration has any routes defined.

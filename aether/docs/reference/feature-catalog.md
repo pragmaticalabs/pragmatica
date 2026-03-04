@@ -19,7 +19,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 3 | Rolling updates | Battle-tested | Zero-downtime version deployments with traffic shifting (new:old ratio), health thresholds, auto-progression, rollback, and cleanup policies |
 | 4 | Auto-healing | Battle-tested | Automatic reconciliation of desired vs. actual state on node departure. Leader-only with failover |
 | 5 | Classloader isolation | Complete | Per-slice classloader prevents dependency conflicts between slices |
-| 6 | Manifest versioning | Complete | Envelope format versioning (v1-v4) for backward-compatible manifest evolution |
+| 6 | Manifest versioning | Complete | Envelope format versioning (v1-v6) for backward-compatible manifest evolution |
 | 66 | Class-ID-based serialization | Complete | Deterministic hash-based Fury class IDs for cross-slice invocations with classloader isolation. Core types get sequential IDs; user types get hash-based IDs [10000-30000). Slice declares `serializableClasses()` at compile time |
 
 ## Scaling & Control
@@ -127,6 +127,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 56 | Envelope format versioning | Complete | `ENVELOPE_FORMAT_VERSION` in ManifestGenerator with runtime compatibility check |
 | 57 | Forge simulator | Battle-tested | Standalone cluster simulator with load generation (constant/ramp/spike), chaos injection, visual dashboard, REST API |
 | 58 | Web dashboard | Partial (WIP) | Forge dashboard complete (cluster visualization, load generation, chaos injection, metrics, scaling events, deployment timing). Node management dashboard in active development — missing observability depth UI, invocation trace viewer, log level management |
+| 77 | Topology graph | Complete | Compile-time topology extraction (envelope v6): HTTP routes, resources, pub-sub topics from `.manifest` files. REST `GET /api/topology`, WebSocket `INITIAL_STATE`. Swim-lane SVG layout: per-slice lanes with inputs (endpoints/subscribers) left, slice center, outputs (resources/publishers) right. Manhattan routing for cross-slice topic connectors (right gutter) and dependency edges (left gutter). HSL color-coded topic groups, hover highlighting, search filtering |
 
 ## Node Operations
 
@@ -186,10 +187,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 23 |
-| Complete | 45 |
+| Complete | 46 |
 | Partial | 2 |
 | Planned | 11 |
-| Total | 81 |
+| Total | 82 |
 
 **Battle-tested features (23):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), Forge integration tests
 
@@ -218,4 +219,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-03-03 (v0.19.1)*
+*Last updated: 2026-03-04 (v0.19.1)*

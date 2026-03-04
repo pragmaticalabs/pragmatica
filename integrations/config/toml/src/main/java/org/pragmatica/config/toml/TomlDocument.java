@@ -18,6 +18,7 @@ package org.pragmatica.config.toml;
 
 import org.pragmatica.lang.Option;
 
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -287,6 +288,6 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
     private Map<String, String> toStringMap(Map<String, Object> map) {
         var result = new LinkedHashMap<String, String>();
         map.forEach((k, v) -> result.put(k, v.toString()));
-        return Map.copyOf(result);
+        return Collections.unmodifiableMap(result);
     }
 }

@@ -326,42 +326,24 @@
             <!-- Deployments Page -->
             <div x-show="currentPage === 'deployments'" x-cloak>
                 <div class="panel">
-                    <h2>BLUEPRINTS</h2>
-                    <template x-for="bp in $store.deployments.blueprints" :key="bp.name">
-                        <div class="blueprint-card">
-                            <div class="blueprint-header">
-                                <span class="blueprint-name" x-text="bp.name"></span>
-                                <span class="blueprint-status" x-text="bp.status"></span>
-                            </div>
-                            <div class="slice-instance-map">
-                                <template x-for="slice in bp.slices || $store.deployments.slices" :key="slice.artifact">
-                                    <div class="slice-row">
-                                        <span class="slice-name" x-text="slice.artifact"></span>
-                                        <span class="slice-instances">
-                                            <template x-for="inst in slice.instances" :key="inst.nodeId">
-                                                <span class="instance-dot" :class="inst.state === 'ACTIVE' ? 'active' : 'loading'" :title="inst.nodeId" x-text="inst.state === 'ACTIVE' ? '●' : '○'"></span>
-                                            </template>
-                                        </span>
-                                        <span class="slice-summary" x-text="sliceSummary(slice)"></span>
-                                    </div>
-                                </template>
-                            </div>
-                        </div>
-                    </template>
-                    <div x-show="$store.deployments.blueprints.length === 0">
-                        <div class="slice-instance-map">
-                            <template x-for="slice in $store.deployments.slices" :key="slice.artifact">
-                                <div class="slice-row">
-                                    <span class="slice-name" x-text="slice.artifact"></span>
-                                    <span class="slice-instances">
-                                        <template x-for="inst in slice.instances" :key="inst.nodeId">
-                                            <span class="instance-dot" :class="inst.state === 'ACTIVE' ? 'active' : 'loading'" :title="inst.nodeId" x-text="inst.state === 'ACTIVE' ? '●' : '○'"></span>
-                                        </template>
-                                    </span>
-                                    <span class="slice-summary" x-text="sliceSummary(slice)"></span>
-                                </div>
-                            </template>
-                        </div>
+                    <h2 class="panel-header">
+                        TOPOLOGY
+                        <span class="panel-count" x-text="$store.topology.nodes.length + ' NODES'"></span>
+                        <button class="btn btn-small btn-secondary" style="margin-left:auto" @click="$store.topology.refresh()">Refresh</button>
+                    </h2>
+                    <div class="topology-legend">
+                        <span class="legend-item"><span class="legend-dot" style="background:#58a6ff"></span> Endpoint</span>
+                        <span class="legend-item"><span class="legend-dot" style="background:#3fb950"></span> Slice</span>
+                        <span class="legend-item"><span class="legend-dot" style="background:#d29922"></span> Topic</span>
+                        <span class="legend-item"><span class="legend-dot" style="background:#bc8cff"></span> Resource</span>
+                        <span class="legend-item"><span class="legend-line solid"></span> Direct</span>
+                        <span class="legend-item"><span class="legend-line dotted"></span> Pub/Sub</span>
+                    </div>
+                    <input type="text" placeholder="Search nodes..."
+                           x-model="$store.topology.searchQuery"
+                           class="filter-input" style="max-width:300px; margin-bottom:var(--space-sm);">
+                    <div class="topology-container" x-ref="topologyContainer"
+                         x-effect="TopologyGraph.render($refs.topologyContainer, $store.topology.nodes, $store.topology.edges, $store.topology.searchQuery)">
                     </div>
                 </div>
                 <div class="panel" x-show="$store.deployments.rollingUpdates.length > 0">
@@ -484,6 +466,7 @@
     <script src="js/stores/events.js"></script>
     <script src="js/stores/alerts.js"></script>
     <script src="js/stores/deployments.js"></script>
+    <script src="js/stores/topology.js"></script>
     <script src="js/stores/forge.js"></script>
     <script src="js/components/sparkline.js"></script>
     <script src="js/components/timeseries.js"></script>
@@ -492,6 +475,7 @@
     <script src="js/components/trace-detail.js"></script>
     <script src="js/components/node-detail.js"></script>
     <script src="js/components/rolling-update.js"></script>
+    <script src="js/components/topology-graph.js"></script>
     <script src="js/app.js"></script>
 </body>
 </html>

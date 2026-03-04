@@ -9,7 +9,9 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -108,9 +110,9 @@ public final class RouteConfigLoader {
     }
 
     private static Map<String, RouteDsl> toImmutableMap(List<Map.Entry<String, RouteDsl>> entries) {
-        var map = new HashMap<String, RouteDsl>();
+        var map = new LinkedHashMap<String, RouteDsl>();
         entries.forEach(e -> map.put(e.getKey(), e.getValue()));
-        return Map.copyOf(map);
+        return Collections.unmodifiableMap(map);
     }
 
     private static ErrorPatternConfig parseErrors(TomlDocument toml) {

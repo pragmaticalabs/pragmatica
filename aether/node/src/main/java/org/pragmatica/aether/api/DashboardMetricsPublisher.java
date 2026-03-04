@@ -4,6 +4,8 @@ import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.DeploymentMap.SliceDeploymentInfo;
 import org.pragmatica.aether.deployment.DeploymentMap.SliceInstanceInfo;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.slice.topology.TopologyGraph;
+import org.pragmatica.aether.slice.topology.TopologyParser;
 import org.pragmatica.consensus.NodeId;
 
 import java.util.List;
@@ -155,6 +157,9 @@ public class DashboardMetricsPublisher {
         sb.append("\"thresholds\":")
           .append(alertManager.thresholdsAsJson())
           .append(",");
+        // Topology (static — only changes on deploy/undeploy)
+        appendTopology(sb, node);
+        sb.append(",");
         // Current metrics snapshot
         sb.append("\"metrics\":")
           .append(buildMetricsData());
@@ -211,7 +216,10 @@ public class DashboardMetricsPublisher {
                           node.deploymentMap()
                               .allDeployments());
         sb.append(",\"aggregates\":")
-          .append(buildAggregates());
+          .append(buildAggregates())
+          .append(",");
+        // Topology (included so late-connecting clients get updated topology)
+        appendTopology(sb, node);
         sb.append("}");
         return sb.toString();
     }
@@ -323,6 +331,64 @@ public class DashboardMetricsPublisher {
             firstDeployment = false;
         }
         sb.append("]");
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private void appendTopology(StringBuilder sb, AetherNode node) {
+        var loaded = node.sliceStore()
+                         .loaded();
+        log.debug("appendTopology: loaded slices count={}", loaded.size());
+        var sliceTopologies = loaded.stream()
+                                    .flatMap(ls -> TopologyParser.parse(ls.slice(),
+                                                                        ls.artifact()
+                                                                          .asString())
+                                                                 .stream())
+                                    .toList();
+        log.debug("appendTopology: parsed topologies={}, building graph", sliceTopologies.size());
+        var graph = TopologyGraph.build(sliceTopologies);
+        log.debug("appendTopology: graph nodes={}, edges={}",
+                  graph.nodes()
+                       .size(),
+                  graph.edges()
+                       .size());
+        sb.append("\"topology\":{\"nodes\":[");
+        boolean firstNode = true;
+        for (var n : graph.nodes()) {
+            if (!firstNode) sb.append(",");
+            sb.append("{\"id\":\"")
+              .append(escapeJson(n.id()))
+              .append("\",\"type\":\"")
+              .append(n.type()
+                       .name())
+              .append("\",\"label\":\"")
+              .append(escapeJson(n.label()))
+              .append("\",\"sliceArtifact\":\"")
+              .append(escapeJson(n.sliceArtifact()))
+              .append("\"}");
+            firstNode = false;
+        }
+        sb.append("],\"edges\":[");
+        boolean firstEdge = true;
+        for (var e : graph.edges()) {
+            if (!firstEdge) sb.append(",");
+            sb.append("{\"from\":\"")
+              .append(escapeJson(e.from()))
+              .append("\",\"to\":\"")
+              .append(escapeJson(e.to()))
+              .append("\",\"style\":\"")
+              .append(e.style()
+                       .name())
+              .append("\",\"topicConfig\":\"")
+              .append(escapeJson(e.topicConfig()))
+              .append("\"}");
+            firstEdge = false;
+        }
+        sb.append("]}");
+    }
+
+    private static String escapeJson(String value) {
+        return value.replace("\\", "\\\\")
+                    .replace("\"", "\\\"");
     }
 
     /// Handle threshold configuration from client.
