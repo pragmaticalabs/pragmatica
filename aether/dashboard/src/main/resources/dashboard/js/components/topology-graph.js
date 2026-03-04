@@ -267,11 +267,9 @@ var TopologyGraph = (function() {
         return '<polygon points="' + x + ',' + y + ' ' + ax + ',' + ay + ' ' + bx + ',' + by + '" fill="' + color + '" opacity="' + opacity + '"/>';
     }
 
-    function getTopicConfigColor(nodeId) {
-        var parts = nodeId.split(':');
-        if (parts.length >= 3) {
-            var config = parts.slice(2).join(':');
-            return topicColorForConfig(config);
+    function getTopicConfigColor(label) {
+        if (label) {
+            return topicColorForConfig(label);
         }
         return null;
     }
@@ -282,7 +280,7 @@ var TopologyGraph = (function() {
         var nodeWidth = pos.nodeWidth;
 
         if (node.type === 'TOPIC_PUB' || node.type === 'TOPIC_SUB') {
-            var configColor = getTopicConfigColor(id);
+            var configColor = getTopicConfigColor(node.label);
             if (configColor) {
                 strokeColor = configColor;
             }
@@ -416,14 +414,25 @@ var TopologyGraph = (function() {
 
                 var isTopicNode = nodeId.startsWith('topic-pub:') || nodeId.startsWith('topic-sub:');
                 if (isTopicNode) {
-                    var prefix = nodeId.startsWith('topic-pub:') ? 'topic-pub:' : 'topic-sub:';
-                    var topicConfig = nodeId.substring(nodeId.indexOf(':', prefix.length) + 1);
+                    var topicConfig = node.getAttribute('data-label');
 
+                    // Collect all topic nodes with matching config
+                    var topicNodeIds = {};
+                    allNodes.forEach(function(n) {
+                        var nid = n.getAttribute('data-node-id');
+                        if ((nid.startsWith('topic-pub:') || nid.startsWith('topic-sub:')) &&
+                            n.getAttribute('data-label') === topicConfig) {
+                            topicNodeIds[nid] = true;
+                            n.style.opacity = '1';
+                        }
+                    });
+
+                    // Highlight edges connected to any matching topic node or with matching topicConfig
                     allEdges.forEach(function(e) {
                         var tc = e.getAttribute('data-topic-config');
                         var from = e.getAttribute('data-from');
                         var to = e.getAttribute('data-to');
-                        if (tc === topicConfig || from === nodeId || to === nodeId) {
+                        if (tc === topicConfig || topicNodeIds[from] || topicNodeIds[to]) {
                             e.style.opacity = '1';
                             allNodes.forEach(function(n) {
                                 var nid = n.getAttribute('data-node-id');

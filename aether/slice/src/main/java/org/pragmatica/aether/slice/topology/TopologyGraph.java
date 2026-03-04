@@ -119,17 +119,15 @@ public record TopologyGraph(List<TopologyNode> nodes, List<TopologyEdge> edges) 
                                        List<TopologyEdge> edgeList) {
         var pubsByConfig = new LinkedHashMap<String, List<String>>();
         var subsByConfig = new LinkedHashMap<String, List<String>>();
-        for (var id : nodeMap.keySet()) {
-            if (id.startsWith("topic-pub:")) {
-                var config = id.substring(id.indexOf(':', "topic-pub:".length()) + 1);
-                pubsByConfig.computeIfAbsent(config,
+        for (var node : nodeMap.values()) {
+            if (node.type() == NodeType.TOPIC_PUB) {
+                pubsByConfig.computeIfAbsent(node.label(),
                                              _ -> new ArrayList<>())
-                            .add(id);
-            } else if (id.startsWith("topic-sub:")) {
-                var config = id.substring(id.indexOf(':', "topic-sub:".length()) + 1);
-                subsByConfig.computeIfAbsent(config,
+                            .add(node.id());
+            } else if (node.type() == NodeType.TOPIC_SUB) {
+                subsByConfig.computeIfAbsent(node.label(),
                                              _ -> new ArrayList<>())
-                            .add(id);
+                            .add(node.id());
             }
         }
         for (var entry : pubsByConfig.entrySet()) {
