@@ -23,4 +23,8 @@ public record PgColumn(int index, String name, Oid type, short formatCode) {
     public boolean isBinary() {
         return formatCode == 1;
     }
+
+    public PgColumn withFormatCode(short newFormatCode) {
+        return new PgColumn(index, name, type, newFormatCode);
+    }
 }

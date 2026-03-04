@@ -77,8 +77,9 @@ public class PgConnection implements Connection {
             Consumer<DataRow> rowProcessor = dataRow -> processor.accept(new PgRow(dataRow, columns.byName, columns.ordered, dataConverter));
 
             if (columns != null) {
-                onColumns.accept(columns.byName, columns.ordered);
                 short[] resultFmtCodes = DataConverter.resultFormatCodes(columns.ordered);
+                columns = updateFormatCodes(columns, resultFmtCodes);
+                onColumns.accept(columns.byName, columns.ordered);
                 var types = dataConverter.assumeTypes(params);
                 var encoded = dataConverter.fromParametersBinary(params, types);
                 var binaryBind = new Bind(sname, encoded.values(), encoded.formatCodes(), resultFmtCodes);
@@ -339,6 +340,18 @@ public class PgConnection implements Connection {
                 .fold(_ -> stream.close());
         }
         return stream.close();
+    }
+
+    private static Columns updateFormatCodes(Columns existing, short[] formatCodes) {
+        var ordered = existing.ordered;
+        var byName = new HashMap<String, PgColumn>(ordered.length * 2);
+        var updated = new PgColumn[ordered.length];
+
+        for (int i = 0; i < ordered.length; i++) {
+            updated[i] = ordered[i].withFormatCode(formatCodes[i]);
+            byName.put(updated[i].name(), updated[i]);
+        }
+        return new Columns(Map.copyOf(byName), updated);
     }
 
     private static Columns calcColumns(ColumnDescription[] descriptions) {
