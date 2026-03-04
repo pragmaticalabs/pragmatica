@@ -1,5 +1,7 @@
 package org.pragmatica.aether.slice.topology;
 
+import org.pragmatica.lang.Option;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -38,15 +40,20 @@ public record TopologyGraph(List<TopologyNode> nodes, List<TopologyEdge> edges) 
     public static TopologyGraph build(List<SliceTopology> slices) {
         var nodeMap = new LinkedHashMap<String, TopologyNode>();
         var edgeList = new ArrayList<TopologyEdge>();
+        // First pass: all slice nodes, routes, resources, topics
         for (var slice : slices) {
             var sliceId = "slice:" + slice.artifact();
             nodeMap.putIfAbsent(sliceId,
                                 new TopologyNode(sliceId, NodeType.SLICE, slice.sliceName(), slice.artifact()));
             addRouteNodes(slice, sliceId, nodeMap, edgeList);
-            addDependencyEdges(slice, sliceId, nodeMap, edgeList);
             addResourceNodes(slice, sliceId, nodeMap, edgeList);
             addPublishNodes(slice, sliceId, nodeMap, edgeList);
             addSubscribeNodes(slice, sliceId, nodeMap, edgeList);
+        }
+        // Second pass: dependency edges (all slice nodes exist, can match by name)
+        for (var slice : slices) {
+            var sliceId = "slice:" + slice.artifact();
+            addDependencyEdges(slice, sliceId, nodeMap, edgeList);
         }
         addPubSubEdges(nodeMap, edgeList);
         return new TopologyGraph(new ArrayList<>(nodeMap.values()), edgeList);
@@ -69,14 +76,37 @@ public record TopologyGraph(List<TopologyNode> nodes, List<TopologyEdge> edges) 
                                            Map<String, TopologyNode> nodeMap,
                                            List<TopologyEdge> edgeList) {
         for (var dep : slice.dependencies()) {
-            if (!dep.artifact()
-                    .isEmpty()) {
-                var depSliceId = "slice:" + dep.artifact();
+            if (dep.artifact()
+                   .isEmpty()) {
+                continue;
+            }
+            var depSliceId = "slice:" + dep.artifact();
+            if (!nodeMap.containsKey(depSliceId)) {
+                // Dependency artifact may differ from runtime artifact — match by simple class name
+                var simpleName = simpleClassName(dep.interfaceName());
+                depSliceId = findSliceIdByName(nodeMap, simpleName).or(depSliceId);
                 nodeMap.putIfAbsent(depSliceId,
                                     new TopologyNode(depSliceId, NodeType.SLICE, dep.interfaceName(), dep.artifact()));
-                edgeList.add(new TopologyEdge(sliceId, depSliceId, EdgeStyle.SOLID, ""));
+            }
+            edgeList.add(new TopologyEdge(sliceId, depSliceId, EdgeStyle.SOLID, ""));
+        }
+    }
+
+    private static Option<String> findSliceIdByName(Map<String, TopologyNode> nodeMap, String simpleName) {
+        for (var node : nodeMap.values()) {
+            if (node.type() == NodeType.SLICE && node.label()
+                                                     .equals(simpleName)) {
+                return Option.some(node.id());
             }
         }
+        return Option.none();
+    }
+
+    private static String simpleClassName(String qualifiedName) {
+        var lastDot = qualifiedName.lastIndexOf('.');
+        return lastDot >= 0
+               ? qualifiedName.substring(lastDot + 1)
+               : qualifiedName;
     }
 
     private static void addResourceNodes(SliceTopology slice,
