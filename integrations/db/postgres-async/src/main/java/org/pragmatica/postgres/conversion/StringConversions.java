@@ -11,10 +11,7 @@ final class StringConversions {
     private StringConversions() {}
 
     static String asString(Oid oid, String value) {
-        return switch (oid) {
-            case UNSPECIFIED, TEXT, CHAR, BPCHAR, UUID, VARCHAR -> value;
-            default -> returnError(oid, "String");
-        };
+        return value;
     }
 
     static Character toChar(Oid oid, String value) {

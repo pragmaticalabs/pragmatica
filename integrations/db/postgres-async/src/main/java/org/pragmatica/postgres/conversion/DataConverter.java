@@ -111,41 +111,91 @@ public class DataConverter {
 
     public Long toLong(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
-        if (binary) return ByteBuffer.wrap(value).getLong();
+        if (binary) {
+            return switch (oid) {
+                case INT2 -> (long) ByteBuffer.wrap(value).getShort();
+                case INT4 -> (long) ByteBuffer.wrap(value).getInt();
+                case INT8 -> ByteBuffer.wrap(value).getLong();
+                case FLOAT4 -> (long) ByteBuffer.wrap(value).getFloat();
+                case FLOAT8 -> (long) ByteBuffer.wrap(value).getDouble();
+                default -> NumericConversions.toLong(oid, new String(value, encoding));
+            };
+        }
         return NumericConversions.toLong(oid, new String(value, encoding));
     }
 
     public Integer toInteger(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
-        if (binary) return ByteBuffer.wrap(value).getInt();
+        if (binary) {
+            return switch (oid) {
+                case INT2 -> (int) ByteBuffer.wrap(value).getShort();
+                case INT4 -> ByteBuffer.wrap(value).getInt();
+                case INT8 -> (int) ByteBuffer.wrap(value).getLong();
+                case FLOAT4 -> (int) ByteBuffer.wrap(value).getFloat();
+                case FLOAT8 -> (int) ByteBuffer.wrap(value).getDouble();
+                default -> NumericConversions.toInteger(oid, new String(value, encoding));
+            };
+        }
         return NumericConversions.toInteger(oid, new String(value, encoding));
     }
 
     public Short toShort(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
-        if (binary) return ByteBuffer.wrap(value).getShort();
+        if (binary) {
+            return switch (oid) {
+                case INT2 -> ByteBuffer.wrap(value).getShort();
+                case INT4 -> (short) ByteBuffer.wrap(value).getInt();
+                case INT8 -> (short) ByteBuffer.wrap(value).getLong();
+                case FLOAT4 -> (short) ByteBuffer.wrap(value).getFloat();
+                case FLOAT8 -> (short) ByteBuffer.wrap(value).getDouble();
+                default -> NumericConversions.toShort(oid, new String(value, encoding));
+            };
+        }
         return NumericConversions.toShort(oid, new String(value, encoding));
     }
 
     public Byte toByte(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
-        if (binary) return value[0];
+        if (binary) {
+            return switch (oid) {
+                case BOOL -> value[0];
+                case INT2 -> (byte) ByteBuffer.wrap(value).getShort();
+                case INT4 -> (byte) ByteBuffer.wrap(value).getInt();
+                case INT8 -> (byte) ByteBuffer.wrap(value).getLong();
+                case FLOAT4 -> (byte) ByteBuffer.wrap(value).getFloat();
+                case FLOAT8 -> (byte) ByteBuffer.wrap(value).getDouble();
+                default -> value[0];
+            };
+        }
         return NumericConversions.toByte(oid, new String(value, encoding));
     }
 
     public BigInteger toBigInteger(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
-        if (binary) return BigInteger.valueOf(ByteBuffer.wrap(value).getLong());
+        if (binary) {
+            return switch (oid) {
+                case INT2 -> BigInteger.valueOf(ByteBuffer.wrap(value).getShort());
+                case INT4 -> BigInteger.valueOf(ByteBuffer.wrap(value).getInt());
+                case INT8 -> BigInteger.valueOf(ByteBuffer.wrap(value).getLong());
+                case FLOAT4 -> BigDecimal.valueOf(ByteBuffer.wrap(value).getFloat()).toBigInteger();
+                case FLOAT8 -> BigDecimal.valueOf(ByteBuffer.wrap(value).getDouble()).toBigInteger();
+                default -> NumericConversions.toBigInteger(oid, new String(value, encoding));
+            };
+        }
         return NumericConversions.toBigInteger(oid, new String(value, encoding));
     }
 
     public BigDecimal toBigDecimal(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
         if (binary) {
-            var buf = ByteBuffer.wrap(value);
-            return value.length == 4 ? BigDecimal.valueOf(buf.getFloat())
-                 : value.length == 8 ? BigDecimal.valueOf(buf.getDouble())
-                 : new BigDecimal(new String(value, encoding));
+            return switch (oid) {
+                case INT2 -> BigDecimal.valueOf(ByteBuffer.wrap(value).getShort());
+                case INT4 -> BigDecimal.valueOf(ByteBuffer.wrap(value).getInt());
+                case INT8 -> BigDecimal.valueOf(ByteBuffer.wrap(value).getLong());
+                case FLOAT4 -> BigDecimal.valueOf(ByteBuffer.wrap(value).getFloat());
+                case FLOAT8 -> BigDecimal.valueOf(ByteBuffer.wrap(value).getDouble());
+                default -> new BigDecimal(new String(value, encoding));
+            };
         }
         return NumericConversions.toBigDecimal(oid, new String(value, encoding));
     }
@@ -153,8 +203,14 @@ public class DataConverter {
     public Double toDouble(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
         if (binary) {
-            var buf = ByteBuffer.wrap(value);
-            return value.length == 4 ? (double) buf.getFloat() : buf.getDouble();
+            return switch (oid) {
+                case INT2 -> (double) ByteBuffer.wrap(value).getShort();
+                case INT4 -> (double) ByteBuffer.wrap(value).getInt();
+                case INT8 -> (double) ByteBuffer.wrap(value).getLong();
+                case FLOAT4 -> (double) ByteBuffer.wrap(value).getFloat();
+                case FLOAT8 -> ByteBuffer.wrap(value).getDouble();
+                default -> NumericConversions.toDouble(oid, new String(value, encoding));
+            };
         }
         return NumericConversions.toDouble(oid, new String(value, encoding));
     }
@@ -162,8 +218,20 @@ public class DataConverter {
     public LocalDate toLocalDate(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
         if (binary) {
-            int days = ByteBuffer.wrap(value).getInt();
-            return LocalDate.of(2000, 1, 1).plusDays(days);
+            return switch (oid) {
+                case DATE -> {
+                    int days = ByteBuffer.wrap(value).getInt();
+                    yield LocalDate.of(2000, 1, 1).plusDays(days);
+                }
+                case TIMESTAMP, TIMESTAMPTZ -> {
+                    long pgMicros = ByteBuffer.wrap(value).getLong();
+                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
+                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
+                    int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC).toLocalDate();
+                }
+                default -> TemporalConversions.toLocalDate(oid, new String(value, encoding));
+            };
         }
         return TemporalConversions.toLocalDate(oid, new String(value, encoding));
     }
@@ -171,11 +239,20 @@ public class DataConverter {
     public LocalDateTime toLocalDateTime(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
         if (binary) {
-            long pgMicros = ByteBuffer.wrap(value).getLong();
-            long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-            long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-            int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
-            return LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC);
+            return switch (oid) {
+                case TIMESTAMP, TIMESTAMPTZ -> {
+                    long pgMicros = ByteBuffer.wrap(value).getLong();
+                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
+                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
+                    int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC);
+                }
+                case DATE -> {
+                    int days = ByteBuffer.wrap(value).getInt();
+                    yield LocalDate.of(2000, 1, 1).plusDays(days).atStartOfDay();
+                }
+                default -> TemporalConversions.toLocalDateTime(oid, new String(value, encoding));
+            };
         }
         return TemporalConversions.toLocalDateTime(oid, new String(value, encoding));
     }
@@ -183,8 +260,24 @@ public class DataConverter {
     public LocalTime toLocalTime(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
         if (binary) {
-            long micros = ByteBuffer.wrap(value).getLong();
-            return LocalTime.ofNanoOfDay(micros * 1000);
+            return switch (oid) {
+                case TIME -> {
+                    long micros = ByteBuffer.wrap(value).getLong();
+                    yield LocalTime.ofNanoOfDay(micros * 1000);
+                }
+                case TIMETZ -> {
+                    long micros = ByteBuffer.wrap(value).getLong();
+                    yield LocalTime.ofNanoOfDay(micros * 1000);
+                }
+                case TIMESTAMP, TIMESTAMPTZ -> {
+                    long pgMicros = ByteBuffer.wrap(value).getLong();
+                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
+                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
+                    int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC).toLocalTime();
+                }
+                default -> TemporalConversions.toLocalTime(oid, new String(value, encoding));
+            };
         }
         return TemporalConversions.toLocalTime(oid, new String(value, encoding));
     }
@@ -192,11 +285,20 @@ public class DataConverter {
     public Instant toInstant(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
         if (binary) {
-            long pgMicros = ByteBuffer.wrap(value).getLong();
-            long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-            long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-            int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
-            return Instant.ofEpochSecond(epochSecs, nanoAdj);
+            return switch (oid) {
+                case TIMESTAMP, TIMESTAMPTZ -> {
+                    long pgMicros = ByteBuffer.wrap(value).getLong();
+                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
+                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
+                    int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+                    yield Instant.ofEpochSecond(epochSecs, nanoAdj);
+                }
+                case DATE -> {
+                    int days = ByteBuffer.wrap(value).getInt();
+                    yield LocalDate.of(2000, 1, 1).plusDays(days).atStartOfDay().toInstant(ZoneOffset.UTC);
+                }
+                default -> TemporalConversions.toInstant(oid, new String(value, encoding));
+            };
         }
         return TemporalConversions.toInstant(oid, new String(value, encoding));
     }
@@ -229,41 +331,91 @@ public class DataConverter {
 
     public Long toLong(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
-        if (binary) return ByteBuffer.wrap(data, offset, 8).getLong();
+        if (binary) {
+            return switch (oid) {
+                case INT2 -> (long) ByteBuffer.wrap(data, offset, 2).getShort();
+                case INT4 -> (long) ByteBuffer.wrap(data, offset, 4).getInt();
+                case INT8 -> ByteBuffer.wrap(data, offset, 8).getLong();
+                case FLOAT4 -> (long) ByteBuffer.wrap(data, offset, 4).getFloat();
+                case FLOAT8 -> (long) ByteBuffer.wrap(data, offset, 8).getDouble();
+                default -> NumericConversions.toLong(oid, new String(data, offset, length, encoding));
+            };
+        }
         return NumericConversions.toLong(oid, new String(data, offset, length, encoding));
     }
 
     public Integer toInteger(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
-        if (binary) return ByteBuffer.wrap(data, offset, 4).getInt();
+        if (binary) {
+            return switch (oid) {
+                case INT2 -> (int) ByteBuffer.wrap(data, offset, 2).getShort();
+                case INT4 -> ByteBuffer.wrap(data, offset, 4).getInt();
+                case INT8 -> (int) ByteBuffer.wrap(data, offset, 8).getLong();
+                case FLOAT4 -> (int) ByteBuffer.wrap(data, offset, 4).getFloat();
+                case FLOAT8 -> (int) ByteBuffer.wrap(data, offset, 8).getDouble();
+                default -> NumericConversions.toInteger(oid, new String(data, offset, length, encoding));
+            };
+        }
         return NumericConversions.toInteger(oid, new String(data, offset, length, encoding));
     }
 
     public Short toShort(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
-        if (binary) return ByteBuffer.wrap(data, offset, 2).getShort();
+        if (binary) {
+            return switch (oid) {
+                case INT2 -> ByteBuffer.wrap(data, offset, 2).getShort();
+                case INT4 -> (short) ByteBuffer.wrap(data, offset, 4).getInt();
+                case INT8 -> (short) ByteBuffer.wrap(data, offset, 8).getLong();
+                case FLOAT4 -> (short) ByteBuffer.wrap(data, offset, 4).getFloat();
+                case FLOAT8 -> (short) ByteBuffer.wrap(data, offset, 8).getDouble();
+                default -> NumericConversions.toShort(oid, new String(data, offset, length, encoding));
+            };
+        }
         return NumericConversions.toShort(oid, new String(data, offset, length, encoding));
     }
 
     public Byte toByte(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
-        if (binary) return data[offset];
+        if (binary) {
+            return switch (oid) {
+                case BOOL -> data[offset];
+                case INT2 -> (byte) ByteBuffer.wrap(data, offset, 2).getShort();
+                case INT4 -> (byte) ByteBuffer.wrap(data, offset, 4).getInt();
+                case INT8 -> (byte) ByteBuffer.wrap(data, offset, 8).getLong();
+                case FLOAT4 -> (byte) ByteBuffer.wrap(data, offset, 4).getFloat();
+                case FLOAT8 -> (byte) ByteBuffer.wrap(data, offset, 8).getDouble();
+                default -> data[offset];
+            };
+        }
         return NumericConversions.toByte(oid, new String(data, offset, length, encoding));
     }
 
     public BigInteger toBigInteger(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
-        if (binary) return BigInteger.valueOf(ByteBuffer.wrap(data, offset, 8).getLong());
+        if (binary) {
+            return switch (oid) {
+                case INT2 -> BigInteger.valueOf(ByteBuffer.wrap(data, offset, 2).getShort());
+                case INT4 -> BigInteger.valueOf(ByteBuffer.wrap(data, offset, 4).getInt());
+                case INT8 -> BigInteger.valueOf(ByteBuffer.wrap(data, offset, 8).getLong());
+                case FLOAT4 -> BigDecimal.valueOf(ByteBuffer.wrap(data, offset, 4).getFloat()).toBigInteger();
+                case FLOAT8 -> BigDecimal.valueOf(ByteBuffer.wrap(data, offset, 8).getDouble()).toBigInteger();
+                default -> NumericConversions.toBigInteger(oid, new String(data, offset, length, encoding));
+            };
+        }
         return NumericConversions.toBigInteger(oid, new String(data, offset, length, encoding));
     }
 
     public BigDecimal toBigDecimal(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
         if (binary) {
-            var buf = ByteBuffer.wrap(data, offset, length);
-            return length == 4 ? BigDecimal.valueOf(buf.getFloat())
-                 : length == 8 ? BigDecimal.valueOf(buf.getDouble())
-                 : new BigDecimal(new String(data, offset, length, encoding));
+            return switch (oid) {
+                case INT2 -> BigDecimal.valueOf(ByteBuffer.wrap(data, offset, 2).getShort());
+                case INT4 -> BigDecimal.valueOf(ByteBuffer.wrap(data, offset, 4).getInt());
+                case INT8 -> BigDecimal.valueOf(ByteBuffer.wrap(data, offset, 8).getLong());
+                case FLOAT4 -> BigDecimal.valueOf(ByteBuffer.wrap(data, offset, 4).getFloat());
+                case FLOAT8 -> BigDecimal.valueOf(ByteBuffer.wrap(data, offset, 8).getDouble());
+                default -> new BigDecimal(new String(data, offset, length, encoding));
+            };
         }
         return NumericConversions.toBigDecimal(oid, new String(data, offset, length, encoding));
     }
@@ -271,8 +423,14 @@ public class DataConverter {
     public Double toDouble(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
         if (binary) {
-            var buf = ByteBuffer.wrap(data, offset, length);
-            return length == 4 ? (double) buf.getFloat() : buf.getDouble();
+            return switch (oid) {
+                case INT2 -> (double) ByteBuffer.wrap(data, offset, 2).getShort();
+                case INT4 -> (double) ByteBuffer.wrap(data, offset, 4).getInt();
+                case INT8 -> (double) ByteBuffer.wrap(data, offset, 8).getLong();
+                case FLOAT4 -> (double) ByteBuffer.wrap(data, offset, 4).getFloat();
+                case FLOAT8 -> ByteBuffer.wrap(data, offset, 8).getDouble();
+                default -> NumericConversions.toDouble(oid, new String(data, offset, length, encoding));
+            };
         }
         return NumericConversions.toDouble(oid, new String(data, offset, length, encoding));
     }
@@ -280,8 +438,20 @@ public class DataConverter {
     public LocalDate toLocalDate(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
         if (binary) {
-            int days = ByteBuffer.wrap(data, offset, 4).getInt();
-            return LocalDate.of(2000, 1, 1).plusDays(days);
+            return switch (oid) {
+                case DATE -> {
+                    int days = ByteBuffer.wrap(data, offset, 4).getInt();
+                    yield LocalDate.of(2000, 1, 1).plusDays(days);
+                }
+                case TIMESTAMP, TIMESTAMPTZ -> {
+                    long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
+                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
+                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
+                    int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC).toLocalDate();
+                }
+                default -> TemporalConversions.toLocalDate(oid, new String(data, offset, length, encoding));
+            };
         }
         return TemporalConversions.toLocalDate(oid, new String(data, offset, length, encoding));
     }
@@ -289,11 +459,20 @@ public class DataConverter {
     public LocalDateTime toLocalDateTime(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
         if (binary) {
-            long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
-            long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-            long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-            int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
-            return LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC);
+            return switch (oid) {
+                case TIMESTAMP, TIMESTAMPTZ -> {
+                    long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
+                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
+                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
+                    int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC);
+                }
+                case DATE -> {
+                    int days = ByteBuffer.wrap(data, offset, 4).getInt();
+                    yield LocalDate.of(2000, 1, 1).plusDays(days).atStartOfDay();
+                }
+                default -> TemporalConversions.toLocalDateTime(oid, new String(data, offset, length, encoding));
+            };
         }
         return TemporalConversions.toLocalDateTime(oid, new String(data, offset, length, encoding));
     }
@@ -301,8 +480,24 @@ public class DataConverter {
     public LocalTime toLocalTime(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
         if (binary) {
-            long micros = ByteBuffer.wrap(data, offset, 8).getLong();
-            return LocalTime.ofNanoOfDay(micros * 1000);
+            return switch (oid) {
+                case TIME -> {
+                    long micros = ByteBuffer.wrap(data, offset, 8).getLong();
+                    yield LocalTime.ofNanoOfDay(micros * 1000);
+                }
+                case TIMETZ -> {
+                    long micros = ByteBuffer.wrap(data, offset, 8).getLong();
+                    yield LocalTime.ofNanoOfDay(micros * 1000);
+                }
+                case TIMESTAMP, TIMESTAMPTZ -> {
+                    long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
+                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
+                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
+                    int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC).toLocalTime();
+                }
+                default -> TemporalConversions.toLocalTime(oid, new String(data, offset, length, encoding));
+            };
         }
         return TemporalConversions.toLocalTime(oid, new String(data, offset, length, encoding));
     }
@@ -310,11 +505,20 @@ public class DataConverter {
     public Instant toInstant(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
         if (binary) {
-            long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
-            long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-            long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-            int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
-            return Instant.ofEpochSecond(epochSecs, nanoAdj);
+            return switch (oid) {
+                case TIMESTAMP, TIMESTAMPTZ -> {
+                    long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
+                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
+                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
+                    int nanoAdj = (int) (Math.floorMod(epochMicros, 1_000_000) * 1000);
+                    yield Instant.ofEpochSecond(epochSecs, nanoAdj);
+                }
+                case DATE -> {
+                    int days = ByteBuffer.wrap(data, offset, 4).getInt();
+                    yield LocalDate.of(2000, 1, 1).plusDays(days).atStartOfDay().toInstant(ZoneOffset.UTC);
+                }
+                default -> TemporalConversions.toInstant(oid, new String(data, offset, length, encoding));
+            };
         }
         return TemporalConversions.toInstant(oid, new String(data, offset, length, encoding));
     }

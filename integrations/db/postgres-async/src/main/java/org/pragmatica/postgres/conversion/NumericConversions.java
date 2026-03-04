@@ -16,6 +16,7 @@ final class NumericConversions {
     static Long toLong(Oid oid, String value) {
         return switch (oid) {
             case UNSPECIFIED, INT2, INT4, INT8 -> Long.valueOf(value);
+            case NUMERIC, FLOAT4, FLOAT8 -> new BigDecimal(value).longValue();
             default -> returnError(oid, "Long");
         };
     }
@@ -23,6 +24,8 @@ final class NumericConversions {
     static Integer toInteger(Oid oid, String value) {
         return switch (oid) {
             case UNSPECIFIED, INT2, INT4 -> Integer.valueOf(value);
+            case INT8 -> (int) Long.parseLong(value);
+            case NUMERIC, FLOAT4, FLOAT8 -> new BigDecimal(value).intValue();
             default -> returnError(oid, "Integer");
         };
     }
@@ -30,6 +33,8 @@ final class NumericConversions {
     static Short toShort(Oid oid, String value) {
         return switch (oid) {
             case UNSPECIFIED, INT2 -> Short.valueOf(value);
+            case INT4, INT8 -> (short) Long.parseLong(value);
+            case NUMERIC, FLOAT4, FLOAT8 -> new BigDecimal(value).shortValue();
             default -> returnError(oid, "Short");
         };
     }
@@ -37,6 +42,8 @@ final class NumericConversions {
     static Byte toByte(Oid oid, String value) {
         return switch (oid) {
             case UNSPECIFIED, INT2 -> Byte.valueOf(value);
+            case INT4, INT8 -> (byte) Long.parseLong(value);
+            case NUMERIC, FLOAT4, FLOAT8 -> new BigDecimal(value).byteValue();
             default -> returnError(oid, "Byte");
         };
     }
@@ -44,6 +51,7 @@ final class NumericConversions {
     static BigInteger toBigInteger(Oid oid, String value) {
         return switch (oid) {
             case UNSPECIFIED, INT2, INT4, INT8 -> new BigInteger(value);
+            case NUMERIC -> new BigDecimal(value).toBigInteger();
             default -> returnError(oid, "BigInteger");
         };
     }

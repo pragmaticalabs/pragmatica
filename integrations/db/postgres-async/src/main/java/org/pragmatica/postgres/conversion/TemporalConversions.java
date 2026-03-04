@@ -45,6 +45,8 @@ final class TemporalConversions {
         try {
             return switch (oid) {
                 case UNSPECIFIED, DATE -> LocalDate.parse(value, ISO_LOCAL_DATE);
+                case TIMESTAMP -> LocalDateTime.parse(value, TIMESTAMP_FORMAT).toLocalDate();
+                case TIMESTAMPTZ -> OffsetDateTime.parse(value, TIMESTAMPTZ_FORMAT).toLocalDate();
                 default -> returnError(oid, "LocalDate");
             };
         } catch (DateTimeParseException e) {
@@ -57,6 +59,8 @@ final class TemporalConversions {
             return switch (oid) {
                 case UNSPECIFIED, TIME -> LocalTime.parse(value, ISO_LOCAL_TIME);
                 case TIMETZ -> OffsetTime.parse(value, TIMEZ_FORMAT).toLocalTime();
+                case TIMESTAMP -> LocalDateTime.parse(value, TIMESTAMP_FORMAT).toLocalTime();
+                case TIMESTAMPTZ -> OffsetDateTime.parse(value, TIMESTAMPTZ_FORMAT).toLocalTime();
                 default -> returnError(oid, "LocalTime");
             };
         } catch (DateTimeParseException e) {
@@ -69,6 +73,7 @@ final class TemporalConversions {
             return switch (oid) {
                 case UNSPECIFIED, TIMESTAMP -> LocalDateTime.parse(value, TIMESTAMP_FORMAT);
                 case TIMESTAMPTZ -> OffsetDateTime.parse(value, TIMESTAMPTZ_FORMAT).toLocalDateTime();
+                case DATE -> LocalDate.parse(value, ISO_LOCAL_DATE).atStartOfDay();
                 default -> returnError(oid, "LocalDateTime");
             };
         } catch (DateTimeParseException e) {
@@ -79,8 +84,9 @@ final class TemporalConversions {
     static ZonedDateTime toZonedDateTime(Oid oid, String value) {
         try {
             return switch (oid) {
-                case UNSPECIFIED, TIMESTAMP -> LocalDateTime.parse(value, TIMESTAMP_FORMAT).atZone(ZoneOffset.UTC); //Assume UTC
+                case UNSPECIFIED, TIMESTAMP -> LocalDateTime.parse(value, TIMESTAMP_FORMAT).atZone(ZoneOffset.UTC);
                 case TIMESTAMPTZ -> ZonedDateTime.parse(value, TIMESTAMPTZ_FORMAT);
+                case DATE -> LocalDate.parse(value, ISO_LOCAL_DATE).atStartOfDay(ZoneOffset.UTC);
                 default -> returnError(oid, "ZonedDateTime");
             };
         } catch (DateTimeParseException e) {
@@ -91,8 +97,9 @@ final class TemporalConversions {
     static OffsetDateTime toOffsetDateTime(Oid oid, String value) {
         try {
             return switch (oid) {
-                case UNSPECIFIED, TIMESTAMP -> LocalDateTime.parse(value, TIMESTAMP_FORMAT).atZone(ZoneOffset.UTC).toOffsetDateTime(); //Assume UTC
+                case UNSPECIFIED, TIMESTAMP -> LocalDateTime.parse(value, TIMESTAMP_FORMAT).atZone(ZoneOffset.UTC).toOffsetDateTime();
                 case TIMESTAMPTZ -> OffsetDateTime.parse(value, TIMESTAMPTZ_FORMAT);
+                case DATE -> LocalDate.parse(value, ISO_LOCAL_DATE).atStartOfDay().atOffset(ZoneOffset.UTC);
                 default -> returnError(oid, "OffsetDateTime");
             };
         } catch (DateTimeParseException e) {
@@ -105,6 +112,7 @@ final class TemporalConversions {
             return switch (oid) {
                 case UNSPECIFIED, TIMESTAMP -> LocalDateTime.parse(value, TIMESTAMP_FORMAT).toInstant(ZoneOffset.UTC);
                 case TIMESTAMPTZ -> OffsetDateTime.parse(value, TIMESTAMPTZ_FORMAT).toInstant();
+                case DATE -> LocalDate.parse(value, ISO_LOCAL_DATE).atStartOfDay().toInstant(ZoneOffset.UTC);
                 default -> returnError(oid, "Instant");
             };
         } catch (DateTimeParseException e) {
