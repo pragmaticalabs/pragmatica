@@ -1,13 +1,17 @@
 /// SVG topology graph renderer — swim-lane layout with Manhattan routing.
 /// Column-based layout: ENDPOINT/TOPIC_SUB → SLICE → RESOURCE/TOPIC_PUB
+/// Node widths are computed per-column to fit the widest label.
 var TopologyGraph = (function() {
-    var COLUMN_WIDTH = 260;
     var ROW_HEIGHT = 50;
-    var NODE_WIDTH = 220;
     var NODE_HEIGHT = 38;
     var PADDING_X = 40;
     var PADDING_Y = 30;
     var LANE_GAP = 24;
+    var COL_GAP = 40;
+    var MIN_NODE_WIDTH = 120;
+    var CHAR_WIDTH = 7.2;
+    var BADGE_WIDTH = 42;
+    var NODE_PAD_RIGHT = 10;
 
     var TYPE_COLORS = {
         ENDPOINT:  { fill: '#1a3a5c', stroke: '#58a6ff', text: '#58a6ff' },
@@ -27,20 +31,23 @@ var TopologyGraph = (function() {
         return 'hsl(' + hue + ', 70%, 60%)';
     }
 
-    function truncateLabel(label, maxLen) {
-        if (!label) return '';
-        if (label.length <= maxLen) return label;
-        return label.substring(0, maxLen - 1) + '\u2026';
-    }
-
     function escapeHtml(str) {
         if (!str) return '';
         return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
+    function nodeColumn(type) {
+        if (type === 'ENDPOINT' || type === 'TOPIC_SUB') return 0;
+        if (type === 'SLICE') return 1;
+        return 2;
+    }
+
     function swimLaneLayout(nodes) {
+        var defaultColWidth = [MIN_NODE_WIDTH, MIN_NODE_WIDTH, MIN_NODE_WIDTH];
+        var defaultColX = [PADDING_X, PADDING_X + MIN_NODE_WIDTH + COL_GAP, PADDING_X + 2 * (MIN_NODE_WIDTH + COL_GAP)];
+
         if (!nodes || nodes.length === 0) {
-            return { positions: {}, laneYRanges: [], width: 0, height: 0 };
+            return { positions: {}, laneYRanges: [], width: 0, height: 0, colNodeWidth: defaultColWidth, colX: defaultColX };
         }
 
         // Group by sliceArtifact preserving first-occurrence order
@@ -61,6 +68,26 @@ var TopologyGraph = (function() {
             sliceGroups[artifact].push(n);
         });
 
+        // Measure max label length per column across all nodes
+        var maxLen = [0, 0, 0];
+        nodes.forEach(function(n) {
+            var col = nodeColumn(n.type);
+            var labelLen = (n.label || '').length;
+            if (labelLen > maxLen[col]) maxLen[col] = labelLen;
+        });
+
+        var colNodeWidth = [
+            Math.max(MIN_NODE_WIDTH, Math.ceil(BADGE_WIDTH + maxLen[0] * CHAR_WIDTH + NODE_PAD_RIGHT)),
+            Math.max(MIN_NODE_WIDTH, Math.ceil(BADGE_WIDTH + maxLen[1] * CHAR_WIDTH + NODE_PAD_RIGHT)),
+            Math.max(MIN_NODE_WIDTH, Math.ceil(BADGE_WIDTH + maxLen[2] * CHAR_WIDTH + NODE_PAD_RIGHT))
+        ];
+
+        var colX = [
+            PADDING_X,
+            PADDING_X + colNodeWidth[0] + COL_GAP,
+            PADDING_X + colNodeWidth[0] + COL_GAP + colNodeWidth[1] + COL_GAP
+        ];
+
         var positions = {};
         var laneYRanges = [];
         var currentY = PADDING_Y;
@@ -72,49 +99,39 @@ var TopologyGraph = (function() {
             var sliceNode = null;
 
             group.forEach(function(n) {
-                if (n.type === 'ENDPOINT' || n.type === 'TOPIC_SUB') {
-                    inputs.push(n);
-                } else if (n.type === 'RESOURCE' || n.type === 'TOPIC_PUB') {
-                    outputs.push(n);
-                } else if (n.type === 'SLICE') {
-                    sliceNode = n;
-                } else {
-                    // TOPIC or unknown — treat as output
-                    outputs.push(n);
-                }
+                var col = nodeColumn(n.type);
+                if (col === 0) inputs.push(n);
+                else if (col === 1) sliceNode = n;
+                else outputs.push(n);
             });
 
             var laneHeight = Math.max(inputs.length, outputs.length, 1) * ROW_HEIGHT;
             var laneMidY = currentY + laneHeight / 2;
 
-            // Place slice node at column 1, vertically centered
             if (sliceNode) {
                 positions[sliceNode.id] = {
-                    x: PADDING_X + COLUMN_WIDTH,
-                    y: laneMidY - NODE_HEIGHT / 2,
-                    node: sliceNode
+                    x: colX[1], y: laneMidY - NODE_HEIGHT / 2,
+                    node: sliceNode, nodeWidth: colNodeWidth[1]
                 };
             }
 
-            // Center inputs around slice y in column 0
             var inputBlockHeight = inputs.length * ROW_HEIGHT;
             var inputStartY = laneMidY - inputBlockHeight / 2;
             inputs.forEach(function(n, i) {
                 positions[n.id] = {
-                    x: PADDING_X,
+                    x: colX[0],
                     y: inputStartY + i * ROW_HEIGHT + (ROW_HEIGHT - NODE_HEIGHT) / 2,
-                    node: n
+                    node: n, nodeWidth: colNodeWidth[0]
                 };
             });
 
-            // Center outputs around slice y in column 2
             var outputBlockHeight = outputs.length * ROW_HEIGHT;
             var outputStartY = laneMidY - outputBlockHeight / 2;
             outputs.forEach(function(n, i) {
                 positions[n.id] = {
-                    x: PADDING_X + 2 * COLUMN_WIDTH,
+                    x: colX[2],
                     y: outputStartY + i * ROW_HEIGHT + (ROW_HEIGHT - NODE_HEIGHT) / 2,
-                    node: n
+                    node: n, nodeWidth: colNodeWidth[2]
                 };
             });
 
@@ -122,24 +139,27 @@ var TopologyGraph = (function() {
             currentY += laneHeight + LANE_GAP;
         });
 
-        // Orphan nodes in their own lane
         if (orphans.length > 0) {
             var orphanLaneHeight = orphans.length * ROW_HEIGHT;
             orphans.forEach(function(n, i) {
                 positions[n.id] = {
-                    x: PADDING_X + COLUMN_WIDTH,
+                    x: colX[1],
                     y: currentY + i * ROW_HEIGHT + (ROW_HEIGHT - NODE_HEIGHT) / 2,
-                    node: n
+                    node: n, nodeWidth: colNodeWidth[1]
                 };
             });
             laneYRanges.push({ artifact: '(unassigned)', yStart: currentY, yEnd: currentY + orphanLaneHeight });
             currentY += orphanLaneHeight + LANE_GAP;
         }
 
-        var width = PADDING_X * 2 + 3 * COLUMN_WIDTH;
+        var width = colX[2] + colNodeWidth[2] + PADDING_X;
         var height = currentY - LANE_GAP + PADDING_Y;
 
-        return { positions: positions, laneYRanges: laneYRanges, width: Math.max(width, 400), height: Math.max(height, 120) };
+        return {
+            positions: positions, laneYRanges: laneYRanges,
+            width: Math.max(width, 400), height: Math.max(height, 120),
+            colNodeWidth: colNodeWidth, colX: colX
+        };
     }
 
     function classifyEdge(edge, nodeMap) {
@@ -178,7 +198,7 @@ var TopologyGraph = (function() {
         };
     }
 
-    function renderEdge(edge, edgeIndex, positions, gutterSlots, nodeMap, leftOffset) {
+    function renderEdge(edge, edgeIndex, positions, gutterSlots, nodeMap, leftOffset, layout) {
         var from = positions[edge.from];
         var to = positions[edge.to];
         if (!from || !to) return '';
@@ -187,40 +207,34 @@ var TopologyGraph = (function() {
         var topicConfig = edge.topicConfig || '';
         var g = '<g class="topo-edge" data-topic-config="' + escapeHtml(topicConfig) + '" data-from="' + escapeHtml(edge.from) + '" data-to="' + escapeHtml(edge.to) + '">';
 
-        var fromCx = from.x + NODE_WIDTH;
+        var fromCx = from.x + from.nodeWidth;
         var fromCy = from.y + NODE_HEIGHT / 2;
         var toCx = to.x;
         var toCy = to.y + NODE_HEIGHT / 2;
 
         if (type === 'direct') {
-            // Short horizontal bezier within the same lane
             var dx = Math.abs(toCx - fromCx) * 0.3;
             g += '<path d="M' + fromCx + ',' + fromCy + ' C' + (fromCx + dx) + ',' + fromCy + ' ' + (toCx - dx) + ',' + toCy + ' ' + toCx + ',' + toCy + '"';
             g += ' fill="none" stroke="#484f58" stroke-width="1.5" opacity="0.5"/>';
-            // Arrowhead
             g += renderArrow(toCx, toCy, -1, 0, '#484f58', '0.5');
         } else if (type === 'topic') {
-            // Manhattan routing through right gutter
             var slot = gutterSlots.rightSlots[edgeIndex] || 0;
-            var gutterX = leftOffset + PADDING_X + 3 * COLUMN_WIDTH + 10 + slot * 12;
+            var gutterX = leftOffset + layout.colX[2] + layout.colNodeWidth[2] + 10 + slot * 12;
             var color = topicColorForConfig(topicConfig);
 
-            var startX = from.x + NODE_WIDTH;
+            var startX = from.x + from.nodeWidth;
             var startY = from.y + NODE_HEIGHT / 2;
-            var endX = to.x + NODE_WIDTH; // right side of TOPIC_SUB — actually we want to connect to right gutter then back to left of sub
-            // pub node is in column 2, sub node is in column 0
-            // Route: right of pub → gutter → left of sub
             var endX2 = to.x;
             var endY = to.y + NODE_HEIGHT / 2;
 
             g += '<path d="M' + startX + ',' + startY + ' H' + gutterX + ' V' + endY + ' H' + endX2 + '"';
             g += ' fill="none" stroke="' + color + '" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.7"/>';
-            // Arrowhead pointing left into the sub node
             g += renderArrow(endX2, endY, -1, 0, color, '0.7');
         } else if (type === 'dependency') {
-            // Manhattan routing through mid-gutter (between col 0 and col 1)
             var slot2 = gutterSlots.leftSlots[edgeIndex] || 0;
-            var midGutterX = leftOffset + PADDING_X + NODE_WIDTH + (COLUMN_WIDTH - NODE_WIDTH) / 2 - slot2 * 12;
+            var gapStart = leftOffset + layout.colX[0] + layout.colNodeWidth[0];
+            var gapWidth = layout.colX[1] - layout.colX[0] - layout.colNodeWidth[0];
+            var midGutterX = gapStart + gapWidth / 2 - slot2 * 12;
 
             var startX2 = from.x;
             var startY2 = from.y + NODE_HEIGHT / 2;
@@ -229,7 +243,6 @@ var TopologyGraph = (function() {
 
             g += '<path d="M' + startX2 + ',' + startY2 + ' H' + midGutterX + ' V' + endY2 + ' H' + endX3 + '"';
             g += ' fill="none" stroke="#8b949e" stroke-width="1.5" opacity="0.5"/>';
-            // Arrowhead pointing right into the target slice
             g += renderArrow(endX3, endY2, 1, 0, '#8b949e', '0.5');
         }
 
@@ -239,8 +252,6 @@ var TopologyGraph = (function() {
 
     function renderArrow(x, y, dirX, dirY, color, opacity) {
         var size = 7;
-        // dirX, dirY: direction the arrow points (normalized)
-        // For horizontal arrows: dirX=-1 means pointing left, dirX=1 means pointing right
         var ax, ay, bx, by;
         if (dirX !== 0) {
             ax = x - dirX * size;
@@ -257,7 +268,6 @@ var TopologyGraph = (function() {
     }
 
     function getTopicConfigColor(nodeId) {
-        // Extract config from node ID: everything after the second ':'
         var parts = nodeId.split(':');
         if (parts.length >= 3) {
             var config = parts.slice(2).join(':');
@@ -269,8 +279,8 @@ var TopologyGraph = (function() {
     function renderNode(id, pos, node) {
         var colors = TYPE_COLORS[node.type] || TYPE_COLORS.SLICE;
         var strokeColor = colors.stroke;
+        var nodeWidth = pos.nodeWidth;
 
-        // For TOPIC_PUB and TOPIC_SUB, derive stroke from topicConfig
         if (node.type === 'TOPIC_PUB' || node.type === 'TOPIC_SUB') {
             var configColor = getTopicConfigColor(id);
             if (configColor) {
@@ -278,21 +288,18 @@ var TopologyGraph = (function() {
             }
         }
 
-        var label = truncateLabel(node.label, 28);
+        var label = node.label || '';
         var badgeLabels = { ENDPOINT: 'END', TOPIC_PUB: 'PUB', TOPIC_SUB: 'SUB', SLICE: 'SLC', RESOURCE: 'RES', TOPIC: 'TOP' };
         var badgeText = badgeLabels[node.type] || node.type.substring(0, 3);
 
-        var g = '<g class="topo-node" data-node-id="' + escapeHtml(id) + '" data-label="' + escapeHtml(node.label || '') + '">';
+        var g = '<g class="topo-node" data-node-id="' + escapeHtml(id) + '" data-label="' + escapeHtml(label) + '">';
 
-        // Rounded rect
-        g += '<rect x="' + pos.x + '" y="' + pos.y + '" width="' + NODE_WIDTH + '" height="' + NODE_HEIGHT + '"';
+        g += '<rect x="' + pos.x + '" y="' + pos.y + '" width="' + nodeWidth + '" height="' + NODE_HEIGHT + '"';
         g += ' rx="6" ry="6" fill="' + colors.fill + '" stroke="' + strokeColor + '" stroke-width="1.5"/>';
 
-        // Type badge
         g += '<rect x="' + (pos.x + 6) + '" y="' + (pos.y + 6) + '" width="30" height="14" rx="3" fill="' + strokeColor + '" opacity="0.2"/>';
         g += '<text x="' + (pos.x + 21) + '" y="' + (pos.y + 16) + '" text-anchor="middle" fill="' + colors.text + '" font-size="9" font-family="monospace">' + badgeText + '</text>';
 
-        // Label
         g += '<text x="' + (pos.x + 42) + '" y="' + (pos.y + NODE_HEIGHT / 2 + 4) + '" fill="' + colors.text + '" font-size="12" font-family="monospace">' + escapeHtml(label) + '</text>';
 
         g += '</g>';
@@ -345,19 +352,19 @@ var TopologyGraph = (function() {
         }
 
         function restoreDefaults() {
-            // Check if search is active
-            var searchInput = container.closest('.panel');
             var searchQuery = '';
-            if (searchInput) {
-                var input = searchInput.querySelector('input[type="text"]');
-                if (input) searchQuery = input.value || '';
-            }
-            // Also check Alpine store
             if (typeof Alpine !== 'undefined') {
                 try {
                     var store = Alpine.store('topology');
                     if (store && store.searchQuery) searchQuery = store.searchQuery;
                 } catch(e) { /* ignore */ }
+            }
+            if (!searchQuery) {
+                var panel = container.closest('.panel');
+                if (panel) {
+                    var input = panel.querySelector('input[type="text"]');
+                    if (input) searchQuery = input.value || '';
+                }
             }
 
             if (searchQuery && searchQuery.trim() !== '') {
@@ -377,11 +384,9 @@ var TopologyGraph = (function() {
                 dimAll();
 
                 if (tc && tc !== '') {
-                    // Highlight all edges with same topicConfig
                     allEdges.forEach(function(e) {
                         if (e.getAttribute('data-topic-config') === tc) {
                             e.style.opacity = '1';
-                            // Boost connected nodes
                             var from = e.getAttribute('data-from');
                             var to = e.getAttribute('data-to');
                             allNodes.forEach(function(n) {
@@ -391,7 +396,6 @@ var TopologyGraph = (function() {
                         }
                     });
                 } else {
-                    // Just highlight this edge and connected nodes
                     edge.style.opacity = '1';
                     var from = edge.getAttribute('data-from');
                     var to = edge.getAttribute('data-to');
@@ -410,14 +414,11 @@ var TopologyGraph = (function() {
                 dimAll();
                 node.style.opacity = '1';
 
-                // For TOPIC_PUB/TOPIC_SUB nodes, highlight all nodes/edges with matching topic config
                 var isTopicNode = nodeId.startsWith('topic-pub:') || nodeId.startsWith('topic-sub:');
                 if (isTopicNode) {
-                    // Extract config: "topic-pub:artifact:config" or "topic-sub:artifact:config"
                     var prefix = nodeId.startsWith('topic-pub:') ? 'topic-pub:' : 'topic-sub:';
                     var topicConfig = nodeId.substring(nodeId.indexOf(':', prefix.length) + 1);
 
-                    // Highlight all edges with matching topicConfig and their connected nodes
                     allEdges.forEach(function(e) {
                         var tc = e.getAttribute('data-topic-config');
                         var from = e.getAttribute('data-from');
@@ -431,7 +432,6 @@ var TopologyGraph = (function() {
                         }
                     });
                 } else {
-                    // Standard node hover — highlight directly connected edges/nodes
                     allEdges.forEach(function(e) {
                         var from = e.getAttribute('data-from');
                         var to = e.getAttribute('data-to');
@@ -456,22 +456,17 @@ var TopologyGraph = (function() {
             return;
         }
 
-        // Build node map
         var nodeMap = {};
         nodes.forEach(function(n) { nodeMap[n.id] = n; });
 
-        // Layout
         var result = swimLaneLayout(nodes);
         var positions = result.positions;
 
-        // Classify and assign gutter slots
         var gutterSlots = assignGutterSlots(edges || [], nodeMap);
 
-        // Compute total width including gutters
         var totalWidth = Math.max(result.width + gutterSlots.rightGutterWidth + gutterSlots.leftGutterWidth + 40, 500);
         var totalHeight = Math.max(result.height + 40, 120);
 
-        // Offset all positions by leftGutterWidth to make room for left gutter
         var leftOffset = gutterSlots.leftGutterWidth;
         for (var id in positions) {
             positions[id].x += leftOffset;
@@ -479,26 +474,21 @@ var TopologyGraph = (function() {
 
         var svg = '<svg width="' + totalWidth + '" height="' + totalHeight + '" class="topology-svg">';
 
-        // Lane separators
         result.laneYRanges.forEach(function(lane, i) {
             if (i > 0) {
                 var sepY = lane.yStart - LANE_GAP / 2;
                 svg += '<line x1="0" y1="' + sepY + '" x2="' + totalWidth + '" y2="' + sepY + '" stroke="#30363d" stroke-width="1" stroke-dasharray="4,4" opacity="0.5"/>';
             }
-            // Lane label (rotated, short artifact name)
             var labelY = (lane.yStart + lane.yEnd) / 2;
-            // Extract artifact name: "org.example:catalog-slice:1.0.0" → "catalog-slice"
             var parts = lane.artifact.split(':');
             var shortName = parts.length >= 2 ? parts[parts.length - 2] : parts[0] || lane.artifact;
             svg += '<text x="' + (leftOffset - 5) + '" y="' + labelY + '" text-anchor="end" fill="#484f58" font-size="10" font-family="monospace" transform="rotate(-90,' + (leftOffset - 5) + ',' + labelY + ')">' + escapeHtml(shortName) + '</text>';
         });
 
-        // Draw edges (behind nodes)
         (edges || []).forEach(function(e, i) {
-            svg += renderEdge(e, i, positions, gutterSlots, nodeMap, leftOffset);
+            svg += renderEdge(e, i, positions, gutterSlots, nodeMap, leftOffset, result);
         });
 
-        // Draw nodes
         Object.keys(positions).forEach(function(id) {
             var pos = positions[id];
             svg += renderNode(id, pos, pos.node);
@@ -507,7 +497,6 @@ var TopologyGraph = (function() {
         svg += '</svg>';
         container.innerHTML = svg;
 
-        // Attach interactivity
         attachHoverListeners(container);
         if (searchQuery) {
             applySearch(container, searchQuery);

@@ -882,7 +882,7 @@ tbody tr:hover { background: var(--bg-tertiary); }
 
 /* Topology Graph */
 .topology-container {
-    overflow-x: auto;
+    overflow-x: scroll;
     overflow-y: scroll;
     max-height: 500px;
     padding: var(--space-sm);
