@@ -8,7 +8,6 @@ podman run -it --rm \
   -p 8070:8070 \
   -p 8888:8888 \
   -p 5150:5150 \
-  --add-host=host.containers.internal:host-gateway \
   -v "$HOME/.m2/repository:/root/.m2/repository" \
   eclipse-temurin:25-jdk-noble \
   bash
@@ -18,11 +17,11 @@ podman run -it --rm \
 > - `8070` — App HTTP (Forge routes slice traffic here)
 > - `8888` — Forge dashboard (browser access from host)
 > - `5150` — Management API / CLI
-> - `--add-host` — allows the container to reach services on the host (e.g., PostgreSQL in Part 7) via `host.containers.internal`
 >
-> On **Linux**, you can replace the `-p` flags and `--add-host` with `--network=host` for simplicity.
-> On **macOS/Windows**, explicit `-p` mappings are required because `--network=host`
-> only affects the podman VM, not the host.
+> **Reaching host services** (e.g., PostgreSQL in Part 7): use `host.containers.internal`
+> as the hostname. Podman on macOS/Windows resolves this automatically to the host machine.
+> On Linux, add `--add-host=host.containers.internal:host-gateway` to the command above,
+> or use `--network=host` instead of `-p` flags.
 >
 > **`-v .m2/repository`** — mounts local Maven cache so 0.19.2-SNAPSHOT deps resolve (not published to Central yet). Remove this mount for a true clean-room test once 0.19.2 is published.
 
