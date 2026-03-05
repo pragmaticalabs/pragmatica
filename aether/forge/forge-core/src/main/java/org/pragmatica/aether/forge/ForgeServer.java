@@ -106,7 +106,17 @@ public final class ForgeServer {
         this.forgeConfig = forgeConfig;
     }
 
+    private static final String VERSION = "Aether Forge 0.19.2";
+
     public static void main(String[] args) {
+        if (hasFlag(args, "--help", "-h")) {
+            printHelp();
+            return;
+        }
+        if (hasFlag(args, "--version", "-V")) {
+            System.out.println(VERSION);
+            return;
+        }
         // Parse CLI args with env var overrides
         var startupConfigResult = StartupConfig.startupConfig(args);
         startupConfigResult.onFailure(cause -> {
@@ -131,6 +141,40 @@ public final class ForgeServer {
             log.error("Failed to start Forge server", e);
             System.exit(1);
         }
+    }
+
+    @SuppressWarnings("JBCT-SEQ-01")
+    private static boolean hasFlag(String[] args, String longFlag, String shortFlag) {
+        for (var arg : args) {
+            if (arg.equals(longFlag) || arg.equals(shortFlag)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void printHelp() {
+        System.out.println(VERSION);
+        System.out.println();
+        System.out.println("Start a local Aether Forge development cluster.");
+        System.out.println();
+        System.out.println("Usage: aether-forge [options]");
+        System.out.println();
+        System.out.println("Options:");
+        System.out.println("  --config <forge.toml>       Forge cluster configuration");
+        System.out.println("  --blueprint <file.toml>     Blueprint to deploy on startup");
+        System.out.println("  --load-config <file.toml>   Load test configuration");
+        System.out.println("  --auto-start                Start load generation after config loaded");
+        System.out.println("  -h, --help                  Show this help message");
+        System.out.println("  -V, --version               Print version");
+        System.out.println();
+        System.out.println("Environment variables:");
+        System.out.println("  FORGE_CONFIG        Path to forge.toml");
+        System.out.println("  FORGE_BLUEPRINT     Path to blueprint file");
+        System.out.println("  FORGE_LOAD_CONFIG   Path to load config file");
+        System.out.println("  FORGE_AUTO_START    Set to \"true\" to auto-start load");
+        System.out.println("  FORGE_PORT          Dashboard port (default: 8888)");
+        System.out.println("  CLUSTER_SIZE        Number of nodes (default: 5)");
     }
 
     private static EmberConfig loadForgeConfig(StartupConfig startupConfig) {
