@@ -13,7 +13,7 @@ A unified monorepo containing the Pragmatica ecosystem for modern functional Jav
 
 ## Version
 
-Current version: **0.19.0**
+Current version: **0.19.1**
 
 ### Pre-Monorepo Versions
 - pragmatica-lite: 0.11.3
@@ -138,7 +138,7 @@ mvn verify
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>core</artifactId>
-    <version>0.19.0</version>
+    <version>0.19.1</version>
 </dependency>
 ```
 
@@ -148,7 +148,7 @@ mvn verify
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>0.19.0</version>
+    <version>0.19.1</version>
     <executions>
         <execution>
             <goals>
@@ -165,7 +165,7 @@ mvn verify
 <dependency>
     <groupId>org.pragmatica-lite.aether</groupId>
     <artifactId>slice-api</artifactId>
-    <version>0.19.0</version>
+    <version>0.19.1</version>
     <scope>provided</scope>
 </dependency>
 ```

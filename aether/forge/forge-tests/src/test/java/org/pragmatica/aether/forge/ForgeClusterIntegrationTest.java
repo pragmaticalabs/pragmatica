@@ -1,9 +1,12 @@
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.TestMethodOrder;
 import org.pragmatica.aether.slice.SliceState;
 
 import java.io.IOException;
@@ -19,10 +22,12 @@ import org.pragmatica.aether.ember.EmberCluster;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 
 /// Integration tests for EmberCluster startup, blueprint deployment, and shutdown.
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class EmberClusterIntegrationTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(180);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.19.0";
+    private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
 
     private EmberCluster cluster;
     private HttpClient httpClient;
@@ -30,25 +35,29 @@ class EmberClusterIntegrationTest {
     private static final int BASE_PORT = 12500;
     private static final int BASE_MGMT_PORT = 12600;
 
-    @BeforeEach
-    void setUp(TestInfo testInfo) {
-        int portOffset = getPortOffset(testInfo);
-        cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "fci");
+    @BeforeAll
+    void setUp() {
+        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "fci");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();
+
+        cluster.start()
+               .await()
+               .onFailure(cause -> {
+                   throw new AssertionError("Cluster start failed: " + cause.message());
+               });
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> cluster.currentLeader().isPresent());
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(this::allNodesHealthy);
     }
 
-    private int getPortOffset(TestInfo testInfo) {
-        return switch (testInfo.getTestMethod().map(m -> m.getName()).orElse("")) {
-            case "clusterStartup_withThreeNodes_electsLeader" -> 0;
-            case "blueprintDeployment_deploysSlices_andReachesActiveState" -> 5;
-            case "clusterShutdown_stopsAllNodes_gracefully" -> 10;
-            default -> 15;
-        };
-    }
-
-    @AfterEach
+    @AfterAll
     void tearDown() {
         if (cluster != null) {
             cluster.stop()
@@ -57,17 +66,8 @@ class EmberClusterIntegrationTest {
     }
 
     @Test
+    @Order(1)
     void clusterStartup_withThreeNodes_electsLeader() {
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
         assertThat(cluster.nodeCount()).isEqualTo(3);
         assertThat(cluster.currentLeader().isPresent()).isTrue();
 
@@ -76,29 +76,8 @@ class EmberClusterIntegrationTest {
     }
 
     @Test
+    @Order(2)
     void blueprintDeployment_deploysSlices_andReachesActiveState() {
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
-        // Wait for all nodes to be healthy (have quorum) before deploying
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(this::allNodesHealthy);
-
-        // Additional stabilization time for consensus to be fully ready
-        try {
-            Thread.sleep(5000);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-
         var leaderPort = cluster.getLeaderManagementPort()
                                 .unwrap();
 
@@ -106,9 +85,9 @@ class EmberClusterIntegrationTest {
             id = "org.test:blueprint:1.0.0"
 
             [[slices]]
-            artifact = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.19.0"
+            artifact = "%s"
             instances = 1
-            """;
+            """.formatted(TEST_ARTIFACT);
         deployBlueprint(leaderPort, blueprintContent);
 
         await().atMost(WAIT_TIMEOUT)
@@ -135,17 +114,8 @@ class EmberClusterIntegrationTest {
     }
 
     @Test
+    @Order(3)
     void clusterShutdown_stopsAllNodes_gracefully() {
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
         assertThat(cluster.nodeCount()).isEqualTo(3);
 
         cluster.stop()
@@ -155,6 +125,9 @@ class EmberClusterIntegrationTest {
                });
 
         assertThat(cluster.nodeCount()).isZero();
+
+        // Nullify cluster so tearDown does not try to stop it again
+        cluster = null;
     }
 
     private void deployBlueprint(int port, String blueprintContent) {

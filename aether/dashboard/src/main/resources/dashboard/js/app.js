@@ -50,11 +50,13 @@ document.addEventListener('alpine:init', function() {
                     if (data.type === 'INITIAL_STATE' && data.data) {
                         Alpine.store('cluster').updateFromStatus(data.data);
                         Alpine.store('deployments').updateFromWsDashboard(data.data);
+                        Alpine.store('topology').updateFromWsDashboard(data.data);
                         Alpine.store('alerts').updateFromInitialState(data.data);
                     } else if (data.type === 'METRICS_UPDATE' && data.data) {
                         Alpine.store('cluster').updateFromWsDashboard(data.data);
                         Alpine.store('metrics').updateFromWsDashboard(data.data);
                         Alpine.store('deployments').updateFromWsDashboard(data.data);
+                        Alpine.store('topology').updateFromWsDashboard(data.data);
                         Alpine.store('metrics').updateNodeHistory(Alpine.store('cluster').nodes);
                         this.updateSparklines();
                         this.updateCharts();
@@ -96,6 +98,7 @@ document.addEventListener('alpine:init', function() {
                 Alpine.store('cluster').refreshObservabilityDepth();
                 Alpine.store('alerts').refresh();
                 Alpine.store('alerts').refreshThresholds();
+                Alpine.store('topology').refresh();
             },
 
             initSparklines() {

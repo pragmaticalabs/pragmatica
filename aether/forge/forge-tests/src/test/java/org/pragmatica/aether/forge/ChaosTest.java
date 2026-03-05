@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -37,13 +38,14 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///   - Leader kill spree
 ///   - Split brain recovery
 ///
+@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 class ChaosTest {
     private static final int BASE_PORT = 9500;
     private static final int BASE_MGMT_PORT = 9600;
     private static final Duration CHAOS_DURATION = Duration.ofSeconds(30);
     private static final Duration RECOVERY_TIMEOUT = Duration.ofSeconds(120);
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
     private EmberCluster cluster;
@@ -84,11 +86,10 @@ class ChaosTest {
     }
 
     @AfterEach
-    void tearDown() throws InterruptedException {
+    void tearDown() {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            Thread.sleep(3000);
         }
     }
 

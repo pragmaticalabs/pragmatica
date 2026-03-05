@@ -1,12 +1,13 @@
 package org.pragmatica.aether.example.urlshortener.shortener;
 
-import org.pragmatica.aether.example.urlshortener.analytics.Analytics;
 import org.pragmatica.aether.resource.db.Sql;
 import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.aether.slice.Publisher;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 
 import java.nio.charset.StandardCharsets;
@@ -18,7 +19,7 @@ import java.util.regex.Pattern;
 /// Uses database storage with two tables:
 ///
 ///   - `urls` - maps short code to original URL
-///   - `clicks` - tracks click analytics
+///   - `clicks` - tracks click analytics (via pub-sub)
 ///
 @Slice
 public interface UrlShortener {
@@ -69,6 +70,9 @@ public interface UrlShortener {
         }
     }
 
+    // === Events ===
+    record ClickEvent(String shortCode) {}
+
     // === Errors ===
     sealed interface UrlError extends Cause {
         record InvalidUrl(String reason) implements UrlError {
@@ -115,8 +119,8 @@ public interface UrlShortener {
     Promise<ResolveResponse> resolve(ResolveRequest request);
 
     // === Factory ===
-    static UrlShortener urlShortener(@Sql SqlConnector db, Analytics analytics) {
-        record urlShortener(SqlConnector db, Analytics analytics) implements UrlShortener {
+    static UrlShortener urlShortener(@Sql SqlConnector db, @ClickEventPublisher Publisher<ClickEvent> clickPublisher) {
+        record urlShortener(SqlConnector db, Publisher<ClickEvent> clickPublisher) implements UrlShortener {
             private static final String SELECT_BY_URL = "SELECT short_code FROM urls WHERE original_url = ?";
             private static final String SELECT_BY_CODE = "SELECT original_url FROM urls WHERE short_code = ?";
             private static final String INSERT_URL = "INSERT INTO urls (short_code, original_url) VALUES (?, ?)";
@@ -138,15 +142,13 @@ public interface UrlShortener {
                 return db.queryOptional(SELECT_BY_CODE,
                                         row -> row.getString("original_url"),
                                         shortCode)
-                         .flatMap(maybeUrl -> maybeUrl.map(url -> recordClickAndRespond(shortCode, url))
+                         .flatMap(maybeUrl -> maybeUrl.map(url -> publishClickAndRespond(shortCode, url))
                                                       .or(UrlError.NotFound.INSTANCE::promise));
             }
 
-            private Promise<ResolveResponse> recordClickAndRespond(String shortCode, String url) {
-                return Analytics.RecordClickRequest.recordClickRequest(shortCode)
-                                .async()
-                                .flatMap(analytics::recordClick)
-                                .map(_ -> ResolveResponse.resolveResponse(shortCode, url));
+            private Promise<ResolveResponse> publishClickAndRespond(String shortCode, String url) {
+                return clickPublisher.publish(new ClickEvent(shortCode))
+                                     .map(_ -> ResolveResponse.resolveResponse(shortCode, url));
             }
 
             private Promise<ShortenResponse> createNewShortUrl(String url) {
@@ -194,11 +196,12 @@ public interface UrlShortener {
                 return sb.toString();
             }
         }
-        return new urlShortener(db, analytics);
+        return new urlShortener(db, clickPublisher);
     }
 
-    // === Convenience factory for testing without database ===
+    // === Convenience factory for testing without publisher ===
     static UrlShortener urlShortener(SqlConnector db) {
-        return urlShortener(db, Analytics.noopAnalytics());
+        return urlShortener(db,
+                            _ -> Promise.success(Unit.unit()));
     }
 }

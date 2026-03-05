@@ -1316,6 +1316,77 @@ Rollback to old version. Requires leader node.
 
 ---
 
+## Topology
+
+### GET /api/topology
+
+Get the cluster-wide topology graph showing data flow between endpoints, slices, resources, and pub-sub topics. Nodes are grouped per-slice with `sliceArtifact` for swim-lane layout. Topic connectors carry `topicConfig` for cross-slice pub-sub matching.
+
+The graph preserves route declaration order from TOML configuration files.
+
+**Response:**
+```json
+{
+  "nodes": [
+    {
+      "id": "endpoint:GET:/api/shorten",
+      "type": "ENDPOINT",
+      "label": "GET /api/shorten",
+      "sliceArtifact": "org.example:url-shortener:1.0.0"
+    },
+    {
+      "id": "slice:org.example:url-shortener:1.0.0",
+      "type": "SLICE",
+      "label": "UrlShortener",
+      "sliceArtifact": "org.example:url-shortener:1.0.0"
+    },
+    {
+      "id": "topic-pub:org.example:url-shortener:1.0.0:click-events",
+      "type": "TOPIC_PUB",
+      "label": "click-events",
+      "sliceArtifact": "org.example:url-shortener:1.0.0"
+    },
+    {
+      "id": "topic-sub:org.example:analytics:1.0.0:click-events",
+      "type": "TOPIC_SUB",
+      "label": "click-events",
+      "sliceArtifact": "org.example:analytics:1.0.0"
+    }
+  ],
+  "edges": [
+    {
+      "from": "endpoint:GET:/api/shorten",
+      "to": "slice:org.example:url-shortener:1.0.0",
+      "style": "SOLID",
+      "topicConfig": ""
+    },
+    {
+      "from": "topic-pub:org.example:url-shortener:1.0.0:click-events",
+      "to": "topic-sub:org.example:analytics:1.0.0:click-events",
+      "style": "DOTTED",
+      "topicConfig": "click-events"
+    }
+  ]
+}
+```
+
+**Node types:** `ENDPOINT`, `SLICE`, `TOPIC_PUB`, `TOPIC_SUB`, `RESOURCE`
+
+**Edge styles:**
+- `SOLID` — direct intra-slice connections (endpoint→slice, slice→resource) and slice-to-slice dependencies
+- `DOTTED` — cross-slice pub-sub topic connectors (topic-pub→topic-sub)
+
+**Node ID formats:**
+- Endpoints: `endpoint:{method}:{path}`
+- Slices: `slice:{artifact}`
+- Resources: `resource:{artifact}:{type}:{config}` (per-slice)
+- Topic publishers: `topic-pub:{artifact}:{config}` (per-slice)
+- Topic subscribers: `topic-sub:{artifact}:{config}` (per-slice)
+
+**Cross-slice matching:** Publishers and subscribers with the same config suffix are connected many-to-many via DOTTED edges. The `topicConfig` field on these edges contains the matching config name.
+
+---
+
 ## Artifact Repository
 
 ### GET /repository/info/{groupPath}/{artifactId}/{version}
@@ -1541,6 +1612,7 @@ When no API keys are configured, WebSocket connections are immediately authorize
 | POST | `/api/rolling-update/{updateId}/routing` | Rolling Updates |
 | POST | `/api/rolling-update/{updateId}/complete` | Rolling Updates |
 | POST | `/api/rolling-update/{updateId}/rollback` | Rolling Updates |
+| GET | `/api/topology` | Topology |
 | GET | `/repository/info/{group}/{artifact}/{version}` | Artifact Repository |
 | GET | `/repository/{group}/{artifact}/{version}/{file}` | Artifact Repository |
 | PUT | `/repository/{group}/{artifact}/{version}/{file}` | Artifact Repository |

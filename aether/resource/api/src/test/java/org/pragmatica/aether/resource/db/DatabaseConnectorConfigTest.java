@@ -27,6 +27,8 @@ class DatabaseConnectorConfigTest {
             assertThat(config.database()).isEqualTo("testdb");
             assertThat(config.port()).isZero();
             assertThat(config.poolConfig()).isEqualTo(PoolConfig.DEFAULT);
+            assertThat(config.poolConfig().ioThreads()).isZero();
+            assertThat(config.poolConfig().effectiveIoThreads()).isGreaterThanOrEqualTo(8);
             assertThat(config.properties()).isEmpty();
             assertThat(config.jdbcUrl().isEmpty()).isTrue();
             assertThat(config.r2dbcUrl().isEmpty()).isTrue();
@@ -129,6 +131,7 @@ class DatabaseConnectorConfigTest {
                                                   PoolConfig.DEFAULT,
                                                   Map.of("useSSL", "true"),
                                                   none(),
+                                                  none(),
                                                   none())
                 .unwrap();
 
@@ -221,6 +224,7 @@ class DatabaseConnectorConfigTest {
                                                   PoolConfig.DEFAULT,
                                                   Map.of(),
                                                   some(overrideUrl),
+                                                  none(),
                                                   none())
                 .unwrap();
 
@@ -273,6 +277,7 @@ class DatabaseConnectorConfigTest {
                                                   PoolConfig.DEFAULT,
                                                   Map.of("useSSL", "true", "serverTimezone", "UTC"),
                                                   none(),
+                                                  none(),
                                                   none())
                 .unwrap();
 
@@ -309,6 +314,7 @@ class DatabaseConnectorConfigTest {
                                                   PoolConfig.DEFAULT,
                                                   Map.of(),
                                                   some("jdbc:postgresql://user:pass@host/db"),
+                                                  none(),
                                                   none())
                 .unwrap();
 

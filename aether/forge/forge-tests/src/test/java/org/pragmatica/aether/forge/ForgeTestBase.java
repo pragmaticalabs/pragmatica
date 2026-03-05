@@ -9,6 +9,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 
+import static org.awaitility.Awaitility.await;
+
 /// Base class with shared test utilities for Forge tests.
 ///
 ///
@@ -44,6 +46,49 @@ public abstract class ForgeTestBase {
         } catch (IOException | InterruptedException e) {
             return false;
         }
+    }
+
+    /// Check if all nodes in the cluster are ready (healthy with quorum and ready flag).
+    ///
+    /// @param cluster the EmberCluster to check
+    /// @param httpClient the HTTP client to use for health checks
+    /// @return true if all nodes report ready and have quorum
+    protected boolean allNodesReady(EmberCluster cluster, HttpClient httpClient) {
+        var status = cluster.status();
+        return status.nodes().stream()
+                     .allMatch(node -> checkNodeReady(node.mgmtPort(), httpClient));
+    }
+
+    /// Check if a single node is ready.
+    ///
+    /// @param port the management port of the node
+    /// @param httpClient the HTTP client to use
+    /// @return true if the node reports ready with quorum
+    protected boolean checkNodeReady(int port, HttpClient httpClient) {
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + port + "/api/health"))
+                                 .GET()
+                                 .timeout(Duration.ofSeconds(5))
+                                 .build();
+        try {
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            return response.statusCode() == 200
+                && response.body().contains("\"ready\":true")
+                && response.body().contains("\"quorum\":true");
+        } catch (IOException | InterruptedException e) {
+            return false;
+        }
+    }
+
+    /// Wait for all nodes in the cluster to become ready.
+    ///
+    /// @param cluster the EmberCluster to wait on
+    /// @param httpClient the HTTP client to use for health checks
+    /// @param timeout maximum time to wait for readiness
+    protected void awaitClusterReady(EmberCluster cluster, HttpClient httpClient, Duration timeout) {
+        await().atMost(timeout)
+               .pollInterval(Duration.ofMillis(500))
+               .until(() -> allNodesReady(cluster, httpClient));
     }
 
     /// Perform an HTTP GET request.

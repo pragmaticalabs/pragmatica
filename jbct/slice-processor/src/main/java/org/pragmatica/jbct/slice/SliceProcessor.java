@@ -120,10 +120,9 @@ public class SliceProcessor extends AbstractProcessor {
     }
 
     private void generateArtifacts(TypeElement interfaceElement, SliceModel sliceModel) {
-        generateFactory(interfaceElement, sliceModel).flatMap(_ -> generateRoutes(interfaceElement, sliceModel))
-                       .flatMap(routesClassOpt -> generateSliceManifest(interfaceElement, sliceModel, routesClassOpt))
-                       .onFailure(cause -> error(interfaceElement,
-                                                 cause.message()));
+        generateFactory(interfaceElement, sliceModel)
+            .flatMap(_ -> generateRoutesAndManifest(interfaceElement, sliceModel))
+            .onFailure(cause -> error(interfaceElement, cause.message()));
     }
 
     private Result<Unit> generateFactory(TypeElement interfaceElement, SliceModel sliceModel) {
@@ -132,20 +131,28 @@ public class SliceProcessor extends AbstractProcessor {
                                                     "Generated factory: " + sliceModel.simpleName() + "Factory"));
     }
 
+    private Result<Unit> generateRoutesAndManifest(TypeElement interfaceElement, SliceModel sliceModel) {
+        return loadRouteConfig(sliceModel.packageName())
+            .flatMap(configOpt -> generateRoutesClass(interfaceElement, sliceModel, configOpt)
+                .flatMap(routesClassOpt -> generateSliceManifest(interfaceElement, sliceModel, routesClassOpt, configOpt)));
+    }
+
+    private Result<Option<String>> generateRoutesClass(TypeElement interfaceElement,
+                                                        SliceModel sliceModel,
+                                                        Option<RouteConfig> configOpt) {
+        return configOpt.fold(
+            () -> Result.success(Option.<String>none()),
+            config -> generateRoutesFromConfig(interfaceElement, sliceModel, config));
+    }
+
     private Result<Unit> generateSliceManifest(TypeElement interfaceElement,
                                                SliceModel sliceModel,
-                                               Option<String> routesClass) {
-        return manifestGenerator.generateSliceManifest(sliceModel, routesClass)
+                                               Option<String> routesClass,
+                                               Option<RouteConfig> routeConfig) {
+        return manifestGenerator.generateSliceManifest(sliceModel, routesClass, routeConfig)
                                 .onSuccess(_ -> note(interfaceElement,
                                                      "Generated slice manifest: META-INF/slice/" + sliceModel.simpleName()
                                                      + ".manifest"));
-    }
-
-    private Result<Option<String>> generateRoutes(TypeElement interfaceElement, SliceModel sliceModel) {
-        var packageName = sliceModel.packageName();
-        return loadRouteConfig(packageName)
-        .flatMap(configOpt -> configOpt.fold(() -> Result.success(Option.<String>none()),
-                                             config -> generateRoutesFromConfig(interfaceElement, sliceModel, config)));
     }
 
     private Result<Option<RouteConfig>> loadRouteConfig(String packageName) {

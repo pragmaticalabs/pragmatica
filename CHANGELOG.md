@@ -4,7 +4,36 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.19.0] - Unreleased
+## [0.19.1] - Unreleased
+
+### Added
+- **postgres-async integration** — native async PostgreSQL driver wired into Aether resource provisioning
+  - `asyncUrl` config field on `DatabaseConnectorConfig` for transport selection (priority 20, preferred over JDBC/R2DBC)
+  - `postgres-r2dbc-adapter` module — R2DBC SPI adapter over postgres-async (ConnectionFactory, Connection, Statement, Result, Row, RowMetadata)
+  - `db-async` module — `AsyncSqlConnector` using postgres-async directly (zero adapter overhead) with LISTEN/NOTIFY support
+  - `db-jooq-async` module — `AsyncJooqConnector` via R2DBC adapter for full jOOQ compatibility
+- **Configurable IO threads for postgres-async** — `io_threads` field in `[database.pool_config]` controls Netty event loop thread count. Default `0` = auto-detect (`max(availableProcessors, 8)`). Removes single-thread serialization bottleneck that limited throughput to ~3500 req/s
+- **PubSubTest** — Forge-based cross-node pub-sub integration test: deploys url-shortener + analytics slices, verifies click event delivery (single, multi-click, leader failover)
+- **Dashboard topology graph** — Deployments tab now shows endpoint→slice→resource data flow graph (SVG, column-based DAG layout). Compile-time topology data: HTTP routes, resources, pub-sub topics extracted from `.manifest` files (envelope v6). REST endpoint `GET /api/topology`, included in WebSocket `INITIAL_STATE`
+- **Topology swim-lane layout** — complete rewrite of topology graph renderer with per-slice swim lanes, Manhattan routing for cross-slice topic connectors (right gutter) and dependency edges (left gutter), HSL color-coded topic groups, hover highlighting (dims non-related elements), and search filtering
+- **Per-slice topology wire format** — topology nodes carry `sliceArtifact`, edges carry `topicConfig`. Resources and topics are now per-slice (no more shared nodes). Cross-slice pub-sub matching connects all publishers to all subscribers with the same config (many-to-many)
+- **Route declaration order preservation** — `RouteConfig`, `RouteConfigLoader`, and `TomlDocument` now preserve TOML declaration order using `LinkedHashMap` instead of `Map.copyOf()`
+
+### Performance
+- **postgres-async driver optimizations** — single-buffer DataRow (N+1→3 allocations per row), connection pool lock consolidation (3→1 lock acquisitions per getConnection), static protocol constants, ByteArrayOutputStream elimination in wire protocol parsing. Benchmarked: **50% lower p95 at 2000 req/s** (4.78ms→2.38ms), **35% lower p95 at 5000 req/s** (180ms→117ms)
+
+### Changed
+- **E2E test suite reduced from 13 to 2 classes** — removed 11 tests that fully overlap with Forge equivalents (ClusterFormation, NetworkPartition, NodeDrain, SliceDeployment, ManagementApi, SliceInvocation, RollingUpdate, GracefulShutdown, Metrics, Controller, Ttm). Kept ArtifactRepositoryE2ETest (unique DHT coverage) and NodeFailureE2ETest (simplified to 2 focused container-specific tests)
+- **Forge tests moved to class-level cluster setup** — 8 test classes converted from per-method to `@BeforeAll/@AfterAll` with `@TestInstance(PER_CLASS)`, reducing ~300 cluster starts to ~50
+- **Sleep-based stabilization replaced with health endpoint polling** — removed all `Thread.sleep()` stabilization in Forge tests, replaced with awaitility polling on `/api/health` ready+quorum status
+- **CI restructured** — Forge tests run in `build-and-test` job (no Docker needed); E2E job slimmed to 20-min timeout with 2 focused test classes. 5 heavy Forge tests (`@Tag("Heavy")`) excluded from CI 2-core runners
+- **NodeFailureE2ETest simplified** — rewritten from 3 ordered shared-cluster tests to 2 independent tests (single node failure + leader failover) extending AbstractE2ETest
+- **E2E default cluster size reduced from 5 to 3** — `AbstractE2ETest.clusterSize()` returns 3; NodeFailureE2ETest overrides to 5
+- **E2E timeouts reduced** — DEFAULT_TIMEOUT 30→15s, DEPLOY_TIMEOUT 3min→90s, RECOVERY_TIMEOUT 60→30s, QUORUM_TIMEOUT 120→60s, CI multiplier 2.0→1.5
+- **Forge pom.xml** — `reuseForks=true` (was false), process timeout 1800s
+- **postgres-async tests skipped by default** — all 15 test classes require Testcontainers/Docker; `<skipTests>true</skipTests>` in module pom
+
+## [0.19.0] - 2026-03-02
 
 ### Added
 - **Ember** — embeddable headless cluster runtime extracted from `forge-cluster` into `aether/ember/` module with fluent builder API (`Ember.cluster(5).withH2().start()`)

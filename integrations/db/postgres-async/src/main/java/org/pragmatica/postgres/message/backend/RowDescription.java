@@ -1,0 +1,63 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.pragmatica.postgres.message.backend;
+
+import org.pragmatica.postgres.Oid;
+import org.pragmatica.postgres.message.BackendMessage;
+
+/**
+ * @author  Antti Laisi
+ */
+public final class RowDescription implements BackendMessage {
+
+    public static class ColumnDescription {
+
+        final String name;
+        final Oid type;
+        final short formatCode;
+
+        public ColumnDescription(String name, Oid type, short formatCode) {
+            this.name = name;
+            this.type = type;
+            this.formatCode = formatCode;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public Oid getType() {
+            return type;
+        }
+
+        public short getFormatCode() {
+            return formatCode;
+        }
+
+        public boolean isBinary() {
+            return formatCode == 1;
+        }
+    }
+
+    final ColumnDescription[] columns;
+
+    public RowDescription(ColumnDescription[] columns) {
+        this.columns = columns;
+    }
+
+    public ColumnDescription[] getColumns() {
+        return columns;
+    }
+}

@@ -5,7 +5,7 @@
     <parent>
         <artifactId>integrations</artifactId>
         <groupId>org.pragmatica-lite</groupId>
-        <version>0.19.0</version>
+        <version>0.19.1</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -21,6 +21,8 @@
         <module>jdbc</module>
         <module>r2dbc</module>
         <module>jooq-r2dbc</module>
+        <module>postgres-async</module>
+        <module>postgres-r2dbc-adapter</module>
     </modules>
 
     <properties>

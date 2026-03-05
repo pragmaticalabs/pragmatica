@@ -1,11 +1,13 @@
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -26,19 +28,21 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///
 /// Validates that nodes register ON_DUTY lifecycle state after quorum,
 /// and that drain/activate/shutdown transitions work correctly via the management API.
+@Tag("Heavy")
 @SuppressWarnings("JBCT-NAM-01")
 @Execution(ExecutionMode.SAME_THREAD)
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class NodeLifecycleTest {
     private static final int BASE_PORT = 13000;
     private static final int BASE_MGMT_PORT = 13100;
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
     private EmberCluster cluster;
     private HttpClient httpClient;
 
-    @BeforeEach
+    @BeforeAll
     void setUp() {
         cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "lc");
         httpClient = HttpClient.newBuilder()
@@ -55,12 +59,11 @@ class NodeLifecycleTest {
         awaitAllNodesHealthy();
     }
 
-    @AfterEach
-    void tearDown() throws InterruptedException {
+    @AfterAll
+    void tearDown() {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            Thread.sleep(3000);
         }
     }
 

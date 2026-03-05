@@ -284,6 +284,20 @@ public sealed interface ManagementApiResponses {
     record ConfigRemovedResponse(String status,
                                  String key) {}
 
+    // ===== Topology Routes =====
+    record TopologyResponse(List<TopologyNodeInfo> nodes,
+                            List<TopologyEdgeInfo> edges) {}
+
+    record TopologyNodeInfo(String id,
+                            String type,
+                            String label,
+                            String sliceArtifact) {}
+
+    record TopologyEdgeInfo(String from,
+                            String to,
+                            String style,
+                            String topicConfig) {}
+
     // ===== Repository Routes =====
     record ArtifactInfoResponse(String artifact,
                                 long size,

@@ -2,7 +2,9 @@ package org.pragmatica.jbct.slice.generator;
 
 import org.pragmatica.jbct.slice.model.DependencyModel;
 import org.pragmatica.jbct.slice.model.MethodModel;
+import org.pragmatica.jbct.slice.model.ResourceQualifierModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
+import org.pragmatica.jbct.slice.routing.RouteConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -21,7 +23,7 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 public class ManifestGenerator {
-    static final int ENVELOPE_FORMAT_VERSION = 5;
+    static final int ENVELOPE_FORMAT_VERSION = 6;
 
     private final Filer filer;
     private final DependencyVersionResolver versionResolver;
@@ -48,12 +50,18 @@ public class ManifestGenerator {
     /// Generate per-slice manifest with class listings for multi-artifact packaging.
     /// Written to META-INF/slice/{SliceName}.manifest
     public Result<Unit> generateSliceManifest(SliceModel model) {
-        return generateSliceManifest(model, Option.none());
+        return generateSliceManifest(model, Option.none(), Option.none());
     }
 
     /// Generate per-slice manifest with optional Routes class.
     /// Written to META-INF/slice/{SliceName}.manifest
     public Result<Unit> generateSliceManifest(SliceModel model, Option<String> routesClass) {
+        return generateSliceManifest(model, routesClass, Option.none());
+    }
+
+    /// Generate per-slice manifest with optional Routes class and route configuration.
+    /// Written to META-INF/slice/{SliceName}.manifest
+    public Result<Unit> generateSliceManifest(SliceModel model, Option<String> routesClass, Option<RouteConfig> routeConfig) {
         try{
             var props = new Properties();
             var sliceName = model.simpleName();
@@ -97,6 +105,20 @@ public class ManifestGenerator {
                                           .or(() -> "UNRESOLVED"));
                 index++;
             }
+            // Resources (exclude publishers — they get their own section)
+            var resources = model.dependencies()
+                                 .stream()
+                                 .filter(dep -> dep.isResource() && !dep.isPublisher())
+                                 .toList();
+            props.setProperty("resources.count", String.valueOf(resources.size()));
+            for (int resIndex = 0; resIndex < resources.size(); resIndex++) {
+                var resPrefix = "resource." + resIndex + ".";
+                resources.get(resIndex)
+                         .resourceQualifier()
+                         .onPresent(rq -> writeResourceProperties(props, resPrefix, rq));
+            }
+            // HTTP routes
+            routeConfig.onPresent(config -> writeRouteProperties(props, config));
             // Slice config file path (for blueprint generator to read)
             props.setProperty("config.file", "slices/" + sliceName + ".toml");
             // Topic subscription metadata
@@ -141,6 +163,21 @@ public class ManifestGenerator {
             if (!publishMessageTypes.isEmpty()) {
                 props.setProperty("publish.message.classes", String.join(",", publishMessageTypes));
             }
+            // Publisher topics (enriched - config section + message type)
+            var publishers = model.dependencies()
+                                  .stream()
+                                  .filter(DependencyModel::isPublisher)
+                                  .toList();
+            props.setProperty("publish.topics.count", String.valueOf(publishers.size()));
+            for (int pubIndex = 0; pubIndex < publishers.size(); pubIndex++) {
+                var pubPrefix = "publish.topic." + pubIndex + ".";
+                publishers.get(pubIndex)
+                          .resourceQualifier()
+                          .onPresent(rq -> props.setProperty(pubPrefix + "config", rq.configSection()));
+                publishers.get(pubIndex)
+                          .publisherMessageType()
+                          .onPresent(mt -> props.setProperty(pubPrefix + "messageType", mt));
+            }
             // Metadata
             props.setProperty("generated.timestamp",
                               Instant.now()
@@ -178,6 +215,25 @@ public class ManifestGenerator {
         // Add Routes class if generated
         routesClass.onPresent(classes::add);
         return classes;
+    }
+
+    private static void writeResourceProperties(Properties props, String prefix, ResourceQualifierModel rq) {
+        props.setProperty(prefix + "type", rq.resourceTypeSimpleName());
+        props.setProperty(prefix + "config", rq.configSection());
+    }
+
+    private void writeRouteProperties(Properties props, RouteConfig config) {
+        var routeEntries = new ArrayList<>(config.routes().entrySet());
+        props.setProperty("routes.count", String.valueOf(routeEntries.size()));
+        for (int rtIndex = 0; rtIndex < routeEntries.size(); rtIndex++) {
+            var rtPrefix = "route." + rtIndex + ".";
+            var entry = routeEntries.get(rtIndex);
+            props.setProperty(rtPrefix + "method", entry.getValue().method());
+            props.setProperty(rtPrefix + "path", config.prefix().isEmpty()
+                                                  ? entry.getValue().pathTemplate()
+                                                  : config.prefix() + entry.getValue().pathTemplate());
+            props.setProperty(rtPrefix + "handler", entry.getKey());
+        }
     }
 
     private List<String> collectRequestTypes(SliceModel model) {

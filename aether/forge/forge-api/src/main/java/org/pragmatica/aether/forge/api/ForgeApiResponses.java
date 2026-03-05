@@ -255,6 +255,23 @@ public final class ForgeApiResponses {
     /// Response from multiplier set operation.
     public record MultiplierSetResponse(boolean success, double multiplier) {}
 
+    // ========== Topology Responses ==========
+    /// Topology response containing graph nodes and edges.
+    public record TopologyResponse(List<TopologyNodeInfo> nodes,
+                                   List<TopologyEdgeInfo> edges) {}
+
+    /// A node in the topology graph.
+    public record TopologyNodeInfo(String id,
+                                   String type,
+                                   String label,
+                                   String sliceArtifact) {}
+
+    /// An edge in the topology graph.
+    public record TopologyEdgeInfo(String from,
+                                   String to,
+                                   String style,
+                                   String topicConfig) {}
+
     // ========== Forge Detection ==========
     /// Response from /api/forge/status endpoint indicating this is a Forge instance.
     public record ForgeStatusResponse(boolean forge) {}

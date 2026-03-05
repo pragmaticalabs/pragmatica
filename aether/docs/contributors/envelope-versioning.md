@@ -23,7 +23,7 @@ A simple integer that identifies the **format version** of the generated envelop
 
 ## Current Version
 
-`ENVELOPE_FORMAT_VERSION = 4` (defined in `ManifestGenerator.java`)
+`ENVELOPE_FORMAT_VERSION = 6` (defined in `ManifestGenerator.java`)
 
 ### Version History
 
@@ -33,6 +33,8 @@ A simple integer that identifies the **format version** of the generated envelop
 | 2 | Added topic subscription manifest entries (`topic.subscription.*`) for pub-sub messaging |
 | 3 | Added scheduled task manifest entries (`scheduled.task.*`) for periodic invocation |
 | 4 | Added `serializableClasses()` to generated adapter record for class-ID-based serialization |
+| 5 | Added publisher message classes (`publish.message.classes`) to manifest |
+| 6 | Added topology data: resources (`resource.*`), HTTP routes (`route.*`), publisher topics (`publish.topic.*`) |
 
 ## When to Bump
 

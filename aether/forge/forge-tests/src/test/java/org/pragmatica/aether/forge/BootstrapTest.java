@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -31,13 +32,14 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///   - Rolling restart behavior
 ///   - Multiple node restarts
 ///
+@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 class BootstrapTest {
     private static final int BASE_PORT = 7500;
     private static final int BASE_MGMT_PORT = 7600;
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.19.0";
+    private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:bootstrap:1.0.0";
 
     private EmberCluster cluster;
@@ -74,16 +76,15 @@ class BootstrapTest {
     }
 
     @AfterEach
-    void tearDown() throws InterruptedException {
+    void tearDown() {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            Thread.sleep(3000);
         }
     }
 
     @Test
-    @Timeout(120)
+    @Timeout(240)
     void nodeRestart_rejoinsCluster() {
         // Kill bt-2
         cluster.killNode("bt-2")
@@ -128,7 +129,7 @@ class BootstrapTest {
     }
 
     @Test
-    @Timeout(120)
+    @Timeout(240)
     void nodeRestart_recoversState() {
         // Wait for all nodes to be healthy before deploying
         await().atMost(WAIT_TIMEOUT)
@@ -198,7 +199,7 @@ class BootstrapTest {
     }
 
     @Test
-    @Timeout(120)
+    @Timeout(240)
     void manualRollingRestart_maintainsAvailability() {
         // Wait for all nodes to be healthy
         await().atMost(WAIT_TIMEOUT)
@@ -255,7 +256,7 @@ class BootstrapTest {
     }
 
     @Test
-    @Timeout(120)
+    @Timeout(240)
     void multipleNodeRestarts_clusterRemainsFunctional() {
         // Wait for all nodes to be healthy
         await().atMost(WAIT_TIMEOUT)

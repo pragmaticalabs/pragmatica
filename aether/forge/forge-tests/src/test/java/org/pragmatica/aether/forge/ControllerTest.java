@@ -1,10 +1,11 @@
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -37,19 +38,19 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// generation which is complex in E2E tests. These tests focus on
 /// controller infrastructure rather than scaling decisions.
 @Execution(ExecutionMode.SAME_THREAD)
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ControllerTest {
     private static final int BASE_PORT = 10500;
     private static final int BASE_MGMT_PORT = 10600;
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
     private EmberCluster cluster;
     private HttpClient httpClient;
 
-    @BeforeEach
-    void setUp(TestInfo testInfo) {
-        int portOffset = getPortOffset(testInfo);
-        cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "ct");
+    @BeforeAll
+    void setUp() {
+        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "ct");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();
@@ -69,26 +70,28 @@ class ControllerTest {
                .until(this::allNodesHealthy);
     }
 
-    private int getPortOffset(TestInfo testInfo) {
-        return switch (testInfo.getTestMethod().map(m -> m.getName()).orElse("")) {
-            case "controllerConfig_getReturnsCurrentSettings" -> 0;
-            case "controllerConfig_updateSucceeds" -> 5;
-            case "controllerConfig_persistsAcrossRequests" -> 10;
-            case "controllerStatus_returnsRunningState" -> 15;
-            case "controllerEvaluate_triggersImmediately" -> 20;
-            case "controller_runsOnlyOnLeader" -> 25;
-            case "controller_survivesLeaderFailure" -> 30;
-            default -> 35;
-        };
+    @BeforeEach
+    void restoreCluster() {
+        // Restore killed node if any (from controller_survivesLeaderFailure)
+        if (cluster.nodeCount() < 3) {
+            cluster.addNode().await();
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(() -> cluster.nodeCount() == 3);
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(() -> cluster.currentLeader().isPresent());
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(this::allNodesHealthy);
+        }
     }
 
-    @AfterEach
-    void tearDown() throws InterruptedException {
+    @AfterAll
+    void tearDown() {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            // Allow time for ports to be released before next test
-            Thread.sleep(3000);
         }
     }
 

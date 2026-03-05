@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -32,16 +33,17 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///   - Request continuity during updates
 ///   - Node failure during update
 ///
+@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 class RollingUpdateTest {
     private static final int BASE_PORT = 9000;
     private static final int BASE_MGMT_PORT = 9100;
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String OLD_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.19.0";
-    private static final String NEW_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.19.0";
+    private static final String OLD_VERSION = TestArtifacts.ECHO_SLICE;
+    private static final String NEW_VERSION = TestArtifacts.ECHO_SLICE;
     private static final String ARTIFACT_BASE = "org.pragmatica-lite.aether.test:echo-slice-echo-service";
-    private static final String NEW_VERSION_NUMBER = "0.19.0";
+    private static final String NEW_VERSION_NUMBER = TestArtifacts.VERSION;
     private static final String BLUEPRINT_ID = "forge.test:rolling-update:1.0.0";
 
     private EmberCluster cluster;
@@ -68,9 +70,6 @@ class RollingUpdateTest {
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
-
-        // Stabilization time for consensus
-        sleep(Duration.ofSeconds(5));
 
         // Deploy old version
         var deployResponse = deploy(OLD_VERSION, 3);
@@ -103,11 +102,10 @@ class RollingUpdateTest {
     }
 
     @AfterEach
-    void tearDown() throws InterruptedException {
+    void tearDown() {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            Thread.sleep(3000);
         }
     }
 

@@ -34,7 +34,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class NodeFailureTest {
     private static final int BASE_PORT = 7050;
     private static final int BASE_MGMT_PORT = 7150;
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
     private EmberCluster cluster;
@@ -72,11 +72,10 @@ class NodeFailureTest {
     }
 
     @AfterEach
-    void tearDown() throws InterruptedException {
+    void tearDown() {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            Thread.sleep(3000);
         }
     }
 

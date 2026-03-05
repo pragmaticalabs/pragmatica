@@ -51,14 +51,14 @@ import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 /// }```
 public class AetherCluster implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(AetherCluster.class);
-    private static final Duration QUORUM_TIMEOUT = adapt(Duration.ofSeconds(120));
+    private static final Duration QUORUM_TIMEOUT = adapt(Duration.ofSeconds(60));
     private static final Duration POLL_INTERVAL = Duration.ofSeconds(2);
 
     // Local Maven repository path and test artifacts
     private static final Path M2_REPO_PATH = Path.of(System.getProperty("user.home"), ".m2", "repository");
     private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
     // Note: Uses slice artifact IDs (echo-slice-echo-service), not module artifact IDs (echo-slice)
-    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.19.0");
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.19.1");
     /// Synthetic new version for rolling update tests — same JAR repackaged with bumped patch version.
     /// Only patch version differs from current, matching real rolling update scenarios.
     public static final String ROLLING_UPDATE_NEW_VERSION = bumpPatchVersion(TEST_ARTIFACT_VERSION);
@@ -310,7 +310,7 @@ public class AetherCluster implements AutoCloseable {
 
     // Track stuck states to detect infrastructure issues early
     private final Map<String, Long> stuckStateStartTime = new java.util.concurrent.ConcurrentHashMap<>();
-    private static final Duration STUCK_STATE_THRESHOLD = adapt(Duration.ofSeconds(60));
+    private static final Duration STUCK_STATE_THRESHOLD = adapt(Duration.ofSeconds(30));
 
     /// Checks slice state, throwing exception on FAILED, returning true on ACTIVE.
     /// Also detects when a slice is stuck in an intermediate or NOT_FOUND state for too long.

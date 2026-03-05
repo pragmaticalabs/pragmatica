@@ -12,6 +12,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.topology.TopologyGraph;
+import org.pragmatica.aether.slice.topology.TopologyParser;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.Route;
@@ -31,12 +33,16 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.http.routing.PathParameter.spacer;
 import static org.pragmatica.aether.api.ManagementApiResponses.*;
 
 /// Routes for slice management: scale, blueprint, status.
 public final class SliceRoutes implements RouteSource {
+    private static final Logger log = LoggerFactory.getLogger(SliceRoutes.class);
     private static final Cause MISSING_ARTIFACT_OR_INSTANCES = Causes.cause("Missing 'artifact' or 'instances' field");
     private static final Cause BLUEPRINT_NOT_FOUND = Causes.cause("Blueprint not found");
     private static final Cause NOT_IN_BLUEPRINT = Causes.cause("Slice is not part of any active blueprint. Deploy via blueprint.");
@@ -86,7 +92,9 @@ public final class SliceRoutes implements RouteSource {
                               .asJson(),
                          Route.<BlueprintValidationResponse> post("/api/blueprint/validate")
                               .to(ctx -> handleValidateBlueprint(ctx.bodyAsString()))
-                              .asJson());
+                              .asJson(),
+                         Route.<TopologyResponse> get("/api/topology")
+                              .toJson(this::buildTopologyResponse));
     }
 
     private record ScaleParams(String artifact, int instances) {}
@@ -328,6 +336,43 @@ public final class SliceRoutes implements RouteSource {
         AetherValue value = AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(), instances);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
         return node.apply(List.of(command));
+    }
+
+    private TopologyResponse buildTopologyResponse() {
+        var node = nodeSupplier.get();
+        var loaded = node.sliceStore()
+                         .loaded();
+        log.debug("buildTopologyResponse: loaded slices={}", loaded.size());
+        var sliceTopologies = loaded.stream()
+                                    .flatMap(ls -> TopologyParser.parse(ls.slice(),
+                                                                        ls.artifact()
+                                                                          .asString())
+                                                                 .stream())
+                                    .toList();
+        log.debug("buildTopologyResponse: topologies={}", sliceTopologies.size());
+        var graph = TopologyGraph.build(sliceTopologies);
+        log.debug("buildTopologyResponse: graph nodes={}, edges={}",
+                  graph.nodes()
+                       .size(),
+                  graph.edges()
+                       .size());
+        var nodes = graph.nodes()
+                         .stream()
+                         .map(n -> new TopologyNodeInfo(n.id(),
+                                                        n.type()
+                                                         .name(),
+                                                        n.label(),
+                                                        n.sliceArtifact()))
+                         .toList();
+        var edges = graph.edges()
+                         .stream()
+                         .map(e -> new TopologyEdgeInfo(e.from(),
+                                                        e.to(),
+                                                        e.style()
+                                                         .name(),
+                                                        e.topicConfig()))
+                         .toList();
+        return new TopologyResponse(nodes, edges);
     }
 
     private SlicesResponse buildSlicesResponse() {

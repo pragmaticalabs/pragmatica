@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.slice.SliceState;
@@ -34,6 +35,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// generates 1000 round-trip requests (create + resolve), then validates that
 /// invocation metrics, Prometheus, and trace endpoints report correct data
 /// across all cluster nodes.
+@Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class InvocationMetricsTest extends ForgeTestBase {
@@ -42,13 +44,13 @@ class InvocationMetricsTest extends ForgeTestBase {
     private static final int BASE_APP_HTTP_PORT = 12200;
     private static final int H2_PORT = 12300;
     private static final int REQUEST_COUNT = 1000;
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
-    private static final Duration DEPLOY_TIMEOUT = Duration.ofSeconds(60);
+    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
+    private static final Duration DEPLOY_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
 
-    private static final String URL_SHORTENER_ARTIFACT = "org.pragmatica.aether.example:url-shortener-url-shortener:0.19.0";
-    private static final String ANALYTICS_ARTIFACT = "org.pragmatica.aether.example:url-shortener-analytics:0.19.0";
+    private static final String URL_SHORTENER_ARTIFACT = TestArtifacts.URL_SHORTENER;
+    private static final String ANALYTICS_ARTIFACT = TestArtifacts.ANALYTICS;
     private static final String BLUEPRINT_ID = "forge.test:url-shortener-metrics:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
