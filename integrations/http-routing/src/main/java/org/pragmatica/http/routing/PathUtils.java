@@ -22,8 +22,7 @@ public sealed interface PathUtils {
         var query = fullPath.indexOf('?');
         var path = query >= 0
                    ? fullPath.substring(0, query)
-                             .strip()
-                   : fullPath.strip();
+                   : fullPath;
         if (path.isBlank() || "/".equals(path)) {
             return "/";
         }
