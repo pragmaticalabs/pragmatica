@@ -524,7 +524,7 @@ public final class SliceProjectInitializer {
         import org.pragmatica.lang.Result;
         import org.pragmatica.lang.Verify;
 
-        /// {{sliceName}} slice - greeting service.
+        /// {{sliceName}} slice.
         @Slice
         public interface {{sliceName}} {
             record ValidGreetRequest(String name) {
