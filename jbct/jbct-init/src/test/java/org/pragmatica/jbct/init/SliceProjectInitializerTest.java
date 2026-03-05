@@ -98,13 +98,13 @@ class SliceProjectInitializerTest {
         assertThat(content)
                   .contains("static InventoryService inventoryService()");
         assertThat(content)
-                  .contains("record GreetRequest");
+                  .contains("record ValidGreetRequest");
         assertThat(content)
                   .contains("record GreetResponse");
         assertThat(content)
                   .contains("sealed interface GreetError extends Cause");
         assertThat(content)
-                  .contains("record impl");
+                  .contains("Promise<GreetResponse> greet(String name)");
     }
 
     @Test

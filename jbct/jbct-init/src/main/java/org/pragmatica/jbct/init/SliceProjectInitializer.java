@@ -527,10 +527,10 @@ public final class SliceProjectInitializer {
         /// {{sliceName}} slice - greeting service.
         @Slice
         public interface {{sliceName}} {
-            record GreetRequest(String name) {
-                public static Result<GreetRequest> greetRequest(String name) {
+            record ValidGreetRequest(String name) {
+                public static Result<ValidGreetRequest> validGreetRequest(String name) {
                     return Verify.ensure(name, Verify.Is::notBlank, GreetError.invalidName())
-                                 .map(GreetRequest::new);
+                                 .map(ValidGreetRequest::new);
                 }
             }
 
@@ -549,16 +549,12 @@ public final class SliceProjectInitializer {
                 }
             }
 
-            Promise<GreetResponse> greet(GreetRequest request);
+            Promise<GreetResponse> greet(String name);
 
             static {{sliceName}} {{factoryMethodName}}() {
-                record impl() implements {{sliceName}} {
-                    @Override
-                    public Promise<GreetResponse> greet(GreetRequest request) {
-                        return Promise.success(new GreetResponse("Hello, " + request.name() + "!"));
-                    }
-                }
-                return new impl();
+                return name -> ValidGreetRequest.validGreetRequest(name)
+                                                .map(request -> new GreetResponse("Hello, " + request.name() + "!"))
+                                                .async();
             }
         }
         """;
@@ -577,18 +573,18 @@ public final class SliceProjectInitializer {
 
             @Test
             void greet_validName_returnsGreeting() {
-                {{sliceName}}.GreetRequest.greetRequest("World")
-                    .onFailure(cause -> fail(cause.message()))
-                    .onSuccess(request -> slice.greet(request)
-                        .await()
-                        .onFailure(cause -> fail(cause.message()))
-                        .onSuccess(r -> assertThat(r.greeting()).isEqualTo("Hello, World!")));
+                slice.greet("World")
+                     .await()
+                     .onFailure(cause -> fail(cause.message()))
+                     .onSuccess(r -> assertThat(r.greeting()).isEqualTo("Hello, World!"));
             }
 
             @Test
             void greet_emptyName_returnsError() {
-                var result = {{sliceName}}.GreetRequest.greetRequest("");
-                assertThat(result.isFailure()).isTrue();
+                slice.greet("")
+                     .await()
+                     .onSuccess(r -> fail("Expected failure for empty name"))
+                     .onFailure(cause -> assertThat(cause.message()).isEqualTo("Name cannot be empty"));
             }
         }
         """;
