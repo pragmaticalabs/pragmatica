@@ -529,7 +529,9 @@ public final class SliceProjectInitializer {
         public interface {{sliceName}} {
             record ValidGreetRequest(String name) {
                 public static Result<ValidGreetRequest> validGreetRequest(String name) {
-                    return Verify.ensure(name, Verify.Is::notBlank, GreetError.invalidName())
+                    return Verify.ensure(name,
+                                         Verify.Is::notBlank,
+                                         GreetError.invalidName())
                                  .map(ValidGreetRequest::new);
                 }
             }
