@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- CLI: `jbct add-slice <name>` command — scaffolds a new slice into an existing project with all required files (interface, test, routes.toml, config, dependency manifest) in a dedicated sub-package, enforcing the one-slice-per-package convention
+
 ### Fixed
 - Slice processor: plain interface factory methods with @ResourceQualifier parameters now generate correct resource provisioning and argument passing instead of zero-arg calls
 

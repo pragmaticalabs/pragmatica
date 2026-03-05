@@ -164,32 +164,47 @@ jbct init my-lib -g com.example -a my-lib --no-slice --no-ai
 
 ## Part 6: Add a Second Slice
 
-**Goal:** Add an Analytics slice to the existing HelloWorld project.
+**Goal:** Add an Analytics slice to the existing HelloWorld project using `jbct add-slice`.
+
+> **Convention: One slice per package.** The annotation processor enforces that each Java package
+> contains at most one `@Slice` interface. When adding a second slice, it must go in its own
+> sub-package. The `jbct add-slice` command handles this automatically.
 
 ```bash
 cd /tmp/my-slice
+jbct add-slice Analytics
 ```
 
-### 6a. Create the Analytics slice interface
+This creates the Analytics slice in `com.example.myslice.analytics` (a sub-package of the project's base package), generating all required files:
 
-Create `src/main/java/com/example/myslice/Analytics.java`:
+- `src/main/java/com/example/myslice/analytics/Analytics.java` — slice interface
+- `src/test/java/com/example/myslice/analytics/AnalyticsTest.java` — unit test
+- `src/main/resources/com/example/myslice/analytics/routes.toml` — HTTP routes
+- `src/main/resources/slices/Analytics.toml` — runtime config
+- `src/main/resources/META-INF/dependencies/com.example.myslice.analytics.Analytics` — dependency manifest
+
+### 6a. Customize the Analytics slice
+
+Replace the generated greeting logic in `src/main/java/com/example/myslice/analytics/Analytics.java` with analytics-specific logic:
 
 ```java
-package com.example.myslice;
+package com.example.myslice.analytics;
 
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
+/// Analytics slice.
 @Slice
 public interface Analytics {
-    record CountRequest(String name) {
-        public static Result<CountRequest> countRequest(String name) {
-            if (name == null || name.isBlank()) {
-                return CountError.invalidName().result();
-            }
-            return Result.success(new CountRequest(name.trim()));
+    record ValidCountRequest(String name) {
+        public static Result<ValidCountRequest> validCountRequest(String name) {
+            return Verify.ensure(name,
+                                 Verify.Is::notBlank,
+                                 CountError.invalidName())
+                         .map(ValidCountRequest::new);
         }
     }
 
@@ -204,27 +219,23 @@ public interface Analytics {
         }
 
         static CountError invalidName() {
-            return new InvalidName();
+            return new CountError.InvalidName();
         }
     }
 
-    Promise<CountResponse> getCount(CountRequest request);
+    Promise<CountResponse> getCount(String name);
 
     static Analytics analytics() {
-        record impl() implements Analytics {
-            @Override
-            public Promise<CountResponse> getCount(CountRequest request) {
-                return Promise.success(new CountResponse(request.name(), 42));
-            }
-        }
-        return new impl();
+        return name -> ValidCountRequest.validCountRequest(name)
+                                        .map(request -> new CountResponse(request.name(), 42))
+                                        .async();
     }
 }
 ```
 
-### 6b. Create routes for Analytics
+### 6b. Update Analytics routes
 
-Create `src/main/resources/com/example/myslice/analytics/routes.toml`:
+Edit `src/main/resources/com/example/myslice/analytics/routes.toml`:
 
 ```toml
 prefix = "/api/analytics"
@@ -235,25 +246,6 @@ getCount = "GET /count/{name}"
 [errors]
 default = 500
 HTTP_400 = ["*invalid*", "*empty*"]
-```
-
-> **Note:** Routes file path must match the package path of the slice. If Analytics is in `com.example.myslice`, the routes go in `src/main/resources/com/example/myslice/analytics/routes.toml` (using the slice name in lowercase as the final directory).
-
-### 6c. Create Analytics slice config
-
-Create `src/main/resources/slices/Analytics.toml`:
-
-```toml
-[blueprint]
-instances = 3
-```
-
-### 6d. Create dependency manifest
-
-Create `src/main/resources/META-INF/dependencies/com.example.myslice.Analytics`:
-
-```
-# Analytics slice dependencies
 ```
 
 ### Verify
@@ -447,10 +439,10 @@ public @interface GreetEventPublisher {}
 
 ### 8b. Define the subscriber qualifier
 
-Create `src/main/java/com/example/myslice/GreetEventSubscription.java`:
+Create `src/main/java/com/example/myslice/analytics/GreetEventSubscription.java`:
 
 ```java
-package com.example.myslice;
+package com.example.myslice.analytics;
 
 import org.pragmatica.aether.slice.Subscriber;
 import org.pragmatica.aether.slice.annotation.ResourceQualifier;
@@ -499,9 +491,10 @@ static HelloWorld helloWorld(@Sql SqlConnector db,
 
 ### 8e. Update Analytics to subscribe to events
 
-Update `Analytics.java` to add a subscriber method:
+Update `src/main/java/com/example/myslice/analytics/Analytics.java` to add a subscriber method:
 
 ```java
+import com.example.myslice.HelloWorld;
 import org.pragmatica.lang.Unit;
 
 // Add inside the interface:
@@ -512,8 +505,10 @@ Promise<Unit> onGreetEvent(HelloWorld.GreetEvent event);
 static Analytics analytics() {
     record impl() implements Analytics {
         @Override
-        public Promise<CountResponse> getCount(CountRequest request) {
-            return Promise.success(new CountResponse(request.name(), 42));
+        public Promise<CountResponse> getCount(String name) {
+            return ValidCountRequest.validCountRequest(name)
+                                    .map(request -> new CountResponse(request.name(), 42))
+                                    .async();
         }
 
         @Override

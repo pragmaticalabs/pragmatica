@@ -20,7 +20,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 4 | Auto-healing | Battle-tested | Automatic reconciliation of desired vs. actual state on node departure. Leader-only with failover |
 | 5 | Classloader isolation | Complete | Per-slice classloader prevents dependency conflicts between slices |
 | 6 | Manifest versioning | Complete | Envelope format versioning (v1-v6) for backward-compatible manifest evolution |
-| 66 | Class-ID-based serialization | Complete | Deterministic hash-based Fury class IDs for cross-slice invocations with classloader isolation. Core types get sequential IDs; user types get hash-based IDs [10000-30000). Slice declares `serializableClasses()` at compile time |
+| 66 | Compile-time serde | Complete | `@Codec` annotation processor generates `*Codec` classes for records, enums, and sealed interfaces. `SliceCodec` wire format with deterministic hash-based tags, VLQ encoding, zero runtime reflection. Replaces Fory/Kryo for slice boundary serialization |
 
 ## Scaling & Control
 
@@ -128,6 +128,8 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 57 | Forge simulator | Battle-tested | Standalone cluster simulator with load generation (constant/ramp/spike), chaos injection, visual dashboard, REST API |
 | 58 | Web dashboard | Partial (WIP) | Forge dashboard complete (cluster visualization, load generation, chaos injection, metrics, scaling events, deployment timing). Node management dashboard in active development — missing observability depth UI, invocation trace viewer, log level management |
 | 77 | Topology graph | Complete | Compile-time topology extraction (envelope v6): HTTP routes, resources, pub-sub topics from `.manifest` files. REST `GET /api/topology`, WebSocket `INITIAL_STATE`. Swim-lane SVG layout: per-slice lanes with inputs (endpoints/subscribers) left, slice center, outputs (resources/publishers) right. Manhattan routing for cross-slice topic connectors (right gutter) and dependency edges (left gutter). HSL color-coded topic groups, hover highlighting, search filtering |
+| 78 | `jbct add-slice` command | Complete | Scaffolds a new slice into an existing project: creates interface, test, routes.toml, config, and dependency manifest in a dedicated sub-package (enforcing one-slice-per-package convention) |
+| 79 | IDE plugins | Planned | Slice development plugins for IntelliJ IDEA (native), VS Code, Eclipse, NetBeans. Shared LSP backend for routes.toml support, JBCT diagnostics, TOML schema validation. IntelliJ gets gutter icons, inspections, run configs |
 
 ## Node Operations
 

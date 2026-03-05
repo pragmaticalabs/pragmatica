@@ -264,7 +264,19 @@ The processor classifies factory parameters into three categories:
 
 ## Multiple Slices in One Module
 
-A single Maven module can contain multiple slices:
+A single Maven module can contain multiple slices. Each slice **must** live in its own
+package — the annotation processor enforces this at compile time. If two `@Slice` interfaces
+share a package, the build fails with a clear error message suggesting separate packages.
+
+Use `jbct add-slice` to scaffold a new slice into an existing project:
+
+```bash
+jbct add-slice Analytics
+```
+
+This creates the slice in a sub-package (`analytics/`) with all required files: interface,
+test, routes, config, and dependency manifest. The command reads your `pom.xml` to determine
+the base package automatically.
 
 ```
 commerce/

@@ -952,4 +952,5 @@ mvn compile                   # Compile only (fast iteration)
 ./generate-blueprint.sh       # Generate deployment blueprint
 jbct format .                 # Auto-format source code
 jbct lint .                   # Check for lint violations
+jbct add-slice Analytics      # Add a new slice to this project
 ```

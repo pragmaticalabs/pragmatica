@@ -1,6 +1,6 @@
 # IDE Plugins & Pre-commit Hooks - Implementation Plan
 
-**Status:** Future Enhancement
+**Status:** Future Enhancement (see [development-priorities.md #26](../../aether/docs/internal/progress/development-priorities.md) for updated scope including LSP-first approach and Aether slice-specific features)
 **Created:** 2026-01-01
 
 ## Overview

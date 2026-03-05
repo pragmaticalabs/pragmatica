@@ -37,6 +37,9 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 - **Management API** — `GET /api/nodes/lifecycle`, `GET /api/node/lifecycle/{nodeId}`, `POST /api/node/drain/{nodeId}`, `POST /api/node/activate/{nodeId}`, `POST /api/node/shutdown/{nodeId}`
 - **CLI** — `node lifecycle`, `node drain`, `node activate`, `node shutdown`
 
+### Compile-Time Serde (v0.19.x)
+- **Compile-Time Codec Generation** — `@Codec` annotation processor (`codec-processor`) generates `*Codec` classes for records, enums, and sealed interfaces at compile time. `SliceCodec` wire format with tag-based dispatch (deterministic hash tags, VLQ encoding), zero runtime reflection. Replaces Fory/Kryo for slice boundary serialization. Modules: `integrations/serialization/api`, `integrations/serialization/codec-processor`, `integrations/serialization/benchmark`
+
 ### Core Infrastructure
 - **Request ID Propagation** - ScopedValue-based context with ServiceLoader propagation hook in Promise
 - **SliceInvoker Immediate Retry** - Event-driven retry on node departure (matches AppHttpServer pattern)
@@ -160,7 +163,7 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
      - Drain connections before node removal (graceful deregistration delay)
      - TLS termination configuration (certificate ARN/ID passthrough)
    - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
-   - **Enables:** Spot Instance Support (#26), Expense Tracking (#27) in FUTURE section
+   - **Enables:** Spot Instance Support (#27), Expense Tracking (#28) in FUTURE section
 
 2. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
     - Cluster-level schema migration managed by Aether runtime, not individual nodes
@@ -367,9 +370,55 @@ Part of Cloud Integration (#1). Per-provider status:
 - Cloud-native discovery — label/tag-based peer discovery (eliminates static peer list)
 - Disaster recovery — terminate majority, bring up replacements, verify state recovery via Rabia sync
 
+### MEDIUM PRIORITY - Developer Tooling
+
+26. **Slice Development IDE Plugins**
+    - IDE plugins for Aether slice development, providing deep integration with the JBCT toolchain
+    - **Recommended approach:** build a shared **Language Server (LSP)** backend first, then thin IDE-specific clients. IntelliJ IDEA gets a native plugin for features that LSP cannot express (refactoring, inspections, run configs). VS Code, Eclipse, and NetBeans consume the LSP directly.
+
+    **Core features (all IDEs via LSP):**
+    - `routes.toml` support: syntax validation, auto-completion for method names (cross-referenced with `@Slice` interface), route conflict detection
+    - Slice scaffolding: "New Aether Slice" action that runs `jbct add-slice` under the hood
+    - JBCT format-on-save: trigger `jbct format` when saving `.java` files in JBCT projects (detected via `jbct.toml`)
+    - JBCT lint diagnostics: inline warnings/errors from `jbct lint` as editor diagnostics
+    - `aether.toml` / `forge.toml` schema validation and auto-completion
+    - Blueprint preview: show resolved `blueprint.toml` content after annotation processing
+    - Error mapping visualization: link `[errors]` glob patterns in `routes.toml` to matching `Cause` types
+
+    **IntelliJ IDEA native plugin (highest priority):**
+    - Gutter icons: navigate between `@Slice` interface methods and their `routes.toml` entries
+    - Live templates: `slice`, `slicemethod`, `cause`, `resourcequalifier` — expand to JBCT-compliant boilerplate
+    - Inspections: detect JBCT violations at edit time (nested error channels, missing factory method, wrong return type)
+    - Run configurations: "Run Forge" with embedded console, "Deploy to Forge" one-click action
+    - Project wizard: "New Aether Slice Project" that calls `jbct init` with UI for parameters
+    - Annotation processor output viewer: inspect generated factory, routes, and manifest without digging in `target/`
+    - Slice dependency graph: visualize inter-slice dependencies from manifests
+
+    **VS Code extension (high priority):**
+    - LSP client + TOML language support for routes/config files
+    - Task integration: `jbct check`, `jbct format`, `run-forge.sh` as VS Code tasks
+    - Snippets: JBCT patterns (slice, cause, request record, resource qualifier)
+    - Debug configuration: attach to running Forge JVM
+
+    **Eclipse plugin (lower priority):**
+    - LSP client (Eclipse LSP4E)
+    - Basic project facet for JBCT projects
+
+    **NetBeans plugin (lowest priority):**
+    - LSP client (NetBeans has built-in LSP support since 12.0)
+
+    **Implementation phases:**
+    1. LSP server (Kotlin or Java, runs as standalone process) — routes.toml support, JBCT diagnostics, TOML schemas
+    2. VS Code extension (thin LSP client + tasks/snippets)
+    3. IntelliJ native plugin (LSP + platform-specific features: inspections, gutter icons, run configs)
+    4. Eclipse/NetBeans LSP clients (community-driven or on-demand)
+
+    **Complexity:** Medium-high for LSP + IntelliJ; low for VS Code/Eclipse/NetBeans LSP clients
+    **Prerequisite:** Stable JBCT CLI and annotation processor APIs
+
 ### FUTURE
 
-26. **Spot Instance Support for Elastic Scaling**
+27. **Spot Instance Support for Elastic Scaling**
     - Cost-optimized scaling using cloud spot/preemptible instances
     - 60-90% cost savings for traffic spike handling
 
@@ -422,7 +471,7 @@ Part of Cloud Integration (#1). Per-provider status:
     **Complexity:** Low - just configuration and cloud API flag
     **Prerequisite:** Cloud Integration (#1)
 
-27. **Cluster Expense Tracking**
+28. **Cluster Expense Tracking**
 
     - Real-time cost visibility for cluster operations
     - Enables cost-aware scaling decisions
@@ -455,18 +504,18 @@ Part of Cloud Integration (#1). Per-provider status:
     **Complexity:** Medium - cloud billing APIs have quirks, data aggregation needed
     **Prerequisite:** Cloud Integration (#1)
 
-28. **LLM Integration (Layer 3)**
+29. **LLM Integration (Layer 3)**
     - Claude/GPT API integration
     - Complex reasoning workflows
     - Multi-cloud decision support
 
-29. **Mini-Kafka (Message Streaming)**
+30. **Mini-Kafka (Message Streaming)**
     - Ordered message streaming with partitions (differs from pub/sub)
     - In-memory storage (initial implementation)
     - Consumer group coordination
     - Retention policies
 
-30. **Cross-Slice Transaction Support (2PC)**
+31. **Cross-Slice Transaction Support (2PC)**
     - Distributed transactions via Transaction aspect
     - Scope: DB transactions + internal services (pub-sub, queues, streaming)
     - NOT Saga pattern (user-unfriendly compensation design)
@@ -493,22 +542,14 @@ Part of Cloud Integration (#1). Per-provider status:
     - Aether's "each call eventually succeeds, if cluster is alive" applies
     - DB failure = transaction failure (expected behavior)
 
-31. **Distributed Saga Orchestration**
+32. **Distributed Saga Orchestration**
     - Long-running transaction orchestration (saga pattern)
     - Durable state transitions with compensation on failure
     - Differs from local state machine — coordinates across multiple slices
     - Automatic retry, timeout, and dead-letter handling
     - Visualization of in-flight sagas and their states
 
-32. **Compile-Time Serde Code Generation**
-    - Replace Fory/Kryo with generated serializer/deserializer code emitted by the slice-processor
-    - Eliminates external serialization dependency and all classloader-related issues
-    - **Supported types:** records, primitives, String, enums, List, Set, Map, nested records
-    - **Enforced at compile time:** unsupported field types produce annotation processor errors
-    - **Deterministic wire format:** class ID + fields in declaration order, no runtime reflection
-    - **Benefits:** zero runtime reflection, no classloader introspection, compile-time validation, no external dependencies
-    - **Scope:** slice boundary serialization only (cross-slice invocations, pub-sub messages)
-    - Inspired by Fory's approach but tailored to the constrained slice boundary type system
+33. ~~**Compile-Time Serde Code Generation**~~ **DONE** — Moved to Completed section
 
 ---
 
