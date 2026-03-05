@@ -520,19 +520,17 @@ public final class SliceProjectInitializer {
 
         import org.pragmatica.aether.slice.annotation.Slice;
         import org.pragmatica.lang.Cause;
-        import org.pragmatica.lang.Option;
         import org.pragmatica.lang.Promise;
         import org.pragmatica.lang.Result;
+        import org.pragmatica.lang.Verify;
 
         /// {{sliceName}} slice - greeting service.
         @Slice
         public interface {{sliceName}} {
             record GreetRequest(String name) {
                 public static Result<GreetRequest> greetRequest(String name) {
-                    return Option.option(name)
-                                 .filter(s -> !s.isBlank())
-                                 .map(GreetRequest::new)
-                                 .toResult(GreetError.invalidName());
+                    return Verify.ensure(name, Verify.Is::notBlank, GreetError.invalidName())
+                                 .map(GreetRequest::new);
                 }
             }
 
