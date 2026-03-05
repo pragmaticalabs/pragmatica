@@ -28,6 +28,10 @@ jobs:
       - name: Build and test all modules
         run: mvn install -B
 
+      - name: Run postgres-async integration tests
+        run: mvn test -B -pl integrations/db/postgres-async -Dpostgres-async.skipTests=false
+        timeout-minutes: 10
+
       - name: Run Forge tests
         run: >
           mvn verify -B -Pwith-e2e -pl aether/forge/forge-tests

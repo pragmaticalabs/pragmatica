@@ -38,6 +38,7 @@
 
     <properties>
         <testcontainers.version>1.21.4</testcontainers.version>
+        <postgres-async.skipTests>true</postgres-async.skipTests>
     </properties>
 
     <dependencies>
@@ -100,7 +101,7 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
-                    <skipTests>true</skipTests>
+                    <skipTests>${postgres-async.skipTests}</skipTests>
                     <excludedGroups>Infinite</excludedGroups>
                 </configuration>
             </plugin>
