@@ -35,6 +35,26 @@ class SliceProjectInitializerTest {
                              // Slice config file
                              assertThat(projectDir.resolve("src/main/resources/slices/MySlice.toml"))
                                        .exists();
+                             // Infrastructure files
+                             assertThat(projectDir.resolve("forge.toml"))
+                                       .exists();
+                             assertThat(projectDir.resolve("aether.toml"))
+                                       .exists();
+                             assertThat(projectDir.resolve("README.md"))
+                                       .exists();
+                             // Run scripts
+                             assertThat(projectDir.resolve("run-forge.sh"))
+                                       .exists();
+                             assertThat(projectDir.resolve("start-postgres.sh"))
+                                       .exists();
+                             assertThat(projectDir.resolve("stop-postgres.sh"))
+                                       .exists();
+                             // Schema
+                             assertThat(projectDir.resolve("schema/init.sql"))
+                                       .exists();
+                             // Routes
+                             assertThat(projectDir.resolve("src/main/resources/org/example/myslice/routes.toml"))
+                                       .exists();
                          });
     }
 
@@ -78,13 +98,13 @@ class SliceProjectInitializerTest {
         assertThat(content)
                   .contains("static InventoryService inventoryService()");
         assertThat(content)
-                  .contains("record Request");
+                  .contains("record GreetRequest");
         assertThat(content)
-                  .contains("record Response");
+                  .contains("record GreetResponse");
         assertThat(content)
-                  .contains("sealed interface ValidationError extends Cause");
+                  .contains("sealed interface GreetError extends Cause");
         assertThat(content)
-                  .contains("record inventoryService");
+                  .contains("record impl");
     }
 
     @Test
@@ -95,6 +115,16 @@ class SliceProjectInitializerTest {
                   .isTrue();
         result.onSuccess(initializer -> assertThat(initializer.sliceName())
                                                   .isEqualTo("MyTestService"));
+    }
+
+    @Test
+    void should_use_explicit_slice_name() {
+        var projectDir = tempDir.resolve("my-project");
+        var result = SliceProjectInitializer.sliceProjectInitializer(projectDir, "org.example", "my-project", "CustomSlice");
+        assertThat(result.isSuccess())
+                  .isTrue();
+        result.onSuccess(initializer -> assertThat(initializer.sliceName())
+                                                  .isEqualTo("CustomSlice"));
     }
 
     @Test

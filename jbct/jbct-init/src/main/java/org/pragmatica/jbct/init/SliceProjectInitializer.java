@@ -11,7 +11,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,6 +38,7 @@ public final class SliceProjectInitializer {
                                     String groupId,
                                     String artifactId,
                                     String basePackage,
+                                    String sliceName,
                                     String jbctVersion,
                                     String pragmaticaVersion,
                                     String aetherVersion) {
@@ -46,24 +46,42 @@ public final class SliceProjectInitializer {
         this.groupId = groupId;
         this.artifactId = artifactId;
         this.basePackage = basePackage;
-        this.sliceName = toCamelCase(artifactId);
+        this.sliceName = sliceName;
         this.jbctVersion = jbctVersion;
         this.pragmaticaVersion = pragmaticaVersion;
         this.aetherVersion = aetherVersion;
     }
 
     /// Create initializer with project parameters, fetching latest versions from GitHub.
+    /// Slice name is derived from artifact ID.
     public static Result<SliceProjectInitializer> sliceProjectInitializer(Path projectDir,
                                                                           String groupId,
                                                                           String artifactId) {
-        var resolver = GitHubVersionResolver.gitHubVersionResolver();
-        return sliceProjectInitializer(projectDir, groupId, artifactId, resolver);
+        return sliceProjectInitializer(projectDir, groupId, artifactId, null, GitHubVersionResolver.gitHubVersionResolver());
     }
 
     /// Create initializer with project parameters and version resolver.
+    /// Slice name is derived from artifact ID.
     public static Result<SliceProjectInitializer> sliceProjectInitializer(Path projectDir,
                                                                           String groupId,
                                                                           String artifactId,
+                                                                          GitHubVersionResolver resolver) {
+        return sliceProjectInitializer(projectDir, groupId, artifactId, null, resolver);
+    }
+
+    /// Create initializer with explicit slice name, fetching latest versions from GitHub.
+    public static Result<SliceProjectInitializer> sliceProjectInitializer(Path projectDir,
+                                                                          String groupId,
+                                                                          String artifactId,
+                                                                          String sliceName) {
+        return sliceProjectInitializer(projectDir, groupId, artifactId, sliceName, GitHubVersionResolver.gitHubVersionResolver());
+    }
+
+    /// Create initializer with explicit slice name and version resolver.
+    public static Result<SliceProjectInitializer> sliceProjectInitializer(Path projectDir,
+                                                                          String groupId,
+                                                                          String artifactId,
+                                                                          String sliceName,
                                                                           GitHubVersionResolver resolver) {
         if (artifactId == null || artifactId.isBlank()) {
             return Causes.cause("artifactId must not be null or empty")
@@ -74,27 +92,17 @@ public final class SliceProjectInitializer {
                          .result();
         }
         var basePackage = groupId + "." + artifactId.replace("-", "");
+        var effectiveName = (sliceName != null && !sliceName.isBlank())
+                            ? sliceName
+                            : toCamelCase(artifactId);
         return Result.success(new SliceProjectInitializer(projectDir,
                                                           groupId,
                                                           artifactId,
                                                           basePackage,
+                                                          effectiveName,
                                                           resolver.jbctVersion(),
                                                           resolver.pragmaticaLiteVersion(),
                                                           resolver.aetherVersion()));
-    }
-
-    /// Create initializer with explicit base package (uses fallback versions).
-    public static SliceProjectInitializer sliceProjectInitializer(Path projectDir,
-                                                                  String groupId,
-                                                                  String artifactId,
-                                                                  String basePackage) {
-        return new SliceProjectInitializer(projectDir,
-                                           groupId,
-                                           artifactId,
-                                           basePackage,
-                                           DEFAULT_JBCT_VERSION,
-                                           DEFAULT_PRAGMATICA_VERSION,
-                                           DEFAULT_AETHER_VERSION);
     }
 
     /// Initialize the slice project structure.
@@ -111,14 +119,17 @@ public final class SliceProjectInitializer {
             var srcTestResources = projectDir.resolve("src/test/resources");
             var metaInfDeps = projectDir.resolve("src/main/resources/META-INF/dependencies");
             var slicesDir = projectDir.resolve("src/main/resources/slices");
+            var schemaDir = projectDir.resolve("schema");
             Files.createDirectories(srcMainJava);
             Files.createDirectories(srcTestJava);
             Files.createDirectories(srcTestResources);
             Files.createDirectories(metaInfDeps);
             Files.createDirectories(slicesDir);
+            Files.createDirectories(schemaDir);
             var packagePath = basePackage.replace(".", "/");
             Files.createDirectories(srcMainJava.resolve(packagePath));
             Files.createDirectories(srcTestJava.resolve(packagePath));
+            Files.createDirectories(projectDir.resolve("src/main/resources/" + packagePath));
             return Result.success(Unit.unit());
         } catch (Exception e) {
             return Causes.cause("Failed to create directories: " + e.getMessage())
@@ -127,12 +138,15 @@ public final class SliceProjectInitializer {
     }
 
     private Result<List<Path>> createAllFiles() {
-        // Fork-Join: Create all independent file groups in parallel
         return Result.allOf(createProjectFiles(),
                             createSourceFiles(),
                             createTestResources(),
                             createDeployScripts(),
-                            createSliceConfigFiles())
+                            createSliceConfigFiles(),
+                            createInfraFiles(),
+                            createRunScripts(),
+                            createRoutes(),
+                            createSchema())
                      .flatMap(this::combineWithDependencyManifest);
     }
 
@@ -154,27 +168,15 @@ public final class SliceProjectInitializer {
     }
 
     private Result<List<Path>> createProjectFiles() {
-        // Fork-Join: Create project config files in parallel
         return Result.allOf(createFile("pom.xml.template", projectDir.resolve("pom.xml")),
                             createFile("jbct.toml.template", projectDir.resolve("jbct.toml")),
-                            createFile("gitignore.template", projectDir.resolve(".gitignore")),
-                            createClaudeMd());
-    }
-
-    private Result<Path> createClaudeMd() {
-        var targetPath = projectDir.resolve("CLAUDE.md");
-        if (Files.exists(targetPath)) {
-            System.out.println("  Skipped: CLAUDE.md (already exists)");
-            return Result.success(targetPath);
-        }
-        return createFile("CLAUDE.md", targetPath);
+                            createFile("gitignore.template", projectDir.resolve(".gitignore")));
     }
 
     private Result<List<Path>> createSourceFiles() {
         var packagePath = basePackage.replace(".", "/");
         var srcMainJava = projectDir.resolve("src/main/java");
         var srcTestJava = projectDir.resolve("src/test/java");
-        // Fork-Join: Create source files in parallel
         return Result.allOf(createFile("Slice.java.template",
                                        srcMainJava.resolve(packagePath)
                                                   .resolve(sliceName + ".java")),
@@ -189,7 +191,6 @@ public final class SliceProjectInitializer {
     }
 
     private Result<List<Path>> createDeployScripts() {
-        // Fork-Join: Create deploy and utility scripts in parallel
         return Result.allOf(createFile("deploy-forge.sh.template",
                                        projectDir.resolve("deploy-forge.sh")),
                             createFile("deploy-test.sh.template",
@@ -199,6 +200,29 @@ public final class SliceProjectInitializer {
                             createFile("generate-blueprint.sh.template",
                                        projectDir.resolve("generate-blueprint.sh")))
                      .onSuccess(scripts -> scripts.forEach(SliceProjectInitializer::makeExecutable));
+    }
+
+    private Result<List<Path>> createInfraFiles() {
+        return Result.allOf(createFile("forge.toml.template", projectDir.resolve("forge.toml")),
+                            createFile("aether.toml.template", projectDir.resolve("aether.toml")),
+                            createFile("README.md.template", projectDir.resolve("README.md")));
+    }
+
+    private Result<List<Path>> createRunScripts() {
+        return Result.allOf(createFile("run-forge.sh.template", projectDir.resolve("run-forge.sh")),
+                            createFile("start-postgres.sh.template", projectDir.resolve("start-postgres.sh")),
+                            createFile("stop-postgres.sh.template", projectDir.resolve("stop-postgres.sh")))
+                     .onSuccess(scripts -> scripts.forEach(SliceProjectInitializer::makeExecutable));
+    }
+
+    private Result<List<Path>> createRoutes() {
+        var packagePath = basePackage.replace(".", "/");
+        var routesDir = projectDir.resolve("src/main/resources/" + packagePath);
+        return createFile("routes.toml.template", routesDir.resolve("routes.toml")).map(path -> List.of(path));
+    }
+
+    private Result<List<Path>> createSchema() {
+        return createFile("init.sql.template", projectDir.resolve("schema/init.sql")).map(path -> List.of(path));
     }
 
     private Result<Path> createDependencyManifest() {
@@ -219,7 +243,6 @@ public final class SliceProjectInitializer {
         }
         try (var in = getClass().getResourceAsStream(TEMPLATES_PATH + templateName)) {
             if (in == null) {
-                // Fall back to inline templates if resource not found
                 return createFromInlineTemplate(templateName, targetPath);
             }
             var content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
@@ -253,7 +276,6 @@ public final class SliceProjectInitializer {
             case "pom.xml.template" -> Option.some(SLICE_POM_TEMPLATE);
             case "jbct.toml.template" -> Option.some(JBCT_TOML_TEMPLATE);
             case "gitignore.template" -> Option.some(GITIGNORE_TEMPLATE);
-            case "CLAUDE.md" -> Option.some(CLAUDE_MD_TEMPLATE);
             case "Slice.java.template" -> Option.some(SLICE_INTERFACE_TEMPLATE);
             case "SliceTest.java.template" -> Option.some(SLICE_TEST_TEMPLATE);
             case "log4j2-test.xml.template" -> Option.some(LOG4J2_TEST_XML_TEMPLATE);
@@ -262,6 +284,14 @@ public final class SliceProjectInitializer {
             case "deploy-prod.sh.template" -> Option.some(DEPLOY_PROD_TEMPLATE);
             case "generate-blueprint.sh.template" -> Option.some(GENERATE_BLUEPRINT_TEMPLATE);
             case "slice.toml.template" -> Option.some(SLICE_CONFIG_TEMPLATE);
+            case "forge.toml.template" -> Option.some(FORGE_TOML_TEMPLATE);
+            case "aether.toml.template" -> Option.some(AETHER_TOML_TEMPLATE);
+            case "run-forge.sh.template" -> Option.some(RUN_FORGE_SH_TEMPLATE);
+            case "start-postgres.sh.template" -> Option.some(START_POSTGRES_SH_TEMPLATE);
+            case "stop-postgres.sh.template" -> Option.some(STOP_POSTGRES_SH_TEMPLATE);
+            case "init.sql.template" -> Option.some(SCHEMA_INIT_SQL_TEMPLATE);
+            case "README.md.template" -> Option.some(README_MD_TEMPLATE);
+            case "routes.toml.template" -> Option.some(ROUTES_TOML_TEMPLATE);
             default -> Option.none();
         };
     }
@@ -291,7 +321,6 @@ public final class SliceProjectInitializer {
     }
 
     private static void makeExecutable(Path path) {
-        // Best-effort to make file executable - may not be supported on all platforms
         try{
             var perms = Files.getPosixFilePermissions(path);
             perms.add(java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE);
@@ -486,114 +515,52 @@ public final class SliceProjectInitializer {
         .DS_Store
         """;
 
-    private static final String CLAUDE_MD_TEMPLATE = """
-        # JBCT Project
-
-        ## AI Agent Policy (MANDATORY)
-
-        **Use `jbct-coder` agent for ALL coding and fixing tasks.** This ensures code follows JBCT patterns and conventions.
-
-        To invoke: Use `/jbct` skill or spawn `jbct-coder` agent via Task tool.
-
-        ## Implementation Workflow
-
-        1. **Clarify** - Ask questions if requirements are ambiguous or multiple approaches exist
-        2. **Plan** - Create implementation plan before coding
-        3. **Implement** - Execute plan stages using `jbct-coder`
-        4. **Commit** - Commit after each plan stage completion
-        5. **Review** - After plan completion, review ALL updated files using `/jbct-review`
-        6. **Fix** - Fix all found issues using `/fix-all`
-
-        ### Review Strategy
-
-        - **Small/medium plans** (1-5 stages): Review after all stages complete
-        - **Large plans** (6+ stages): Review after every 2-3 stages, then final review after all complete
-
-        ## Git Commits
-
-        - **Format**: Conventional commits (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`)
-        - **Style**: Single line, imperative mood, no period at end
-        - **Examples**:
-          - `feat: add user authentication endpoint`
-          - `fix: handle null response in API client`
-          - `refactor: extract validation logic to separate class`
-
-        ## Conversation Style
-
-        **Core Principles:**
-        1. **Extreme brevity** - Answer directly without preamble. No "Let me help you" or "Great question!". Just the answer.
-        2. **Action-first** - Execute immediately. Explain only when necessary for safety or clarity.
-        3. **No fluff** - Skip politeness markers, acknowledgments, and summaries unless requested.
-        4. **Ask when needed** - If requirements are ambiguous or multiple valid approaches exist, ask before acting.
-
-        **When to Ask:**
-        - Ambiguous requirements with multiple valid interpretations
-        - Missing critical information (file paths, values, choices)
-        - Destructive operations with risk of data loss
-        - Technical decisions requiring user preference
-
-        **When NOT to Ask:**
-        - Clear, unambiguous requests
-        - Standard patterns following project conventions
-        - Recoverable operations (git, file edits)
-        - Obvious next steps (99% certain of intent)
-
-        **Execution Pattern:**
-        - Read → Act → Verify (show work incrementally)
-        - Parallel operations when independent
-        - Immediate verification after significant actions
-        """;
-
     private static final String SLICE_INTERFACE_TEMPLATE = """
         package {{basePackage}};
 
         import org.pragmatica.aether.slice.annotation.Slice;
         import org.pragmatica.lang.Cause;
+        import org.pragmatica.lang.Option;
         import org.pragmatica.lang.Promise;
         import org.pragmatica.lang.Result;
 
-        /// {{sliceName}} slice interface.
+        /// {{sliceName}} slice - greeting service.
         @Slice
         public interface {{sliceName}} {
-
-            /// Request record.
-            record Request(String value) {
-                public static Result<Request> request(String value) {
-                    if (value == null || value.isBlank()) {
-                        return Result.failure(ValidationError.emptyValue());
-                    }
-                    return Result.success(new Request(value));
+            record GreetRequest(String name) {
+                public static Result<GreetRequest> greetRequest(String name) {
+                    return Option.option(name)
+                                 .filter(s -> !s.isBlank())
+                                 .map(GreetRequest::new)
+                                 .toResult(GreetError.invalidName());
                 }
             }
 
-            /// Response record.
-            record Response(String result) {}
+            record GreetResponse(String greeting) {}
 
-            /// Validation error.
-            sealed interface ValidationError extends Cause {
-                record EmptyValue() implements ValidationError {
+            sealed interface GreetError extends Cause {
+                record InvalidName() implements GreetError {
                     @Override
                     public String message() {
-                        return "Value cannot be empty";
+                        return "Name cannot be empty";
                     }
                 }
 
-                static ValidationError emptyValue() {
-                    return new EmptyValue();
+                static GreetError invalidName() {
+                    return new InvalidName();
                 }
             }
 
-            Promise<Response> process(Request request);
+            Promise<GreetResponse> greet(GreetRequest request);
 
             static {{sliceName}} {{factoryMethodName}}() {
-                record {{factoryMethodName}}() implements {{sliceName}} {
+                record impl() implements {{sliceName}} {
                     @Override
-                    public Promise<Response> process(Request request) {
-                        var response = new Response("Processed: " + request.value());
-                        return Promise.success(response);
+                    public Promise<GreetResponse> greet(GreetRequest request) {
+                        return Promise.success(new GreetResponse("Hello, " + request.name() + "!"));
                     }
                 }
-                return new {{factoryMethodName}}();
+                return new impl();
             }
         }
         """;
@@ -601,23 +568,29 @@ public final class SliceProjectInitializer {
     private static final String SLICE_TEST_TEMPLATE = """
         package {{basePackage}};
 
-        import org.junit.jupiter.api.Assertions;
         import org.junit.jupiter.api.Test;
 
         import static org.assertj.core.api.Assertions.assertThat;
+        import static org.junit.jupiter.api.Assertions.fail;
 
         class {{sliceName}}Test {
 
             private final {{sliceName}} slice = {{sliceName}}.{{factoryMethodName}}();
 
             @Test
-            void should_process_request() {
-                {{sliceName}}.Request.request("test")
-                    .onFailure(Assertions::fail)
-                    .onSuccess(request -> slice.process(request)
+            void greet_validName_returnsGreeting() {
+                {{sliceName}}.GreetRequest.greetRequest("World")
+                    .onFailure(cause -> fail(cause.message()))
+                    .onSuccess(request -> slice.greet(request)
                         .await()
-                        .onFailure(Assertions::fail)
-                        .onSuccess(r -> assertThat(r.result()).isEqualTo("Processed: test")));
+                        .onFailure(cause -> fail(cause.message()))
+                        .onSuccess(r -> assertThat(r.greeting()).isEqualTo("Hello, World!")));
+            }
+
+            @Test
+            void greet_emptyName_returnsError() {
+                var result = {{sliceName}}.GreetRequest.greetRequest("");
+                assertThat(result.isFailure()).isTrue();
             }
         }
         """;
@@ -739,6 +712,204 @@ public final class SliceProjectInitializer {
                 <Logger name="org.h2" level="error"/>
             </Loggers>
         </Configuration>
+        """;
+
+    private static final String FORGE_TOML_TEMPLATE = """
+        # Forge local development cluster
+        [cluster]
+        nodes = 3
+        management_port = 5150
+        dashboard_port = 8888
+        app_http_port = 8070
+
+        [observability]
+        depth_threshold = -1
+
+        [database]
+        enabled = false
+        """;
+
+    private static final String AETHER_TOML_TEMPLATE = """
+        # Aether runtime configuration
+        # Uncomment to enable database access (requires running PostgreSQL):
+        # [database]
+        # type = "POSTGRESQL"
+        # async_url = "postgresql://localhost:5432/forge"
+        # [database.pool_config]
+        # min_connections = 5
+        # max_connections = 20
+        """;
+
+    private static final String RUN_FORGE_SH_TEMPLATE = """
+        #!/bin/bash
+        # Start local Aether Forge cluster
+        set -e
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+        echo "Building {{artifactId}} slice..."
+        mvn clean install -DskipTests -q
+
+        # Find aether-forge
+        if command -v aether-forge >/dev/null 2>&1; then
+            FORGE_CMD="aether-forge"
+        elif [ -f "$HOME/.aether/bin/aether-forge" ]; then
+            FORGE_CMD="$HOME/.aether/bin/aether-forge"
+        else
+            echo "ERROR: aether-forge not found."
+            echo "Install: curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh"
+            exit 1
+        fi
+
+        echo ""
+        echo "Starting Aether Forge..."
+        echo "  Dashboard:  http://localhost:8888"
+        echo "  App HTTP:   http://localhost:8070"
+        echo "  Management: http://localhost:5150"
+        echo ""
+        echo "Test: curl http://localhost:8070/api/hello/World"
+        echo ""
+
+        exec $FORGE_CMD --config "$SCRIPT_DIR/forge.toml" --blueprint "$SCRIPT_DIR/target/blueprint.toml"
+        """;
+
+    private static final String START_POSTGRES_SH_TEMPLATE = """
+        #!/bin/bash
+        # Start PostgreSQL for local development
+        set -e
+
+        CONTAINER_NAME="{{artifactId}}-postgres"
+        VOLUME_NAME="{{artifactId}}-pgdata"
+        PG_PORT="${PG_PORT:-5432}"
+        PG_PASSWORD="${PG_PASSWORD:-postgres}"
+
+        # Auto-detect container runtime
+        if command -v podman >/dev/null 2>&1; then
+            RUNTIME="podman"
+        elif command -v docker >/dev/null 2>&1; then
+            RUNTIME="docker"
+        else
+            echo "ERROR: Neither podman nor docker found."
+            echo "Install podman: https://podman.io/getting-started/installation"
+            exit 1
+        fi
+
+        # Check if already running
+        if $RUNTIME ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
+            echo "PostgreSQL is already running (container: $CONTAINER_NAME)"
+            exit 0
+        fi
+
+        # Check if stopped container exists
+        if $RUNTIME ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
+            echo "Starting existing container..."
+            $RUNTIME start "$CONTAINER_NAME"
+        else
+            echo "Creating PostgreSQL container..."
+            $RUNTIME run -d \\
+                --name "$CONTAINER_NAME" \\
+                -v "$VOLUME_NAME:/var/lib/postgresql/data" \\
+                -e POSTGRES_PASSWORD="$PG_PASSWORD" \\
+                -e POSTGRES_DB=forge \\
+                -p "$PG_PORT:5432" \\
+                postgres:17
+
+            # Wait for PostgreSQL to be ready
+            echo "Waiting for PostgreSQL..."
+            for i in $(seq 1 30); do
+                if $RUNTIME exec "$CONTAINER_NAME" pg_isready -U postgres >/dev/null 2>&1; then
+                    break
+                fi
+                sleep 1
+            done
+
+            # Run init.sql if present
+            SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+            if [ -f "$SCRIPT_DIR/schema/init.sql" ]; then
+                echo "Running schema/init.sql..."
+                $RUNTIME exec -i "$CONTAINER_NAME" psql -U postgres -d forge < "$SCRIPT_DIR/schema/init.sql"
+            fi
+        fi
+
+        echo ""
+        echo "PostgreSQL running on port $PG_PORT"
+        echo "  Connection: postgresql://postgres:$PG_PASSWORD@localhost:$PG_PORT/forge"
+        """;
+
+    private static final String STOP_POSTGRES_SH_TEMPLATE = """
+        #!/bin/bash
+        # Stop PostgreSQL development container
+        set -e
+
+        CONTAINER_NAME="{{artifactId}}-postgres"
+        VOLUME_NAME="{{artifactId}}-pgdata"
+
+        # Auto-detect container runtime
+        if command -v podman >/dev/null 2>&1; then
+            RUNTIME="podman"
+        elif command -v docker >/dev/null 2>&1; then
+            RUNTIME="docker"
+        else
+            echo "ERROR: Neither podman nor docker found."
+            exit 1
+        fi
+
+        $RUNTIME stop "$CONTAINER_NAME" 2>/dev/null && echo "Stopped $CONTAINER_NAME" || echo "Container not running"
+        $RUNTIME rm "$CONTAINER_NAME" 2>/dev/null && echo "Removed $CONTAINER_NAME" || true
+
+        if [ "$1" = "--purge" ]; then
+            $RUNTIME volume rm "$VOLUME_NAME" 2>/dev/null && echo "Removed volume $VOLUME_NAME" || true
+        fi
+        """;
+
+    private static final String SCHEMA_INIT_SQL_TEMPLATE = """
+        -- Database schema for {{sliceName}}
+        -- Run: ./start-postgres.sh
+        """;
+
+    private static final String README_MD_TEMPLATE = """
+        # {{sliceName}}
+
+        An Aether slice project.
+
+        ## Prerequisites
+
+        - Java 25+
+        - Maven 3.9+
+        - Aether tools: `curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh`
+
+        ## Quick Start
+
+            # Build and start local cluster
+            ./run-forge.sh
+
+            # Test the API
+            curl http://localhost:8070/api/hello/World
+
+            # Dashboard
+            open http://localhost:8888
+
+        ## Development
+
+            mvn clean install    # Build
+            mvn test             # Run tests
+            jbct check           # Format and lint
+
+        ## Deploy
+
+            ./deploy-forge.sh    # Local development
+            ./deploy-test.sh     # Test environment
+            ./deploy-prod.sh     # Production
+        """;
+
+    private static final String ROUTES_TOML_TEMPLATE = """
+        prefix = "/api"
+
+        [routes]
+        greet = "GET /hello/{name}"
+
+        [errors]
+        default = 500
+        HTTP_400 = ["*invalid*", "*empty*"]
         """;
 
     public Path projectDir() {

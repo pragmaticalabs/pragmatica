@@ -38,8 +38,20 @@ public class InitCommand implements Callable<Integer> {
 
     @Option(
     names = {"--slice"},
-    description = "Create an Aether slice project")
+    description = "Create an Aether slice project",
+    hidden = true)
     boolean slice;
+
+    @Option(
+    names = {"--no-slice"},
+    description = "Create a plain JBCT project (no Aether slice)")
+    boolean noSlice;
+
+    @Option(
+    names = {"--name"},
+    description = "Slice name (default: HelloWorld)",
+    defaultValue = "HelloWorld")
+    String sliceName;
 
     @Option(
     names = {"--ai-only"},
@@ -89,9 +101,10 @@ public class InitCommand implements Callable<Integer> {
                                             .toString());
         var projectCreated = false;
         var aiToolsInstalled = false;
+        var isSliceProject = !noSlice;
         // Create project structure unless --ai-only
         if (!aiOnly) {
-            var projectType = slice
+            var projectType = isSliceProject
                               ? "slice"
                               : "JBCT";
             System.out.println("Initializing " + projectType + " project in: " + projectDir);
@@ -104,7 +117,7 @@ public class InitCommand implements Callable<Integer> {
                     return 1;
                 }
             }
-            var projectResult = slice
+            var projectResult = isSliceProject
                                 ? initSliceProject()
                                 : initRegularProject();
             if (!projectResult) {
@@ -131,12 +144,22 @@ public class InitCommand implements Callable<Integer> {
         // Print summary
         System.out.println();
         if (projectCreated) {
-            System.out.println("Project initialized successfully!");
-            System.out.println();
-            System.out.println("Next steps:");
-            System.out.println("  1. cd " + projectDir.getFileName());
-            System.out.println("  2. Edit pom.xml to customize your project");
-            System.out.println("  3. Run 'mvn verify' to check everything works");
+            if (isSliceProject) {
+                System.out.println("Slice project initialized successfully!");
+                System.out.println();
+                System.out.println("Next steps:");
+                System.out.println("  1. cd " + projectDir.getFileName());
+                System.out.println("  2. ./run-forge.sh");
+                System.out.println("  3. curl http://localhost:8070/api/hello/World");
+                System.out.println("  4. Dashboard: http://localhost:8888");
+            } else {
+                System.out.println("Project initialized successfully!");
+                System.out.println();
+                System.out.println("Next steps:");
+                System.out.println("  1. cd " + projectDir.getFileName());
+                System.out.println("  2. Edit pom.xml to customize your project");
+                System.out.println("  3. Run 'mvn verify' to check everything works");
+            }
         }
         if (aiToolsInstalled) {
             System.out.println();
@@ -195,7 +218,7 @@ public class InitCommand implements Callable<Integer> {
     }
 
     private boolean initSliceProject() {
-        return SliceProjectInitializer.sliceProjectInitializer(projectDir, groupId, artifactId)
+        return SliceProjectInitializer.sliceProjectInitializer(projectDir, groupId, artifactId, sliceName)
                                       .flatMap(initializer -> initializer.initialize()
                                                                          .onSuccess(createdFiles -> printSliceCreatedFiles(createdFiles,
                                                                                                                            initializer.sliceName())))

@@ -1,0 +1,789 @@
+# Slice DX Test Plan
+
+## Container Command
+
+```bash
+podman run -it --rm \
+  --name aether-dx-test \
+  --network=host \
+  -v "$HOME/.m2/repository:/root/.m2/repository" \
+  eclipse-temurin:25-jdk-noble \
+  bash
+```
+
+> **`--network=host`** — needed for Part 5 (PostgreSQL on localhost) and Part 8 (Forge dashboard access from host browser).
+>
+> **`-v .m2/repository`** — mounts local Maven cache so 0.19.2-SNAPSHOT deps resolve (not published to Central yet). Remove this mount for a true clean-room test once 0.19.2 is published.
+
+### Inside the container — prerequisites
+
+```bash
+apt-get update && apt-get install -y curl git
+
+# Install Maven 3.9.12
+MAVEN_VERSION=3.9.12
+curl -fsSL https://archive.apache.org/dist/maven/maven-3/$MAVEN_VERSION/binaries/apache-maven-$MAVEN_VERSION-bin.tar.gz | tar xz -C /opt
+export PATH="/opt/apache-maven-$MAVEN_VERSION/bin:$PATH"
+export JAVA_HOME=/opt/java/openjdk
+
+java -version    # should show 25
+mvn --version    # should show 3.9.12
+```
+
+---
+
+## Part 1: Install Tools
+
+**Goal:** Verify install.sh downloads and configures all tools.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh
+source ~/.bashrc    # or ~/.zshrc
+```
+
+### Verify
+
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 1.1 | jbct installed | `jbct --version` | Version printed (0.19.1) |
+| 1.2 | aether installed | `aether --help` | Help text with subcommands |
+| 1.3 | aether-forge installed | `aether-forge --help` | Help text |
+| 1.4 | Binaries in PATH | `which jbct aether aether-forge` | All three found |
+
+---
+
+## Part 2: Create First Slice (Default — HelloWorld)
+
+**Goal:** `jbct init` creates a runnable project with zero manual file creation.
+
+```bash
+cd /tmp
+jbct init my-slice -g com.example -a my-slice --no-ai
+cd my-slice
+```
+
+### Verify: Project structure
+
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 2.1 | Slice source | `cat src/main/java/com/example/myslice/HelloWorld.java` | `@Slice`, `greet()`, `GreetRequest`, `GreetResponse`, `GreetError` |
+| 2.2 | Test source | `cat src/test/java/com/example/myslice/HelloWorldTest.java` | Two tests: `greet_validName_returnsGreeting`, `greet_emptyName_returnsError` |
+| 2.3 | Routes | `cat src/main/resources/com/example/myslice/routes.toml` | `greet = "GET /hello/{name}"` |
+| 2.4 | Forge config | `cat forge.toml` | `nodes = 3`, `app_http_port = 8070` |
+| 2.5 | Aether config | `cat aether.toml` | DB section commented out |
+| 2.6 | Run script | `ls -la run-forge.sh` | Executable |
+| 2.7 | Postgres scripts | `ls -la start-postgres.sh stop-postgres.sh` | Both executable |
+| 2.8 | Schema | `cat schema/init.sql` | Placeholder comment |
+| 2.9 | README | `head -20 README.md` | Quick start with `./run-forge.sh` |
+| 2.10 | No CLAUDE.md | `ls CLAUDE.md 2>&1` | "No such file" |
+| 2.11 | Deploy scripts | `ls deploy-*.sh generate-blueprint.sh` | All four present |
+
+### Verify: Build and test
+
+```bash
+mvn clean install
+```
+
+| # | Check | Expected |
+|---|-------|----------|
+| 2.12 | Build succeeds | `BUILD SUCCESS` |
+| 2.13 | Tests pass | 2 tests run, 0 failures |
+| 2.14 | JBCT format OK | No format-check errors |
+| 2.15 | Blueprint generated | `cat target/blueprint.toml` shows `[[slices]]` entry |
+
+---
+
+## Part 3: Run Forge and Test HTTP Endpoint
+
+**Goal:** The generated project runs end-to-end with Forge.
+
+```bash
+./run-forge.sh
+```
+
+(In a separate terminal / or background with `&`)
+
+### Verify
+
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 3.1 | Forge starts | Watch console output | "Starting Aether Forge..." |
+| 3.2 | Greeting API | `curl -s http://localhost:8070/api/hello/World` | `{"greeting":"Hello, World!"}` |
+| 3.3 | Different name | `curl -s http://localhost:8070/api/hello/Alice` | `{"greeting":"Hello, Alice!"}` |
+| 3.4 | Empty name | `curl -s http://localhost:8070/api/hello/%20` | HTTP 400 with error message |
+| 3.5 | Dashboard | `curl -s -o /dev/null -w "%{http_code}" http://localhost:8888` | `200` |
+| 3.6 | Management API | `curl -s http://localhost:5150/api/status` | Cluster status JSON |
+| 3.7 | Nodes healthy | `curl -s http://localhost:5150/api/nodes` | 3 nodes listed |
+| 3.8 | Slices deployed | `curl -s http://localhost:5150/api/slices` | HelloWorld slice listed |
+
+Stop Forge: `Ctrl+C`
+
+---
+
+## Part 4: Custom Slice Name
+
+**Goal:** `--name` parameter works correctly.
+
+```bash
+cd /tmp
+jbct init inventory-app -g com.acme -a inventory-app --name InventoryService --no-ai
+```
+
+### Verify
+
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 4.1 | Custom name | `ls inventory-app/src/main/java/com/acme/inventoryapp/` | `InventoryService.java` |
+| 4.2 | Test file | `ls inventory-app/src/test/java/com/acme/inventoryapp/` | `InventoryServiceTest.java` |
+| 4.3 | Factory method | `grep "static InventoryService" inventory-app/src/main/java/com/acme/inventoryapp/InventoryService.java` | `inventoryService()` |
+| 4.4 | Build | `cd inventory-app && mvn clean install` | `BUILD SUCCESS` |
+
+---
+
+## Part 5: Plain JBCT Project (--no-slice)
+
+**Goal:** `--no-slice` creates a minimal JBCT project without Aether.
+
+```bash
+cd /tmp
+jbct init my-lib -g com.example -a my-lib --no-slice --no-ai
+```
+
+### Verify
+
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 5.1 | No slice files | `ls my-lib/forge.toml 2>&1` | "No such file" |
+| 5.2 | No run scripts | `ls my-lib/run-forge.sh 2>&1` | "No such file" |
+| 5.3 | Has pom.xml | `head -5 my-lib/pom.xml` | Standard Maven POM |
+| 5.4 | Has jbct.toml | `cat my-lib/jbct.toml` | Format config |
+| 5.5 | No CLAUDE.md | `ls my-lib/CLAUDE.md 2>&1` | "No such file" |
+| 5.6 | Next steps | (check console output from init) | Shows "Edit pom.xml" not "run-forge.sh" |
+
+---
+
+## Part 6: Add a Second Slice
+
+**Goal:** Add an Analytics slice to the existing HelloWorld project.
+
+```bash
+cd /tmp/my-slice
+```
+
+### 6a. Create the Analytics slice interface
+
+Create `src/main/java/com/example/myslice/Analytics.java`:
+
+```java
+package com.example.myslice;
+
+import org.pragmatica.aether.slice.annotation.Slice;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+
+@Slice
+public interface Analytics {
+    record CountRequest(String name) {
+        public static Result<CountRequest> countRequest(String name) {
+            if (name == null || name.isBlank()) {
+                return CountError.invalidName().result();
+            }
+            return Result.success(new CountRequest(name.trim()));
+        }
+    }
+
+    record CountResponse(String name, int count) {}
+
+    sealed interface CountError extends Cause {
+        record InvalidName() implements CountError {
+            @Override
+            public String message() {
+                return "Name cannot be empty";
+            }
+        }
+
+        static CountError invalidName() {
+            return new InvalidName();
+        }
+    }
+
+    Promise<CountResponse> getCount(CountRequest request);
+
+    static Analytics analytics() {
+        record impl() implements Analytics {
+            @Override
+            public Promise<CountResponse> getCount(CountRequest request) {
+                return Promise.success(new CountResponse(request.name(), 42));
+            }
+        }
+        return new impl();
+    }
+}
+```
+
+### 6b. Create routes for Analytics
+
+Create `src/main/resources/com/example/myslice/analytics/routes.toml`:
+
+```toml
+prefix = "/api/analytics"
+
+[routes]
+getCount = "GET /count/{name}"
+
+[errors]
+default = 500
+HTTP_400 = ["*invalid*", "*empty*"]
+```
+
+> **Note:** Routes file path must match the package path of the slice. If Analytics is in `com.example.myslice`, the routes go in `src/main/resources/com/example/myslice/analytics/routes.toml` (using the slice name in lowercase as the final directory).
+
+### 6c. Create Analytics slice config
+
+Create `src/main/resources/slices/Analytics.toml`:
+
+```toml
+[blueprint]
+instances = 3
+```
+
+### 6d. Create dependency manifest
+
+Create `src/main/resources/META-INF/dependencies/com.example.myslice.Analytics`:
+
+```
+# Analytics slice dependencies
+```
+
+### Verify
+
+```bash
+mvn clean install
+```
+
+| # | Check | Expected |
+|---|-------|----------|
+| 6.1 | Build succeeds | Both slices compile and package |
+| 6.2 | Blueprint | `cat target/blueprint.toml` shows TWO `[[slices]]` entries |
+| 6.3 | Run Forge | `./run-forge.sh` starts, both slices deploy |
+| 6.4 | HelloWorld API | `curl -s http://localhost:8070/api/hello/World` works |
+| 6.5 | Analytics API | `curl -s http://localhost:8070/api/analytics/count/World` returns count |
+| 6.6 | Both in slices list | `curl -s http://localhost:5150/api/slices` shows both |
+
+---
+
+## Part 7: Add Database Resource
+
+**Goal:** Wire PostgreSQL into a slice using `@Sql SqlConnector`.
+
+### 7a. Start PostgreSQL
+
+On the **host machine** (outside the container, where podman is available):
+
+```bash
+# Using the generated script:
+cd /tmp/my-slice
+./start-postgres.sh
+```
+
+Or manually:
+
+```bash
+podman run -d \
+  --name my-slice-postgres \
+  -v my-slice-pgdata:/var/lib/postgresql/data \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=forge \
+  -p 5432:5432 \
+  postgres:17
+```
+
+### 7b. Create schema
+
+Update `schema/init.sql`:
+
+```sql
+CREATE TABLE IF NOT EXISTS greetings (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    greeted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Run schema:
+
+```bash
+podman exec -i my-slice-postgres psql -U postgres -d forge < schema/init.sql
+```
+
+### 7c. Add resource-api dependency
+
+Add to `pom.xml` dependencies section:
+
+```xml
+<!-- Database Access (provided by Aether runtime) -->
+<dependency>
+    <groupId>org.pragmatica-lite.aether</groupId>
+    <artifactId>resource-api</artifactId>
+    <version>${aether.version}</version>
+    <scope>provided</scope>
+</dependency>
+```
+
+### 7d. Uncomment database config
+
+Edit `aether.toml`:
+
+```toml
+[database]
+type = "POSTGRESQL"
+async_url = "postgresql://localhost:5432/forge"
+
+[database.pool_config]
+min_connections = 5
+max_connections = 20
+```
+
+### 7e. Update HelloWorld slice to use DB
+
+Update `HelloWorld.java` to inject `SqlConnector` and record greetings:
+
+```java
+package com.example.myslice;
+
+import org.pragmatica.aether.resource.db.Sql;
+import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.aether.slice.annotation.Slice;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+
+@Slice
+public interface HelloWorld {
+    record GreetRequest(String name) {
+        public static Result<GreetRequest> greetRequest(String name) {
+            return Option.option(name)
+                         .filter(s -> !s.isBlank())
+                         .map(GreetRequest::new)
+                         .toResult(GreetError.invalidName());
+        }
+    }
+
+    record GreetResponse(String greeting) {}
+
+    sealed interface GreetError extends Cause {
+        record InvalidName() implements GreetError {
+            @Override
+            public String message() {
+                return "Name cannot be empty";
+            }
+        }
+
+        static GreetError invalidName() {
+            return new InvalidName();
+        }
+    }
+
+    Promise<GreetResponse> greet(GreetRequest request);
+
+    static HelloWorld helloWorld(@Sql SqlConnector db) {
+        record impl(SqlConnector db) implements HelloWorld {
+            private static final String INSERT_GREETING = "INSERT INTO greetings (name) VALUES (?)";
+
+            @Override
+            public Promise<GreetResponse> greet(GreetRequest request) {
+                return db.update(INSERT_GREETING, request.name())
+                         .map(_ -> new GreetResponse("Hello, " + request.name() + "!"));
+            }
+        }
+        return new impl(db);
+    }
+}
+```
+
+### Verify
+
+```bash
+mvn clean install
+./run-forge.sh
+```
+
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 7.1 | Build succeeds | `mvn clean install` | `BUILD SUCCESS` |
+| 7.2 | Greeting with DB | `curl -s http://localhost:8070/api/hello/World` | `{"greeting":"Hello, World!"}` |
+| 7.3 | DB has record | `podman exec my-slice-postgres psql -U postgres -d forge -c "SELECT * FROM greetings"` | Row with "World" |
+| 7.4 | Multiple calls | `curl -s http://localhost:8070/api/hello/Alice && curl -s http://localhost:8070/api/hello/Bob` | Both succeed |
+| 7.5 | DB count | `podman exec my-slice-postgres psql -U postgres -d forge -c "SELECT COUNT(*) FROM greetings"` | 3 rows |
+
+---
+
+## Part 8: Add Pub/Sub Topic
+
+**Goal:** Publisher in HelloWorld, subscriber in Analytics — events flow between slices.
+
+### 8a. Define the event and publisher qualifier
+
+Create `src/main/java/com/example/myslice/GreetEventPublisher.java`:
+
+```java
+package com.example.myslice;
+
+import org.pragmatica.aether.slice.Publisher;
+import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+@ResourceQualifier(type = Publisher.class, config = "messaging.greet-events")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+public @interface GreetEventPublisher {}
+```
+
+### 8b. Define the subscriber qualifier
+
+Create `src/main/java/com/example/myslice/GreetEventSubscription.java`:
+
+```java
+package com.example.myslice;
+
+import org.pragmatica.aether.slice.Subscriber;
+import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+@ResourceQualifier(type = Subscriber.class, config = "messaging.greet-events")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.METHOD)
+public @interface GreetEventSubscription {}
+```
+
+### 8c. Define the event record
+
+Add to `HelloWorld.java` (inside the interface):
+
+```java
+record GreetEvent(String name) {}
+```
+
+### 8d. Update HelloWorld to publish events
+
+Update the factory method to accept a publisher:
+
+```java
+static HelloWorld helloWorld(@Sql SqlConnector db,
+                             @GreetEventPublisher Publisher<GreetEvent> greetPublisher) {
+    record impl(SqlConnector db, Publisher<GreetEvent> greetPublisher) implements HelloWorld {
+        private static final String INSERT_GREETING = "INSERT INTO greetings (name) VALUES (?)";
+
+        @Override
+        public Promise<GreetResponse> greet(GreetRequest request) {
+            return db.update(INSERT_GREETING, request.name())
+                     .flatMap(_ -> greetPublisher.publish(new GreetEvent(request.name())))
+                     .map(_ -> new GreetResponse("Hello, " + request.name() + "!"));
+        }
+    }
+    return new impl(db, greetPublisher);
+}
+```
+
+> **Note:** Add `import org.pragmatica.aether.slice.Publisher;` to the imports.
+
+### 8e. Update Analytics to subscribe to events
+
+Update `Analytics.java` to add a subscriber method:
+
+```java
+import org.pragmatica.lang.Unit;
+
+// Add inside the interface:
+@GreetEventSubscription
+Promise<Unit> onGreetEvent(HelloWorld.GreetEvent event);
+
+// Update the factory implementation to handle the event:
+static Analytics analytics() {
+    record impl() implements Analytics {
+        @Override
+        public Promise<CountResponse> getCount(CountRequest request) {
+            return Promise.success(new CountResponse(request.name(), 42));
+        }
+
+        @Override
+        public Promise<Unit> onGreetEvent(HelloWorld.GreetEvent event) {
+            System.out.println("[Analytics] Received greet event for: " + event.name());
+            return Promise.success(Unit.unit());
+        }
+    }
+    return new impl();
+}
+```
+
+### Verify
+
+```bash
+mvn clean install
+./run-forge.sh
+```
+
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 8.1 | Build succeeds | `mvn clean install` | `BUILD SUCCESS` |
+| 8.2 | Greet API works | `curl -s http://localhost:8070/api/hello/World` | Greeting returned |
+| 8.3 | Event received | Check Forge console | `[Analytics] Received greet event for: World` |
+| 8.4 | Multiple events | Send 5 greetings, check console | 5 event log lines |
+
+---
+
+## Part 9: JBCT Format and Lint
+
+**Goal:** Verify JBCT tooling works on the project.
+
+```bash
+cd /tmp/my-slice
+```
+
+### 9a. Introduce a formatting issue
+
+Add extra blank lines or wrong indentation to HelloWorld.java.
+
+### Verify
+
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 9.1 | Format check fails | `mvn jbct:format-check` | Reports unformatted file(s) |
+| 9.2 | Auto-format | `mvn jbct:format` | Files formatted |
+| 9.3 | Format check passes | `mvn jbct:format-check` | No errors |
+| 9.4 | Lint | `mvn jbct:lint` | No warnings |
+| 9.5 | Full check | `mvn jbct:check` | Both format and lint pass |
+
+---
+
+## Part 10: CLI Exploration
+
+**Goal:** Verify the `aether` CLI works against a running Forge.
+
+Start Forge first: `./run-forge.sh &`
+
+```bash
+# Connect to management port
+aether -c localhost:5150 status
+aether -c localhost:5150 nodes
+aether -c localhost:5150 health
+aether -c localhost:5150 slices
+aether -c localhost:5150 events
+```
+
+### Verify
+
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 10.1 | Cluster status | `aether -c localhost:5150 status` | Shows leader, node count |
+| 10.2 | Node list | `aether -c localhost:5150 nodes` | 3 nodes with health info |
+| 10.3 | Health | `aether -c localhost:5150 health` | Health status per node |
+| 10.4 | Slices | `aether -c localhost:5150 slices` | Both HelloWorld and Analytics |
+| 10.5 | Events | `aether -c localhost:5150 events` | Recent cluster events |
+
+---
+
+## Part 11: Management API Deep Dive
+
+**Goal:** Exercise the management API endpoints directly.
+
+### Verify
+
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 11.1 | Cluster status | `curl -s localhost:5150/api/status \| jq .` | JSON with leader, nodes, slices |
+| 11.2 | Health probes | `curl -s localhost:5150/health/live` | `{"status":"UP"}` |
+| 11.3 | Readiness | `curl -s localhost:5150/health/ready` | `{"status":"UP"}` |
+| 11.4 | Node list | `curl -s localhost:5150/api/nodes \| jq .` | Array of 3 nodes |
+| 11.5 | Slice list | `curl -s localhost:5150/api/slices \| jq .` | Both slices with instances |
+| 11.6 | Routes | `curl -s localhost:5150/api/routes \| jq .` | `/api/hello/{name}`, `/api/analytics/count/{name}` |
+| 11.7 | Blueprint | `curl -s localhost:5150/api/blueprint \| jq .` | Active blueprint |
+| 11.8 | Metrics | `curl -s localhost:5150/api/metrics \| jq .` | CPU, memory, latency |
+| 11.9 | Invocation metrics | `curl -s localhost:5150/api/invocation-metrics \| jq .` | Per-method stats |
+| 11.10 | Events | `curl -s localhost:5150/api/events \| jq .` | Recent events array |
+| 11.11 | Config | `curl -s localhost:5150/api/config \| jq .` | Runtime configuration |
+| 11.12 | Prometheus | `curl -s localhost:5150/api/prometheus` | Prometheus text format |
+| 11.13 | Traces | `curl -s localhost:5150/api/traces \| jq .` | Recent invocation traces |
+
+---
+
+## Part 12: Observability
+
+**Goal:** Verify tracing, depth logging, and metrics.
+
+### 12a. Generate traffic
+
+```bash
+for i in $(seq 1 20); do curl -s http://localhost:8070/api/hello/User$i > /dev/null; done
+```
+
+### Verify
+
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 12.1 | Invocation metrics | `curl -s localhost:5150/api/invocation-metrics` | `greet` method with 20 calls |
+| 12.2 | Trace list | `curl -s 'localhost:5150/api/traces?limit=5'` | Recent trace entries |
+| 12.3 | Trace detail | `curl -s localhost:5150/api/traces/{requestId}` | Full call tree |
+| 12.4 | Trace stats | `curl -s localhost:5150/api/traces/stats` | Aggregated statistics |
+| 12.5 | Slow invocations | `curl -s localhost:5150/api/invocation-metrics/slow` | Slowest calls |
+| 12.6 | Node metrics | `curl -s localhost:5150/api/node-metrics` | Per-node CPU/memory |
+| 12.7 | Comprehensive | `curl -s localhost:5150/api/metrics/comprehensive` | Full metrics snapshot |
+
+### 12b. Depth override
+
+```bash
+# Set depth threshold for HelloWorld.greet to 3
+curl -s -X POST localhost:5150/api/observability/depth \
+  -H "Content-Type: application/json" \
+  -d '{"method":"HelloWorld.greet","depth":3}'
+
+# Verify
+curl -s localhost:5150/api/observability/depth
+```
+
+---
+
+## Part 13: Dashboard Exploration
+
+**Goal:** Verify the Forge dashboard is functional.
+
+| # | Check | URL | Expected |
+|---|-------|-----|----------|
+| 13.1 | Dashboard loads | `http://localhost:8888` | Visual dashboard |
+| 13.2 | Cluster visible | Dashboard UI | 3 nodes shown |
+| 13.3 | Slices visible | Dashboard UI | Both slices listed |
+| 13.4 | WebSocket status | `curl -s localhost:5150/ws/status` | WebSocket upgrade response |
+
+---
+
+## Part 14: Blueprint Management
+
+**Goal:** Verify blueprint generation, validation, and management.
+
+### 14a. Blueprint generation
+
+```bash
+mvn jbct:generate-blueprint -DskipTests
+cat target/blueprint.toml
+```
+
+### Verify
+
+| # | Check | Expected |
+|---|-------|----------|
+| 14.1 | Blueprint generated | File exists with `[[slices]]` entries |
+| 14.2 | Both slices present | HelloWorld and Analytics in blueprint |
+| 14.3 | Validate via API | `curl -s -X POST localhost:5150/api/blueprint/validate -d @target/blueprint.toml` returns valid |
+| 14.4 | List blueprints | `curl -s localhost:5150/api/blueprints` shows active blueprint |
+| 14.5 | Blueprint status | `curl -s localhost:5150/api/blueprint/{id}/status` shows deployed |
+
+### 14b. CLI blueprint management
+
+```bash
+aether -c localhost:5150 blueprint list
+aether -c localhost:5150 blueprint validate target/blueprint.toml
+```
+
+---
+
+## Part 15: Scaling
+
+**Goal:** Scale slice instances up and down.
+
+### Verify
+
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 15.1 | Current scale | `curl -s localhost:5150/api/slices` | 3 instances each |
+| 15.2 | Scale up | `curl -s -X POST 'localhost:5150/api/scale?slice=HelloWorld&instances=5'` | Success |
+| 15.3 | Verify scale | `curl -s localhost:5150/api/slices` | HelloWorld at 5 instances |
+| 15.4 | Scale down | `curl -s -X POST 'localhost:5150/api/scale?slice=HelloWorld&instances=2'` | Success |
+| 15.5 | Via CLI | `aether -c localhost:5150 scale HelloWorld 3` | Scaled back to 3 |
+
+---
+
+## Part 16: Node Lifecycle
+
+**Goal:** Test drain, activation, and graceful shutdown.
+
+### Verify
+
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 16.1 | Node lifecycle | `curl -s localhost:5150/api/nodes/lifecycle` | All nodes ACTIVE |
+| 16.2 | Drain a node | `curl -s -X POST localhost:5150/api/node/drain/{nodeId}` | Node transitions to DRAINING |
+| 16.3 | API still works | `curl -s http://localhost:8070/api/hello/World` | Still responds (traffic re-routed) |
+| 16.4 | Activate node | `curl -s -X POST localhost:5150/api/node/activate/{nodeId}` | Node back to ACTIVE |
+
+---
+
+## Part 17: Error Handling Patterns
+
+**Goal:** Verify error responses follow the routes.toml error mapping.
+
+### Verify
+
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 17.1 | Valid request | `curl -s -w "\n%{http_code}" http://localhost:8070/api/hello/World` | 200 |
+| 17.2 | Empty name (400) | `curl -s -w "\n%{http_code}" http://localhost:8070/api/hello/%20` | 400 |
+| 17.3 | Error body | `curl -s http://localhost:8070/api/hello/%20` | JSON with error message |
+| 17.4 | Unknown route (404) | `curl -s -w "\n%{http_code}" http://localhost:8070/api/nonexistent` | 404 |
+
+---
+
+## Part 18: Stop and Cleanup
+
+```bash
+# Stop Forge
+# Ctrl+C or kill the background process
+
+# Stop PostgreSQL
+./stop-postgres.sh
+
+# Purge PostgreSQL (remove data volume)
+./stop-postgres.sh --purge
+```
+
+### Verify
+
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 18.1 | Postgres stopped | `podman ps` | No my-slice-postgres container |
+| 18.2 | Volume removed (purge) | `podman volume ls` | No my-slice-pgdata volume |
+
+---
+
+## Summary Checklist
+
+| Part | Area | Tests |
+|------|------|-------|
+| 1 | Install tools | 4 |
+| 2 | Create first slice | 15 |
+| 3 | Run Forge + HTTP | 8 |
+| 4 | Custom slice name | 4 |
+| 5 | Plain JBCT project | 6 |
+| 6 | Add second slice | 6 |
+| 7 | Add database | 5 |
+| 8 | Add pub/sub topic | 4 |
+| 9 | JBCT format/lint | 5 |
+| 10 | CLI exploration | 5 |
+| 11 | Management API | 13 |
+| 12 | Observability | 7+ |
+| 13 | Dashboard | 4 |
+| 14 | Blueprint management | 5+ |
+| 15 | Scaling | 5 |
+| 16 | Node lifecycle | 4 |
+| 17 | Error handling | 4 |
+| 18 | Cleanup | 2 |
+| **Total** | | **~100** |
