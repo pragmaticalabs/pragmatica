@@ -711,7 +711,7 @@ public final class SliceProjectInitializer {
     private static final String FORGE_TOML_TEMPLATE = """
         # Forge local development cluster
         [cluster]
-        nodes = 3
+        nodes = 5
         management_port = 5150
         dashboard_port = 8888
         app_http_port = 8070
