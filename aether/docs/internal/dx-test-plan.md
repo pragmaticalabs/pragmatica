@@ -47,7 +47,7 @@ mvn --version    # should show 3.9.12
 **Goal:** Verify install.sh downloads and configures all tools.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/release-0.19.2/install.sh | sh
 source ~/.bashrc    # or ~/.zshrc
 ```
 
@@ -55,7 +55,7 @@ source ~/.bashrc    # or ~/.zshrc
 
 | # | Check | Command | Expected |
 |---|-------|---------|----------|
-| 1.1 | jbct installed | `jbct --version` | Version printed (0.19.1) |
+| 1.1 | jbct installed | `jbct --version` | Version printed (0.19.2-candidate) |
 | 1.2 | aether installed | `aether --help` | Help text with subcommands |
 | 1.3 | aether-forge installed | `aether-forge --help` | Help text |
 | 1.4 | Binaries in PATH | `which jbct aether aether-forge` | All three found |

@@ -3,7 +3,7 @@
 # Usage: curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh
 set -e
 
-REPO_BASE="https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main"
+REPO_BASE="https://raw.githubusercontent.com/pragmaticalabs/pragmatica/release-0.19.2"
 
 echo "Installing Pragmatica development tools..."
 echo ""

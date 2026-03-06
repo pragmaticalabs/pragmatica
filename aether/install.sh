@@ -30,8 +30,16 @@ detect_platform() {
 }
 
 get_latest_version() {
+    if [ -n "$VERSION" ]; then
+        echo "Using specified version: $VERSION"
+        return
+    fi
     echo "Fetching latest version..."
-    VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | sed -E 's/.*"v?([^"]+)".*/\1/')
+    VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases" \
+        | grep '"tag_name"' \
+        | sed -E 's/.*"v?([^"]+)".*/\1/' \
+        | sort -t. -k1,1rn -k2,2rn -k3,3rn \
+        | head -1)
     if [ -z "$VERSION" ]; then
         echo "Error: Could not determine latest version"
         exit 1
