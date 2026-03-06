@@ -59,8 +59,8 @@
                                     <span class="node-stat" x-text="'CPU ' + String(Math.round(node.cpuUsage * 100)).padStart(3) + '%'"></span>
                                     <span class="node-stat" x-text="'Heap ' + String(node.heapUsedMb).padStart(4) + '/' + node.heapMaxMb + ' MB'"></span>
                                     <span class="node-slice-badges">
-                                        <template x-for="slice in (node.slices || [])" :key="slice">
-                                            <span class="slice-badge" x-text="shortSliceName(slice)"></span>
+                                        <template x-for="slice in (node.slices || [])" :key="slice.artifact">
+                                            <span :class="'slice-badge ' + (slice.state || 'active').toLowerCase()" x-text="shortSliceName(slice.artifact)"></span>
                                         </template>
                                     </span>
                                 </div>
@@ -75,7 +75,7 @@
                         <div class="panel">
                             <h2 class="panel-header">
                                 SLICES STATUS
-                                <span class="panel-count" x-text="$store.deployments.slices.length + ' ACTIVE'"></span>
+                                <span class="panel-count" x-text="$store.deployments.slices.length + ' SLICES'"></span>
                             </h2>
                             <div class="slice-list">
                                 <template x-for="slice in $store.deployments.slices" :key="slice.artifact">

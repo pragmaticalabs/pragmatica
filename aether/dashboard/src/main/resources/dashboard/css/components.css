@@ -240,6 +240,31 @@
     white-space: nowrap;
 }
 
+.slice-badge.active {
+    background: rgba(63, 185, 80, 0.15);
+    color: var(--accent-green);
+}
+
+.slice-badge.loading, .slice-badge.activating, .slice-badge.deactivating, .slice-badge.unloading {
+    background: rgba(210, 153, 34, 0.15);
+    color: var(--accent-orange);
+}
+
+.slice-badge.failed, .slice-badge.permanently_failed {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--accent-red);
+}
+
+.slice-badge.loaded {
+    background: rgba(88, 166, 255, 0.15);
+    color: var(--accent-blue);
+}
+
+.slice-badge.load, .slice-badge.activate, .slice-badge.deactivate, .slice-badge.unload {
+    background: rgba(139, 148, 158, 0.15);
+    color: var(--text-secondary);
+}
+
 /* Badges */
 .node-badge {
     font-size: var(--font-size-xs);
@@ -407,9 +432,24 @@
     color: var(--accent-green);
 }
 
-.status-badge.loading, .status-badge.joining {
+.status-badge.loading, .status-badge.joining, .status-badge.activating, .status-badge.deactivating, .status-badge.unloading {
     background: rgba(210, 153, 34, 0.15);
     color: var(--accent-orange);
+}
+
+.status-badge.failed, .status-badge.permanently_failed {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--accent-red);
+}
+
+.status-badge.loaded {
+    background: rgba(88, 166, 255, 0.15);
+    color: var(--accent-blue);
+}
+
+.status-badge.load, .status-badge.activate, .status-badge.deactivate, .status-badge.unload {
+    background: rgba(139, 148, 158, 0.15);
+    color: var(--text-secondary);
 }
 
 .instance-badges {
@@ -431,9 +471,24 @@
     color: var(--accent-green);
 }
 
-.instance-badge.loading {
+.instance-badge.loading, .instance-badge.activating, .instance-badge.deactivating, .instance-badge.unloading {
     background: rgba(210, 153, 34, 0.1);
     color: var(--accent-orange);
+}
+
+.instance-badge.failed, .instance-badge.permanently_failed {
+    background: rgba(248, 81, 73, 0.1);
+    color: var(--accent-red);
+}
+
+.instance-badge.loaded {
+    background: rgba(88, 166, 255, 0.1);
+    color: var(--accent-blue);
+}
+
+.instance-badge.load, .instance-badge.activate, .instance-badge.deactivate, .instance-badge.unload {
+    background: rgba(139, 148, 158, 0.1);
+    color: var(--text-secondary);
 }
 
 /* Slice Rows (deployments page) */
@@ -475,7 +530,10 @@
 }
 
 .instance-dot.active { color: var(--accent-green); }
-.instance-dot.loading { color: var(--accent-orange); }
+.instance-dot.loading, .instance-dot.activating, .instance-dot.deactivating, .instance-dot.unloading { color: var(--accent-orange); }
+.instance-dot.failed, .instance-dot.permanently_failed { color: var(--accent-red); }
+.instance-dot.loaded { color: var(--accent-blue); }
+.instance-dot.load, .instance-dot.activate, .instance-dot.deactivate, .instance-dot.unload { color: var(--text-secondary); }
 
 /* Tables */
 table {

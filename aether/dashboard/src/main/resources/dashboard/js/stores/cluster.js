@@ -42,7 +42,7 @@ document.addEventListener('alpine:init', function() {
                     var instances = (typeof s === 'string') ? [] : (s.instances || []);
                     instances.forEach(function(inst) {
                         if (!nodeSliceMap[inst.nodeId]) nodeSliceMap[inst.nodeId] = [];
-                        nodeSliceMap[inst.nodeId].push(artifact);
+                        nodeSliceMap[inst.nodeId].push({artifact: artifact, state: inst.state || 'ACTIVE'});
                     });
                 });
                 this.nodes.forEach(function(node) {
@@ -71,7 +71,7 @@ document.addEventListener('alpine:init', function() {
                 data.deployments.forEach(function(d) {
                     (d.instances || []).forEach(function(inst) {
                         if (!nodeSliceMap[inst.nodeId]) nodeSliceMap[inst.nodeId] = [];
-                        nodeSliceMap[inst.nodeId].push(d.artifact);
+                        nodeSliceMap[inst.nodeId].push({artifact: d.artifact, state: inst.state || 'ACTIVE'});
                     });
                 });
                 this.nodes.forEach(function(node) {
