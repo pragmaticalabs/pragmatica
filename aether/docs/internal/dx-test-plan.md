@@ -337,21 +337,7 @@ cd /tmp/my-slice
 
 The script auto-detects podman/docker, starts PostgreSQL, and applies `schema/init.sql` automatically.
 
-### 7b. Add resource-api dependency
-
-Add to `pom.xml` dependencies section:
-
-```xml
-<!-- Database Access (provided by Aether runtime) -->
-<dependency>
-    <groupId>org.pragmatica-lite.aether</groupId>
-    <artifactId>resource-api</artifactId>
-    <version>${aether.version}</version>
-    <scope>provided</scope>
-</dependency>
-```
-
-### 7c. Uncomment database config
+### 7b. Uncomment database config
 
 Edit `aether.toml`:
 
@@ -368,7 +354,7 @@ max_connections = 20
 > **Note:** Use `host.containers.internal` to reach PostgreSQL running on the host machine.
 > If using `--network=host` (Linux), use `localhost` instead.
 
-### 7d. Update HelloWorld slice to use DB
+### 7c. Update HelloWorld slice to use DB
 
 Update `HelloWorld.java` to inject `SqlConnector` and record greetings:
 

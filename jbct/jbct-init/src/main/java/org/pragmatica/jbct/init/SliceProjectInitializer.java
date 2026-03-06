@@ -397,7 +397,13 @@ public final class SliceProjectInitializer {
                     <scope>provided</scope>
                 </dependency>
 
-                <!-- Add other slice API dependencies here (use 'provided' scope for Aether runtime libs) -->
+                <!-- Resource Provisioning API (provided by Aether runtime) -->
+                <dependency>
+                    <groupId>org.pragmatica-lite.aether</groupId>
+                    <artifactId>resource-api</artifactId>
+                    <version>${aether.version}</version>
+                    <scope>provided</scope>
+                </dependency>
 
                 <!-- Testing -->
                 <dependency>
