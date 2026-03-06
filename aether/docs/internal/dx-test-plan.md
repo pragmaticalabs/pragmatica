@@ -316,29 +316,7 @@ mvn clean install
 
 **Goal:** Wire PostgreSQL into a slice using `@Sql SqlConnector`.
 
-### 7a. Start PostgreSQL
-
-On the **host machine** (outside the container, where podman is available):
-
-```bash
-# Using the generated script:
-cd /tmp/my-slice
-./start-postgres.sh
-```
-
-Or manually:
-
-```bash
-podman run -d \
-  --name my-slice-postgres \
-  -v my-slice-pgdata:/var/lib/postgresql/data \
-  -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=forge \
-  -p 5432:5432 \
-  postgres:17
-```
-
-### 7b. Create schema
+### 7a. Update schema and start PostgreSQL
 
 Update `schema/init.sql`:
 
@@ -350,13 +328,16 @@ CREATE TABLE IF NOT EXISTS greetings (
 );
 ```
 
-Run schema:
+On the **host machine** (outside the container, where podman is available):
 
 ```bash
-podman exec -i my-slice-postgres psql -U postgres -d forge < schema/init.sql
+cd /tmp/my-slice
+./start-postgres.sh
 ```
 
-### 7c. Add resource-api dependency
+The script auto-detects podman/docker, starts PostgreSQL, and applies `schema/init.sql` automatically.
+
+### 7b. Add resource-api dependency
 
 Add to `pom.xml` dependencies section:
 
@@ -370,7 +351,7 @@ Add to `pom.xml` dependencies section:
 </dependency>
 ```
 
-### 7d. Uncomment database config
+### 7c. Uncomment database config
 
 Edit `aether.toml`:
 
@@ -387,7 +368,7 @@ max_connections = 20
 > **Note:** Use `host.containers.internal` to reach PostgreSQL running on the host machine.
 > If using `--network=host` (Linux), use `localhost` instead.
 
-### 7e. Update HelloWorld slice to use DB
+### 7d. Update HelloWorld slice to use DB
 
 Update `HelloWorld.java` to inject `SqlConnector` and record greetings:
 

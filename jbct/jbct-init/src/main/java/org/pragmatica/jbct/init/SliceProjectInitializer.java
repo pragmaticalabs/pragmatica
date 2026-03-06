@@ -790,15 +790,20 @@ public final class SliceProjectInitializer {
         fi
 
         # Check if already running
+        # Check if already running
         if $RUNTIME ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
             echo "PostgreSQL is already running (container: $CONTAINER_NAME)"
-            exit 0
-        fi
-
         # Check if stopped container exists
-        if $RUNTIME ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
+        elif $RUNTIME ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
             echo "Starting existing container..."
             $RUNTIME start "$CONTAINER_NAME"
+            echo "Waiting for PostgreSQL..."
+            for i in $(seq 1 30); do
+                if $RUNTIME exec "$CONTAINER_NAME" pg_isready -U postgres >/dev/null 2>&1; then
+                    break
+                fi
+                sleep 1
+            done
         else
             echo "Creating PostgreSQL container..."
             $RUNTIME run -d \\
@@ -809,7 +814,6 @@ public final class SliceProjectInitializer {
                 -p "$PG_PORT:5432" \\
                 postgres:17
 
-            # Wait for PostgreSQL to be ready
             echo "Waiting for PostgreSQL..."
             for i in $(seq 1 30); do
                 if $RUNTIME exec "$CONTAINER_NAME" pg_isready -U postgres >/dev/null 2>&1; then
@@ -817,13 +821,13 @@ public final class SliceProjectInitializer {
                 fi
                 sleep 1
             done
+        fi
 
-            # Run init.sql if present
-            SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-            if [ -f "$SCRIPT_DIR/schema/init.sql" ]; then
-                echo "Running schema/init.sql..."
-                $RUNTIME exec -i "$CONTAINER_NAME" psql -U postgres -d forge < "$SCRIPT_DIR/schema/init.sql"
-            fi
+        # Always apply schema (idempotent — uses CREATE IF NOT EXISTS)
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        if [ -f "$SCRIPT_DIR/schema/init.sql" ]; then
+            echo "Applying schema/init.sql..."
+            $RUNTIME exec -i "$CONTAINER_NAME" psql -U postgres -d forge < "$SCRIPT_DIR/schema/init.sql"
         fi
 
         echo ""
