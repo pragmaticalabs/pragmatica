@@ -196,6 +196,7 @@ public interface ClusterDeploymentManager {
                       Map<String, Integer> retryCounters,
                       Map<BlueprintId, InFlightBlueprint> inFlightBlueprints,
                       Set<BlueprintId> restoringBlueprints,
+                      Set<Artifact> permanentlyFailed,
                       DeploymentAtomicity atomicity) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
             private static final int MAX_RETRIES = 5;
@@ -392,7 +393,9 @@ public interface ClusterDeploymentManager {
 
             private void handleSliceNodeRemoval(SliceNodeKey sliceNodeKey) {
                 sliceStates.remove(sliceNodeKey);
-                // Trigger reconciliation to replace the removed instance
+                if (permanentlyFailed.contains(sliceNodeKey.artifact())) {
+                    return;
+                }
                 SharedScheduler.schedule(this::reconcile, timeSpan(1).seconds());
             }
 
@@ -716,6 +719,7 @@ public interface ClusterDeploymentManager {
                              artifact,
                              requestedInstances,
                              nodes.size());
+                    permanentlyFailed.remove(artifact);
                     blueprints.put(artifact,
                                    Blueprint.blueprint(artifact, requestedInstances, slice.minAvailable()));
                     // Create SliceTargetKey so rolling updates can find the current version
@@ -827,18 +831,22 @@ public interface ClusterDeploymentManager {
             }
 
             private void handleDeterministicFailure(SliceNodeKey sliceKey, String failureReason) {
+                var artifact = sliceKey.artifact();
+                if (permanentlyFailed.contains(artifact)) {
+                    return;
+                }
+                permanentlyFailed.add(artifact);
                 log.error("Deterministic failure for {} on {}: {} — will NOT retry",
-                          sliceKey.artifact(),
+                          artifact,
                           sliceKey.nodeId(),
                           failureReason);
-                router.route(DeploymentFailed.deploymentFailed(sliceKey.artifact(),
+                router.route(DeploymentFailed.deploymentFailed(artifact,
                                                                sliceKey.nodeId(),
                                                                SliceState.FAILED,
                                                                failureReason,
                                                                System.currentTimeMillis()));
-                // In ALL_OR_NOTHING mode, deterministic failure triggers blueprint rollback
                 if (atomicity == DeploymentAtomicity.ALL_OR_NOTHING) {
-                    rollbackBlueprintForArtifact(sliceKey.artifact());
+                    rollbackBlueprintForArtifact(artifact);
                 }
             }
 
@@ -1420,6 +1428,9 @@ public interface ClusterDeploymentManager {
                 var reconciled = 0;
                 for (var blueprint : blueprints.values()) {
                     var artifact = blueprint.artifact();
+                    if (permanentlyFailed.contains(artifact)) {
+                        continue;
+                    }
                     var desiredInstances = blueprint.instances();
                     var currentInstances = getCurrentInstances(artifact);
                     if (currentInstances.size() != desiredInstances) {
@@ -1606,6 +1617,7 @@ public interface ClusterDeploymentManager {
                                                                         ConcurrentHashMap.newKeySet(),
                                                                         new ConcurrentHashMap<>(),
                                                                         new ConcurrentHashMap<>(),
+                                                                        ConcurrentHashMap.newKeySet(),
                                                                         ConcurrentHashMap.newKeySet(),
                                                                         atomicity);
                     // Swap to Active FIRST — ensures topology changes arriving on other threads
