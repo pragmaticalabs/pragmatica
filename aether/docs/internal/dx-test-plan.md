@@ -356,7 +356,13 @@ max_connections = 20
 
 ### 7c. Update HelloWorld slice to use DB
 
-Update `HelloWorld.java` to inject `SqlConnector` and record greetings:
+Update `HelloWorld.java` to inject `SqlConnector` and record greetings.
+
+> **Pattern: Parse, don't validate.** The `greet(String name)` method takes raw input from the HTTP
+> route — all entry points exposed to the external world receive potentially unsafe data. The
+> `ValidGreetRequest.validGreetRequest(name)` call transforms this unsafe input into a validated
+> internal representation (`ValidGreetRequest`) that is safe to use across all business logic.
+> Validation failures are captured as typed errors (`GreetError`), never as exceptions.
 
 ```java
 package com.example.myslice;
