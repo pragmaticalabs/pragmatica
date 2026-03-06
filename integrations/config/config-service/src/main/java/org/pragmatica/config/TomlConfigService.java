@@ -7,6 +7,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Text;
+import org.pragmatica.lang.parse.TimeSpan;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
@@ -15,6 +16,7 @@ import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.stream.IntStream;
 
@@ -214,6 +216,12 @@ public final class TomlConfigService implements ConfigService {
         if (type == double.class || type == Double.class) {
             return lookupDouble(section, key, tomlKey);
         }
+        if (type == TimeSpan.class) {
+            return lookupTimeSpan(section, key, tomlKey);
+        }
+        if (type == Duration.class) {
+            return lookupDuration(section, key, tomlKey);
+        }
         if (type.isEnum()) {
             return lookupEnum(section, key, tomlKey, type);
         }
@@ -259,6 +267,22 @@ public final class TomlConfigService implements ConfigService {
                        .map(Object.class::cast);
     }
 
+    private Result<Object> lookupTimeSpan(String section, String key, String tomlKey) {
+        return document.getString(section, tomlKey)
+                       .toResult(ConfigError.sectionNotFound(section + "." + key))
+                       .flatMap(v -> TimeSpan.timeSpan(v)
+                                             .mapError(_ -> ConfigError.typeMismatch(section + "." + key, "TimeSpan", v)))
+                       .map(Object.class::cast);
+    }
+
+    private Result<Object> lookupDuration(String section, String key, String tomlKey) {
+        return document.getString(section, tomlKey)
+                       .toResult(ConfigError.sectionNotFound(section + "." + key))
+                       .flatMap(v -> TimeSpan.timeSpan(v)
+                                             .mapError(_ -> ConfigError.typeMismatch(section + "." + key, "Duration", v)))
+                       .map(ts -> (Object) ts.duration());
+    }
+
     private Result<Object> lookupEnum(String section, String key, String tomlKey, Class<?> type) {
         return document.getString(section, tomlKey)
                        .toResult(ConfigError.sectionNotFound(section + "." + key))
@@ -300,6 +324,14 @@ public final class TomlConfigService implements ConfigService {
         }
         if (innerClass == Double.class) {
             return success(document.getDouble(section, tomlKey));
+        }
+        if (innerClass == TimeSpan.class) {
+            return success(document.getString(section, tomlKey)
+                                   .flatMap(v -> TimeSpan.timeSpan(v).option()));
+        }
+        if (innerClass == Duration.class) {
+            return success(document.getString(section, tomlKey)
+                                   .flatMap(v -> TimeSpan.timeSpan(v).option().map(TimeSpan::duration)));
         }
         if (innerClass.isEnum()) {
             return handleOptionalEnum(section, tomlKey, key, innerClass);

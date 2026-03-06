@@ -2,8 +2,7 @@ package org.pragmatica.aether.resource.db;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.time.Duration;
+import org.pragmatica.lang.parse.TimeSpan;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -21,11 +20,11 @@ import static org.pragmatica.lang.Result.success;
 /// @param ioThreads            Number of Netty IO threads for async transport (0 = auto)
 public record PoolConfig(int minConnections,
                          int maxConnections,
-                         Duration connectionTimeout,
-                         Duration idleTimeout,
-                         Duration maxLifetime,
+                         TimeSpan connectionTimeout,
+                         TimeSpan idleTimeout,
+                         TimeSpan maxLifetime,
                          Option<String> validationQuery,
-                         Duration leakDetectionTimeout,
+                         TimeSpan leakDetectionTimeout,
                          int ioThreads) {
     private static final int DEFAULT_IO_THREADS = Math.max(Runtime.getRuntime()
                                                                   .availableProcessors(),
@@ -43,11 +42,11 @@ public record PoolConfig(int minConnections,
     /// @return Result with pool configuration
     public static Result<PoolConfig> poolConfig(int minConnections,
                                                 int maxConnections,
-                                                Duration connectionTimeout,
-                                                Duration idleTimeout,
-                                                Duration maxLifetime,
+                                                TimeSpan connectionTimeout,
+                                                TimeSpan idleTimeout,
+                                                TimeSpan maxLifetime,
                                                 Option<String> validationQuery,
-                                                Duration leakDetectionTimeout,
+                                                TimeSpan leakDetectionTimeout,
                                                 int ioThreads) {
         return success(new PoolConfig(minConnections,
                                       maxConnections,
@@ -69,11 +68,15 @@ public record PoolConfig(int minConnections,
     /// Default pool configuration suitable for most applications.
     public static final PoolConfig DEFAULT = poolConfig(4,
                                                         20,
-                                                        Duration.ofSeconds(30),
-                                                        Duration.ofMinutes(10),
-                                                        Duration.ofMinutes(30),
+                                                        TimeSpan.timeSpan("30s")
+                                                                .unwrap(),
+                                                        TimeSpan.timeSpan("10m")
+                                                                .unwrap(),
+                                                        TimeSpan.timeSpan("30m")
+                                                                .unwrap(),
                                                         none(),
-                                                        Duration.ZERO,
+                                                        TimeSpan.timeSpan("0s")
+                                                                .unwrap(),
                                                         0).unwrap();
 
     /// Creates a builder for fluent configuration.
@@ -87,11 +90,11 @@ public record PoolConfig(int minConnections,
     public static final class Builder {
         private int minConnections = DEFAULT.minConnections;
         private int maxConnections = DEFAULT.maxConnections;
-        private Duration connectionTimeout = DEFAULT.connectionTimeout;
-        private Duration idleTimeout = DEFAULT.idleTimeout;
-        private Duration maxLifetime = DEFAULT.maxLifetime;
+        private TimeSpan connectionTimeout = DEFAULT.connectionTimeout;
+        private TimeSpan idleTimeout = DEFAULT.idleTimeout;
+        private TimeSpan maxLifetime = DEFAULT.maxLifetime;
         private Option<String> validationQuery = DEFAULT.validationQuery;
-        private Duration leakDetectionTimeout = DEFAULT.leakDetectionTimeout;
+        private TimeSpan leakDetectionTimeout = DEFAULT.leakDetectionTimeout;
         private int ioThreads = DEFAULT.ioThreads;
 
         private Builder() {}
@@ -106,17 +109,17 @@ public record PoolConfig(int minConnections,
             return this;
         }
 
-        public Builder withConnectionTimeout(Duration value) {
+        public Builder withConnectionTimeout(TimeSpan value) {
             this.connectionTimeout = value;
             return this;
         }
 
-        public Builder withIdleTimeout(Duration value) {
+        public Builder withIdleTimeout(TimeSpan value) {
             this.idleTimeout = value;
             return this;
         }
 
-        public Builder withMaxLifetime(Duration value) {
+        public Builder withMaxLifetime(TimeSpan value) {
             this.maxLifetime = value;
             return this;
         }
@@ -126,7 +129,7 @@ public record PoolConfig(int minConnections,
             return this;
         }
 
-        public Builder withLeakDetectionTimeout(Duration value) {
+        public Builder withLeakDetectionTimeout(TimeSpan value) {
             this.leakDetectionTimeout = value;
             return this;
         }

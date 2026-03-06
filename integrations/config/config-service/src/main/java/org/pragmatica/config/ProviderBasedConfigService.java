@@ -4,9 +4,9 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
-import org.pragmatica.lang.parse.DateTime;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.parse.Text;
+import org.pragmatica.lang.parse.TimeSpan;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -19,7 +19,6 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
 import static org.pragmatica.lang.Option.none;
@@ -33,8 +32,6 @@ import static org.pragmatica.lang.Result.success;
 /// (typed section binding). This enables AetherNode to create a ConfigService from
 /// a ConfigurationProvider for resource provisioning.
 public final class ProviderBasedConfigService implements ConfigService {
-    private static final Pattern DURATION_PATTERN = Pattern.compile("^(\\d+)\\s*(ms|s|m|h|d)$");
-
     private final ConfigurationProvider provider;
 
     private ProviderBasedConfigService(ConfigurationProvider provider) {
@@ -239,6 +236,9 @@ public final class ProviderBasedConfigService implements ConfigService {
         if (type == double.class || type == Double.class) {
             return some(ProviderBasedConfigService::parseDoubleAsObject);
         }
+        if (type == TimeSpan.class) {
+            return some(ProviderBasedConfigService::parseTimeSpanAsObject);
+        }
         if (type == Duration.class) {
             return some(ProviderBasedConfigService::parseDurationAsObject);
         }
@@ -261,8 +261,12 @@ public final class ProviderBasedConfigService implements ConfigService {
         return safeParseDouble(v).map(Object.class::cast);
     }
 
+    private static Option<Object> parseTimeSpanAsObject(String v) {
+        return TimeSpan.timeSpan(v).option().map(Object.class::cast);
+    }
+
     private static Option<Object> parseDurationAsObject(String v) {
-        return parseDuration(v).map(Object.class::cast);
+        return TimeSpan.timeSpan(v).option().map(ts -> (Object) ts.duration());
     }
 
     // --- Type-specific resolvers ---
@@ -335,41 +339,6 @@ public final class ProviderBasedConfigService implements ConfigService {
     private static Option<Double> safeParseDouble(String value) {
         return Number.parseDouble(value)
                      .option();
-    }
-
-    static Option<Duration> parseDuration(String value) {
-        if (Verify.Is.blank(value)) {
-            return none();
-        }
-        var trimmed = value.trim();
-        return parseHumanDuration(trimmed).orElse(() -> safeParseIsoDuration(trimmed));
-    }
-
-    private static Option<Duration> parseHumanDuration(String trimmed) {
-        var matcher = DURATION_PATTERN.matcher(trimmed);
-        if (!matcher.matches()) {
-            return none();
-        }
-        return Number.parseLong(matcher.group(1))
-                     .option()
-                     .map(amount -> durationForUnit(amount,
-                                                    matcher.group(2)));
-    }
-
-    private static Duration durationForUnit(long amount, String unit) {
-        return switch (unit) {
-            case "ms" -> Duration.ofMillis(amount);
-            case "s" -> Duration.ofSeconds(amount);
-            case "m" -> Duration.ofMinutes(amount);
-            case "h" -> Duration.ofHours(amount);
-            case "d" -> Duration.ofDays(amount);
-            default -> Duration.ZERO;
-        };
-    }
-
-    private static Option<Duration> safeParseIsoDuration(String trimmed) {
-        return DateTime.parseDuration(trimmed)
-                       .option();
     }
 
     // --- Map value collection ---

@@ -125,6 +125,9 @@ public sealed interface TimeSpan {
         if (compacted.isEmpty()) {
             return TimeSpanError.EMPTY_INPUT.result();
         }
+        if (compacted.matches("\\d+")) {
+            return parsePlainSeconds(compacted);
+        }
         var matcher = COMPONENT_PATTERN.matcher(compacted);
         var duration = Duration.ZERO;
         var lastEnd = 0;
@@ -155,6 +158,15 @@ public sealed interface TimeSpan {
             return TimeSpanError.NO_VALID_COMPONENTS.result();
         }
         return success(new TimeSpanValue(duration));
+    }
+
+    private static Result<TimeSpan> parsePlainSeconds(String compacted) {
+        try{
+            var value = Long.parseLong(compacted);
+            return success(new TimeSpanValue(Duration.ofSeconds(value)));
+        } catch (NumberFormatException e) {
+            return new TimeSpanError.InvalidValue(compacted, "s").result();
+        }
     }
 
     private static Duration addDuration(Duration base, long value, String unit) {

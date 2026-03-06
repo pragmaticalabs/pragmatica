@@ -113,6 +113,20 @@ class TimeSpanTest {
         }
 
         @Test
+        void timeSpan_succeeds_forPlainNumberAsSeconds() {
+            TimeSpan.timeSpan("100")
+                    .onFailureRun(Assertions::fail)
+                    .onSuccess(ts -> assertEquals(100_000, ts.toMillis()));
+        }
+
+        @Test
+        void timeSpan_succeeds_forPlainZeroAsSeconds() {
+            TimeSpan.timeSpan("0")
+                    .onFailureRun(Assertions::fail)
+                    .onSuccess(ts -> assertEquals(0, ts.toMillis()));
+        }
+
+        @Test
         void timeSpan_succeeds_forZeroValues() {
             TimeSpan.timeSpan("0s")
                     .onFailureRun(Assertions::fail)
@@ -207,13 +221,6 @@ class TimeSpanTest {
         @Test
         void timeSpan_fails_forInvalidUnit() {
             TimeSpan.timeSpan("100x")
-                    .onSuccessRun(Assertions::fail)
-                    .onFailure(cause -> assertInstanceOf(TimeSpanError.InvalidComponent.class, cause));
-        }
-
-        @Test
-        void timeSpan_fails_forNoUnit() {
-            TimeSpan.timeSpan("100")
                     .onSuccessRun(Assertions::fail)
                     .onFailure(cause -> assertInstanceOf(TimeSpanError.InvalidComponent.class, cause));
         }

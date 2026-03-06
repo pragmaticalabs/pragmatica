@@ -11,7 +11,6 @@ import java.time.Duration;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.config.ProviderBasedConfigService.parseDuration;
 import static org.pragmatica.config.ProviderBasedConfigService.providerBasedConfigService;
 import static org.pragmatica.config.ProviderBasedConfigService.toSnakeCase;
 
@@ -57,84 +56,6 @@ class ProviderBasedConfigServiceTest {
     }
 
     // --- Tests ---
-
-    @Nested
-    class ParseDuration {
-
-        @Test
-        void parseDuration_seconds_returnsDuration() {
-            var result = parseDuration("30s");
-
-            assertThat(result.isPresent()).isTrue();
-            assertThat(result.unwrap()).isEqualTo(Duration.ofSeconds(30));
-        }
-
-        @Test
-        void parseDuration_minutes_returnsDuration() {
-            var result = parseDuration("10m");
-
-            assertThat(result.isPresent()).isTrue();
-            assertThat(result.unwrap()).isEqualTo(Duration.ofMinutes(10));
-        }
-
-        @Test
-        void parseDuration_hours_returnsDuration() {
-            var result = parseDuration("1h");
-
-            assertThat(result.isPresent()).isTrue();
-            assertThat(result.unwrap()).isEqualTo(Duration.ofHours(1));
-        }
-
-        @Test
-        void parseDuration_millis_returnsDuration() {
-            var result = parseDuration("500ms");
-
-            assertThat(result.isPresent()).isTrue();
-            assertThat(result.unwrap()).isEqualTo(Duration.ofMillis(500));
-        }
-
-        @Test
-        void parseDuration_days_returnsDuration() {
-            var result = parseDuration("1d");
-
-            assertThat(result.isPresent()).isTrue();
-            assertThat(result.unwrap()).isEqualTo(Duration.ofDays(1));
-        }
-
-        @Test
-        void parseDuration_iso8601_returnsDuration() {
-            var result = parseDuration("PT30S");
-
-            assertThat(result.isPresent()).isTrue();
-            assertThat(result.unwrap()).isEqualTo(Duration.ofSeconds(30));
-        }
-
-        @Test
-        void parseDuration_emptyString_returnsNone() {
-            assertThat(parseDuration("").isEmpty()).isTrue();
-        }
-
-        @Test
-        void parseDuration_whitespaceOnly_returnsNone() {
-            assertThat(parseDuration("   ").isEmpty()).isTrue();
-        }
-
-        @Test
-        void parseDuration_invalidText_returnsNone() {
-            assertThat(parseDuration("abc").isEmpty()).isTrue();
-        }
-
-        @Test
-        void parseDuration_invalidUnit_returnsNone() {
-            assertThat(parseDuration("10x").isEmpty()).isTrue();
-        }
-
-        @Test
-        void parseDuration_null_throwsNpe() {
-            // parseDuration is only called via flatMap which guarantees non-null
-            org.junit.jupiter.api.Assertions.assertThrows(NullPointerException.class, () -> parseDuration(null));
-        }
-    }
 
     @Nested
     class ToSnakeCase {

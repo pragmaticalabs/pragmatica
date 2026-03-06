@@ -57,9 +57,11 @@ public final class R2dbcSqlConnectorFactory implements ResourceFactory<SqlConnec
                                                     .initialSize(config.poolConfig()
                                                                        .minConnections())
                                                     .maxIdleTime(config.poolConfig()
-                                                                       .idleTimeout())
+                                                                       .idleTimeout()
+                                                                       .duration())
                                                     .maxLifeTime(config.poolConfig()
-                                                                       .maxLifetime())
+                                                                       .maxLifetime()
+                                                                       .duration())
                                                     .build();
         var pool = new ConnectionPool(poolConfig);
         return R2dbcSqlConnector.r2dbcSqlConnector(config, pool);

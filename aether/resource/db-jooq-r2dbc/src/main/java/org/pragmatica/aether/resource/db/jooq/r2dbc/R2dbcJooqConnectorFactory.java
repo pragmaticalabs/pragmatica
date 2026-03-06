@@ -56,9 +56,11 @@ public final class R2dbcJooqConnectorFactory implements ResourceFactory<JooqConn
                                                     .initialSize(config.poolConfig()
                                                                        .minConnections())
                                                     .maxIdleTime(config.poolConfig()
-                                                                       .idleTimeout())
+                                                                       .idleTimeout()
+                                                                       .duration())
                                                     .maxLifeTime(config.poolConfig()
-                                                                       .maxLifetime())
+                                                                       .maxLifetime()
+                                                                       .duration())
                                                     .build();
         var pool = new ConnectionPool(poolConfig);
         return R2dbcJooqConnector.r2dbcJooqConnector(config, pool);
