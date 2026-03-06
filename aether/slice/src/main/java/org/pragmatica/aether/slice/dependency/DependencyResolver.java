@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceLoadingContext;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceManifest;
 import org.pragmatica.aether.slice.SliceManifest.SliceManifestInfo;
 import org.pragmatica.aether.slice.repository.Location;
@@ -762,14 +763,15 @@ public interface DependencyResolver {
     }
 
     private static Promise<Class<?>> loadClass(String className, ClassLoader classLoader) {
-        return Promise.lift(Causes::fromThrowable, () -> classLoader.loadClass(className));
+        return Promise.lift(t -> new SliceLoadingFailure.Fatal.ClassLoadFailed(className, Causes.fromThrowable(t)),
+                            () -> classLoader.loadClass(className));
     }
 
     private static Cause circularDependencyDetected(String artifactKey) {
-        return cause("Circular dependency detected during resolution: " + artifactKey);
+        return new SliceLoadingFailure.Fatal.CircularDependency(artifactKey);
     }
 
     private static Cause artifactMismatch(Artifact requested, Artifact declared) {
-        return cause("Artifact mismatch: requested " + requested.asString() + " but JAR manifest declares " + declared.asString());
+        return new SliceLoadingFailure.Fatal.ArtifactMismatch(requested.asString(), declared.asString());
     }
 }

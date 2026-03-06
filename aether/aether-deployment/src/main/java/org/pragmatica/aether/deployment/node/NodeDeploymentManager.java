@@ -800,8 +800,7 @@ public interface NodeDeploymentManager {
             }
 
             private Promise<Unit> transitionToFailed(SliceNodeKey sliceKey, Cause cause) {
-                return updateSliceState(sliceKey,
-                                        SliceNodeValue.failedSliceNodeValue(cause.message()));
+                return updateSliceState(sliceKey, SliceNodeValue.failedSliceNodeValue(cause));
             }
 
             private void removeFromDeployments(SliceNodeKey sliceKey) {

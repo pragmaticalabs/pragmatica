@@ -2,6 +2,7 @@ package org.pragmatica.aether.resource;
 
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.aether.slice.ProvisioningContext;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -163,8 +164,7 @@ public final class SpiResourceProvider implements ResourceProvider {
                      .map(factoryList -> loadConfigAndInvoke((List<ResourceFactory<T, ?>>)(List<?>) factoryList,
                                                              resourceType,
                                                              configSection))
-                     .or(() -> ResourceProvisioningError.factoryNotFound(resourceType)
-                                                        .promise());
+                     .or(() -> new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise());
     }
 
     @SuppressWarnings("unchecked")
@@ -177,8 +177,7 @@ public final class SpiResourceProvider implements ResourceProvider {
                                                                         resourceType,
                                                                         configSection,
                                                                         enrichedContext))
-                     .or(() -> ResourceProvisioningError.factoryNotFound(resourceType)
-                                                        .promise());
+                     .or(() -> new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise());
     }
 
     private ProvisioningContext enrichWithRuntimeExtensions(ProvisioningContext context) {
@@ -219,13 +218,12 @@ public final class SpiResourceProvider implements ResourceProvider {
             var typed = (ResourceFactory<T, C>) factory;
             if (typed.supports(config)) {
                 return typed.provision(config)
-                            .mapError(cause -> ResourceProvisioningError.creationFailed(resourceType,
-                                                                                        configSection,
-                                                                                        cause));
+                            .mapError(cause -> new SliceLoadingFailure.Fatal.ResourceCreationFailed(resourceType.getSimpleName(),
+                                                                                                    configSection,
+                                                                                                    cause));
             }
         }
-        return ResourceProvisioningError.factoryNotFound(resourceType)
-                                        .promise();
+        return new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise();
     }
 
     @SuppressWarnings("unchecked")
@@ -238,19 +236,18 @@ public final class SpiResourceProvider implements ResourceProvider {
             var typed = (ResourceFactory<T, C>) factory;
             if (typed.supports(config)) {
                 return typed.provision(config, context)
-                            .mapError(cause -> ResourceProvisioningError.creationFailed(resourceType,
-                                                                                        configSection,
-                                                                                        cause));
+                            .mapError(cause -> new SliceLoadingFailure.Fatal.ResourceCreationFailed(resourceType.getSimpleName(),
+                                                                                                    configSection,
+                                                                                                    cause));
             }
         }
-        return ResourceProvisioningError.factoryNotFound(resourceType)
-                                        .promise();
+        return new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise();
     }
 
     @SuppressWarnings("unchecked")
     private <C> Promise<C> loadConfig(String section, Class<C> configType) {
         return configLoader.apply(section, configType)
-                           .mapError(cause -> ResourceProvisioningError.configLoadFailed(section, cause))
+                           .mapError(cause -> new SliceLoadingFailure.Fatal.ConfigurationFailed(section, cause))
                            .map(obj -> (C) obj)
                            .async();
     }

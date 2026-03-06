@@ -361,6 +361,6 @@ public interface SliceStore {
 
         private static final Fn1<Cause, String> INVALID_STATE_TRANSITION = Causes.forOneValue("Invalid state transition: %s");
 
-        private static final Fn1<Cause, String> ARTIFACT_NOT_FOUND = Causes.forOneValue("Artifact not found in any repository: %s");
+        private static final Fn1<Cause, String> ARTIFACT_NOT_FOUND = SliceLoadingFailure.Intermittent.ArtifactNotFound::new;
     }
 }

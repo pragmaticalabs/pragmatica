@@ -2,10 +2,12 @@ package org.pragmatica.aether.slice.kvstore;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
 
@@ -81,14 +83,17 @@ public sealed interface AetherValue {
     ///
     /// @param state the current deployment state
     /// @param failureReason when state is FAILED, carries the cause message; otherwise none
-    record SliceNodeValue(SliceState state, Option<String> failureReason) implements AetherValue {
+    record SliceNodeValue(SliceState state, Option<String> failureReason, boolean fatal) implements AetherValue {
         public static SliceNodeValue sliceNodeValue(SliceState state) {
-            return new SliceNodeValue(state, none());
+            return new SliceNodeValue(state, none(), false);
         }
 
-        /// Creates a FAILED state value with the failure reason.
-        public static SliceNodeValue failedSliceNodeValue(String reason) {
-            return new SliceNodeValue(SliceState.FAILED, Option.option(reason));
+        /// Creates a FAILED state value by classifying the cause.
+        public static SliceNodeValue failedSliceNodeValue(Cause cause) {
+            var classified = SliceLoadingFailure.classify(cause);
+            return new SliceNodeValue(SliceState.FAILED,
+                                      Option.option(classified.message()),
+                                      classified.isFatal());
         }
     }
 

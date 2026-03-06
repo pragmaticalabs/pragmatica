@@ -819,7 +819,7 @@ public interface ClusterDeploymentManager {
                                                   .or("Unknown failure");
                 sliceStates.remove(sliceKey);
                 issueUnloadCommand(sliceKey);
-                if (DeploymentFailureClassifier.isDeterministic(failureReason)) {
+                if (sliceNodeValue.fatal()) {
                     handleDeterministicFailure(sliceKey, failureReason);
                 } else {
                     handleTransientFailure(sliceKey, failureReason);

@@ -3,6 +3,7 @@ package org.pragmatica.aether.slice.dependency;
 import org.pragmatica.aether.slice.Aspect;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceCreationContext;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -50,8 +51,8 @@ public interface SliceFactory {
             factoryMethodResult = findFactoryMethod(sliceClass);
         } catch (Throwable t) {
             log.error("Exception in findFactoryMethod for {}: {}", sliceClass.getName(), t.getMessage(), t);
-            return Causes.fromThrowable(t)
-                         .promise();
+            return new SliceLoadingFailure.Fatal.ClassLoadFailed(sliceClass.getName(), Causes.fromThrowable(t))
+            .promise();
         }
         var verifiedResult = factoryMethodResult.onFailure(cause -> log.error("Failed to find factory method for {}: {}",
                                                                               sliceClass.getName(),
@@ -91,8 +92,8 @@ public interface SliceFactory {
             log.trace("getDeclaredMethods returned {} methods for {}", methods.length, sliceClass.getName());
         } catch (Throwable t) {
             log.error("findFactoryMethod: getDeclaredMethods FAILED for {}: {}", sliceClass.getName(), t.getMessage(), t);
-            return Causes.fromThrowable(t)
-                         .result();
+            return new SliceLoadingFailure.Fatal.ClassLoadFailed(sliceClass.getName(), Causes.fromThrowable(t))
+            .result();
         }
         return Arrays.stream(methods)
                      .filter(m -> Modifier.isStatic(m.getModifiers()))
@@ -162,6 +163,7 @@ public interface SliceFactory {
                                           method.getName());
                                 return (Promise<Slice>) method.invoke(null, args);
                             })
+                      .mapError(SliceLoadingFailure::classify)
                       .flatMap(promise -> {
                                    log.info("Factory method {} returned promise, waiting for completion",
                                             method.getName());
@@ -183,23 +185,27 @@ public interface SliceFactory {
     }
 
     private static Cause factoryMethodNotFound(String className, String methodName) {
-        return cause("Factory method not found: " + className + "." + methodName + "() returning Promise<Slice>");
+        return new SliceLoadingFailure.Fatal.FactoryMethodNotFound(className, methodName);
     }
 
     private static Cause parameterCountMismatch(String methodName, int expected, int actual) {
-        return cause("Parameter count mismatch in " + methodName + ": expected " + expected
-                     + " (Aspect, SliceCreationContext), got " + actual);
+        return new SliceLoadingFailure.Fatal.ParameterMismatch(methodName,
+                                                               "expected " + expected
+                                                               + " (Aspect, SliceCreationContext), got " + actual);
     }
 
     private static Cause firstParameterMustBeAspect(String methodName, String actual) {
-        return cause("First parameter of " + methodName + " must be Aspect, got " + actual);
+        return new SliceLoadingFailure.Fatal.ParameterMismatch(methodName,
+                                                               "first parameter must be Aspect, got " + actual);
     }
 
     private static Cause secondParameterMustBeCreationContext(String methodName, String actual) {
-        return cause("Second parameter of " + methodName + " must be SliceCreationContext, got " + actual);
+        return new SliceLoadingFailure.Fatal.ParameterMismatch(methodName,
+                                                               "second parameter must be SliceCreationContext, got " + actual);
     }
 
     private static Cause parameterTypeMismatch(int index, String expected, String actual) {
-        return cause("Parameter type mismatch at index " + index + ": expected " + expected + ", got " + actual);
+        return new SliceLoadingFailure.Fatal.ParameterMismatch("parameter[" + index + "]",
+                                                               "expected " + expected + ", got " + actual);
     }
 }

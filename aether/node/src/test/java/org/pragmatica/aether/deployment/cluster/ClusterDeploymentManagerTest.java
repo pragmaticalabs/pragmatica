@@ -3,6 +3,8 @@ package org.pragmatica.aether.deployment.cluster;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
@@ -11,24 +13,26 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
-import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
-import org.pragmatica.consensus.leader.LeaderNotification;
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
+
+import static org.pragmatica.lang.utils.Causes.cause;
 
 import java.util.Arrays;
 import java.util.List;
@@ -445,8 +449,10 @@ class ClusterDeploymentManagerTest {
 
         clusterNode.appliedCommands.clear();
 
-        // Simulate deterministic failure on slice-a (ClassNotFoundException is deterministic)
-        trackSliceStateWithFailure(mgr, sliceA, node2, "ClassNotFoundException: com.example.Missing");
+        // Simulate deterministic failure on slice-a (Fatal = non-retriable)
+        trackSliceStateWithFailure(mgr, sliceA, node2,
+            new SliceLoadingFailure.Fatal.ClassLoadFailed("com.example.Missing",
+                cause("ClassNotFoundException")));
 
         // ALL_OR_NOTHING should unload ALL slices in the blueprint, plus Remove SliceTargetKeys + AppBlueprintKey
         // Expect: UNLOAD commands for sliceA instances + UNLOAD commands for sliceB instances
@@ -492,7 +498,9 @@ class ClusterDeploymentManagerTest {
         clusterNode.appliedCommands.clear();
 
         // Simulate deterministic failure on slice-a in BEST_EFFORT mode
-        trackSliceStateWithFailure(manager, sliceA, node2, "ClassNotFoundException: com.example.Missing");
+        trackSliceStateWithFailure(manager, sliceA, node2,
+            new SliceLoadingFailure.Fatal.ClassLoadFailed("com.example.Missing",
+                cause("ClassNotFoundException")));
 
         // In BEST_EFFORT, only the failed slice gets UNLOAD — no sibling rollback
         var unloadArtifacts = clusterNode.appliedCommands.stream()
@@ -530,8 +538,10 @@ class ClusterDeploymentManagerTest {
 
         clusterNode.appliedCommands.clear();
 
-        // Simulate transient failure (not matching any deterministic pattern)
-        trackSliceStateWithFailure(mgr, sliceA, node2, "Connection timed out");
+        // Simulate transient failure (Intermittent = retriable)
+        trackSliceStateWithFailure(mgr, sliceA, node2,
+            new SliceLoadingFailure.Intermittent.ResourceUnavailable("database",
+                cause("Connection timed out")));
 
         // Transient failure should NOT trigger blueprint rollback
         // Only the failed slice gets UNLOAD (from handleSliceFailure), no sibling rollback
@@ -574,7 +584,9 @@ class ClusterDeploymentManagerTest {
 
         // Now simulate a deterministic failure on a different artifact not in the blueprint
         var unrelatedArtifact = Artifact.artifact("org.example:unrelated:1.0.0").unwrap();
-        trackSliceStateWithFailure(mgr, unrelatedArtifact, node2, "ClassNotFoundException: com.example.Other");
+        trackSliceStateWithFailure(mgr, unrelatedArtifact, node2,
+            new SliceLoadingFailure.Fatal.ClassLoadFailed("com.example.Other",
+                cause("ClassNotFoundException")));
 
         // Since tracking was cleared when all slices became ACTIVE,
         // the unrelated failure should NOT trigger any blueprint rollback for slice-a/slice-b
@@ -650,7 +662,7 @@ class ClusterDeploymentManagerTest {
         mgr.onSliceNodePut(notification);
     }
 
-    private void trackSliceStateWithFailure(ClusterDeploymentManager mgr, Artifact artifact, NodeId nodeId, String failureReason) {
+    private void trackSliceStateWithFailure(ClusterDeploymentManager mgr, Artifact artifact, NodeId nodeId, Cause failureReason) {
         var key = new SliceNodeKey(artifact, nodeId);
         var value = SliceNodeValue.failedSliceNodeValue(failureReason);
         var command = new KVCommand.Put<>(key, value);

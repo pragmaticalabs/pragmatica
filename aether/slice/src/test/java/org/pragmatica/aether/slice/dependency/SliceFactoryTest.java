@@ -136,7 +136,8 @@ class SliceFactoryTest {
                     .await()
                     .onSuccessRun(Assertions::fail)
                     .onFailure(cause -> {
-                        assertThat(cause.message()).contains("Parameter count mismatch");
+                        assertThat(cause.message()).contains("Parameter mismatch");
+                        assertThat(cause.message()).contains("expected 2");
                     });
     }
 
@@ -153,8 +154,7 @@ class SliceFactoryTest {
                     .await()
                     .onSuccessRun(Assertions::fail)
                     .onFailure(cause -> {
-                        assertThat(cause.message()).contains("First parameter");
-                        assertThat(cause.message()).contains("must be Aspect");
+                        assertThat(cause.message()).contains("first parameter must be Aspect");
                     });
     }
 }

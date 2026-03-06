@@ -2,6 +2,7 @@ package org.pragmatica.aether.resource;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -75,7 +76,7 @@ class SpiResourceProviderTest {
 
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause ->
-                assertThat(cause).isInstanceOf(ResourceProvisioningError.FactoryNotFound.class)
+                assertThat(cause).isInstanceOf(SliceLoadingFailure.Fatal.ResourceFactoryNotFound.class)
             );
         }
 
