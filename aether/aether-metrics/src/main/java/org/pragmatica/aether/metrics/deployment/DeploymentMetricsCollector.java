@@ -179,7 +179,11 @@ class DeploymentMetricsCollectorImpl implements DeploymentMetricsCollector {
     private void finalizeFailed(DeploymentFailed event, DeploymentMetrics metrics) {
         var failedMetrics = toFailedMetrics(event, metrics);
         addToCompleted(event.artifact(), failedMetrics);
-        log.warn("Deployment failed: {} on {} at state {}", event.artifact(), event.nodeId(), event.failedAt());
+        log.warn("Deployment failed: {} on {} at state {}: {}",
+                 event.artifact(),
+                 event.nodeId(),
+                 event.failedAt(),
+                 event.errorMessage());
     }
 
     private DeploymentMetrics toFailedMetrics(DeploymentFailed event, DeploymentMetrics metrics) {

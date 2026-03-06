@@ -130,7 +130,7 @@ class DeploymentMetricsCollectorTest {
     @Test
     void onDeploymentFailed_atLoadingState_setsFailedLoadingStatus() {
         collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 1000L));
-        collector.onDeploymentFailed(DeploymentFailed.deploymentFailed(artifact, self, SliceState.LOADING, 1200L));
+        collector.onDeploymentFailed(DeploymentFailed.deploymentFailed(artifact, self, SliceState.LOADING, "Test load failure", 1200L));
 
         assertThat(collector.inProgressDeployments()).isEmpty();
 
@@ -142,7 +142,7 @@ class DeploymentMetricsCollectorTest {
     @Test
     void onDeploymentFailed_atActivatingState_setsFailedActivatingStatus() {
         collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 1000L));
-        collector.onDeploymentFailed(DeploymentFailed.deploymentFailed(artifact, self, SliceState.ACTIVATING, 1700L));
+        collector.onDeploymentFailed(DeploymentFailed.deploymentFailed(artifact, self, SliceState.ACTIVATING, "Test activation failure", 1700L));
 
         var completed = collector.metricsFor(artifact);
         assertThat(completed).hasSize(1);
@@ -355,7 +355,7 @@ class DeploymentMetricsCollectorTest {
         collector.onDeploymentCompleted(DeploymentCompleted.deploymentCompleted(artifact, self, 1500L));
 
         collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 2000L));
-        collector.onDeploymentFailed(DeploymentFailed.deploymentFailed(artifact, self, SliceState.LOADING, 2200L));
+        collector.onDeploymentFailed(DeploymentFailed.deploymentFailed(artifact, self, SliceState.LOADING, "Test load failure", 2200L));
 
         var metrics = collector.metricsFor(artifact);
 

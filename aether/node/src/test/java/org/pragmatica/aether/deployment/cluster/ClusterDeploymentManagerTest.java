@@ -456,7 +456,7 @@ class ClusterDeploymentManagerTest {
 
     private void trackSliceState(Artifact artifact, NodeId nodeId, SliceState state) {
         var key = new SliceNodeKey(artifact, nodeId);
-        var value = new SliceNodeValue(state);
+        var value = SliceNodeValue.sliceNodeValue(state);
         var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
         manager.onSliceNodePut(notification);
@@ -476,7 +476,7 @@ class ClusterDeploymentManagerTest {
             assertThat(putCmd.key()).isInstanceOf(SliceNodeKey.class);
             var sliceKey = (SliceNodeKey) putCmd.key();
             assertThat(sliceKey.artifact()).isEqualTo(artifact);
-            assertThat(putCmd.value()).isEqualTo(new SliceNodeValue(SliceState.LOAD));
+            assertThat(putCmd.value()).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.LOAD));
         }
     }
 
@@ -487,7 +487,7 @@ class ClusterDeploymentManagerTest {
             assertThat(putCmd.key()).isInstanceOf(SliceNodeKey.class);
             var sliceKey = (SliceNodeKey) putCmd.key();
             assertThat(sliceKey.artifact()).isEqualTo(artifact);
-            assertThat(putCmd.value()).isEqualTo(new SliceNodeValue(SliceState.UNLOAD));
+            assertThat(putCmd.value()).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.UNLOAD));
         }
     }
 

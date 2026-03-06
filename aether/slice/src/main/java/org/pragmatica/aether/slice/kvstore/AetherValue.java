@@ -77,10 +77,18 @@ public sealed interface AetherValue {
         }
     }
 
-    /// Deployment Vector (NodeId/Artifact) contains the current state of the loaded slice
-    record SliceNodeValue(SliceState state) implements AetherValue {
+    /// Deployment Vector (NodeId/Artifact) contains the current state of the loaded slice.
+    ///
+    /// @param state the current deployment state
+    /// @param failureReason when state is FAILED, carries the cause message; otherwise none
+    record SliceNodeValue(SliceState state, Option<String> failureReason) implements AetherValue {
         public static SliceNodeValue sliceNodeValue(SliceState state) {
-            return new SliceNodeValue(state);
+            return new SliceNodeValue(state, none());
+        }
+
+        /// Creates a FAILED state value with the failure reason.
+        public static SliceNodeValue failedSliceNodeValue(String reason) {
+            return new SliceNodeValue(SliceState.FAILED, Option.option(reason));
         }
     }
 

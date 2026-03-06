@@ -129,12 +129,11 @@ public interface NodeDeploymentManager {
                 var sliceKey = valuePut.cause()
                                        .key();
                 if (sliceKey.isForNode(self)) {
-                    var state = valuePut.cause()
-                                        .value()
-                                        .state();
-                    log.debug("ValuePut received for key: {}, state: {}", sliceKey, state);
-                    recordDeployment(sliceKey, state);
-                    processStateTransition(sliceKey, state);
+                    var sliceNodeValue = valuePut.cause()
+                                                 .value();
+                    log.debug("ValuePut received for key: {}, state: {}", sliceKey, sliceNodeValue.state());
+                    recordDeployment(sliceKey, sliceNodeValue);
+                    processStateTransition(sliceKey, sliceNodeValue.state());
                 }
             }
 
@@ -158,7 +157,8 @@ public interface NodeDeploymentManager {
                 }
             }
 
-            private void recordDeployment(SliceNodeKey sliceKey, SliceState state) {
+            private void recordDeployment(SliceNodeKey sliceKey, SliceNodeValue sliceNodeValue) {
+                var state = sliceNodeValue.state();
                 var timestamp = System.currentTimeMillis();
                 var previousDeployment = Option.option(deployments.get(sliceKey));
                 var previousState = previousDeployment.map(SliceDeployment::state);
@@ -175,9 +175,12 @@ public interface NodeDeploymentManager {
                 // Emit deployment failed event if transitioning to FAILED
                 // We do this here because we have access to previousState
                 if (state == SliceState.FAILED) {
+                    var errorMessage = sliceNodeValue.failureReason()
+                                                     .or("Unknown failure");
                     previousState.onPresent(prevState -> router.route(DeploymentFailed.deploymentFailed(sliceKey.artifact(),
                                                                                                         self,
                                                                                                         prevState,
+                                                                                                        errorMessage,
                                                                                                         timestamp)));
                 }
             }
@@ -232,7 +235,7 @@ public interface NodeDeploymentManager {
 
             private void handleLoadingFailure(SliceNodeKey sliceKey, Cause cause) {
                 log.error("Failed to load slice {}: {}", sliceKey.artifact(), cause.message());
-                transitionTo(sliceKey, SliceState.FAILED);
+                transitionToFailed(sliceKey, cause);
             }
 
             private void handleLoaded(SliceNodeKey sliceKey) {
@@ -247,9 +250,13 @@ public interface NodeDeploymentManager {
                                .onPresent(_ -> performActivation(sliceKey));
             }
 
+            private static final Fn1<Cause, String> SLICE_NOT_FOUND_FOR_ACTIVATION = Causes.forOneValue("Slice %s state is ACTIVATE but not found in SliceStore");
+
             private void handleSliceNotFoundForActivation(SliceNodeKey sliceKey) {
+                var cause = SLICE_NOT_FOUND_FOR_ACTIVATION.apply(sliceKey.artifact()
+                                                                         .asString());
                 log.error("Slice {} state is ACTIVATE but not found in SliceStore", sliceKey.artifact());
-                transitionTo(sliceKey, SliceState.FAILED);
+                transitionToFailed(sliceKey, cause);
             }
 
             private void performActivation(SliceNodeKey sliceKey) {
@@ -285,7 +292,7 @@ public interface NodeDeploymentManager {
                 unpublishHttpRoutes(sliceKey);
                 unpublishTopicSubscriptions(sliceKey);
                 unpublishScheduledTasks(sliceKey);
-                transitionTo(sliceKey, SliceState.FAILED);
+                transitionToFailed(sliceKey, cause);
             }
 
             private void handleActive(SliceNodeKey sliceKey) {
@@ -421,7 +428,7 @@ public interface NodeDeploymentManager {
 
             private void handleDeactivationFailure(SliceNodeKey sliceKey, Cause cause) {
                 log.error("Deactivation failed for {}: {}", sliceKey.artifact(), cause.message());
-                transitionTo(sliceKey, SliceState.FAILED);
+                transitionToFailed(sliceKey, cause);
             }
 
             private Promise<Unit> unpublishHttpRoutes(SliceNodeKey sliceKey) {
@@ -789,25 +796,29 @@ public interface NodeDeploymentManager {
             }
 
             private Promise<Unit> transitionTo(SliceNodeKey sliceKey, SliceState newState) {
-                return updateSliceState(sliceKey, newState);
+                return updateSliceState(sliceKey, SliceNodeValue.sliceNodeValue(newState));
+            }
+
+            private Promise<Unit> transitionToFailed(SliceNodeKey sliceKey, Cause cause) {
+                return updateSliceState(sliceKey,
+                                        SliceNodeValue.failedSliceNodeValue(cause.message()));
             }
 
             private void removeFromDeployments(SliceNodeKey sliceKey) {
                 deployments.remove(sliceKey);
             }
 
-            private Promise<Unit> updateSliceState(SliceNodeKey sliceKey, SliceState newState) {
+            private Promise<Unit> updateSliceState(SliceNodeKey sliceKey, SliceNodeValue value) {
                 log.debug("updateSliceState: {} -> {}",
                           sliceKey,
-                          newState);
-                var value = new SliceNodeValue(newState);
+                          value.state());
                 KVCommand<AetherKey> command = new KVCommand.Put<>(sliceKey, value);
                 // Submit command to cluster for consensus
                 return cluster.apply(List.of(command))
                               .mapToUnit()
                               .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
                                                         sliceKey.artifact(),
-                                                        newState))
+                                                        value.state()))
                               .onFailure(cause -> logStateUpdateFailure(sliceKey, cause));
             }
 

@@ -177,33 +177,17 @@ public final class ClusterEventAggregator {
         var durationSuffix = durationMs >= 0
                              ? " after " + formatDuration(durationMs)
                              : "";
+        var errorSuffix = event.errorMessage()
+                               .isEmpty()
+                          ? ""
+                          : ": " + event.errorMessage();
         buffer.add(ClusterEvent.clusterEvent(EventType.DEPLOYMENT_FAILED,
                                              Severity.WARNING,
                                              "Deployment of " + event.artifact()
                                                                      .asString() + " failed on " + event.nodeId()
                                                                                                         .id() + " at " + event.failedAt()
-                                                                                                                              .name() + durationSuffix,
-                                             durationMs >= 0
-                                             ? Map.of("artifact",
-                                                      event.artifact()
-                                                           .asString(),
-                                                      "nodeId",
-                                                      event.nodeId()
-                                                           .id(),
-                                                      "failedAt",
-                                                      event.failedAt()
-                                                           .name(),
-                                                      "durationMs",
-                                                      String.valueOf(durationMs))
-                                             : Map.of("artifact",
-                                                      event.artifact()
-                                                           .asString(),
-                                                      "nodeId",
-                                                      event.nodeId()
-                                                           .id(),
-                                                      "failedAt",
-                                                      event.failedAt()
-                                                           .name())));
+                                                                                                                              .name() + durationSuffix + errorSuffix,
+                                             buildFailedMetadata(event, durationMs)));
     }
 
     public void onSliceFailure(SliceFailureEvent.AllInstancesFailed event) {
@@ -275,6 +259,27 @@ public final class ClusterEventAggregator {
                                                     "cause",
                                                     event.cause()
                                                          .message())));
+    }
+
+    private static Map<String, String> buildFailedMetadata(DeploymentEvent.DeploymentFailed event, long durationMs) {
+        var metadata = new java.util.HashMap<String, String>();
+        metadata.put("artifact",
+                     event.artifact()
+                          .asString());
+        metadata.put("nodeId",
+                     event.nodeId()
+                          .id());
+        metadata.put("failedAt",
+                     event.failedAt()
+                          .name());
+        if (!event.errorMessage()
+                  .isEmpty()) {
+            metadata.put("errorMessage", event.errorMessage());
+        }
+        if (durationMs >= 0) {
+            metadata.put("durationMs", String.valueOf(durationMs));
+        }
+        return Map.copyOf(metadata);
     }
 
     private static String formatDuration(long durationMs) {

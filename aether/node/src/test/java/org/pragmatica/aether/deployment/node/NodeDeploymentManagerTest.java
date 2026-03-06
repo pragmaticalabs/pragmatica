@@ -249,11 +249,11 @@ class NodeDeploymentManagerTest {
 
         var loadingCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset);
         assertThat(loadingCommand.key()).isEqualTo(key);
-        assertThat(loadingCommand.value()).isEqualTo(new SliceNodeValue(SliceState.LOADING));
+        assertThat(loadingCommand.value()).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.LOADING));
 
         var loadedCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset + 1);
         assertThat(loadedCommand.key()).isEqualTo(key);
-        assertThat(loadedCommand.value()).isEqualTo(new SliceNodeValue(SliceState.LOADED));
+        assertThat(loadedCommand.value()).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.LOADED));
     }
 
     @Test
@@ -274,13 +274,13 @@ class NodeDeploymentManagerTest {
 
         var activatingCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset);
         assertThat(activatingCommand.key()).isEqualTo(key);
-        assertThat(activatingCommand.value()).isEqualTo(new SliceNodeValue(SliceState.ACTIVATING));
+        assertThat(activatingCommand.value()).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.ACTIVATING));
 
         // Find the ACTIVE state command (may be after endpoint commands)
         var activeCommand = clusterNode.appliedCommands.stream()
             .filter(cmd -> cmd instanceof KVCommand.Put)
             .map(cmd -> (KVCommand.Put<AetherKey, AetherValue>) cmd)
-            .filter(cmd -> cmd.value().equals(new SliceNodeValue(SliceState.ACTIVE)))
+            .filter(cmd -> cmd.value().equals(SliceNodeValue.sliceNodeValue(SliceState.ACTIVE)))
             .findFirst()
             .orElseThrow();
         assertThat(activeCommand.key()).isEqualTo(key);
@@ -298,7 +298,7 @@ class NodeDeploymentManagerTest {
 
         assertThat(clusterNode.appliedCommands).hasSize(sliceCommandOffset + 1);
         var putCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset);
-        assertThat(putCommand.value()).isEqualTo(new SliceNodeValue(SliceState.LOADED));
+        assertThat(putCommand.value()).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.LOADED));
     }
 
     @Test
@@ -317,10 +317,12 @@ class NodeDeploymentManagerTest {
         assertThat(clusterNode.appliedCommands).hasSize(sliceCommandOffset + 2);
 
         var loadingCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset);
-        assertThat(loadingCommand.value()).isEqualTo(new SliceNodeValue(SliceState.LOADING));
+        assertThat(loadingCommand.value()).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.LOADING));
 
         var failedCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset + 1);
-        assertThat(failedCommand.value()).isEqualTo(new SliceNodeValue(SliceState.FAILED));
+        assertThat(failedCommand.value()).isInstanceOf(SliceNodeValue.class);
+        assertThat(((SliceNodeValue) failedCommand.value()).state()).isEqualTo(SliceState.FAILED);
+        assertThat(((SliceNodeValue) failedCommand.value()).failureReason().isPresent()).isTrue();
     }
 
     // === ValueRemove Tests ===
@@ -399,7 +401,7 @@ class NodeDeploymentManagerTest {
     }
 
     private void sendValuePut(SliceNodeKey key, SliceState state) {
-        var value = new SliceNodeValue(state);
+        var value = SliceNodeValue.sliceNodeValue(state);
         var command = new KVCommand.Put<SliceNodeKey, SliceNodeValue>(key, value);
         var notification = new ValuePut<>(command, Option.none());
         manager.onSliceNodePut(notification);

@@ -111,7 +111,7 @@ class ArtifactDeploymentTrackerTest {
 
     private void deployArtifact(Artifact artifact, NodeId nodeId) {
         var sliceNodeKey = new SliceNodeKey(artifact, nodeId);
-        var sliceNodeValue = new SliceNodeValue(SliceState.ACTIVE);
+        var sliceNodeValue = SliceNodeValue.sliceNodeValue(SliceState.ACTIVE);
         var put = new KVCommand.Put<SliceNodeKey, SliceNodeValue>(sliceNodeKey, sliceNodeValue);
         var valuePut = new ValuePut<SliceNodeKey, SliceNodeValue>(put, Option.none());
         tracker.onSliceNodePut(valuePut);

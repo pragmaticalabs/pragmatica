@@ -32,6 +32,7 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
+import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.ComputeProvider;
@@ -168,8 +169,11 @@ public interface ClusterDeploymentManager {
                       AtomicBoolean deactivated,
                       AtomicReference<ScheduledFuture<?>> autoHealFuture,
                       AtomicBoolean cooldownActive,
-                      Set<NodeId> drainingNodes) implements ClusterDeploymentState {
+                      Set<NodeId> drainingNodes,
+                      Map<String, Integer> retryCounters) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
+            private static final int MAX_RETRIES = 5;
+            private static final long MAX_RETRY_DELAY_SECONDS = 30;
 
             /// Mark this Active state as deactivated, preventing stale scheduled callbacks
             /// from executing after the node has transitioned to Dormant.
@@ -315,8 +319,7 @@ public interface ClusterDeploymentManager {
                 trackSliceState(valuePut.cause()
                                         .key(),
                                 valuePut.cause()
-                                        .value()
-                                        .state());
+                                        .value());
             }
 
             @Override
@@ -723,7 +726,8 @@ public interface ClusterDeploymentManager {
                 submitBatch(allCommands);
             }
 
-            private void trackSliceState(SliceNodeKey sliceKey, SliceState state) {
+            private void trackSliceState(SliceNodeKey sliceKey, SliceNodeValue sliceNodeValue) {
+                var state = sliceNodeValue.state();
                 var previousState = sliceStates.put(sliceKey, state);
                 log.trace("Slice {} on {} state: {} -> {}",
                           sliceKey.artifact(),
@@ -736,19 +740,69 @@ public interface ClusterDeploymentManager {
                 }
                 // When slice becomes ACTIVE, check if any dependent slices can now be activated
                 if (state == SliceState.ACTIVE) {
+                    retryCounters.remove(sliceKey.artifact()
+                                                 .asString());
                     activateDependentSlices(sliceKey.artifact());
                 }
-                // When slice enters FAILED state, remove it and trigger replacement
+                // When slice enters FAILED state, classify and handle
                 if (state == SliceState.FAILED) {
-                    log.warn("Slice {} FAILED on {}, removing and scheduling replacement",
-                             sliceKey.artifact(),
-                             sliceKey.nodeId());
-                    sliceStates.remove(sliceKey);
-                    // Issue UNLOAD to clean up the failed slice on the node
-                    issueUnloadCommand(sliceKey);
-                    // Schedule reconciliation to allocate replacement
-                    SharedScheduler.schedule(this::reconcile, timeSpan(1).seconds());
+                    handleSliceFailure(sliceKey, sliceNodeValue);
                 }
+            }
+
+            private void handleSliceFailure(SliceNodeKey sliceKey, SliceNodeValue sliceNodeValue) {
+                var failureReason = sliceNodeValue.failureReason()
+                                                  .or("Unknown failure");
+                sliceStates.remove(sliceKey);
+                issueUnloadCommand(sliceKey);
+                if (DeploymentFailureClassifier.isDeterministic(failureReason)) {
+                    handleDeterministicFailure(sliceKey, failureReason);
+                } else {
+                    handleTransientFailure(sliceKey, failureReason);
+                }
+            }
+
+            private void handleDeterministicFailure(SliceNodeKey sliceKey, String failureReason) {
+                log.error("Deterministic failure for {} on {}: {} — will NOT retry",
+                          sliceKey.artifact(),
+                          sliceKey.nodeId(),
+                          failureReason);
+                router.route(DeploymentFailed.deploymentFailed(sliceKey.artifact(),
+                                                               sliceKey.nodeId(),
+                                                               SliceState.FAILED,
+                                                               failureReason,
+                                                               System.currentTimeMillis()));
+            }
+
+            private void handleTransientFailure(SliceNodeKey sliceKey, String failureReason) {
+                var retryCount = retryCounters.merge(sliceKey.artifact()
+                                                             .asString(),
+                                                     1,
+                                                     Integer::sum);
+                if (retryCount > MAX_RETRIES) {
+                    log.error("Max retries ({}) exceeded for {} on {}: {} — giving up",
+                              MAX_RETRIES,
+                              sliceKey.artifact(),
+                              sliceKey.nodeId(),
+                              failureReason);
+                    retryCounters.remove(sliceKey.artifact()
+                                                 .asString());
+                    router.route(DeploymentFailed.deploymentFailed(sliceKey.artifact(),
+                                                                   sliceKey.nodeId(),
+                                                                   SliceState.FAILED,
+                                                                   failureReason,
+                                                                   System.currentTimeMillis()));
+                    return;
+                }
+                var delaySeconds = Math.min(1L<< (retryCount - 1), MAX_RETRY_DELAY_SECONDS);
+                log.warn("Transient failure for {} on {} (attempt {}/{}): {} — retrying in {}s",
+                         sliceKey.artifact(),
+                         sliceKey.nodeId(),
+                         retryCount,
+                         MAX_RETRIES,
+                         failureReason,
+                         delaySeconds);
+                SharedScheduler.schedule(this::reconcile, timeSpan(delaySeconds).seconds());
             }
 
             /// Try to activate a slice if all its dependencies are ACTIVE.
@@ -806,7 +860,7 @@ public interface ClusterDeploymentManager {
 
             private void issueActivateCommand(SliceNodeKey sliceKey) {
                 log.debug("Issuing ACTIVATE command for {}", sliceKey);
-                var value = new SliceNodeValue(SliceState.ACTIVATE);
+                var value = SliceNodeValue.sliceNodeValue(SliceState.ACTIVATE);
                 var command = new KVCommand.Put<AetherKey, AetherValue>(sliceKey, value);
                 cluster.apply(List.of(command))
                        .onFailure(cause -> log.error("Failed to issue ACTIVATE command for {}: {}",
@@ -819,12 +873,12 @@ public interface ClusterDeploymentManager {
                 sliceStates.put(sliceKey, SliceState.LOAD);
                 var timestamp = System.currentTimeMillis();
                 router.route(DeploymentStarted.deploymentStarted(sliceKey.artifact(), sliceKey.nodeId(), timestamp));
-                return new KVCommand.Put<>(sliceKey, new SliceNodeValue(SliceState.LOAD));
+                return new KVCommand.Put<>(sliceKey, SliceNodeValue.sliceNodeValue(SliceState.LOAD));
             }
 
             private KVCommand<AetherKey> prepareUnloadCommand(SliceNodeKey sliceKey) {
                 log.debug("Preparing UNLOAD command for {}", sliceKey);
-                return new KVCommand.Put<>(sliceKey, new SliceNodeValue(SliceState.UNLOAD));
+                return new KVCommand.Put<>(sliceKey, SliceNodeValue.sliceNodeValue(SliceState.UNLOAD));
             }
 
             private void submitBatch(List<KVCommand<AetherKey>> commands) {
@@ -1055,7 +1109,7 @@ public interface ClusterDeploymentManager {
                         commands.add(new KVCommand.Remove<>(key));
                     } else {
                         // Issue UNLOAD to trigger proper teardown on the node
-                        commands.add(new KVCommand.Put<>(key, new SliceNodeValue(SliceState.UNLOAD)));
+                        commands.add(new KVCommand.Put<>(key, SliceNodeValue.sliceNodeValue(SliceState.UNLOAD)));
                     }
                 }
                 log.info("Cleaning up {} orphaned slice entries (no matching blueprint)", orphanedEntries.size());
@@ -1384,7 +1438,8 @@ public interface ClusterDeploymentManager {
                                                                         new AtomicBoolean(false),
                                                                         new AtomicReference<>(),
                                                                         new AtomicBoolean(false),
-                                                                        ConcurrentHashMap.newKeySet());
+                                                                        ConcurrentHashMap.newKeySet(),
+                                                                        new ConcurrentHashMap<>());
                     // Swap to Active FIRST — ensures topology changes arriving on other threads
                     // are dispatched to Active.onTopologyChange() instead of being lost in Dormant.
                     state.set(activeState);
