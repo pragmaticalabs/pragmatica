@@ -406,6 +406,7 @@ public interface HelloWorld {
 
     static HelloWorld helloWorld(@Sql SqlConnector db) {
         return name -> ValidGreetRequest.validGreetRequest(name)
+                                        .async()
                                         .flatMap(request -> db.update("INSERT INTO greetings (name) VALUES (?)",
                                                                       request.name())
                                                               .map(_ -> new GreetResponse("Hello, " + request.name() + "!")));
