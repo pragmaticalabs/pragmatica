@@ -3,6 +3,7 @@ package org.pragmatica.aether.update;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.RollingUpdateKey;
@@ -164,6 +165,11 @@ public interface RollingUpdateManager {
     @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
     void onLeaderChange(LeaderChange leaderChange);
 
+    /// Handle deployment failure events for auto-rollback during rolling updates.
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
+    void onDeploymentFailed(DeploymentEvent.DeploymentFailed event);
+
     /// Factory method following JBCT naming convention.
     static RollingUpdateManager rollingUpdateManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                      KVStore<AetherKey, AetherValue> kvStore,
@@ -189,6 +195,30 @@ public interface RollingUpdateManager {
                 } else {
                     log.info("Rolling update manager passive (follower)");
                 }
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onDeploymentFailed(DeploymentEvent.DeploymentFailed event) {
+                var artifactBase = event.artifact()
+                                        .base();
+                getActiveUpdate(artifactBase).filter(update -> update.newVersion()
+                                                                     .equals(event.artifact()
+                                                                                  .version()))
+                               .filter(RollingUpdate::isActive)
+                               .onPresent(update -> triggerAutoRollback(update, event));
+            }
+
+            private void triggerAutoRollback(RollingUpdate update, DeploymentEvent.DeploymentFailed event) {
+                log.warn("Auto-rollback triggered for rolling update {} — new version {} failed on node {}: {}",
+                         update.updateId(),
+                         event.artifact(),
+                         event.nodeId(),
+                         event.errorMessage());
+                rollback(update.updateId())
+                .onFailure(cause -> log.error("Auto-rollback failed for update {}: {}",
+                                              update.updateId(),
+                                              cause.message()));
             }
 
             private void restoreState() {

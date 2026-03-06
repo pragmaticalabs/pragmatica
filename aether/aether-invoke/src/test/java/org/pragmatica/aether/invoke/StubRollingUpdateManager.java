@@ -7,6 +7,7 @@ import org.pragmatica.aether.update.HealthThresholds;
 import org.pragmatica.aether.update.RollingUpdate;
 import org.pragmatica.aether.update.RollingUpdateManager;
 import org.pragmatica.aether.update.VersionRouting;
+import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -67,4 +68,7 @@ class StubRollingUpdateManager implements RollingUpdateManager {
 
     @Override
     public void onLeaderChange(LeaderChange leaderChange) {}
+
+    @Override
+    public void onDeploymentFailed(DeploymentEvent.DeploymentFailed event) {}
 }

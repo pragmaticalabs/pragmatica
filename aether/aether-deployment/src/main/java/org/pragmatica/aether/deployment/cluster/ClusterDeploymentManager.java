@@ -4,7 +4,9 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
+import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
@@ -116,6 +118,27 @@ public interface ClusterDeploymentManager {
     @MessageReceiver
     void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
 
+    /// Controls whether multi-slice blueprint deployments are atomic.
+    enum DeploymentAtomicity {
+        /// Default: each slice deploys independently; failures don't affect siblings.
+        BEST_EFFORT,
+        /// All slices in a blueprint must succeed; deterministic failure of any slice
+        /// rolls back the entire blueprint.
+        ALL_OR_NOTHING;
+        /// Parse from TOML config string (case-insensitive, supports kebab-case).
+        public static DeploymentAtomicity parse(String value) {
+            if (value == null || value.isBlank()) {
+                return BEST_EFFORT;
+            }
+            return switch (value.trim()
+                                .toLowerCase()
+                                .replace("-", "_")) {
+                case "all_or_nothing" -> ALL_OR_NOTHING;
+                default -> BEST_EFFORT;
+            };
+        }
+    }
+
     /// State of the cluster deployment manager.
     sealed interface ClusterDeploymentState {
         default void onAppBlueprintPut(ValuePut<AppBlueprintKey, AppBlueprintValue> valuePut) {}
@@ -170,10 +193,29 @@ public interface ClusterDeploymentManager {
                       AtomicReference<ScheduledFuture<?>> autoHealFuture,
                       AtomicBoolean cooldownActive,
                       Set<NodeId> drainingNodes,
-                      Map<String, Integer> retryCounters) implements ClusterDeploymentState {
+                      Map<String, Integer> retryCounters,
+                      Map<BlueprintId, InFlightBlueprint> inFlightBlueprints,
+                      Set<BlueprintId> restoringBlueprints,
+                      DeploymentAtomicity atomicity) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
             private static final int MAX_RETRIES = 5;
             private static final long MAX_RETRY_DELAY_SECONDS = 30;
+
+            /// Tracks an in-flight blueprint deployment for atomicity enforcement.
+            record InFlightBlueprint(BlueprintId id,
+                                     ExpandedBlueprint expanded,
+                                     Set<Artifact> pendingSlices,
+                                     Set<Artifact> activeSlices,
+                                     Option<ExpandedBlueprint> previousBlueprint) {
+                static InFlightBlueprint inFlightBlueprint(BlueprintId id,
+                                                           ExpandedBlueprint expanded,
+                                                           Option<ExpandedBlueprint> previousBlueprint) {
+                    Set<Artifact> pending = ConcurrentHashMap.newKeySet();
+                    expanded.loadOrder()
+                            .forEach(slice -> pending.add(slice.artifact()));
+                    return new InFlightBlueprint(id, expanded, pending, ConcurrentHashMap.newKeySet(), previousBlueprint);
+                }
+            }
 
             /// Mark this Active state as deactivated, preventing stale scheduled callbacks
             /// from executing after the node has transitioned to Dormant.
@@ -660,6 +702,8 @@ public interface ClusterDeploymentManager {
                          expanded.loadOrder()
                                  .size(),
                          nodes.size());
+                // Capture previous expanded blueprint for atomicity rollback (before we overwrite blueprints map)
+                var previousExpanded = capturePreviousBlueprint(expanded);
                 buildDependencyMap(expanded);
                 var allCommands = new ArrayList<KVCommand<AetherKey>>();
                 // Store the ORIGINAL requested instance count — not capped at available nodes.
@@ -682,6 +726,24 @@ public interface ClusterDeploymentManager {
                     allCommands.addAll(collectAllocationCommands(artifact, requestedInstances));
                 }
                 submitBatch(allCommands);
+                // Track in-flight blueprint for atomicity enforcement
+                trackInFlightBlueprint(expanded, previousExpanded);
+            }
+
+            private Option<ExpandedBlueprint> capturePreviousBlueprint(ExpandedBlueprint expanded) {
+                if (atomicity != DeploymentAtomicity.ALL_OR_NOTHING || restoringBlueprints.contains(expanded.id())) {
+                    return Option.empty();
+                }
+                return Option.option(inFlightBlueprints.get(expanded.id()))
+                             .map(InFlightBlueprint::expanded);
+            }
+
+            private void trackInFlightBlueprint(ExpandedBlueprint expanded,
+                                                Option<ExpandedBlueprint> previousExpanded) {
+                if (atomicity == DeploymentAtomicity.ALL_OR_NOTHING && !restoringBlueprints.contains(expanded.id())) {
+                    inFlightBlueprints.put(expanded.id(),
+                                           InFlightBlueprint.inFlightBlueprint(expanded.id(), expanded, previousExpanded));
+                }
             }
 
             /// Build dependency map from ExpandedBlueprint's ResolvedSlice dependencies.
@@ -743,6 +805,8 @@ public interface ClusterDeploymentManager {
                     retryCounters.remove(sliceKey.artifact()
                                                  .asString());
                     activateDependentSlices(sliceKey.artifact());
+                    // Track active slices for in-flight blueprints
+                    trackBlueprintSliceActive(sliceKey.artifact());
                 }
                 // When slice enters FAILED state, classify and handle
                 if (state == SliceState.FAILED) {
@@ -772,6 +836,10 @@ public interface ClusterDeploymentManager {
                                                                SliceState.FAILED,
                                                                failureReason,
                                                                System.currentTimeMillis()));
+                // In ALL_OR_NOTHING mode, deterministic failure triggers blueprint rollback
+                if (atomicity == DeploymentAtomicity.ALL_OR_NOTHING) {
+                    rollbackBlueprintForArtifact(sliceKey.artifact());
+                }
             }
 
             private void handleTransientFailure(SliceNodeKey sliceKey, String failureReason) {
@@ -1369,6 +1437,100 @@ public interface ClusterDeploymentManager {
                 submitBatch(allCommands);
                 cleanupOrphanedSliceEntries();
             }
+
+            /// Track a slice becoming ACTIVE in its parent blueprint.
+            /// When all slices are active, remove from in-flight tracking.
+            private void trackBlueprintSliceActive(Artifact artifact) {
+                for (var entry : inFlightBlueprints.entrySet()) {
+                    var inflight = entry.getValue();
+                    if (inflight.pendingSlices()
+                                .remove(artifact)) {
+                        inflight.activeSlices()
+                                .add(artifact);
+                        if (inflight.pendingSlices()
+                                    .isEmpty()) {
+                            log.info("Blueprint {} fully deployed — all {} slices active",
+                                     entry.getKey()
+                                          .asString(),
+                                     inflight.activeSlices()
+                                             .size());
+                            inFlightBlueprints.remove(entry.getKey());
+                        }
+                    }
+                }
+            }
+
+            /// Roll back the blueprint containing the failed artifact.
+            @SuppressWarnings("JBCT-RET-01")
+            private void rollbackBlueprintForArtifact(Artifact failedArtifact) {
+                for (var entry : inFlightBlueprints.entrySet()) {
+                    var blueprintId = entry.getKey();
+                    var inflight = entry.getValue();
+                    if (!inflight.pendingSlices()
+                                 .contains(failedArtifact) && !inflight.activeSlices()
+                                                                       .contains(failedArtifact)) {
+                        continue;
+                    }
+                    // Skip if artifact is in an active rolling update — rolling update manager handles those
+                    if (activeRoutings.contains(failedArtifact.base())) {
+                        log.info("Skipping blueprint rollback for {} — artifact {} is in active rolling update",
+                                 blueprintId.asString(),
+                                 failedArtifact);
+                        continue;
+                    }
+                    log.warn("ALL_OR_NOTHING: Deterministic failure of {} triggers rollback of blueprint {}",
+                             failedArtifact,
+                             blueprintId.asString());
+                    inFlightBlueprints.remove(blueprintId);
+                    inflight.previousBlueprint()
+                            .apply(() -> unloadBlueprintSlices(inflight),
+                                   previous -> restorePreviousBlueprint(blueprintId, previous));
+                    break;
+                }
+            }
+
+            /// Unload all slices from a failed new blueprint.
+            private void unloadBlueprintSlices(InFlightBlueprint inflight) {
+                var allSlices = new HashSet<>(inflight.pendingSlices());
+                allSlices.addAll(inflight.activeSlices());
+                var allCommands = new ArrayList<KVCommand<AetherKey>>();
+                for (var artifact : allSlices) {
+                    blueprints.remove(artifact);
+                    allCommands.addAll(collectDeallocationCommands(artifact));
+                    allCommands.add(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(artifact.base())));
+                }
+                // Remove the app blueprint from KV-Store
+                var bpKey = new AppBlueprintKey(inflight.id());
+                allCommands.add(new KVCommand.Remove<>(bpKey));
+                log.info("ALL_OR_NOTHING: Unloading {} slices from failed blueprint {}",
+                         allSlices.size(),
+                         inflight.id()
+                                 .asString());
+                submitBatch(allCommands);
+            }
+
+            /// Restore the previous blueprint version by re-submitting it via KV-Store.
+            private void restorePreviousBlueprint(BlueprintId blueprintId, ExpandedBlueprint previous) {
+                restoringBlueprints.add(blueprintId);
+                log.info("ALL_OR_NOTHING: Restoring previous blueprint {} with {} slices",
+                         blueprintId.asString(),
+                         previous.loadOrder()
+                                 .size());
+                var bpKey = new AppBlueprintKey(blueprintId);
+                var bpValue = new AppBlueprintValue(previous);
+                var command = new KVCommand.Put<AetherKey, AetherValue>(bpKey, bpValue);
+                cluster.apply(List.of(command))
+                       .onSuccess(_ -> SharedScheduler.schedule(() -> restoringBlueprints.remove(blueprintId),
+                                                                timeSpan(5).seconds()))
+                       .onFailure(cause -> handleBlueprintRestoreFailure(blueprintId, cause));
+            }
+
+            private void handleBlueprintRestoreFailure(BlueprintId blueprintId, Cause cause) {
+                log.error("ALL_OR_NOTHING: Failed to restore previous blueprint {}: {}",
+                          blueprintId.asString(),
+                          cause.message());
+                restoringBlueprints.remove(blueprintId);
+            }
         }
     }
 
@@ -1396,6 +1558,7 @@ public interface ClusterDeploymentManager {
     /// @param topologyManager Topology manager for cluster size information
     /// @param computeProvider Compute provider for auto-healing (empty to disable)
     /// @param autoHealConfig  Auto-heal retry configuration
+    /// @param atomicity       Blueprint deployment atomicity mode
     static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
                                                              ClusterNode<KVCommand<AetherKey>> cluster,
                                                              KVStore<AetherKey, AetherValue> kvStore,
@@ -1403,7 +1566,8 @@ public interface ClusterDeploymentManager {
                                                              List<NodeId> initialTopology,
                                                              TopologyManager topologyManager,
                                                              Option<ComputeProvider> computeProvider,
-                                                             AutoHealConfig autoHealConfig) {
+                                                             AutoHealConfig autoHealConfig,
+                                                             DeploymentAtomicity atomicity) {
         record clusterDeploymentManager(NodeId self,
                                         ClusterNode<KVCommand<AetherKey>> cluster,
                                         KVStore<AetherKey, AetherValue> kvStore,
@@ -1411,6 +1575,7 @@ public interface ClusterDeploymentManager {
                                         TopologyManager topologyManager,
                                         Option<ComputeProvider> computeProvider,
                                         AutoHealConfig autoHealConfig,
+                                        DeploymentAtomicity atomicity,
                                         AtomicReference<ClusterDeploymentState> state,
                                         AtomicReference<List<NodeId>> topologyRef) implements ClusterDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(clusterDeploymentManager.class);
@@ -1439,7 +1604,10 @@ public interface ClusterDeploymentManager {
                                                                         new AtomicReference<>(),
                                                                         new AtomicBoolean(false),
                                                                         ConcurrentHashMap.newKeySet(),
-                                                                        new ConcurrentHashMap<>());
+                                                                        new ConcurrentHashMap<>(),
+                                                                        new ConcurrentHashMap<>(),
+                                                                        ConcurrentHashMap.newKeySet(),
+                                                                        atomicity);
                     // Swap to Active FIRST — ensures topology changes arriving on other threads
                     // are dispatched to Active.onTopologyChange() instead of being lost in Dormant.
                     state.set(activeState);
@@ -1566,6 +1734,7 @@ public interface ClusterDeploymentManager {
                                             topologyManager,
                                             computeProvider,
                                             autoHealConfig,
+                                            atomicity,
                                             new AtomicReference<>(new ClusterDeploymentState.Dormant()),
                                             new AtomicReference<>(List.copyOf(initialTopology)));
     }

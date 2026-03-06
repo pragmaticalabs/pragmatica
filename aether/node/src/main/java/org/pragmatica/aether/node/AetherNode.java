@@ -587,7 +587,8 @@ public interface AetherNode {
                                                                                          clusterNode.topologyManager(),
                                                                                          config.environment()
                                                                                                .flatMap(EnvironmentIntegration::compute),
-                                                                                         config.autoHeal());
+                                                                                         config.autoHeal(),
+                                                                                         ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT);
         // Create load balancer manager when provider is available
         var loadBalancerManager = config.environment()
                                         .flatMap(EnvironmentIntegration::loadBalancer)
@@ -1107,6 +1108,8 @@ public interface AetherNode {
                                               eventAggregator::onDeploymentCompleted));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
                                               eventAggregator::onDeploymentFailed));
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
+                                              rollingUpdateManager::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               eventAggregator::onSliceFailure));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledUp.class, eventAggregator::onScaledUp));
