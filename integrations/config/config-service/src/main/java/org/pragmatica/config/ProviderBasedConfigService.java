@@ -10,6 +10,7 @@ import org.pragmatica.lang.parse.Text;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
@@ -107,7 +108,7 @@ public final class ProviderBasedConfigService implements ConfigService {
             var components = configClass.getRecordComponents();
             var types = extractComponentTypes(components);
             Constructor<T> constructor = configClass.getDeclaredConstructor(types);
-            return collectComponentArgs(section, components).flatMap(args -> invokeConstructor(constructor, args));
+            return collectComponentArgs(section, components).flatMap(args -> invokeFactoryOrConstructor(configClass, constructor, types, args));
         } catch (ReflectiveOperationException e) {
             return ConfigError.parseFailed(section, e)
                               .result();
@@ -122,6 +123,38 @@ public final class ProviderBasedConfigService implements ConfigService {
 
     private static Class<?> componentType(RecordComponent component) {
         return component.getType();
+    }
+
+    private <T> Result<T> invokeFactoryOrConstructor(Class<T> configClass, Constructor<T> constructor, Class<?>[] types, Object[] args) {
+        return findFactoryMethod(configClass, types)
+            .map(method -> invokeFactory(method, args, configClass))
+            .or(() -> invokeConstructor(constructor, args));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> Result<T> invokeFactory(Method method, Object[] args, Class<T> configClass) {
+        try{
+            return (Result<T>) method.invoke(null, args);
+        } catch (ReflectiveOperationException e) {
+            return ConfigError.parseFailed(configClass.getSimpleName(), e)
+                              .result();
+        }
+    }
+
+    private static Option<Method> findFactoryMethod(Class<?> configClass, Class<?>[] types) {
+        var name = factoryMethodName(configClass);
+        try{
+            var method = configClass.getDeclaredMethod(name, types);
+            if (Modifier.isStatic(method.getModifiers()) && method.getReturnType() == Result.class) {
+                return some(method);
+            }
+        } catch (NoSuchMethodException e) {}
+        return none();
+    }
+
+    private static String factoryMethodName(Class<?> configClass) {
+        var simpleName = configClass.getSimpleName();
+        return Character.toLowerCase(simpleName.charAt(0)) + simpleName.substring(1);
     }
 
     private <T> Result<T> invokeConstructor(Constructor<T> constructor, Object[] args) {
@@ -190,7 +223,6 @@ public final class ProviderBasedConfigService implements ConfigService {
     }
 
     // --- Primitive parser lookup ---
-    @SuppressWarnings("unchecked")
     static Option<Fn1<Option<Object>, String>> primitiveParser(Class<?> type) {
         if (type == String.class) {
             return some(Option::some);

@@ -9,6 +9,8 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Text;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
@@ -17,6 +19,7 @@ import java.util.Arrays;
 import java.util.stream.IntStream;
 
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 
 /// TOML-based implementation of ConfigService.
@@ -90,7 +93,6 @@ public final class TomlConfigService implements ConfigService {
         return document.getBoolean(parts.section(), parts.key());
     }
 
-    @SuppressWarnings("unchecked")
     private <T> Result<T> bindToClass(String section, Class<T> configClass) {
         if (!configClass.isRecord()) {
             return ConfigError.typeMismatch(section,
@@ -102,11 +104,43 @@ public final class TomlConfigService implements ConfigService {
             var components = configClass.getRecordComponents();
             var types = extractComponentTypes(components);
             Constructor<T> constructor = configClass.getDeclaredConstructor(types);
-            return collectComponentArgs(section, components).flatMap(args -> invokeConstructor(constructor, args));
+            return collectComponentArgs(section, components).flatMap(args -> invokeFactoryOrConstructor(configClass, constructor, types, args));
         } catch (Exception e) {
             return ConfigError.parseFailed(section, e)
                               .result();
         }
+    }
+
+    private <T> Result<T> invokeFactoryOrConstructor(Class<T> configClass, Constructor<T> constructor, Class<?>[] types, Object[] args) {
+        return findFactoryMethod(configClass, types)
+            .map(method -> invokeFactory(method, args, configClass))
+            .or(() -> invokeConstructor(constructor, args));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> Result<T> invokeFactory(Method method, Object[] args, Class<T> configClass) {
+        try{
+            return (Result<T>) method.invoke(null, args);
+        } catch (Exception e) {
+            return ConfigError.parseFailed(configClass.getSimpleName(), e)
+                              .result();
+        }
+    }
+
+    private static Option<Method> findFactoryMethod(Class<?> configClass, Class<?>[] types) {
+        var name = factoryMethodName(configClass);
+        try{
+            var method = configClass.getDeclaredMethod(name, types);
+            if (Modifier.isStatic(method.getModifiers()) && method.getReturnType() == Result.class) {
+                return some(method);
+            }
+        } catch (NoSuchMethodException e) {}
+        return none();
+    }
+
+    private static String factoryMethodName(Class<?> configClass) {
+        var simpleName = configClass.getSimpleName();
+        return Character.toLowerCase(simpleName.charAt(0)) + simpleName.substring(1);
     }
 
     private <T> Result<T> invokeConstructor(Constructor<T> constructor, Object[] args) {
@@ -161,7 +195,6 @@ public final class TomlConfigService implements ConfigService {
         return component.getType();
     }
 
-    @SuppressWarnings("unchecked")
     private Result<Object> extractValue(String section, RecordComponent component) {
         var key = component.getName();
         var type = component.getType();
@@ -242,7 +275,6 @@ public final class TomlConfigService implements ConfigService {
         return (Result<Object>) bindToClass(nestedSection, type);
     }
 
-    @SuppressWarnings("unchecked")
     private Result<Object> extractOptionValue(String section, String tomlKey, String key, Type genericType) {
         if (genericType instanceof ParameterizedType paramType) {
             var typeArgs = paramType.getActualTypeArguments();

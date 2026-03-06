@@ -4,6 +4,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import java.time.Duration;
 import java.util.Map;
@@ -42,6 +44,17 @@ class ProviderBasedConfigServiceTest {
     enum DbType { H2, POSTGRESQL, MYSQL }
 
     record EnumConfig(String name, DbType type) {}
+
+    record ValidatedConfig(String host, int port) {
+        private static final org.pragmatica.lang.Cause INVALID_PORT = Causes.cause("Port must be between 1 and 65535");
+
+        public static Result<ValidatedConfig> validatedConfig(String host, int port) {
+            if (port < 1 || port > 65535) {
+                return INVALID_PORT.result();
+            }
+            return Result.success(new ValidatedConfig(host, port));
+        }
+    }
 
     // --- Tests ---
 
@@ -397,6 +410,51 @@ class ProviderBasedConfigServiceTest {
             var result = service.config("test", EnumConfig.class);
 
             assertThat(result.isFailure()).isTrue();
+        }
+    }
+
+    @Nested
+    class FactoryMethodBinding {
+
+        @Test
+        void config_validatedRecord_usesFactoryMethod() {
+            var service = serviceFrom(Map.of(
+                "test.host", "localhost",
+                "test.port", "8080"
+            ));
+
+            var result = service.config("test", ValidatedConfig.class);
+
+            assertThat(result.isSuccess()).isTrue();
+            var config = result.unwrap();
+            assertThat(config.host()).isEqualTo("localhost");
+            assertThat(config.port()).isEqualTo(8080);
+        }
+
+        @Test
+        void config_validatedRecord_returnsFailureOnInvalidPort() {
+            var service = serviceFrom(Map.of(
+                "test.host", "localhost",
+                "test.port", "99999"
+            ));
+
+            var result = service.config("test", ValidatedConfig.class);
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("Port must be between 1 and 65535"));
+        }
+
+        @Test
+        void config_simpleRecord_fallsBackToConstructor() {
+            var service = serviceFrom(Map.of(
+                "test.name", "myapp",
+                "test.port", "8080",
+                "test.enabled", "true"
+            ));
+
+            var result = service.config("test", SimpleConfig.class);
+
+            assertThat(result.isSuccess()).isTrue();
         }
     }
 }
