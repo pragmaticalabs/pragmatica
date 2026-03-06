@@ -52,7 +52,7 @@ public final class JdbcJooqConnector implements JooqConnector {
     /// @param dataSource JDBC DataSource
     /// @return New JdbcJooqConnector instance
     public static JdbcJooqConnector jdbcJooqConnector(DatabaseConnectorConfig config, DataSource dataSource) {
-        var dialect = JooqConnector.mapDialect(config.type());
+        var dialect = JooqConnector.mapDialect(config.effectiveType());
         return new JdbcJooqConnector(config, dataSource, dialect);
     }
 

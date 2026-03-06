@@ -49,7 +49,7 @@ public final class R2dbcJooqConnector implements JooqConnector {
     /// @return New R2dbcJooqConnector instance
     public static R2dbcJooqConnector r2dbcJooqConnector(DatabaseConnectorConfig config,
                                                         ConnectionFactory connectionFactory) {
-        var dialect = JooqConnector.mapDialect(config.type());
+        var dialect = JooqConnector.mapDialect(config.effectiveType());
         return new R2dbcJooqConnector(config, connectionFactory, dialect);
     }
 

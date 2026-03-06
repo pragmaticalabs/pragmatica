@@ -108,12 +108,53 @@ public enum DatabaseType {
     /// @return Option with detected type
     public static Option<DatabaseType> fromJdbcUrl(String jdbcUrl) {
         return option(jdbcUrl).filter(url -> url.startsWith("jdbc:"))
-                     .flatMap(DatabaseType::matchByJdbcProtocol);
+                     .flatMap(DatabaseType::matchByProtocol);
     }
-    private static Option<DatabaseType> matchByJdbcProtocol(String jdbcUrl) {
-        var urlLower = jdbcUrl.toLowerCase();
+    /// Try to detect database type from R2DBC URL.
+    ///
+    /// @param r2dbcUrl R2DBC connection URL
+    /// @return Option with detected type
+    public static Option<DatabaseType> fromR2dbcUrl(String r2dbcUrl) {
+        return option(r2dbcUrl).filter(url -> url.startsWith("r2dbc:"))
+                     .flatMap(DatabaseType::matchByProtocol);
+    }
+    /// Try to detect database type from async URL (scheme://host:port/database).
+    ///
+    /// @param asyncUrl Async connection URL
+    /// @return Option with detected type
+    public static Option<DatabaseType> fromAsyncUrl(String asyncUrl) {
+        return option(asyncUrl).filter(url -> url.contains("://"))
+                     .flatMap(DatabaseType::matchByScheme);
+    }
+    /// Try to detect database type from any available URL.
+    /// Tries JDBC, R2DBC, then async URL in order, returning the first match.
+    ///
+    /// @param jdbcUrl  Optional JDBC URL
+    /// @param r2dbcUrl Optional R2DBC URL
+    /// @param asyncUrl Optional async URL
+    /// @return Option with detected type
+    public static Option<DatabaseType> fromAnyUrl(Option<String> jdbcUrl,
+                                                  Option<String> r2dbcUrl,
+                                                  Option<String> asyncUrl) {
+        return jdbcUrl.flatMap(DatabaseType::fromJdbcUrl)
+                      .orElse(() -> r2dbcUrl.flatMap(DatabaseType::fromR2dbcUrl))
+                      .orElse(() -> asyncUrl.flatMap(DatabaseType::fromAsyncUrl));
+    }
+    private static Option<DatabaseType> matchByProtocol(String url) {
+        var urlLower = url.toLowerCase();
         for (var type : values()) {
             if (urlLower.contains(":" + type.jdbcProtocol + ":")) {
+                return some(type);
+            }
+        }
+        return none();
+    }
+    private static Option<DatabaseType> matchByScheme(String url) {
+        var schemePart = url.substring(0,
+                                       url.indexOf("://"))
+                            .toLowerCase();
+        for (var type : values()) {
+            if (type.name.equals(schemePart) || type.jdbcProtocol.equals(schemePart)) {
                 return some(type);
             }
         }

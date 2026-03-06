@@ -22,9 +22,9 @@ class DatabaseConnectorConfigTest {
                 .unwrap();
 
             assertThat(config.name()).isEqualTo("mydb");
-            assertThat(config.type()).isEqualTo(DatabaseType.POSTGRESQL);
-            assertThat(config.host()).isEqualTo("localhost");
-            assertThat(config.database()).isEqualTo("testdb");
+            assertThat(config.type()).isEqualTo(some(DatabaseType.POSTGRESQL));
+            assertThat(config.host()).isEqualTo(some("localhost"));
+            assertThat(config.database()).isEqualTo(some("testdb"));
             assertThat(config.port()).isZero();
             assertThat(config.poolConfig()).isEqualTo(PoolConfig.DEFAULT);
             assertThat(config.poolConfig().ioThreads()).isZero();
@@ -97,7 +97,7 @@ class DatabaseConnectorConfigTest {
                 .unwrap();
 
             assertThat(config.name()).isEqualTo("db");
-            assertThat(config.type()).isEqualTo(DatabaseType.POSTGRESQL);
+            assertThat(config.effectiveType()).isEqualTo(DatabaseType.POSTGRESQL);
             assertThat(config.jdbcUrl().isPresent()).isTrue();
         }
 
@@ -122,10 +122,10 @@ class DatabaseConnectorConfigTest {
         @Test
         void databaseConnectorConfig_succeeds_withAllParams() {
             var config = databaseConnectorConfig("mydb",
-                                                  DatabaseType.MYSQL,
-                                                  "db.example.com",
+                                                  some(DatabaseType.MYSQL),
+                                                  some("db.example.com"),
                                                   3307,
-                                                  "appdb",
+                                                  some("appdb"),
                                                   some("admin"),
                                                   some("secret"),
                                                   PoolConfig.DEFAULT,
@@ -136,11 +136,79 @@ class DatabaseConnectorConfigTest {
                 .unwrap();
 
             assertThat(config.name()).isEqualTo("mydb");
-            assertThat(config.type()).isEqualTo(DatabaseType.MYSQL);
-            assertThat(config.host()).isEqualTo("db.example.com");
+            assertThat(config.type()).isEqualTo(some(DatabaseType.MYSQL));
+            assertThat(config.host()).isEqualTo(some("db.example.com"));
             assertThat(config.port()).isEqualTo(3307);
-            assertThat(config.database()).isEqualTo("appdb");
+            assertThat(config.database()).isEqualTo(some("appdb"));
             assertThat(config.properties()).containsEntry("useSSL", "true");
+        }
+    }
+
+    @Nested
+    class UrlFirstFactory {
+
+        @Test
+        void databaseConnectorConfig_succeeds_withAsyncUrlOnly() {
+            var config = databaseConnectorConfigBuilder()
+                .withName("forge-db")
+                .withAsyncUrl("postgresql://host.containers.internal:5432/forge")
+                .build()
+                .unwrap();
+
+            assertThat(config.name()).isEqualTo("forge-db");
+            assertThat(config.effectiveType()).isEqualTo(DatabaseType.POSTGRESQL);
+            assertThat(config.effectiveHost()).isEqualTo("host.containers.internal");
+            assertThat(config.effectivePort()).isEqualTo(5432);
+            assertThat(config.effectiveDatabase()).isEqualTo("forge");
+        }
+
+        @Test
+        void databaseConnectorConfig_succeeds_withJdbcUrlOnly() {
+            var config = databaseConnectorConfigBuilder()
+                .withName("jdbc-db")
+                .withJdbcUrl("jdbc:postgresql://dbhost:5433/myapp")
+                .build()
+                .unwrap();
+
+            assertThat(config.effectiveType()).isEqualTo(DatabaseType.POSTGRESQL);
+            assertThat(config.effectiveHost()).isEqualTo("dbhost");
+            assertThat(config.effectivePort()).isEqualTo(5433);
+            assertThat(config.effectiveDatabase()).isEqualTo("myapp");
+        }
+
+        @Test
+        void databaseConnectorConfig_succeeds_withR2dbcUrlOnly() {
+            var config = databaseConnectorConfigBuilder()
+                .withName("r2dbc-db")
+                .withR2dbcUrl("r2dbc:mysql://mysqlhost:3307/orders")
+                .build()
+                .unwrap();
+
+            assertThat(config.effectiveType()).isEqualTo(DatabaseType.MYSQL);
+            assertThat(config.effectiveHost()).isEqualTo("mysqlhost");
+            assertThat(config.effectivePort()).isEqualTo(3307);
+            assertThat(config.effectiveDatabase()).isEqualTo("orders");
+        }
+
+        @Test
+        void databaseConnectorConfig_fails_withNoUrlAndNoComponents() {
+            var result = databaseConnectorConfigBuilder()
+                .withName("empty-db")
+                .build();
+
+            assertThat(result.isFailure()).isTrue();
+        }
+
+        @Test
+        void databaseConnectorConfig_explicitTypeOverrides_urlInferredType() {
+            var config = databaseConnectorConfigBuilder()
+                .withName("override-db")
+                .withType(DatabaseType.COCKROACHDB)
+                .withAsyncUrl("postgresql://host:26257/crdb")
+                .build()
+                .unwrap();
+
+            assertThat(config.effectiveType()).isEqualTo(DatabaseType.COCKROACHDB);
         }
     }
 
@@ -158,9 +226,9 @@ class DatabaseConnectorConfigTest {
                 .unwrap();
 
             assertThat(config.name()).isEqualTo("test-db");
-            assertThat(config.type()).isEqualTo(DatabaseType.POSTGRESQL);
-            assertThat(config.host()).isEqualTo("localhost");
-            assertThat(config.database()).isEqualTo("myapp");
+            assertThat(config.type()).isEqualTo(some(DatabaseType.POSTGRESQL));
+            assertThat(config.host()).isEqualTo(some("localhost"));
+            assertThat(config.database()).isEqualTo(some("myapp"));
         }
 
         @Test
@@ -189,7 +257,7 @@ class DatabaseConnectorConfigTest {
         }
 
         @Test
-        void builder_fails_withoutHost() {
+        void builder_fails_withoutHostAndNoUrl() {
             var result = databaseConnectorConfigBuilder()
                 .withName("db")
                 .withType(DatabaseType.POSTGRESQL)
@@ -197,6 +265,17 @@ class DatabaseConnectorConfigTest {
                 .build();
 
             assertThat(result.isFailure()).isTrue();
+        }
+
+        @Test
+        void builder_succeeds_withUrlAndNoHost() {
+            var config = databaseConnectorConfigBuilder()
+                .withName("db")
+                .withAsyncUrl("postgresql://somehost:5432/test")
+                .build()
+                .unwrap();
+
+            assertThat(config.effectiveHost()).isEqualTo("somehost");
         }
     }
 
@@ -215,10 +294,10 @@ class DatabaseConnectorConfigTest {
         void effectiveJdbcUrl_usesOverride_whenProvided() {
             var overrideUrl = "jdbc:postgresql://custom:9999/overridedb";
             var config = databaseConnectorConfig("db",
-                                                  DatabaseType.POSTGRESQL,
-                                                  "localhost",
+                                                  some(DatabaseType.POSTGRESQL),
+                                                  some("localhost"),
                                                   0,
-                                                  "testdb",
+                                                  some("testdb"),
                                                   none(),
                                                   none(),
                                                   PoolConfig.DEFAULT,
@@ -237,6 +316,57 @@ class DatabaseConnectorConfigTest {
                 .unwrap();
 
             assertThat(config.effectiveR2dbcUrl()).isEqualTo("r2dbc:postgresql://localhost:5432/testdb");
+        }
+
+        @Test
+        void effectiveAsyncUrl_returnsUrl_fromAsyncUrlOnly() {
+            var config = databaseConnectorConfigBuilder()
+                .withName("db")
+                .withAsyncUrl("postgresql://myhost:5432/mydb")
+                .build()
+                .unwrap();
+
+            assertThat(config.effectiveAsyncUrl()).isEqualTo("postgresql://myhost:5432/mydb");
+        }
+    }
+
+    @Nested
+    class UrlParsing {
+
+        @Test
+        void parseHostFromUrl_parsesJdbcUrl() {
+            assertThat(DatabaseConnectorConfig.parseHostFromUrl("jdbc:postgresql://myhost:5432/db"))
+                .isEqualTo(some("myhost"));
+        }
+
+        @Test
+        void parseHostFromUrl_parsesAsyncUrl() {
+            assertThat(DatabaseConnectorConfig.parseHostFromUrl("postgresql://dbhost:5432/forge"))
+                .isEqualTo(some("dbhost"));
+        }
+
+        @Test
+        void parsePortFromUrl_parsesPort() {
+            assertThat(DatabaseConnectorConfig.parsePortFromUrl("postgresql://host:5433/db"))
+                .isEqualTo(5433);
+        }
+
+        @Test
+        void parsePortFromUrl_returnsZero_whenNoPort() {
+            assertThat(DatabaseConnectorConfig.parsePortFromUrl("postgresql://host/db"))
+                .isZero();
+        }
+
+        @Test
+        void parseDatabaseFromUrl_parsesDatabase() {
+            assertThat(DatabaseConnectorConfig.parseDatabaseFromUrl("postgresql://host:5432/forge"))
+                .isEqualTo(some("forge"));
+        }
+
+        @Test
+        void parseDatabaseFromUrl_parsesJdbcDatabase() {
+            assertThat(DatabaseConnectorConfig.parseDatabaseFromUrl("jdbc:postgresql://host:5432/mydb"))
+                .isEqualTo(some("mydb"));
         }
     }
 
@@ -268,10 +398,10 @@ class DatabaseConnectorConfigTest {
         @Test
         void toJdbcProperties_includesAdditionalProperties() {
             var config = databaseConnectorConfig("db",
-                                                  DatabaseType.MYSQL,
-                                                  "localhost",
+                                                  some(DatabaseType.MYSQL),
+                                                  some("localhost"),
                                                   3306,
-                                                  "testdb",
+                                                  some("testdb"),
                                                   none(),
                                                   none(),
                                                   PoolConfig.DEFAULT,
@@ -305,10 +435,10 @@ class DatabaseConnectorConfigTest {
         @Test
         void toString_masksCredentialsInJdbcUrl() {
             var config = databaseConnectorConfig("db",
-                                                  DatabaseType.POSTGRESQL,
-                                                  "localhost",
+                                                  some(DatabaseType.POSTGRESQL),
+                                                  some("localhost"),
                                                   0,
-                                                  "testdb",
+                                                  some("testdb"),
                                                   none(),
                                                   none(),
                                                   PoolConfig.DEFAULT,

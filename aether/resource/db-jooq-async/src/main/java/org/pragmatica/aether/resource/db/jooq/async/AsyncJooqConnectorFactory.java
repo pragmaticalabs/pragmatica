@@ -41,12 +41,9 @@ public final class AsyncJooqConnectorFactory implements ResourceFactory<JooqConn
 
     private static JooqConnector connector(DatabaseConnectorConfig config) {
         var builder = new NettyConnectibleBuilder();
-        builder.hostname(config.host())
-               .port(config.port() > 0
-                     ? config.port()
-                     : config.type()
-                             .defaultPort())
-               .database(config.database());
+        builder.hostname(config.effectiveHost())
+               .port(config.effectivePort())
+               .database(config.effectiveDatabase());
         config.username()
               .onPresent(builder::username);
         config.password()

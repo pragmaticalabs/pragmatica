@@ -50,7 +50,7 @@ final class AsyncJooqConnector implements JooqConnector {
     /// @return New AsyncJooqConnector instance
     static AsyncJooqConnector asyncJooqConnector(DatabaseConnectorConfig config,
                                                  PgAsyncConnectionFactory connectionFactory) {
-        var dialect = JooqConnector.mapDialect(config.type());
+        var dialect = JooqConnector.mapDialect(config.effectiveType());
         return new AsyncJooqConnector(config, connectionFactory, dialect);
     }
 

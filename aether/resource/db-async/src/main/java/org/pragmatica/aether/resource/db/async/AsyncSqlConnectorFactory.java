@@ -45,12 +45,9 @@ public final class AsyncSqlConnectorFactory implements ResourceFactory<SqlConnec
     }
 
     private static void configureConnection(NettyConnectibleBuilder builder, DatabaseConnectorConfig config) {
-        builder.hostname(config.host());
-        builder.port(config.port() > 0
-                     ? config.port()
-                     : config.type()
-                             .defaultPort());
-        builder.database(config.database());
+        builder.hostname(config.effectiveHost());
+        builder.port(config.effectivePort());
+        builder.database(config.effectiveDatabase());
         config.username()
               .onPresent(builder::username);
         config.password()

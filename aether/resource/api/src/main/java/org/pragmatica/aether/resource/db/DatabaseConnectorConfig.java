@@ -3,9 +3,12 @@ package org.pragmatica.aether.resource.db;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.parse.Number;
 
 import java.util.Map;
 import java.util.Properties;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -15,11 +18,15 @@ import static org.pragmatica.lang.utils.Causes.cause;
 
 /// Configuration for database connectors.
 ///
+/// When any URL is present (jdbcUrl, r2dbcUrl, or asyncUrl), the database type, host,
+/// and database name are inferred from the URL. When no URL is present, type, host,
+/// and database must be provided explicitly.
+///
 /// @param name           Connector name for identification and metrics
-/// @param type           Database type
-/// @param host           Database host
+/// @param type           Database type (optional when URL is present)
+/// @param host           Database host (optional when URL is present)
 /// @param port           Database port (0 to use default for database type)
-/// @param database       Database name
+/// @param database       Database name (optional when URL is present)
 /// @param username       Connection username (optional)
 /// @param password       Connection password (optional)
 /// @param poolConfig     Connection pool configuration
@@ -28,10 +35,10 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// @param r2dbcUrl       Override R2DBC URL (optional, overrides host/port/database)
 /// @param asyncUrl       Override async URL (optional, selects postgres-async transport)
 public record DatabaseConnectorConfig(String name,
-                                      DatabaseType type,
-                                      String host,
+                                      Option<DatabaseType> type,
+                                      Option<String> host,
                                       int port,
-                                      String database,
+                                      Option<String> database,
                                       Option<String> username,
                                       Option<String> password,
                                       PoolConfig poolConfig,
@@ -39,6 +46,8 @@ public record DatabaseConnectorConfig(String name,
                                       Option<String> jdbcUrl,
                                       Option<String> r2dbcUrl,
                                       Option<String> asyncUrl) {
+    private static final Pattern URL_PATTERN = Pattern.compile("(?:\\w+:)*(?://)?(?:[^@]+@)?([^/:]+)(?::(\\d+))?/(.+?)(?:\\?.*)?$");
+
     /// Override toString() to mask password for security.
     @Override
     public String toString() {
@@ -57,13 +66,61 @@ public record DatabaseConnectorConfig(String name,
         return url.replaceAll("://[^:]+:[^@]+@", "://[REDACTED]@");
     }
 
+    // --- URL parsing utilities ---
+    /// Parse host from any database URL format.
+    ///
+    /// @param url Database URL (JDBC, R2DBC, or async format)
+    /// @return Option with host if parseable
+    public static Option<String> parseHostFromUrl(String url) {
+        return matchUrl(url).map(m -> m.group(1))
+                       .flatMap(Option::option)
+                       .filter(h -> !h.isEmpty());
+    }
+
+    /// Parse port from any database URL format.
+    ///
+    /// @param url Database URL (JDBC, R2DBC, or async format)
+    /// @return Port number, or 0 if not present
+    public static int parsePortFromUrl(String url) {
+        return matchUrl(url).map(m -> m.group(2))
+                       .flatMap(Option::option)
+                       .flatMap(DatabaseConnectorConfig::safeParsePort)
+                       .or(0);
+    }
+
+    /// Parse database name from any database URL format.
+    ///
+    /// @param url Database URL (JDBC, R2DBC, or async format)
+    /// @return Option with database name if parseable
+    public static Option<String> parseDatabaseFromUrl(String url) {
+        return matchUrl(url).map(m -> m.group(3))
+                       .flatMap(Option::option)
+                       .filter(d -> !d.isEmpty());
+    }
+
+    private static Option<Matcher> matchUrl(String url) {
+        return option(url).map(URL_PATTERN::matcher)
+                     .filter(Matcher::find);
+    }
+
+    private static Option<Integer> safeParsePort(String value) {
+        return option(value).filter(v -> !v.isEmpty())
+                     .flatMap(DatabaseConnectorConfig::parseInteger);
+    }
+
+    private static Option<Integer> parseInteger(String value) {
+        return Number.parseInt(value)
+                     .option();
+    }
+
+    // --- Factory methods ---
     /// Creates a config with all parameters.
     ///
     /// @param name       Connector name
-    /// @param type       Database type
-    /// @param host       Database host
+    /// @param type       Database type (optional, inferred from URL if absent)
+    /// @param host       Database host (optional, inferred from URL if absent)
     /// @param port       Database port
-    /// @param database   Database name
+    /// @param database   Database name (optional, inferred from URL if absent)
     /// @param username   Connection username
     /// @param password   Connection password
     /// @param poolConfig Pool configuration
@@ -73,10 +130,10 @@ public record DatabaseConnectorConfig(String name,
     /// @param asyncUrl   Override async URL
     /// @return Result with config or validation error
     public static Result<DatabaseConnectorConfig> databaseConnectorConfig(String name,
-                                                                          DatabaseType type,
-                                                                          String host,
+                                                                          Option<DatabaseType> type,
+                                                                          Option<String> host,
                                                                           int port,
-                                                                          String database,
+                                                                          Option<String> database,
                                                                           Option<String> username,
                                                                           Option<String> password,
                                                                           PoolConfig poolConfig,
@@ -84,21 +141,22 @@ public record DatabaseConnectorConfig(String name,
                                                                           Option<String> jdbcUrl,
                                                                           Option<String> r2dbcUrl,
                                                                           Option<String> asyncUrl) {
-        return success(new DatabaseConnectorConfig(name,
-                                                   type,
-                                                   host,
-                                                   port,
-                                                   database,
-                                                   username,
-                                                   password,
-                                                   poolConfig,
-                                                   properties,
-                                                   jdbcUrl,
-                                                   r2dbcUrl,
-                                                   asyncUrl));
+        return ensureName(name).flatMap(_ -> validateConfig(type, host, database, jdbcUrl, r2dbcUrl, asyncUrl))
+                         .map(_ -> new DatabaseConnectorConfig(name,
+                                                               type,
+                                                               host,
+                                                               port,
+                                                               database,
+                                                               username,
+                                                               password,
+                                                               poolConfig,
+                                                               properties,
+                                                               jdbcUrl,
+                                                               r2dbcUrl,
+                                                               asyncUrl));
     }
 
-    /// Creates a config with required parameters.
+    /// Creates a config with required parameters (component-based, no URLs).
     ///
     /// @param name     Connector name
     /// @param type     Database type
@@ -115,10 +173,10 @@ public record DatabaseConnectorConfig(String name,
                                                                           String password) {
         return ensureRequired(name, type, host, database)
         .flatMap(_ -> databaseConnectorConfig(name,
-                                              type,
-                                              host,
+                                              some(type),
+                                              some(host),
                                               0,
-                                              database,
+                                              some(database),
                                               option(username),
                                               option(password),
                                               PoolConfig.DEFAULT,
@@ -140,28 +198,18 @@ public record DatabaseConnectorConfig(String name,
                                                                           String username,
                                                                           String password) {
         return ensureName(name).flatMap(_ -> ensureJdbcUrl(jdbcUrl))
-                         .flatMap(url -> databaseConnectorConfig(name,
-                                                                 typeFromUrl(url),
-                                                                 url,
-                                                                 username,
-                                                                 password));
+                         .flatMap(url -> databaseConnectorConfigFromJdbcUrl(name, url, username, password));
     }
 
-    private static DatabaseType typeFromUrl(String url) {
-        return DatabaseType.fromJdbcUrl(url)
-                           .or(DatabaseType.POSTGRESQL);
-    }
-
-    private static Result<DatabaseConnectorConfig> databaseConnectorConfig(String name,
-                                                                           DatabaseType type,
-                                                                           String url,
-                                                                           String username,
-                                                                           String password) {
+    private static Result<DatabaseConnectorConfig> databaseConnectorConfigFromJdbcUrl(String name,
+                                                                                      String url,
+                                                                                      String username,
+                                                                                      String password) {
         return databaseConnectorConfig(name,
-                                       type,
-                                       "",
-                                       0,
-                                       "",
+                                       DatabaseType.fromJdbcUrl(url),
+                                       parseHostFromUrl(url),
+                                       parsePortFromUrl(url),
+                                       parseDatabaseFromUrl(url),
                                        option(username),
                                        option(password),
                                        PoolConfig.DEFAULT,
@@ -188,25 +236,63 @@ public record DatabaseConnectorConfig(String name,
         return new Builder();
     }
 
+    // --- Effective URL methods ---
+    /// Returns the effective database type, from explicit config or inferred from URLs.
+    ///
+    /// @return DatabaseType, defaulting to POSTGRESQL if not determinable
+    public DatabaseType effectiveType() {
+        return type.orElse(() -> DatabaseType.fromAnyUrl(jdbcUrl, r2dbcUrl, asyncUrl))
+                   .or(DatabaseType.POSTGRESQL);
+    }
+
+    /// Returns the effective host, from explicit config or parsed from any available URL.
+    ///
+    /// @return Host string, defaulting to "localhost" if not determinable
+    public String effectiveHost() {
+        return host.orElse(() -> firstUrlHost(jdbcUrl, r2dbcUrl, asyncUrl))
+                   .or("localhost");
+    }
+
+    /// Returns the effective port, from explicit config or parsed from any available URL.
+    ///
+    /// @return Port number, using database type default if not determinable
+    public int effectivePort() {
+        if (port > 0) {
+            return port;
+        }
+        var urlPort = firstUrlPort(jdbcUrl, r2dbcUrl, asyncUrl);
+        return urlPort > 0
+               ? urlPort
+               : effectiveType().defaultPort();
+    }
+
+    /// Returns the effective database name, from explicit config or parsed from any available URL.
+    ///
+    /// @return Database name string
+    public String effectiveDatabase() {
+        return database.orElse(() -> firstUrlDatabase(jdbcUrl, r2dbcUrl, asyncUrl))
+                       .or("");
+    }
+
     /// Returns the effective JDBC URL, either from override or constructed from components.
     ///
     /// @return JDBC connection URL
     public String effectiveJdbcUrl() {
-        return jdbcUrl.or(() -> type.buildJdbcUrl(host, port, database));
+        return jdbcUrl.or(() -> effectiveType().buildJdbcUrl(effectiveHost(), effectivePort(), effectiveDatabase()));
     }
 
     /// Returns the effective R2DBC URL, either from override or constructed from components.
     ///
     /// @return R2DBC connection URL
     public String effectiveR2dbcUrl() {
-        return r2dbcUrl.or(() -> type.buildR2dbcUrl(host, port, database));
+        return r2dbcUrl.or(() -> effectiveType().buildR2dbcUrl(effectiveHost(), effectivePort(), effectiveDatabase()));
     }
 
     /// Returns the effective async URL, either from override or constructed from components.
     ///
     /// @return Async connection URL (postgresql://host:port/database format)
     public String effectiveAsyncUrl() {
-        return asyncUrl.or(() -> buildAsyncUrl(host, port, database, type));
+        return asyncUrl.or(() -> buildAsyncUrl(effectiveHost(), effectivePort(), effectiveDatabase(), effectiveType()));
     }
 
     private static String buildAsyncUrl(String host, int port, String database, DatabaseType type) {
@@ -229,34 +315,94 @@ public record DatabaseConnectorConfig(String name,
         return props;
     }
 
+    // --- Validation ---
+    private static Result<Unit> validateConfig(Option<DatabaseType> type,
+                                               Option<String> host,
+                                               Option<String> database,
+                                               Option<String> jdbcUrl,
+                                               Option<String> r2dbcUrl,
+                                               Option<String> asyncUrl) {
+        return hasAnyUrl(jdbcUrl, r2dbcUrl, asyncUrl)
+               ? validateUrlBased(jdbcUrl, r2dbcUrl, asyncUrl)
+               : validateComponentBased(type, host, database);
+    }
+
+    private static boolean hasAnyUrl(Option<String> jdbcUrl, Option<String> r2dbcUrl, Option<String> asyncUrl) {
+        return jdbcUrl.isPresent() || r2dbcUrl.isPresent() || asyncUrl.isPresent();
+    }
+
+    private static Result<Unit> validateUrlBased(Option<String> jdbcUrl,
+                                                 Option<String> r2dbcUrl,
+                                                 Option<String> asyncUrl) {
+        var anyValid = jdbcUrl.filter(u -> !u.isBlank())
+                              .orElse(() -> r2dbcUrl.filter(u -> !u.isBlank()))
+                              .orElse(() -> asyncUrl.filter(u -> !u.isBlank()));
+        return anyValid.toResult(cause("At least one non-blank URL is required"))
+                       .map(_ -> Unit.unit());
+    }
+
+    private static Result<Unit> validateComponentBased(Option<DatabaseType> type,
+                                                       Option<String> host,
+                                                       Option<String> database) {
+        return ensureOptionPresent(type, "Database type is required").flatMap(_ -> ensureOptionNonBlank(host,
+                                                                                                        "Database host is required"))
+                                  .flatMap(_ -> ensureOptionNonBlank(database, "Database name is required"))
+                                  .map(_ -> Unit.unit());
+    }
+
+    private static <T> Result<T> ensureOptionPresent(Option<T> opt, String message) {
+        return opt.toResult(cause(message));
+    }
+
+    private static Result<String> ensureOptionNonBlank(Option<String> opt, String message) {
+        return opt.filter(s -> !s.isBlank())
+                  .toResult(cause(message));
+    }
+
     private static Result<Unit> ensureRequired(String name, DatabaseType type, String host, String database) {
-        return ensureName(name).flatMap(_ -> ensureType(type))
-                         .flatMap(_ -> ensureHost(host))
-                         .flatMap(_ -> ensureDatabase(database))
+        return ensureName(name).flatMap(_ -> ensureOptionPresent(option(type),
+                                                                 "Database type is required"))
+                         .flatMap(_ -> ensureOptionNonBlank(option(host),
+                                                            "Database host is required"))
+                         .flatMap(_ -> ensureOptionNonBlank(option(database),
+                                                            "Database name is required"))
                          .map(_ -> Unit.unit());
     }
 
-    private static Result<DatabaseType> ensureType(DatabaseType type) {
-        return option(type).toResult(cause("Database type is required"));
+    // --- URL component helpers ---
+    private static Option<String> firstUrlHost(Option<String> jdbcUrl,
+                                               Option<String> r2dbcUrl,
+                                               Option<String> asyncUrl) {
+        return jdbcUrl.flatMap(DatabaseConnectorConfig::parseHostFromUrl)
+                      .orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parseHostFromUrl))
+                      .orElse(() -> asyncUrl.flatMap(DatabaseConnectorConfig::parseHostFromUrl));
     }
 
-    private static Result<String> ensureHost(String host) {
-        return option(host).filter(h -> !h.isBlank())
-                     .toResult(cause("Database host is required"));
+    private static int firstUrlPort(Option<String> jdbcUrl, Option<String> r2dbcUrl, Option<String> asyncUrl) {
+        return jdbcUrl.map(DatabaseConnectorConfig::parsePortFromUrl)
+                      .filter(p -> p > 0)
+                      .orElse(() -> r2dbcUrl.map(DatabaseConnectorConfig::parsePortFromUrl)
+                                            .filter(p -> p > 0))
+                      .orElse(() -> asyncUrl.map(DatabaseConnectorConfig::parsePortFromUrl)
+                                            .filter(p -> p > 0))
+                      .or(0);
     }
 
-    private static Result<String> ensureDatabase(String database) {
-        return option(database).filter(d -> !d.isBlank())
-                     .toResult(cause("Database name is required"));
+    private static Option<String> firstUrlDatabase(Option<String> jdbcUrl,
+                                                   Option<String> r2dbcUrl,
+                                                   Option<String> asyncUrl) {
+        return jdbcUrl.flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl)
+                      .orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl))
+                      .orElse(() -> asyncUrl.flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl));
     }
 
     /// Builder for DatabaseConnectorConfig.
     public static final class Builder {
         private String name;
-        private DatabaseType type;
-        private String host;
+        private Option<DatabaseType> type = none();
+        private Option<String> host = none();
         private int port = 0;
-        private String database;
+        private Option<String> database = none();
         private Option<String> username = none();
         private Option<String> password = none();
         private PoolConfig poolConfig = PoolConfig.DEFAULT;
@@ -273,12 +419,12 @@ public record DatabaseConnectorConfig(String name,
         }
 
         public Builder withType(DatabaseType value) {
-            this.type = value;
+            this.type = option(value);
             return this;
         }
 
         public Builder withHost(String value) {
-            this.host = value;
+            this.host = option(value);
             return this;
         }
 
@@ -288,7 +434,7 @@ public record DatabaseConnectorConfig(String name,
         }
 
         public Builder withDatabase(String value) {
-            this.database = value;
+            this.database = option(value);
             return this;
         }
 
@@ -328,19 +474,18 @@ public record DatabaseConnectorConfig(String name,
         }
 
         public Result<DatabaseConnectorConfig> build() {
-            return ensureRequired(name, type, host, database)
-            .flatMap(_ -> databaseConnectorConfig(name,
-                                                  type,
-                                                  host,
-                                                  port,
-                                                  database,
-                                                  username,
-                                                  password,
-                                                  poolConfig,
-                                                  properties,
-                                                  jdbcUrl,
-                                                  r2dbcUrl,
-                                                  asyncUrl));
+            return databaseConnectorConfig(name,
+                                           type,
+                                           host,
+                                           port,
+                                           database,
+                                           username,
+                                           password,
+                                           poolConfig,
+                                           properties,
+                                           jdbcUrl,
+                                           r2dbcUrl,
+                                           asyncUrl);
         }
     }
 }
