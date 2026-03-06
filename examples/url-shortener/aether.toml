@@ -4,11 +4,10 @@
 topic_name = "click-events"
 
 [database]
-type = "POSTGRESQL"
-name = "url-shortener"
-host = "localhost"
-port = 5432
-database = "forge"
+#type = "POSTGRESQL"
+#host = "localhost"
+#port = 5432
+#database = "forge"
 username = "forge"
 password = "forge"
 # jdbc_url = "jdbc:postgresql://localhost:5432/forge"

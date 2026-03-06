@@ -235,33 +235,33 @@
     font-family: var(--font-mono);
     padding: 1px var(--space-sm);
     border-radius: var(--radius-sm);
-    background: rgba(63, 185, 80, 0.15);
-    color: var(--accent-green);
+    background: rgba(139, 148, 158, 0.2);
+    color: var(--text-secondary);
     white-space: nowrap;
 }
 
 .slice-badge.active {
-    background: rgba(63, 185, 80, 0.15);
+    background: rgba(63, 185, 80, 0.25);
     color: var(--accent-green);
 }
 
 .slice-badge.loading, .slice-badge.activating, .slice-badge.deactivating, .slice-badge.unloading {
-    background: rgba(210, 153, 34, 0.15);
+    background: rgba(210, 153, 34, 0.25);
     color: var(--accent-orange);
 }
 
 .slice-badge.failed, .slice-badge.permanently_failed {
-    background: rgba(248, 81, 73, 0.15);
+    background: rgba(248, 81, 73, 0.3);
     color: var(--accent-red);
 }
 
 .slice-badge.loaded {
-    background: rgba(88, 166, 255, 0.15);
+    background: rgba(88, 166, 255, 0.25);
     color: var(--accent-blue);
 }
 
 .slice-badge.load, .slice-badge.activate, .slice-badge.deactivate, .slice-badge.unload {
-    background: rgba(139, 148, 158, 0.15);
+    background: rgba(139, 148, 158, 0.2);
     color: var(--text-secondary);
 }
 
@@ -428,27 +428,27 @@
 }
 
 .status-badge.active {
-    background: rgba(63, 185, 80, 0.15);
+    background: rgba(63, 185, 80, 0.25);
     color: var(--accent-green);
 }
 
 .status-badge.loading, .status-badge.joining, .status-badge.activating, .status-badge.deactivating, .status-badge.unloading {
-    background: rgba(210, 153, 34, 0.15);
+    background: rgba(210, 153, 34, 0.25);
     color: var(--accent-orange);
 }
 
 .status-badge.failed, .status-badge.permanently_failed {
-    background: rgba(248, 81, 73, 0.15);
+    background: rgba(248, 81, 73, 0.3);
     color: var(--accent-red);
 }
 
 .status-badge.loaded {
-    background: rgba(88, 166, 255, 0.15);
+    background: rgba(88, 166, 255, 0.25);
     color: var(--accent-blue);
 }
 
 .status-badge.load, .status-badge.activate, .status-badge.deactivate, .status-badge.unload {
-    background: rgba(139, 148, 158, 0.15);
+    background: rgba(139, 148, 158, 0.2);
     color: var(--text-secondary);
 }
 
@@ -467,27 +467,27 @@
 }
 
 .instance-badge.active {
-    background: rgba(63, 185, 80, 0.1);
+    background: rgba(63, 185, 80, 0.2);
     color: var(--accent-green);
 }
 
 .instance-badge.loading, .instance-badge.activating, .instance-badge.deactivating, .instance-badge.unloading {
-    background: rgba(210, 153, 34, 0.1);
+    background: rgba(210, 153, 34, 0.2);
     color: var(--accent-orange);
 }
 
 .instance-badge.failed, .instance-badge.permanently_failed {
-    background: rgba(248, 81, 73, 0.1);
+    background: rgba(248, 81, 73, 0.25);
     color: var(--accent-red);
 }
 
 .instance-badge.loaded {
-    background: rgba(88, 166, 255, 0.1);
+    background: rgba(88, 166, 255, 0.2);
     color: var(--accent-blue);
 }
 
 .instance-badge.load, .instance-badge.activate, .instance-badge.deactivate, .instance-badge.unload {
-    background: rgba(139, 148, 158, 0.1);
+    background: rgba(139, 148, 158, 0.15);
     color: var(--text-secondary);
 }
 
@@ -585,7 +585,7 @@ tbody tr:hover { background: var(--bg-tertiary); }
 
 .event-item {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: var(--space-sm);
     padding: var(--space-xs) var(--space-sm);
     border-left: 3px solid transparent;
@@ -614,9 +614,8 @@ tbody tr:hover { background: var(--bg-tertiary); }
 
 .event-summary {
     color: var(--text-secondary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    word-break: break-word;
+    min-width: 0;
 }
 
 /* Alert Items */

@@ -22,7 +22,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// and database name are inferred from the URL. When no URL is present, type, host,
 /// and database must be provided explicitly.
 ///
-/// @param name           Connector name for identification and metrics
+/// @param name           Connector name for identification and metrics (optional, derived from URL or defaults to "default")
 /// @param type           Database type (optional when URL is present)
 /// @param host           Database host (optional when URL is present)
 /// @param port           Database port (0 to use default for database type)
@@ -34,7 +34,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// @param jdbcUrl        Override JDBC URL (optional, overrides host/port/database)
 /// @param r2dbcUrl       Override R2DBC URL (optional, overrides host/port/database)
 /// @param asyncUrl       Override async URL (optional, selects postgres-async transport)
-public record DatabaseConnectorConfig(String name,
+public record DatabaseConnectorConfig(Option<String> name,
                                       Option<DatabaseType> type,
                                       Option<String> host,
                                       int port,
@@ -48,10 +48,18 @@ public record DatabaseConnectorConfig(String name,
                                       Option<String> asyncUrl) {
     private static final Pattern URL_PATTERN = Pattern.compile("(?:\\w+:)*(?://)?(?:[^@]+@)?([^/:]+)(?::(\\d+))?/(.+?)(?:\\?.*)?$");
 
+    /// Returns the effective connector name: explicit name, or derived from URL database, or "default".
+    ///
+    /// @return Connector name string
+    public String effectiveName() {
+        return name.orElse(() -> firstUrlDatabase(jdbcUrl, r2dbcUrl, asyncUrl))
+                   .or("default");
+    }
+
     /// Override toString() to mask password for security.
     @Override
     public String toString() {
-        return "DatabaseConnectorConfig[name=" + name + ", type=" + type + ", host=" + host + ", port=" + port
+        return "DatabaseConnectorConfig[name=" + effectiveName() + ", type=" + type + ", host=" + host + ", port=" + port
                + ", database=" + database + ", username=[REDACTED]" + ", password=[REDACTED]" + ", poolConfig=" + poolConfig
                + ", properties=" + properties + ", jdbcUrl=" + sanitizeUrl(jdbcUrl) + ", r2dbcUrl=" + sanitizeUrl(r2dbcUrl)
                + ", asyncUrl=" + sanitizeUrl(asyncUrl) + "]";
@@ -116,7 +124,7 @@ public record DatabaseConnectorConfig(String name,
     // --- Factory methods ---
     /// Creates a config with all parameters.
     ///
-    /// @param name       Connector name
+    /// @param name       Connector name (optional, derived from URL or defaults to "default")
     /// @param type       Database type (optional, inferred from URL if absent)
     /// @param host       Database host (optional, inferred from URL if absent)
     /// @param port       Database port
@@ -129,7 +137,7 @@ public record DatabaseConnectorConfig(String name,
     /// @param r2dbcUrl   Override R2DBC URL
     /// @param asyncUrl   Override async URL
     /// @return Result with config or validation error
-    public static Result<DatabaseConnectorConfig> databaseConnectorConfig(String name,
+    public static Result<DatabaseConnectorConfig> databaseConnectorConfig(Option<String> name,
                                                                           Option<DatabaseType> type,
                                                                           Option<String> host,
                                                                           int port,
@@ -141,24 +149,24 @@ public record DatabaseConnectorConfig(String name,
                                                                           Option<String> jdbcUrl,
                                                                           Option<String> r2dbcUrl,
                                                                           Option<String> asyncUrl) {
-        return ensureName(name).flatMap(_ -> validateConfig(type, host, database, jdbcUrl, r2dbcUrl, asyncUrl))
-                         .map(_ -> new DatabaseConnectorConfig(name,
-                                                               type,
-                                                               host,
-                                                               port,
-                                                               database,
-                                                               username,
-                                                               password,
-                                                               poolConfig,
-                                                               properties,
-                                                               jdbcUrl,
-                                                               r2dbcUrl,
-                                                               asyncUrl));
+        return validateConfig(type, host, database, jdbcUrl, r2dbcUrl, asyncUrl)
+        .map(_ -> new DatabaseConnectorConfig(name,
+                                              type,
+                                              host,
+                                              port,
+                                              database,
+                                              username,
+                                              password,
+                                              poolConfig,
+                                              properties,
+                                              jdbcUrl,
+                                              r2dbcUrl,
+                                              asyncUrl));
     }
 
     /// Creates a config with required parameters (component-based, no URLs).
     ///
-    /// @param name     Connector name
+    /// @param name     Connector name (optional, can be blank)
     /// @param type     Database type
     /// @param host     Database host
     /// @param database Database name
@@ -171,8 +179,8 @@ public record DatabaseConnectorConfig(String name,
                                                                           String database,
                                                                           String username,
                                                                           String password) {
-        return ensureRequired(name, type, host, database)
-        .flatMap(_ -> databaseConnectorConfig(name,
+        return ensureRequired(type, host, database)
+        .flatMap(_ -> databaseConnectorConfig(sanitizeName(name),
                                               some(type),
                                               some(host),
                                               0,
@@ -188,7 +196,7 @@ public record DatabaseConnectorConfig(String name,
 
     /// Creates a config from a JDBC URL.
     ///
-    /// @param name     Connector name
+    /// @param name     Connector name (optional, can be blank)
     /// @param jdbcUrl  JDBC connection URL
     /// @param username Connection username
     /// @param password Connection password
@@ -197,11 +205,11 @@ public record DatabaseConnectorConfig(String name,
                                                                           String jdbcUrl,
                                                                           String username,
                                                                           String password) {
-        return ensureName(name).flatMap(_ -> ensureJdbcUrl(jdbcUrl))
-                         .flatMap(url -> databaseConnectorConfigFromJdbcUrl(name, url, username, password));
+        return ensureJdbcUrl(jdbcUrl)
+        .flatMap(url -> databaseConnectorConfigFromJdbcUrl(sanitizeName(name), url, username, password));
     }
 
-    private static Result<DatabaseConnectorConfig> databaseConnectorConfigFromJdbcUrl(String name,
+    private static Result<DatabaseConnectorConfig> databaseConnectorConfigFromJdbcUrl(Option<String> name,
                                                                                       String url,
                                                                                       String username,
                                                                                       String password) {
@@ -219,9 +227,8 @@ public record DatabaseConnectorConfig(String name,
                                        none());
     }
 
-    private static Result<String> ensureName(String name) {
-        return option(name).filter(n -> !n.isBlank())
-                     .toResult(cause("Connector name is required"));
+    private static Option<String> sanitizeName(String name) {
+        return option(name).filter(n -> !n.isBlank());
     }
 
     private static Result<String> ensureJdbcUrl(String jdbcUrl) {
@@ -359,14 +366,13 @@ public record DatabaseConnectorConfig(String name,
                   .toResult(cause(message));
     }
 
-    private static Result<Unit> ensureRequired(String name, DatabaseType type, String host, String database) {
-        return ensureName(name).flatMap(_ -> ensureOptionPresent(option(type),
-                                                                 "Database type is required"))
-                         .flatMap(_ -> ensureOptionNonBlank(option(host),
-                                                            "Database host is required"))
-                         .flatMap(_ -> ensureOptionNonBlank(option(database),
-                                                            "Database name is required"))
-                         .map(_ -> Unit.unit());
+    private static Result<Unit> ensureRequired(DatabaseType type, String host, String database) {
+        return ensureOptionPresent(option(type),
+                                   "Database type is required").flatMap(_ -> ensureOptionNonBlank(option(host),
+                                                                                                  "Database host is required"))
+                                  .flatMap(_ -> ensureOptionNonBlank(option(database),
+                                                                     "Database name is required"))
+                                  .map(_ -> Unit.unit());
     }
 
     // --- URL component helpers ---
@@ -398,7 +404,7 @@ public record DatabaseConnectorConfig(String name,
 
     /// Builder for DatabaseConnectorConfig.
     public static final class Builder {
-        private String name;
+        private Option<String> name = none();
         private Option<DatabaseType> type = none();
         private Option<String> host = none();
         private int port = 0;
@@ -414,7 +420,7 @@ public record DatabaseConnectorConfig(String name,
         private Builder() {}
 
         public Builder withName(String value) {
-            this.name = value;
+            this.name = sanitizeName(value);
             return this;
         }
 

@@ -61,6 +61,8 @@ body {
 }
 
 .overview-right > .panel { margin-bottom: 0; }
+.overview-bottom-row > .panel { margin-bottom: 0; }
+.overview-columns > .panel { margin-bottom: 0; }
 
 /* Metrics 2x4 grid */
 .metrics-grid {

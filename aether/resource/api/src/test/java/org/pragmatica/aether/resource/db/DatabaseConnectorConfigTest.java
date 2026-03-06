@@ -21,7 +21,8 @@ class DatabaseConnectorConfigTest {
             var config = databaseConnectorConfig("mydb", DatabaseType.POSTGRESQL, "localhost", "testdb", "user", "pass")
                 .unwrap();
 
-            assertThat(config.name()).isEqualTo("mydb");
+            assertThat(config.name()).isEqualTo(some("mydb"));
+            assertThat(config.effectiveName()).isEqualTo("mydb");
             assertThat(config.type()).isEqualTo(some(DatabaseType.POSTGRESQL));
             assertThat(config.host()).isEqualTo(some("localhost"));
             assertThat(config.database()).isEqualTo(some("testdb"));
@@ -53,17 +54,21 @@ class DatabaseConnectorConfigTest {
         }
 
         @Test
-        void databaseConnectorConfig_fails_withBlankName() {
-            var result = databaseConnectorConfig("", DatabaseType.POSTGRESQL, "localhost", "testdb", "user", "pass");
+        void databaseConnectorConfig_succeeds_withBlankName() {
+            var config = databaseConnectorConfig("", DatabaseType.POSTGRESQL, "localhost", "testdb", "user", "pass")
+                .unwrap();
 
-            assertThat(result.isFailure()).isTrue();
+            assertThat(config.name()).isEqualTo(none());
+            assertThat(config.effectiveName()).isEqualTo("default");
         }
 
         @Test
-        void databaseConnectorConfig_fails_withNullName() {
-            var result = databaseConnectorConfig(null, DatabaseType.POSTGRESQL, "localhost", "testdb", "user", "pass");
+        void databaseConnectorConfig_succeeds_withNullName() {
+            var config = databaseConnectorConfig(null, DatabaseType.POSTGRESQL, "localhost", "testdb", "user", "pass")
+                .unwrap();
 
-            assertThat(result.isFailure()).isTrue();
+            assertThat(config.name()).isEqualTo(none());
+            assertThat(config.effectiveName()).isEqualTo("default");
         }
 
         @Test
@@ -96,7 +101,8 @@ class DatabaseConnectorConfigTest {
             var config = databaseConnectorConfig("db", "jdbc:postgresql://host:5432/mydb", "user", "pass")
                 .unwrap();
 
-            assertThat(config.name()).isEqualTo("db");
+            assertThat(config.name()).isEqualTo(some("db"));
+            assertThat(config.effectiveName()).isEqualTo("db");
             assertThat(config.effectiveType()).isEqualTo(DatabaseType.POSTGRESQL);
             assertThat(config.jdbcUrl().isPresent()).isTrue();
         }
@@ -109,10 +115,12 @@ class DatabaseConnectorConfigTest {
         }
 
         @Test
-        void databaseConnectorConfig_fails_withBlankNameAndJdbcUrl() {
-            var result = databaseConnectorConfig("", "jdbc:postgresql://host/db", "user", "pass");
+        void databaseConnectorConfig_succeeds_withBlankNameAndJdbcUrl() {
+            var config = databaseConnectorConfig("", "jdbc:postgresql://host/db", "user", "pass")
+                .unwrap();
 
-            assertThat(result.isFailure()).isTrue();
+            assertThat(config.name()).isEqualTo(none());
+            assertThat(config.effectiveName()).isEqualTo("db");
         }
     }
 
@@ -121,7 +129,7 @@ class DatabaseConnectorConfigTest {
 
         @Test
         void databaseConnectorConfig_succeeds_withAllParams() {
-            var config = databaseConnectorConfig("mydb",
+            var config = databaseConnectorConfig(some("mydb"),
                                                   some(DatabaseType.MYSQL),
                                                   some("db.example.com"),
                                                   3307,
@@ -135,7 +143,7 @@ class DatabaseConnectorConfigTest {
                                                   none())
                 .unwrap();
 
-            assertThat(config.name()).isEqualTo("mydb");
+            assertThat(config.name()).isEqualTo(some("mydb"));
             assertThat(config.type()).isEqualTo(some(DatabaseType.MYSQL));
             assertThat(config.host()).isEqualTo(some("db.example.com"));
             assertThat(config.port()).isEqualTo(3307);
@@ -155,7 +163,8 @@ class DatabaseConnectorConfigTest {
                 .build()
                 .unwrap();
 
-            assertThat(config.name()).isEqualTo("forge-db");
+            assertThat(config.name()).isEqualTo(some("forge-db"));
+            assertThat(config.effectiveName()).isEqualTo("forge-db");
             assertThat(config.effectiveType()).isEqualTo(DatabaseType.POSTGRESQL);
             assertThat(config.effectiveHost()).isEqualTo("host.containers.internal");
             assertThat(config.effectivePort()).isEqualTo(5432);
@@ -188,6 +197,21 @@ class DatabaseConnectorConfigTest {
             assertThat(config.effectiveHost()).isEqualTo("mysqlhost");
             assertThat(config.effectivePort()).isEqualTo(3307);
             assertThat(config.effectiveDatabase()).isEqualTo("orders");
+        }
+
+        @Test
+        void databaseConnectorConfig_succeeds_withUrlOnlyAndNoName() {
+            var config = databaseConnectorConfigBuilder()
+                .withAsyncUrl("postgresql://host.containers.internal:5432/forge")
+                .build()
+                .unwrap();
+
+            assertThat(config.name()).isEqualTo(none());
+            assertThat(config.effectiveName()).isEqualTo("forge");
+            assertThat(config.effectiveType()).isEqualTo(DatabaseType.POSTGRESQL);
+            assertThat(config.effectiveHost()).isEqualTo("host.containers.internal");
+            assertThat(config.effectivePort()).isEqualTo(5432);
+            assertThat(config.effectiveDatabase()).isEqualTo("forge");
         }
 
         @Test
@@ -225,7 +249,8 @@ class DatabaseConnectorConfigTest {
                 .build()
                 .unwrap();
 
-            assertThat(config.name()).isEqualTo("test-db");
+            assertThat(config.name()).isEqualTo(some("test-db"));
+            assertThat(config.effectiveName()).isEqualTo("test-db");
             assertThat(config.type()).isEqualTo(some(DatabaseType.POSTGRESQL));
             assertThat(config.host()).isEqualTo(some("localhost"));
             assertThat(config.database()).isEqualTo(some("myapp"));
@@ -246,14 +271,16 @@ class DatabaseConnectorConfigTest {
         }
 
         @Test
-        void builder_fails_withoutName() {
-            var result = databaseConnectorConfigBuilder()
+        void builder_succeeds_withoutName() {
+            var config = databaseConnectorConfigBuilder()
                 .withType(DatabaseType.POSTGRESQL)
                 .withHost("localhost")
                 .withDatabase("test")
-                .build();
+                .build()
+                .unwrap();
 
-            assertThat(result.isFailure()).isTrue();
+            assertThat(config.name()).isEqualTo(none());
+            assertThat(config.effectiveName()).isEqualTo("default");
         }
 
         @Test
@@ -293,7 +320,7 @@ class DatabaseConnectorConfigTest {
         @Test
         void effectiveJdbcUrl_usesOverride_whenProvided() {
             var overrideUrl = "jdbc:postgresql://custom:9999/overridedb";
-            var config = databaseConnectorConfig("db",
+            var config = databaseConnectorConfig(some("db"),
                                                   some(DatabaseType.POSTGRESQL),
                                                   some("localhost"),
                                                   0,
@@ -397,7 +424,7 @@ class DatabaseConnectorConfigTest {
 
         @Test
         void toJdbcProperties_includesAdditionalProperties() {
-            var config = databaseConnectorConfig("db",
+            var config = databaseConnectorConfig(some("db"),
                                                   some(DatabaseType.MYSQL),
                                                   some("localhost"),
                                                   3306,
@@ -434,7 +461,7 @@ class DatabaseConnectorConfigTest {
 
         @Test
         void toString_masksCredentialsInJdbcUrl() {
-            var config = databaseConnectorConfig("db",
+            var config = databaseConnectorConfig(some("db"),
                                                   some(DatabaseType.POSTGRESQL),
                                                   some("localhost"),
                                                   0,
