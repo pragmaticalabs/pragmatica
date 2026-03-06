@@ -181,7 +181,7 @@ public class SliceProcessor extends AbstractProcessor {
         var packageName = sliceModel.packageName();
         return errorDiscovery.discover(packageName,
                                        config.errors())
-                             .flatMap(errorMappings -> routeGenerator.generate(sliceModel, config, errorMappings))
+                             .flatMap(errorMappings -> routeGenerator.generate(interfaceElement, sliceModel, config, errorMappings))
                              .onSuccess(qualifiedNameOpt -> {
                                             qualifiedNameOpt.onPresent(routeServiceEntries::add);
                                             note(interfaceElement,

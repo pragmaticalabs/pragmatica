@@ -9,6 +9,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import javax.annotation.processing.Filer;
 import javax.annotation.processing.Messager;
+import javax.lang.model.element.TypeElement;
 import javax.lang.model.util.Elements;
 import javax.tools.Diagnostic;
 import javax.tools.JavaFileObject;
@@ -144,7 +145,8 @@ public class RouteSourceGenerator {
     /// Generates Routes class for a slice.
     /// Returns the qualified name of the generated class if routes exist, empty otherwise.
     /// The caller is responsible for writing the service file with all accumulated entries.
-    public Result<Option<String>> generate(SliceModel model,
+    public Result<Option<String>> generate(TypeElement sliceElement,
+                                           SliceModel model,
                                            RouteConfig routeConfig,
                                            List<ErrorTypeMapping> errorMappings) {
         if (!routeConfig.hasRoutes()) {
@@ -154,9 +156,9 @@ public class RouteSourceGenerator {
             var routesName = model.simpleName() + "Routes";
             var qualifiedName = model.packageName() + "." + routesName;
             // Generate the Routes class
-            JavaFileObject file = filer.createSourceFile(qualifiedName);
+            JavaFileObject file = filer.createSourceFile(qualifiedName, sliceElement);
             try (var writer = new PrintWriter(file.openWriter())) {
-                generateRoutesClass(writer, model, routeConfig, errorMappings, routesName);
+                generateRoutesClass(writer, model, routeConfig, errorMappings, routesName, sliceElement);
             }
             return Result.success(Option.some(qualifiedName));
         } catch (Exception e) {
@@ -170,7 +172,8 @@ public class RouteSourceGenerator {
                                      SliceModel model,
                                      RouteConfig routeConfig,
                                      List<ErrorTypeMapping> errorMappings,
-                                     String routesName) {
+                                     String routesName,
+                                     TypeElement sliceElement) {
         var sliceName = model.simpleName();
         var basePackage = model.packageName();
         // Package
@@ -219,7 +222,7 @@ public class RouteSourceGenerator {
         out.println("    }");
         out.println();
         // routes() method
-        generateRoutesMethod(out, model, routeConfig);
+        generateRoutesMethod(out, model, routeConfig, sliceElement);
         out.println();
         // errorMapper() method
         generateErrorMapperMethod(out, errorMappings);
@@ -248,7 +251,10 @@ public class RouteSourceGenerator {
         }
     }
 
-    private void generateRoutesMethod(PrintWriter out, SliceModel model, RouteConfig routeConfig) {
+    private void generateRoutesMethod(PrintWriter out,
+                                      SliceModel model,
+                                      RouteConfig routeConfig,
+                                      TypeElement sliceElement) {
         out.println("    @Override");
         out.println("    public Stream<Route<?>> routes() {");
         out.println("        return Stream.of(");
@@ -265,9 +271,12 @@ public class RouteSourceGenerator {
             var routeDsl = entry.getValue();
             var methodOpt = Option.option(methodMap.get(handlerName));
             if (methodOpt.isEmpty()) {
+                var routesToml = model.packageName().replace('.', '/') + "/routes.toml";
                 messager.printMessage(Diagnostic.Kind.ERROR,
-                                      "Route handler '" + handlerName + "' not found in slice interface. "
-                                      + "Available methods: " + methodMap.keySet());
+                                      "Route handler '" + handlerName + "' not found in slice interface '"
+                                      + model.simpleName() + "' (check routes.toml: " + routesToml
+                                      + "). Available methods: " + methodMap.keySet(),
+                                      sliceElement);
                 continue;
             }
             var paramCount = routeDsl.pathParams()
@@ -276,9 +285,12 @@ public class RouteSourceGenerator {
                                                                  ? 1
                                                                  : 0);
             if (paramCount > MAX_PARAMS) {
+                var routesToml = model.packageName().replace('.', '/') + "/routes.toml";
                 messager.printMessage(Diagnostic.Kind.ERROR,
-                                      "Route '" + handlerName + "' has " + paramCount + " parameters, "
-                                      + "but maximum is " + MAX_PARAMS);
+                                      "Route '" + handlerName + "' in slice '" + model.simpleName()
+                                      + "' has " + paramCount + " parameters, but maximum is " + MAX_PARAMS
+                                      + " (check routes.toml: " + routesToml + ")",
+                                      sliceElement);
                 continue;
             }
             validRoutes.add(entry);

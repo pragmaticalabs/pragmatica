@@ -243,7 +243,41 @@ public interface Analytics {
 }
 ```
 
-### 6b. Update Analytics routes
+### 6b. Update AnalyticsTest
+
+The generated test still references the default `greet` method. Replace `src/test/java/com/example/myslice/analytics/AnalyticsTest.java` to match the new `getCount` method:
+
+```java
+package com.example.myslice.analytics;
+
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
+class AnalyticsTest {
+
+    private final Analytics slice = Analytics.analytics();
+
+    @Test
+    void getCount_validName_returnsCount() {
+        slice.getCount("World")
+             .await()
+             .onFailure(cause -> fail(cause.message()))
+             .onSuccess(r -> assertThat(r.count()).isEqualTo(42));
+    }
+
+    @Test
+    void getCount_emptyName_returnsError() {
+        slice.getCount("")
+             .await()
+             .onSuccess(r -> fail("Expected failure for empty name"))
+             .onFailure(cause -> assertThat(cause.message()).isEqualTo("Name cannot be empty"));
+    }
+}
+```
+
+### 6c. Update Analytics routes
 
 Edit `src/main/resources/com/example/myslice/analytics/routes.toml`:
 
