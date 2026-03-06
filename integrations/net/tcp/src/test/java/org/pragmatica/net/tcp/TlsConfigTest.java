@@ -154,7 +154,6 @@ class TlsConfigTest {
 
     @Test
     void deprecated_selfSigned_delegates_to_selfSignedServer() {
-        @SuppressWarnings("deprecation")
         var config = TlsConfig.selfSigned();
 
         assertThat(config).isInstanceOf(TlsConfig.Server.class);
@@ -162,7 +161,6 @@ class TlsConfigTest {
 
     @Test
     void deprecated_fromFiles_delegates_to_server() {
-        @SuppressWarnings("deprecation")
         var config = TlsConfig.fromFiles(Path.of("c"), Path.of("k"));
 
         assertThat(config).isInstanceOf(TlsConfig.Server.class);

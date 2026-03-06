@@ -451,7 +451,6 @@ public interface RollingUpdateManager {
                               .async();
             }
 
-            @SuppressWarnings("unchecked")
             private Promise<RollingUpdate> persistAndTransition(RollingUpdate update, RollingUpdateState newState) {
                 return update.transitionTo(newState)
                              .async()

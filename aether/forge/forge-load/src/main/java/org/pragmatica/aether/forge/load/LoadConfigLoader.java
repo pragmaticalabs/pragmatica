@@ -53,14 +53,12 @@ public sealed interface LoadConfigLoader {
     Cause RATE_REQUIRED = LoadConfigError.ParseFailed.parseFailed("rate is required")
                                         .unwrap();
 
-    @SuppressWarnings("unchecked")
     private static Result<LoadConfig> fromDocument(TomlDocument doc) {
         return doc.getTableArray("load")
                   .toResult(NO_LOAD_SECTIONS)
                   .flatMap(LoadConfigLoader::collectTargets);
     }
 
-    @SuppressWarnings("unchecked")
     private static Result<LoadConfig> collectTargets(List<Map<String, Object>> tables) {
         var indexedResults = IntStream.range(0,
                                              tables.size())
@@ -84,7 +82,6 @@ public sealed interface LoadConfigLoader {
                               .unwrap();
     }
 
-    @SuppressWarnings("unchecked")
     private static Result<LoadTarget> toLoadTarget(Map<String, Object> table, int index) {
         var targetResult = extractRequired(table, "target", TARGET_REQUIRED);
         var rateResult = extractRequired(table, "rate", RATE_REQUIRED);
@@ -97,7 +94,6 @@ public sealed interface LoadConfigLoader {
                      .toResult(cause);
     }
 
-    @SuppressWarnings("unchecked")
     private static Result<LoadTarget> assembleTarget(Map<String, Object> table, String target, String rateStr) {
         var name = extractName(table);
         var duration = extractDuration(table);

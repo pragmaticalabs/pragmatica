@@ -182,7 +182,6 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     }
 
     @Override
-    @SuppressWarnings("rawtypes")
     public Promise<Unit> publishRoutes(Artifact artifact,
                                        ClassLoader classLoader,
                                        Object sliceInstance,

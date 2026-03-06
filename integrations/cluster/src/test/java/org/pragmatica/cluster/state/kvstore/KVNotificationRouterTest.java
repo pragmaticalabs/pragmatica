@@ -192,12 +192,10 @@ class KVNotificationRouterTest {
 
     // --- Helper methods ---
 
-    @SuppressWarnings("unchecked")
     private static <K extends StructuredKey, V> KVStoreNotification.ValuePut<K, V> putNotification(K key, V value) {
         return new KVStoreNotification.ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
     }
 
-    @SuppressWarnings("unchecked")
     private static <K extends StructuredKey> KVStoreNotification.ValueRemove<K, ?> removeNotification(K key) {
         return new KVStoreNotification.ValueRemove<>(new KVCommand.Remove<>(key), Option.none());
     }

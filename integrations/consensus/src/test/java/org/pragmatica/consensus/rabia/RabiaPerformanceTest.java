@@ -230,7 +230,6 @@ class RabiaPerformanceTest {
             return decisions.get();
         }
 
-        @SuppressWarnings("unchecked")
         void broadcastToAll(ProtocolMessage message) {
             messagesSent.addAndGet(nodeIds.size());
             pendingMessages.add(message);

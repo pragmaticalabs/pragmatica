@@ -54,7 +54,6 @@ public sealed interface DeepMerger {
     /// @param base     Base map (lower priority)
     /// @param override Override map (higher priority)
     /// @return Deep-merged map
-    @SuppressWarnings("unchecked")
     static Map<String, Object> deepMerge(Map<String, Object> base, Map<String, Object> override) {
         var result = new LinkedHashMap<>(base);
         override.forEach((key, overrideValue) -> result.merge(key, overrideValue, DeepMerger::mergeValues));
@@ -68,7 +67,6 @@ public sealed interface DeepMerger {
     ///
     /// @param flat Flat map with dot-notation keys
     /// @return Hierarchical nested map
-    @SuppressWarnings("unchecked")
     static Map<String, Object> toHierarchical(Map<String, String> flat) {
         var result = new LinkedHashMap<String, Object>();
         flat.forEach((key, value) -> insertHierarchical(result, key.split("\\."), value));
@@ -88,7 +86,6 @@ public sealed interface DeepMerger {
         return Map.copyOf(result);
     }
 
-    @SuppressWarnings("unchecked")
     private static void flattenRecursive(String prefix, Map<String, Object> map, Map<String, String> result) {
         map.forEach((entryKey, value) -> flattenEntry(prefix, entryKey, value, result));
     }
@@ -118,7 +115,6 @@ public sealed interface DeepMerger {
         return overrideValue;
     }
 
-    @SuppressWarnings("unchecked")
     private static void insertHierarchical(Map<String, Object> result, String[] keyPath, String value) {
         var parentDepth = keyPath.length - 1;
         var current = navigateToParent(result, keyPath, parentDepth);

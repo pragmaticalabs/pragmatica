@@ -456,7 +456,6 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
         if (stopped) {
             return INVOKER_STOPPED.promise();
@@ -468,7 +467,6 @@ class SliceInvokerImpl implements SliceInvoker {
                              : sendRequestResponse(endpoint, slice, method, request));
     }
 
-    @SuppressWarnings("unchecked")
     private <R> Promise<R> sendRequestResponse(Endpoint endpoint, Artifact slice, MethodName method, Object request) {
         var senderBridge = findSenderBridge(request);
         return senderBridge.encode(request)
@@ -616,7 +614,6 @@ class SliceInvokerImpl implements SliceInvoker {
         return endpointRegistry.selectEndpointExcluding(slice, method, exclude);
     }
 
-    @SuppressWarnings("unchecked")
     private <R> void invokeEndpointWithFailover(Promise<R> promise, FailoverContext<R> ctx, Endpoint endpoint) {
         var targetNode = endpoint.nodeId();
         if (targetNode.equals(self)) {
@@ -641,7 +638,6 @@ class SliceInvokerImpl implements SliceInvoker {
                          .onFailure(cause -> handleFailoverFailure(promise, ctx, self, cause));
     }
 
-    @SuppressWarnings("unchecked")
     private <R> void invokeRemoteForFailover(Promise<R> promise, FailoverContext<R> ctx, NodeId targetNode) {
         var senderBridge = findSenderBridge(ctx.request);
         senderBridge.encode(ctx.request)
@@ -799,7 +795,6 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
         return invocationHandler.localSlice(slice)
                                 .async(SLICE_NOT_FOUND)
@@ -829,7 +824,7 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     @Override
-    @SuppressWarnings({"unchecked", "JBCT-RET-01"})
+    @SuppressWarnings({"JBCT-RET-01"})
     public void onInvokeResponse(InvokeResponse response) {
         Option.option(pendingInvocations.remove(response.correlationId()))
               .onEmpty(() -> log.warn("[requestId={}] Received response for unknown correlationId: {}",

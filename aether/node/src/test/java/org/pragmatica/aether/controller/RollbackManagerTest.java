@@ -88,7 +88,6 @@ class RollbackManagerTest {
             assertThat(clusterNode.appliedCommands).hasSize(1);
             var command = clusterNode.appliedCommands.getFirst();
             assertThat(command).isInstanceOf(KVCommand.Put.class);
-            @SuppressWarnings("unchecked")
             var put = (KVCommand.Put<AetherKey, AetherValue>) command;
             assertThat(put.key()).isInstanceOf(PreviousVersionKey.class);
         }
@@ -125,7 +124,6 @@ class RollbackManagerTest {
             assertThat(clusterNode.appliedCommands).hasSize(1);
             var command = clusterNode.appliedCommands.getFirst();
             assertThat(command).isInstanceOf(KVCommand.Put.class);
-            @SuppressWarnings("unchecked")
             var put = (KVCommand.Put<AetherKey, AetherValue>) command;
             assertThat(put.key()).isInstanceOf(SliceTargetKey.class);
             var sliceTargetKey = (SliceTargetKey) put.key();

@@ -375,7 +375,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         return Result.success(router);
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
+    @SuppressWarnings({"rawtypes"})
     private static void addToTable(Map<Class, List<Consumer>> table, Tuple2 tuple) {
         table.computeIfAbsent((Class) tuple.first(),
                               _ -> new ArrayList<>())

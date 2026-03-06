@@ -882,7 +882,6 @@ public sealed interface Option<T> permits Some, None {
     /// the method is marked as [Deprecated]. This generates a warning at compile time.
     ///
     /// @return value stored inside present instance.
-    @SuppressWarnings("DeprecatedIsStillUsed")
     @Deprecated
     default T unwrap() {
         return getOrThrow("Option is empty");

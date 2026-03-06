@@ -828,7 +828,6 @@ public sealed interface Result<T> permits Success, Failure {
     ///  the method is marked as [Deprecated]. This generates a warning at compile time.
     ///
     /// @return value stored inside present instance.
-    @SuppressWarnings("DeprecatedIsStillUsed")
     @Deprecated
     default T unwrap() {
         return getOrThrow("Unwrap error");

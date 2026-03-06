@@ -198,7 +198,6 @@ class ClusterDeploymentManagerTest {
         assertThat(clusterNode.appliedCommands).hasSize(2);
     }
 
-    @SuppressWarnings("unchecked")
     private SliceNodeKey extractSliceNodeKey(KVCommand<AetherKey> command) {
         if (command instanceof KVCommand.Put<?, ?> put && put.key() instanceof SliceNodeKey key) {
             return key;

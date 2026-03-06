@@ -198,7 +198,6 @@ public final class ForgeApiHandler {
         return sb.toString();
     }
 
-    @SuppressWarnings("unchecked")
     private void sendSuccessResponse(ResponseWriter response, Route<?> route, Object result) {
         var serverContentType = toServerContentType(route.contentType());
         var category = route.contentType()

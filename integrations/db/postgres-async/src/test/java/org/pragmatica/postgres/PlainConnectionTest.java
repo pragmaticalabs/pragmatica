@@ -34,7 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 public class PlainConnectionTest {
 
     @RegisterExtension
-    final DatabaseExtension dbr = DatabaseExtension.defaultConfiguration();
+    static final DatabaseExtension dbr = DatabaseExtension.defaultConfiguration();
     private Connectible plain;
 
     @BeforeEach

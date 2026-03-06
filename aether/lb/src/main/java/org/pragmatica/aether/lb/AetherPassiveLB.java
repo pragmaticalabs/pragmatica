@@ -197,7 +197,7 @@ public final class AetherPassiveLB {
     }
 
     // ================== Message Wiring ==================
-    @SuppressWarnings({"unchecked", "rawtypes"})
+    @SuppressWarnings({"unchecked"})
     private static void wireRoutes(PassiveNode<AetherKey, AetherValue> passiveNode,
                                    HttpRouteRegistry routeRegistry,
                                    HttpForwarder httpForwarder) {

@@ -35,7 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 public class ValidatedConnectionTest {
 
     @RegisterExtension
-    final DatabaseExtension dbr = DatabaseExtension.defaultConfiguration();
+    static final DatabaseExtension dbr = DatabaseExtension.defaultConfiguration();
 
     private void withSource(Connectible source, Consumer<Connectible> action) {
         try {

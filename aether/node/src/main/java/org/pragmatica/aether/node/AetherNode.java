@@ -1147,7 +1147,6 @@ public interface AetherNode {
 
     /// Handle leader election commits from KV-Store.
     /// When a LeaderKey is committed, notify the LeaderManager.
-    @SuppressWarnings("unchecked")
     private static void handleLeaderCommit(KVStoreNotification.ValuePut<?, ?> notification,
                                            LeaderManager leaderManager) {
         if (notification.cause()

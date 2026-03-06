@@ -184,7 +184,7 @@ public sealed interface FrameworkCodecs {
         codec.write(buf, value.cause());
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
+    @SuppressWarnings({"rawtypes"})
     private static Failure readFailure(SliceCodec codec, ByteBuf buf) {
         return new Failure(codec.read(buf));
     }

@@ -37,7 +37,6 @@ public final class SpiResourceProvider implements ResourceProvider {
     private final Map<Class<?>, Object> runtimeExtensions;
     private final Fn2<Result<?>, String, Class<?>> configLoader;
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
     private SpiResourceProvider(Fn2<Result<?>, String, Class<?>> configLoader) {
         this.configLoader = configLoader;
         this.promiseCache = new ConcurrentHashMap<>();

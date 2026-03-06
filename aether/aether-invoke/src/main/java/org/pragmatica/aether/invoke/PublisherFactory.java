@@ -33,7 +33,6 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public Promise<Publisher> provision(TopicConfig config, ProvisioningContext context) {
         return context.extension(TopicSubscriptionRegistry.class)
                       .flatMap(registry -> context.extension(SliceInvoker.class)

@@ -82,7 +82,6 @@ public record DefaultSliceBridge(Artifact artifact,
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public Promise<Object> decode(byte[] bytes) {
         return Promise.lift(Causes::fromThrowable, () -> (Object) codec.decode(bytes));
     }

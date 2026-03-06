@@ -304,8 +304,7 @@ class BlueprintServiceTest {
         }
 
         // Override the StateMachine process method
-        @SuppressWarnings("unchecked")
-        public Option<AetherValue> process(org.pragmatica.cluster.state.kvstore.KVCommand command) {
+        public Option<AetherValue> process(KVCommand command) {
             return switch (command) {
                 case KVCommand.Put<?, ?> put -> {
                     storage.put((AetherKey) put.key(), (AetherValue) put.value());

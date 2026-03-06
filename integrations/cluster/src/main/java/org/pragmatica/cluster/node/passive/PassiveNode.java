@@ -140,7 +140,7 @@ public interface PassiveNode<K extends StructuredKey, V> {
         return new passiveNode<>(delegateRouter, topologyManager, network, kvStore, List.copyOf(allEntries));
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes", "JBCT-RET-01"}) // void required by Consumer<Decision> contract
+    @SuppressWarnings({"rawtypes", "JBCT-RET-01"}) // void required by Consumer<Decision> contract
     private static <K extends StructuredKey, V> void applyDecision(KVStore<K, V> kvStore, Decision<?> decision) {
         for (var command : decision.value().commands()) {
             kvStore.process((KVCommand) command);

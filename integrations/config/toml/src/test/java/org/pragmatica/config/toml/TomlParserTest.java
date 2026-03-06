@@ -1254,7 +1254,6 @@ class TomlParserTest {
 
                     // First fruit (apple)
                     assertEquals("apple", fruits.get(0).get("name"));
-                    @SuppressWarnings("unchecked")
                     var appleVarieties = (java.util.List<java.util.Map<String, Object>>)
                         doc.getTableArray("fruits.varieties").unwrap();
                     // Note: TOML spec says [[fruits.varieties]] adds to current [[fruits]]
