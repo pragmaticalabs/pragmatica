@@ -203,27 +203,19 @@ public final class TomlConfigService implements ConfigService {
     }
 
     private Result<Object> lookupInt(String section, String key, String tomlKey) {
-        return document.getInt(section, tomlKey)
-                       .toResult(ConfigError.sectionNotFound(section + "." + key))
-                       .map(Object.class::cast);
+        return Result.<Object>success(document.getInt(section, tomlKey).or(0));
     }
 
     private Result<Object> lookupLong(String section, String key, String tomlKey) {
-        return document.getLong(section, tomlKey)
-                       .toResult(ConfigError.sectionNotFound(section + "." + key))
-                       .map(Object.class::cast);
+        return Result.<Object>success(document.getLong(section, tomlKey).or(0L));
     }
 
     private Result<Object> lookupBoolean(String section, String key, String tomlKey) {
-        return document.getBoolean(section, tomlKey)
-                       .toResult(ConfigError.sectionNotFound(section + "." + key))
-                       .map(Object.class::cast);
+        return Result.<Object>success(document.getBoolean(section, tomlKey).or(false));
     }
 
     private Result<Object> lookupDouble(String section, String key, String tomlKey) {
-        return document.getDouble(section, tomlKey)
-                       .toResult(ConfigError.sectionNotFound(section + "." + key))
-                       .map(Object.class::cast);
+        return Result.<Object>success(document.getDouble(section, tomlKey).or(0.0));
     }
 
     private Result<Object> lookupEnum(String section, String key, String tomlKey, Class<?> type) {
