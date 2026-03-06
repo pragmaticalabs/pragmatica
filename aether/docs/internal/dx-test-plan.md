@@ -292,11 +292,14 @@ default = 500
 HTTP_400 = ["*invalid*", "*empty*"]
 ```
 
-### Verify
+### 6d. Format and build
 
 ```bash
+mvn jbct:format     # Format edited files to JBCT style
 mvn clean install
 ```
+
+### Verify
 
 | # | Check | Expected |
 |---|-------|----------|

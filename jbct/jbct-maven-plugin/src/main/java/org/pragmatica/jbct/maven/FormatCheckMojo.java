@@ -40,12 +40,14 @@ public class FormatCheckMojo extends AbstractJbctMojo {
             checkFile(file, formatter, needsFormatting, errors);
         }
         if (!needsFormatting.isEmpty()) {
-            getLog().error("The following files are not properly formatted:");
+            var fileList = new StringBuilder();
             for (var file : needsFormatting) {
                 getLog().error("  " + file);
+                fileList.append("\n  ").append(file);
             }
             throw new MojoFailureException(needsFormatting.size()
-                                           + " file(s) are not properly formatted. Run 'mvn jbct:format' to fix.");
+                                           + " file(s) are not properly formatted:" + fileList
+                                           + "\nRun 'mvn jbct:format' to fix.");
         }
         if (errors.get() > 0) {
             throw new MojoFailureException("Format check failed for " + errors.get() + " file(s)");

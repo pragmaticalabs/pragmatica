@@ -68,7 +68,11 @@ public class CheckMojo extends AbstractJbctMojo {
         var hasFailures = false;
         var failures = new ArrayList<String>();
         if (!needsFormatting.isEmpty()) {
-            failures.add(needsFormatting.size() + " file(s) need formatting");
+            var fileList = new StringBuilder();
+            for (var file : needsFormatting) {
+                fileList.append("\n  ").append(file);
+            }
+            failures.add(needsFormatting.size() + " file(s) need formatting:" + fileList);
             hasFailures = true;
         }
         if (formatErrors.get() > 0) {
