@@ -25,7 +25,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// @param name           Connector name for identification and metrics (optional, derived from URL or defaults to "default")
 /// @param type           Database type (optional when URL is present)
 /// @param host           Database host (optional when URL is present)
-/// @param port           Database port (0 to use default for database type)
+/// @param port           Database port (optional, defaults to database type default)
 /// @param database       Database name (optional when URL is present)
 /// @param username       Connection username (optional)
 /// @param password       Connection password (optional)
@@ -37,7 +37,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 public record DatabaseConnectorConfig(Option<String> name,
                                       Option<DatabaseType> type,
                                       Option<String> host,
-                                      int port,
+                                      Option<Integer> port,
                                       Option<String> database,
                                       Option<String> username,
                                       Option<String> password,
@@ -96,6 +96,12 @@ public record DatabaseConnectorConfig(Option<String> name,
                        .or(0);
     }
 
+    private static Option<Integer> parsePortFromUrlOption(String url) {
+        return matchUrl(url).map(m -> m.group(2))
+                       .flatMap(Option::option)
+                       .flatMap(DatabaseConnectorConfig::safeParsePort);
+    }
+
     /// Parse database name from any database URL format.
     ///
     /// @param url Database URL (JDBC, R2DBC, or async format)
@@ -140,7 +146,7 @@ public record DatabaseConnectorConfig(Option<String> name,
     public static Result<DatabaseConnectorConfig> databaseConnectorConfig(Option<String> name,
                                                                           Option<DatabaseType> type,
                                                                           Option<String> host,
-                                                                          int port,
+                                                                          Option<Integer> port,
                                                                           Option<String> database,
                                                                           Option<String> username,
                                                                           Option<String> password,
@@ -183,7 +189,7 @@ public record DatabaseConnectorConfig(Option<String> name,
         .flatMap(_ -> databaseConnectorConfig(sanitizeName(name),
                                               some(type),
                                               some(host),
-                                              0,
+                                              none(),
                                               some(database),
                                               option(username),
                                               option(password),
@@ -216,7 +222,7 @@ public record DatabaseConnectorConfig(Option<String> name,
         return databaseConnectorConfig(name,
                                        DatabaseType.fromJdbcUrl(url),
                                        parseHostFromUrl(url),
-                                       parsePortFromUrl(url),
+                                       parsePortFromUrlOption(url),
                                        parseDatabaseFromUrl(url),
                                        option(username),
                                        option(password),
@@ -264,13 +270,13 @@ public record DatabaseConnectorConfig(Option<String> name,
     ///
     /// @return Port number, using database type default if not determinable
     public int effectivePort() {
-        if (port > 0) {
-            return port;
-        }
-        var urlPort = firstUrlPort(jdbcUrl, r2dbcUrl, asyncUrl);
-        return urlPort > 0
-               ? urlPort
-               : effectiveType().defaultPort();
+        return port.filter(p -> p > 0)
+                   .or(() -> {
+                           var urlPort = firstUrlPort(jdbcUrl, r2dbcUrl, asyncUrl);
+                           return urlPort > 0
+                                  ? urlPort
+                                  : effectiveType().defaultPort();
+                       });
     }
 
     /// Returns the effective database name, from explicit config or parsed from any available URL.
@@ -407,7 +413,7 @@ public record DatabaseConnectorConfig(Option<String> name,
         private Option<String> name = none();
         private Option<DatabaseType> type = none();
         private Option<String> host = none();
-        private int port = 0;
+        private Option<Integer> port = none();
         private Option<String> database = none();
         private Option<String> username = none();
         private Option<String> password = none();
@@ -435,7 +441,7 @@ public record DatabaseConnectorConfig(Option<String> name,
         }
 
         public Builder withPort(int value) {
-            this.port = value;
+            this.port = some(value);
             return this;
         }
 

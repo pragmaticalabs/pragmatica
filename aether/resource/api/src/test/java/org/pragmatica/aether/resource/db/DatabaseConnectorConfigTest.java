@@ -26,7 +26,7 @@ class DatabaseConnectorConfigTest {
             assertThat(config.type()).isEqualTo(some(DatabaseType.POSTGRESQL));
             assertThat(config.host()).isEqualTo(some("localhost"));
             assertThat(config.database()).isEqualTo(some("testdb"));
-            assertThat(config.port()).isZero();
+            assertThat(config.port().isEmpty()).isTrue();
             assertThat(config.poolConfig()).isEqualTo(PoolConfig.DEFAULT);
             assertThat(config.poolConfig().ioThreads()).isZero();
             assertThat(config.poolConfig().effectiveIoThreads()).isGreaterThanOrEqualTo(8);
@@ -132,7 +132,7 @@ class DatabaseConnectorConfigTest {
             var config = databaseConnectorConfig(some("mydb"),
                                                   some(DatabaseType.MYSQL),
                                                   some("db.example.com"),
-                                                  3307,
+                                                  some(3307),
                                                   some("appdb"),
                                                   some("admin"),
                                                   some("secret"),
@@ -146,7 +146,7 @@ class DatabaseConnectorConfigTest {
             assertThat(config.name()).isEqualTo(some("mydb"));
             assertThat(config.type()).isEqualTo(some(DatabaseType.MYSQL));
             assertThat(config.host()).isEqualTo(some("db.example.com"));
-            assertThat(config.port()).isEqualTo(3307);
+            assertThat(config.port()).isEqualTo(some(3307));
             assertThat(config.database()).isEqualTo(some("appdb"));
             assertThat(config.properties()).containsEntry("useSSL", "true");
         }
@@ -267,7 +267,7 @@ class DatabaseConnectorConfigTest {
                 .build()
                 .unwrap();
 
-            assertThat(config.port()).isEqualTo(5433);
+            assertThat(config.port()).isEqualTo(some(5433));
         }
 
         @Test
@@ -323,7 +323,7 @@ class DatabaseConnectorConfigTest {
             var config = databaseConnectorConfig(some("db"),
                                                   some(DatabaseType.POSTGRESQL),
                                                   some("localhost"),
-                                                  0,
+                                                  none(),
                                                   some("testdb"),
                                                   none(),
                                                   none(),
@@ -427,7 +427,7 @@ class DatabaseConnectorConfigTest {
             var config = databaseConnectorConfig(some("db"),
                                                   some(DatabaseType.MYSQL),
                                                   some("localhost"),
-                                                  3306,
+                                                  some(3306),
                                                   some("testdb"),
                                                   none(),
                                                   none(),
@@ -464,7 +464,7 @@ class DatabaseConnectorConfigTest {
             var config = databaseConnectorConfig(some("db"),
                                                   some(DatabaseType.POSTGRESQL),
                                                   some("localhost"),
-                                                  0,
+                                                  none(),
                                                   some("testdb"),
                                                   none(),
                                                   none(),
