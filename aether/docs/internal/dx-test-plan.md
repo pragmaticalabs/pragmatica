@@ -365,18 +365,19 @@ import org.pragmatica.aether.resource.db.Sql;
 import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
+/// HelloWorld slice.
 @Slice
 public interface HelloWorld {
-    record GreetRequest(String name) {
-        public static Result<GreetRequest> greetRequest(String name) {
-            return Option.option(name)
-                         .filter(s -> !s.isBlank())
-                         .map(GreetRequest::new)
-                         .toResult(GreetError.invalidName());
+    record ValidGreetRequest(String name) {
+        public static Result<ValidGreetRequest> validGreetRequest(String name) {
+            return Verify.ensure(name,
+                                 Verify.Is::notBlank,
+                                 GreetError.invalidName())
+                         .map(ValidGreetRequest::new);
         }
     }
 
@@ -395,19 +396,13 @@ public interface HelloWorld {
         }
     }
 
-    Promise<GreetResponse> greet(GreetRequest request);
+    Promise<GreetResponse> greet(String name);
 
     static HelloWorld helloWorld(@Sql SqlConnector db) {
-        record helloWorld(SqlConnector db) implements HelloWorld {
-            private static final String INSERT_GREETING = "INSERT INTO greetings (name) VALUES (?)";
-
-            @Override
-            public Promise<GreetResponse> greet(GreetRequest request) {
-                return db.update(INSERT_GREETING, request.name())
-                         .map(_ -> new GreetResponse("Hello, " + request.name() + "!"));
-            }
-        }
-        return new helloWorld(db);
+        return name -> ValidGreetRequest.validGreetRequest(name)
+                                        .flatMap(request -> db.update("INSERT INTO greetings (name) VALUES (?)",
+                                                                      request.name())
+                                                              .map(_ -> new GreetResponse("Hello, " + request.name() + "!")));
     }
 }
 ```
