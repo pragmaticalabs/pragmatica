@@ -398,7 +398,7 @@ public interface HelloWorld {
     Promise<GreetResponse> greet(GreetRequest request);
 
     static HelloWorld helloWorld(@Sql SqlConnector db) {
-        record impl(SqlConnector db) implements HelloWorld {
+        record Impl(SqlConnector db) implements HelloWorld {
             private static final String INSERT_GREETING = "INSERT INTO greetings (name) VALUES (?)";
 
             @Override
@@ -407,7 +407,7 @@ public interface HelloWorld {
                          .map(_ -> new GreetResponse("Hello, " + request.name() + "!"));
             }
         }
-        return new impl(db);
+        return new Impl(db);
     }
 }
 ```
