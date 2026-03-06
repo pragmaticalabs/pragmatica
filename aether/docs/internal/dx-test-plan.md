@@ -414,9 +414,41 @@ public interface HelloWorld {
 }
 ```
 
+### 7d. Update HelloWorldTest
+
+The factory now requires a `SqlConnector`, so the unit test can no longer call `helloWorld()` directly.
+Update the test to verify input validation only — the DB path is tested via Forge integration:
+
+```java
+package com.example.myslice;
+
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
+class HelloWorldTest {
+
+    @Test
+    void validGreetRequest_validName_succeeds() {
+        HelloWorld.ValidGreetRequest.validGreetRequest("World")
+                  .onFailure(cause -> fail(cause.message()))
+                  .onSuccess(r -> assertThat(r.name()).isEqualTo("World"));
+    }
+
+    @Test
+    void validGreetRequest_emptyName_returnsError() {
+        HelloWorld.ValidGreetRequest.validGreetRequest("")
+                  .onSuccess(r -> fail("Expected failure for empty name"))
+                  .onFailure(cause -> assertThat(cause.message()).isEqualTo("Name cannot be empty"));
+    }
+}
+```
+
 ### Verify
 
 ```bash
+mvn jbct:format
 mvn clean install
 ./run-forge.sh
 ```
