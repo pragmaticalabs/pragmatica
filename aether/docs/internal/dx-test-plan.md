@@ -343,7 +343,6 @@ Edit `aether.toml`:
 
 ```toml
 [database]
-type = "POSTGRESQL"
 async_url = "postgresql://host.containers.internal:5432/forge"
 
 [database.pool_config]
