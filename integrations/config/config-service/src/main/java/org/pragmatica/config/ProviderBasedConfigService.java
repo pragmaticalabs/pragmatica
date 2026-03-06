@@ -235,24 +235,13 @@ public final class ProviderBasedConfigService implements ConfigService {
 
     // --- Type-specific resolvers ---
     private Option<Result<Object>> lookupPrimitive(String fullKey, Class<?> type) {
-        return primitiveParser(type).map(parser -> fetchAndParse(fullKey, type, parser));
+        return primitiveParser(type).map(parser -> fetchAndParse(fullKey, parser));
     }
 
-    private Result<Object> fetchAndParse(String fullKey, Class<?> type, Fn1<Option<Object>, String> parser) {
-        var parsed = provider.getString(fullKey)
-                             .flatMap(parser);
-        if (Verify.Is.none(parsed) && type == String.class) {
-            return ConfigError.sectionNotFound(fullKey).result();
-        }
-        return success(parsed.or(() -> primitiveDefault(type)));
-    }
-
-    private static Object primitiveDefault(Class<?> type) {
-        if (type == int.class || type == Integer.class) { return 0; }
-        if (type == long.class || type == Long.class) { return 0L; }
-        if (type == boolean.class || type == Boolean.class) { return false; }
-        if (type == double.class || type == Double.class) { return 0.0; }
-        return null;
+    private Result<Object> fetchAndParse(String fullKey, Fn1<Option<Object>, String> parser) {
+        return provider.getString(fullKey)
+                       .flatMap(parser)
+                       .toResult(ConfigError.sectionNotFound(fullKey));
     }
 
     private Option<Result<Object>> lookupEnum(String fullKey, Class<?> type) {

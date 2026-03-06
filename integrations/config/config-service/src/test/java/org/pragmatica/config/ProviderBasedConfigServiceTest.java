@@ -376,20 +376,15 @@ class ProviderBasedConfigServiceTest {
         }
 
         @Test
-        void config_missingPrimitiveFields_defaultToZeroValues() {
+        void config_missingRequiredField_returnsFailure() {
             var service = serviceFrom(Map.of(
                 "test.name", "myapp"
-                // missing "test.port" and "test.enabled" — primitives default to 0/false
+                // missing "test.port" and "test.enabled"
             ));
 
             var result = service.config("test", SimpleConfig.class);
 
-            assertThat(result.isSuccess()).isTrue();
-            result.onSuccess(config -> {
-                assertThat(config.name()).isEqualTo("myapp");
-                assertThat(config.port()).isZero();
-                assertThat(config.enabled()).isFalse();
-            });
+            assertThat(result.isFailure()).isTrue();
         }
 
         @Test
