@@ -83,6 +83,11 @@ public class InitCommand implements Callable<Integer> {
     description = "Override jbct-maven-plugin version")
     String jbctVersion;
 
+    @Option(
+    names = {"--version"},
+    description = "Override all dependency versions (pragmatica-lite, aether, jbct)")
+    String version;
+
     @Override
     public Integer call() {
         // Validate group ID
@@ -196,35 +201,44 @@ public class InitCommand implements Callable<Integer> {
     }
 
     private boolean hasVersionOverrides() {
-        return org.pragmatica.lang.Option.option(pragmaticaVersion)
-                  .isPresent() || org.pragmatica.lang.Option.option(aetherVersion)
-                                     .isPresent() || org.pragmatica.lang.Option.option(jbctVersion)
-                                                        .isPresent();
+        return org.pragmatica.lang.Option.option(version)
+                  .isPresent() || org.pragmatica.lang.Option.option(pragmaticaVersion)
+                                     .isPresent() || org.pragmatica.lang.Option.option(aetherVersion)
+                                                        .isPresent() || org.pragmatica.lang.Option.option(jbctVersion)
+                                                                           .isPresent();
     }
 
     private String effectivePragmaticaVersion() {
         return org.pragmatica.lang.Option.option(pragmaticaVersion)
+                  .orElse(() -> org.pragmatica.lang.Option.option(version))
                   .or(GitHubVersionResolver::defaultPragmaticaVersion);
     }
 
     private String effectiveAetherVersion() {
         return org.pragmatica.lang.Option.option(aetherVersion)
+                  .orElse(() -> org.pragmatica.lang.Option.option(version))
                   .or(GitHubVersionResolver::defaultAetherVersion);
     }
 
     private String effectiveJbctVersion() {
         return org.pragmatica.lang.Option.option(jbctVersion)
+                  .orElse(() -> org.pragmatica.lang.Option.option(version))
                   .or(GitHubVersionResolver::defaultJbctVersion);
     }
 
     private boolean initSliceProject() {
-        return SliceProjectInitializer.sliceProjectInitializer(projectDir, groupId, artifactId, sliceName)
-                                      .flatMap(initializer -> initializer.initialize()
-                                                                         .onSuccess(createdFiles -> printSliceCreatedFiles(createdFiles,
-                                                                                                                           initializer.sliceName())))
-                                      .onFailure(cause -> System.err.println("Error: " + cause.message()))
-                                      .map(_ -> true)
-                                      .or(false);
+        var initializer = hasVersionOverrides()
+                          ? SliceProjectInitializer.sliceProjectInitializer(projectDir, groupId, artifactId, sliceName,
+                                                                            effectiveJbctVersion(),
+                                                                            effectivePragmaticaVersion(),
+                                                                            effectiveAetherVersion())
+                          : SliceProjectInitializer.sliceProjectInitializer(projectDir, groupId, artifactId, sliceName);
+        return initializer.flatMap(init -> init.initialize()
+                                               .onSuccess(createdFiles -> printSliceCreatedFiles(createdFiles,
+                                                                                                 init.sliceName())))
+                          .onFailure(cause -> System.err.println("Error: " + cause.message()))
+                          .map(_ -> true)
+                          .or(false);
     }
 
     private void printSliceCreatedFiles(java.util.List<Path> createdFiles, String sliceName) {

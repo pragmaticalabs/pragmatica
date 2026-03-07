@@ -105,6 +105,36 @@ public final class SliceProjectInitializer {
                                                           resolver.aetherVersion()));
     }
 
+    /// Create initializer with explicit versions (no GitHub resolution).
+    public static Result<SliceProjectInitializer> sliceProjectInitializer(Path projectDir,
+                                                                          String groupId,
+                                                                          String artifactId,
+                                                                          String sliceName,
+                                                                          String jbctVersion,
+                                                                          String pragmaticaVersion,
+                                                                          String aetherVersion) {
+        if (artifactId == null || artifactId.isBlank()) {
+            return Causes.cause("artifactId must not be null or empty")
+                         .result();
+        }
+        if (groupId == null || groupId.isBlank()) {
+            return Causes.cause("groupId must not be null or empty")
+                         .result();
+        }
+        var basePackage = groupId + "." + artifactId.replace("-", "");
+        var effectiveName = (sliceName != null && !sliceName.isBlank())
+                            ? sliceName
+                            : ProjectFiles.toCamelCase(artifactId);
+        return Result.success(new SliceProjectInitializer(projectDir,
+                                                          groupId,
+                                                          artifactId,
+                                                          basePackage,
+                                                          effectiveName,
+                                                          jbctVersion,
+                                                          pragmaticaVersion,
+                                                          aetherVersion));
+    }
+
     /// Initialize the slice project structure.
     ///
     /// @return List of created files

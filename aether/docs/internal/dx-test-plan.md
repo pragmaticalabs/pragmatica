@@ -23,7 +23,9 @@ podman run -it --rm \
 > On Linux, add `--add-host=host.containers.internal:host-gateway` to the command above,
 > or use `--network=host` instead of `-p` flags.
 >
-> **`-v .m2/repository`** — mounts local Maven cache so 0.19.2-SNAPSHOT deps resolve (not published to Central yet). Remove this mount for a true clean-room test once 0.19.2 is published.
+> **`-v .m2/repository`** — mounts local Maven cache so locally-built deps resolve (not published to Central yet). Remove this mount for a true clean-room test once 0.19.2 is published.
+>
+> **`--version` flag** — when testing unreleased versions, use `jbct init --version 0.19.2` to override the dependency versions in generated pom.xml. Without this flag, `jbct init` uses the latest published release from GitHub (0.19.1).
 
 ### Inside the container — prerequisites
 
@@ -69,6 +71,7 @@ source ~/.bashrc    # or ~/.zshrc
 ```bash
 cd /tmp
 jbct init my-slice -g com.example -a my-slice --no-ai
+# For unreleased versions: jbct init my-slice -g com.example -a my-slice --no-ai --version 0.19.2
 cd my-slice
 ```
 
@@ -76,9 +79,9 @@ cd my-slice
 
 | # | Check | Command | Expected |
 |---|-------|---------|----------|
-| 2.1 | Slice source | `cat src/main/java/com/example/myslice/HelloWorld.java` | `@Slice`, `greet()`, `GreetRequest`, `GreetResponse`, `GreetError` |
-| 2.2 | Test source | `cat src/test/java/com/example/myslice/HelloWorldTest.java` | Two tests: `greet_validName_returnsGreeting`, `greet_emptyName_returnsError` |
-| 2.3 | Routes | `cat src/main/resources/com/example/myslice/routes.toml` | `greet = "GET /hello/{name}"` |
+| 2.1 | Slice source | `cat src/main/java/com/example/myslice/helloworld/HelloWorld.java` | `@Slice`, `greet()`, `GreetRequest`, `GreetResponse`, `GreetError` |
+| 2.2 | Test source | `cat src/test/java/com/example/myslice/helloworld/HelloWorldTest.java` | Two tests: `greet_validName_returnsGreeting`, `greet_emptyName_returnsError` |
+| 2.3 | Routes | `cat src/main/resources/com/example/myslice/helloworld/routes.toml` | `greet = "GET /hello/{name}"` |
 | 2.4 | Forge config | `cat forge.toml` | `nodes = 3`, `app_http_port = 8070` |
 | 2.5 | Aether config | `cat aether.toml` | DB section commented out |
 | 2.6 | Run script | `ls -la run-forge.sh` | Executable |
@@ -87,6 +90,7 @@ cd my-slice
 | 2.9 | README | `head -20 README.md` | Quick start with `./run-forge.sh` |
 | 2.10 | No CLAUDE.md | `ls CLAUDE.md 2>&1` | "No such file" |
 | 2.11 | Deploy scripts | `ls deploy-*.sh generate-blueprint.sh` | All four present |
+| 2.12a | jbct.toml basePackage | `grep basePackage jbct.toml` | `basePackage = "com.example.myslice"` |
 
 ### Verify: Build and test
 
@@ -120,7 +124,7 @@ mvn clean install
 | 3.1 | Forge starts | Watch console output | "Starting Aether Forge..." |
 | 3.2 | Greeting API | `curl -s http://localhost:8070/api/hello/World` | `{"greeting":"Hello, World!"}` |
 | 3.3 | Different name | `curl -s http://localhost:8070/api/hello/Alice` | `{"greeting":"Hello, Alice!"}` |
-| 3.4 | Empty name | `curl -s http://localhost:8070/api/hello/%20` | HTTP 400 with error message |
+| 3.4 | Empty name | `curl -s http://localhost:8070/api/hello/%20` | HTTP 422 with error message |
 | 3.5 | Dashboard | `curl -s -o /dev/null -w "%{http_code}" http://localhost:8888` | `200` |
 | 3.6 | Management API | `curl -s http://localhost:5150/api/status` | Cluster status JSON |
 | 3.7 | Nodes healthy | `curl -s http://localhost:5150/api/nodes` | 3 nodes listed |
@@ -143,9 +147,9 @@ jbct init inventory-app -g com.acme -a inventory-app --name InventoryService --n
 
 | # | Check | Command | Expected |
 |---|-------|---------|----------|
-| 4.1 | Custom name | `ls inventory-app/src/main/java/com/acme/inventoryapp/` | `InventoryService.java` |
-| 4.2 | Test file | `ls inventory-app/src/test/java/com/acme/inventoryapp/` | `InventoryServiceTest.java` |
-| 4.3 | Factory method | `grep "static InventoryService" inventory-app/src/main/java/com/acme/inventoryapp/InventoryService.java` | `inventoryService()` |
+| 4.1 | Custom name | `ls inventory-app/src/main/java/com/acme/inventoryapp/inventoryservice/` | `InventoryService.java` |
+| 4.2 | Test file | `ls inventory-app/src/test/java/com/acme/inventoryapp/inventoryservice/` | `InventoryServiceTest.java` |
+| 4.3 | Factory method | `grep "static InventoryService" inventory-app/src/main/java/com/acme/inventoryapp/inventoryservice/InventoryService.java` | `inventoryService()` |
 | 4.4 | Build | `cd inventory-app && mvn clean install` | `BUILD SUCCESS` |
 
 ---
@@ -289,7 +293,7 @@ getCount = "GET /count/{name}"
 
 [errors]
 default = 500
-HTTP_400 = ["*invalid*", "*empty*"]
+HTTP_422 = ["*Invalid*"]
 ```
 
 ### 6d. Format and build
@@ -355,7 +359,7 @@ max_connections = 20
 
 ### 7c. Update HelloWorld slice to use DB
 
-Update `HelloWorld.java` to inject `SqlConnector` and record greetings.
+Update `src/main/java/com/example/myslice/helloworld/HelloWorld.java` to inject `SqlConnector` and record greetings.
 
 > **Pattern: Parse, don't validate.** The `greet(String name)` method takes raw input from the HTTP
 > route — all entry points exposed to the external world receive potentially unsafe data. The
@@ -364,7 +368,7 @@ Update `HelloWorld.java` to inject `SqlConnector` and record greetings.
 > Validation failures are captured as typed errors (`GreetError`), never as exceptions.
 
 ```java
-package com.example.myslice;
+package com.example.myslice.helloworld;
 
 import org.pragmatica.aether.resource.db.Sql;
 import org.pragmatica.aether.resource.db.SqlConnector;
@@ -419,7 +423,7 @@ The factory now requires a `SqlConnector`, so the unit test can no longer call `
 Update the test to verify input validation only — the DB path is tested via Forge integration:
 
 ```java
-package com.example.myslice;
+package com.example.myslice.helloworld;
 
 import org.junit.jupiter.api.Test;
 
@@ -462,75 +466,59 @@ mvn clean install
 
 ---
 
-## Part 8: Add Pub/Sub Topic
+## Part 8: Add Pub/Sub Event
 
 **Goal:** Publisher in HelloWorld, subscriber in Analytics — events flow between slices.
 
-### 8a. Define the event and publisher qualifier
+### 8a. Generate event annotations
 
-Create `src/main/java/com/example/myslice/GreetEventPublisher.java`:
+Use `jbct add-event` to generate both publisher and subscription annotations:
 
-```java
-package com.example.myslice;
-
-import org.pragmatica.aether.slice.Publisher;
-import org.pragmatica.aether.slice.annotation.ResourceQualifier;
-
-import java.lang.annotation.ElementType;
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.lang.annotation.Target;
-
-@ResourceQualifier(type = Publisher.class, config = "messaging.greet-events")
-@Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.PARAMETER)
-public @interface GreetEventPublisher {}
+```bash
+cd /tmp/my-slice
+jbct add-event greet-event
 ```
 
-### 8b. Define the subscriber qualifier
+This creates:
+- `src/main/java/com/example/myslice/shared/resource/GreetEventPublisher.java` — publisher annotation
+- `src/main/java/com/example/myslice/shared/resource/GreetEventSubscription.java` — subscription annotation
 
-Create `src/main/java/com/example/myslice/analytics/GreetEventSubscription.java`:
+Both annotations use the config key `messaging.greet-event`.
 
-```java
-package com.example.myslice.analytics;
+### Verify add-event
 
-import org.pragmatica.aether.slice.Subscriber;
-import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 8.0a | Publisher created | `cat src/main/java/com/example/myslice/shared/resource/GreetEventPublisher.java` | `@ResourceQualifier(type = Publisher.class, config = "messaging.greet-event")` |
+| 8.0b | Subscription created | `cat src/main/java/com/example/myslice/shared/resource/GreetEventSubscription.java` | `@ResourceQualifier(type = Subscriber.class, config = "messaging.greet-event")` |
 
-import java.lang.annotation.ElementType;
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.lang.annotation.Target;
+### 8b. Define the event record
 
-@ResourceQualifier(type = Subscriber.class, config = "messaging.greet-events")
-@Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.METHOD)
-public @interface GreetEventSubscription {}
-```
-
-### 8c. Define the event record
-
-Add to `HelloWorld.java` (inside the interface):
+Add to `src/main/java/com/example/myslice/helloworld/HelloWorld.java` (inside the interface):
 
 ```java
 record GreetEvent(String name) {}
 ```
 
-### 8d. Update HelloWorld to publish events
+### 8c. Update HelloWorld to publish events
 
 Update the factory method to accept a publisher:
 
 ```java
+import com.example.myslice.shared.resource.GreetEventPublisher;
+
 static HelloWorld helloWorld(@Sql SqlConnector db,
                              @GreetEventPublisher Publisher<GreetEvent> greetPublisher) {
     record impl(SqlConnector db, Publisher<GreetEvent> greetPublisher) implements HelloWorld {
         private static final String INSERT_GREETING = "INSERT INTO greetings (name) VALUES (?)";
 
         @Override
-        public Promise<GreetResponse> greet(GreetRequest request) {
-            return db.update(INSERT_GREETING, request.name())
-                     .flatMap(_ -> greetPublisher.publish(new GreetEvent(request.name())))
-                     .map(_ -> new GreetResponse("Hello, " + request.name() + "!"));
+        public Promise<GreetResponse> greet(String name) {
+            return ValidGreetRequest.validGreetRequest(name)
+                                    .async()
+                                    .flatMap(request -> db.update(INSERT_GREETING, request.name())
+                                                          .flatMap(_ -> greetPublisher.publish(new GreetEvent(request.name())))
+                                                          .map(_ -> new GreetResponse("Hello, " + request.name() + "!")));
         }
     }
     return new impl(db, greetPublisher);
@@ -539,12 +527,13 @@ static HelloWorld helloWorld(@Sql SqlConnector db,
 
 > **Note:** Add `import org.pragmatica.aether.slice.Publisher;` to the imports.
 
-### 8e. Update Analytics to subscribe to events
+### 8d. Update Analytics to subscribe to events
 
 Update `src/main/java/com/example/myslice/analytics/Analytics.java` to add a subscriber method:
 
 ```java
-import com.example.myslice.HelloWorld;
+import com.example.myslice.helloworld.HelloWorld;
+import com.example.myslice.shared.resource.GreetEventSubscription;
 import org.pragmatica.lang.Unit;
 
 // Add inside the interface:
@@ -781,7 +770,7 @@ aether -c localhost:5150 blueprint validate target/blueprint.toml
 | # | Check | Command | Expected |
 |---|-------|---------|----------|
 | 17.1 | Valid request | `curl -s -w "\n%{http_code}" http://localhost:8070/api/hello/World` | 200 |
-| 17.2 | Empty name (400) | `curl -s -w "\n%{http_code}" http://localhost:8070/api/hello/%20` | 400 |
+| 17.2 | Empty name (422) | `curl -s -w "\n%{http_code}" http://localhost:8070/api/hello/%20` | 422 |
 | 17.3 | Error body | `curl -s http://localhost:8070/api/hello/%20` | JSON with error message |
 | 17.4 | Unknown route (404) | `curl -s -w "\n%{http_code}" http://localhost:8070/api/nonexistent` | 404 |
 

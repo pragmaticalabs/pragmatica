@@ -5,7 +5,7 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.ImageFromDockerfile;
 import org.testcontainers.utility.DockerImageName;
-import org.testcontainers.utility.MountableFile;
+import org.testcontainers.containers.BindMode;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -88,14 +88,6 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     private static final Path M2_REPO_PATH = Path.of(System.getProperty("user.home"), ".m2", "repository");
     private static final String CONTAINER_M2_PATH = "/home/aether/.m2/repository";
 
-    // Test artifact paths relative to Maven repository
-    // Note: Uses slice artifact IDs (echo-slice-echo-service), not module artifact IDs (echo-slice)
-    private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
-    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.19.1");
-    private static final String[] TEST_ARTIFACTS = {
-        "echo-slice-echo-service/" + TEST_ARTIFACT_VERSION + "/echo-slice-echo-service-" + TEST_ARTIFACT_VERSION + ".jar"
-    };
-
     /// Creates a new Aether node container with default ports and bridge networking.
     ///
     ///
@@ -120,7 +112,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
                                  .withStartupTimeout(STARTUP_TIMEOUT))
                  .withNetworkAliases(nodeId);
 
-        copyTestArtifacts(container);
+        mountLocalMavenRepo(container);
 
         return container;
     }
@@ -172,7 +164,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
                                  .forStatusCode(200)
                                  .withStartupTimeout(STARTUP_TIMEOUT));
 
-        copyTestArtifacts(container);
+        mountLocalMavenRepo(container);
 
         return container;
     }
@@ -183,19 +175,10 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         return HOST_NETWORKING_SUPPORTED;
     }
 
-    /// Copies test slice artifacts into the container's Maven repository.
-    private static void copyTestArtifacts(AetherNodeContainer container) {
-        for (var artifact : TEST_ARTIFACTS) {
-            var hostPath = M2_REPO_PATH.resolve(TEST_GROUP_PATH).resolve(artifact);
-            var containerPath = CONTAINER_M2_PATH + "/" + TEST_GROUP_PATH + "/" + artifact;
-
-            if (Files.exists(hostPath)) {
-                container.withCopyFileToContainer(
-                    MountableFile.forHostPath(hostPath, 0644),
-                    containerPath);
-            } else {
-                System.err.println("[WARN] Test artifact not found: " + hostPath);
-            }
+    /// Mounts the local Maven repository into the container for artifact resolution.
+    private static void mountLocalMavenRepo(AetherNodeContainer container) {
+        if (Files.isDirectory(M2_REPO_PATH)) {
+            container.withFileSystemBind(M2_REPO_PATH.toString(), CONTAINER_M2_PATH, BindMode.READ_ONLY);
         }
     }
 
