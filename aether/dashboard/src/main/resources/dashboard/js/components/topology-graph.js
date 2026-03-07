@@ -219,31 +219,23 @@ var TopologyGraph = (function() {
             g += renderArrow(toCx, toCy, -1, 0, '#484f58', '0.5');
         } else if (type === 'topic') {
             var slot = gutterSlots.rightSlots[edgeIndex] || 0;
-            var gutterX = leftOffset + layout.colX[2] + layout.colNodeWidth[2] + 10 + slot * 12;
+            var rightGutterX = leftOffset + layout.colX[2] + layout.colNodeWidth[2] + 10 + slot * 12;
+            var leftGutterX = 10 + slot * 12;
             var color = topicColorForConfig(topicConfig);
+            var midY = (fromCy + toCy) / 2;
 
-            var startX = from.x + from.nodeWidth;
-            var startY = from.y + NODE_HEIGHT / 2;
-            var endX2 = to.x;
-            var endY = to.y + NODE_HEIGHT / 2;
-
-            g += '<path d="M' + startX + ',' + startY + ' H' + gutterX + ' V' + endY + ' H' + endX2 + '"';
+            g += '<path d="M' + fromCx + ',' + fromCy + ' H' + rightGutterX + ' V' + midY + ' H' + leftGutterX + ' V' + toCy + ' H' + toCx + '"';
             g += ' fill="none" stroke="' + color + '" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.7"/>';
-            g += renderArrow(endX2, endY, -1, 0, color, '0.7');
+            g += renderArrow(toCx, toCy, -1, 0, color, '0.7');
         } else if (type === 'dependency') {
             var slot2 = gutterSlots.leftSlots[edgeIndex] || 0;
-            var gapStart = leftOffset + layout.colX[0] + layout.colNodeWidth[0];
-            var gapWidth = layout.colX[1] - layout.colX[0] - layout.colNodeWidth[0];
-            var midGutterX = gapStart + gapWidth / 2 - slot2 * 12;
+            var rightChannelX = leftOffset + layout.colX[1] + layout.colNodeWidth[1] + 10 + slot2 * 12;
+            var leftChannelX = leftOffset + layout.colX[0] + layout.colNodeWidth[0] + 10 + slot2 * 12;
+            var midY2 = (fromCy + toCy) / 2;
 
-            var startX2 = from.x;
-            var startY2 = from.y + NODE_HEIGHT / 2;
-            var endX3 = to.x;
-            var endY2 = to.y + NODE_HEIGHT / 2;
-
-            g += '<path d="M' + startX2 + ',' + startY2 + ' H' + midGutterX + ' V' + endY2 + ' H' + endX3 + '"';
+            g += '<path d="M' + fromCx + ',' + fromCy + ' H' + rightChannelX + ' V' + midY2 + ' H' + leftChannelX + ' V' + toCy + ' H' + toCx + '"';
             g += ' fill="none" stroke="#8b949e" stroke-width="1.5" opacity="0.5"/>';
-            g += renderArrow(endX3, endY2, 1, 0, '#8b949e', '0.5');
+            g += renderArrow(toCx, toCy, -1, 0, '#8b949e', '0.5');
         }
 
         g += '</g>';
