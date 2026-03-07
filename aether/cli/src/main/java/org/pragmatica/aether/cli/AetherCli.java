@@ -369,7 +369,15 @@ public class AetherCli implements Runnable {
     }
 
     private static String formatErrorResponse(HttpResponse<String> response) {
-        return "{\"error\":\"HTTP " + response.statusCode() + ": " + response.body() + "\"}";
+        var body = response.body();
+        if (body != null && body.startsWith("{")) {
+            return body;
+        }
+        var escaped = body == null
+                      ? ""
+                      : body.replace("\\", "\\\\")
+                            .replace("\"", "\\\"");
+        return "{\"error\":\"HTTP " + response.statusCode() + ": " + escaped + "\"}";
     }
 
     // ===== Subcommands =====

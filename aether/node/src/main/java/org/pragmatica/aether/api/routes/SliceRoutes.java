@@ -332,8 +332,12 @@ public final class SliceRoutes implements RouteSource {
 
     private Promise<List<Long>> applyDeployCommand(Artifact artifact, int instances) {
         var node = nodeSupplier.get();
-        AetherKey key = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
-        AetherValue value = AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(), instances);
+        var key = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
+        var existing = node.kvStore()
+                           .get(key)
+                           .filter(v -> v instanceof AetherValue.SliceTargetValue)
+                           .map(v -> ((AetherValue.SliceTargetValue) v).withInstances(instances));
+        AetherValue value = existing.or(AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(), instances));
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
         return node.apply(List.of(command));
     }
