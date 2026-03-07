@@ -80,6 +80,10 @@ public final class ManagementRouter {
             response.okText(value.toString());
             return;
         }
+        if (value instanceof String json) {
+            response.ok(json);
+            return;
+        }
         writeJson(value, response);
     }
 
