@@ -109,17 +109,30 @@ public class AetherCli implements Runnable {
         }
     }
 
+    @SuppressWarnings("JBCT-SEQ-01")
     private static boolean isReplMode(String[] args) {
-        // REPL if no args, or only connection-related options
+        // REPL if no args, or only connection-related options and their values
         if (args.length == 0) {
             return true;
         }
-        return Arrays.stream(args)
-                     .allMatch(AetherCli::isConnectionOption);
+        var skipNext = false;
+        for (var arg : args) {
+            if (skipNext) {
+                skipNext = false;
+                continue;
+            }
+            if (isConnectionFlag(arg)) {
+                if (!arg.contains("=")) {
+                    skipNext = true;
+                }
+            } else {
+                return false;
+            }
+        }
+        return true;
     }
 
-    @SuppressWarnings("JBCT-SEQ-01")
-    private static boolean isConnectionOption(String arg) {
+    private static boolean isConnectionFlag(String arg) {
         return arg.startsWith("-c") || arg.startsWith("--connect") || arg.startsWith("--config") || arg.startsWith("-k") || arg.startsWith("--api-key");
     }
 

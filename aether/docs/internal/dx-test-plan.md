@@ -608,6 +608,17 @@ aether -c localhost:5150 slices
 aether -c localhost:5150 events
 ```
 
+> **REPL mode:** Running `aether -c localhost:5150` without a subcommand enters interactive
+> REPL mode. You can then type commands without the `aether -c localhost:5150` prefix:
+> ```bash
+> # Enter REPL mode
+> aether -c localhost:5150
+> # Then type commands directly:
+> > status
+> > nodes
+> > slices
+> ```
+
 ### Verify
 
 | # | Check | Command | Expected |
@@ -617,30 +628,31 @@ aether -c localhost:5150 events
 | 10.3 | Health | `aether -c localhost:5150 health` | Health status per node |
 | 10.4 | Slices | `aether -c localhost:5150 slices` | Both HelloWorld and Analytics |
 | 10.5 | Events | `aether -c localhost:5150 events` | Recent cluster events |
+| 10.6 | REPL mode | `aether -c localhost:5150` (no subcommand) | Enters interactive REPL |
 
 ---
 
 ## Part 11: Management API Deep Dive
 
-**Goal:** Exercise the management API endpoints directly.
+**Goal:** Exercise the management API endpoints via CLI (and curl for HTTP-only probes).
 
 ### Verify
 
 | # | Check | Command | Expected |
 |---|-------|---------|----------|
-| 11.1 | Cluster status | `curl -s localhost:5150/api/status \| jq .` | JSON with leader, nodes, slices |
+| 11.1 | Cluster status | `aether -c localhost:5150 status` | JSON with leader, nodes, slices |
 | 11.2 | Health probes | `curl -s localhost:5150/health/live` | `{"status":"UP"}` |
 | 11.3 | Readiness | `curl -s localhost:5150/health/ready` | `{"status":"UP"}` |
-| 11.4 | Node list | `curl -s localhost:5150/api/nodes \| jq .` | Array of 3 nodes |
-| 11.5 | Slice list | `curl -s localhost:5150/api/slices \| jq .` | Both slices with instances |
+| 11.4 | Node list | `aether -c localhost:5150 nodes` | Array of 3 nodes |
+| 11.5 | Slice list | `aether -c localhost:5150 slices` | Both slices with instances |
 | 11.6 | Routes | `curl -s localhost:5150/api/routes \| jq .` | `/api/hello/{name}`, `/api/analytics/count/{name}` |
-| 11.7 | Blueprint | `curl -s localhost:5150/api/blueprint \| jq .` | Active blueprint |
-| 11.8 | Metrics | `curl -s localhost:5150/api/metrics \| jq .` | CPU, memory, latency |
-| 11.9 | Invocation metrics | `curl -s localhost:5150/api/invocation-metrics \| jq .` | Per-method stats |
-| 11.10 | Events | `curl -s localhost:5150/api/events \| jq .` | Recent events array |
-| 11.11 | Config | `curl -s localhost:5150/api/config \| jq .` | Runtime configuration |
+| 11.7 | Blueprint | `aether -c localhost:5150 blueprint list` | Active blueprint |
+| 11.8 | Metrics | `aether -c localhost:5150 metrics` | CPU, memory, latency |
+| 11.9 | Invocation metrics | `aether -c localhost:5150 invocation-metrics` | Per-method stats |
+| 11.10 | Events | `aether -c localhost:5150 events` | Recent events array |
+| 11.11 | Config | `aether -c localhost:5150 config list` | Runtime configuration |
 | 11.12 | Prometheus | `curl -s localhost:5150/api/prometheus` | Prometheus text format |
-| 11.13 | Traces | `curl -s localhost:5150/api/traces \| jq .` | Recent invocation traces |
+| 11.13 | Traces | `aether -c localhost:5150 traces list` | Recent invocation traces |
 
 ---
 
@@ -658,11 +670,11 @@ for i in $(seq 1 20); do curl -s http://localhost:8070/api/hello/User$i > /dev/n
 
 | # | Check | Command | Expected |
 |---|-------|---------|----------|
-| 12.1 | Invocation metrics | `curl -s localhost:5150/api/invocation-metrics` | `greet` method with 20 calls |
-| 12.2 | Trace list | `curl -s 'localhost:5150/api/traces?limit=5'` | Recent trace entries |
-| 12.3 | Trace detail | `curl -s localhost:5150/api/traces/{requestId}` | Full call tree |
-| 12.4 | Trace stats | `curl -s localhost:5150/api/traces/stats` | Aggregated statistics |
-| 12.5 | Slow invocations | `curl -s localhost:5150/api/invocation-metrics/slow` | Slowest calls |
+| 12.1 | Invocation metrics | `aether -c localhost:5150 invocation-metrics list` | `greet` method with 20 calls |
+| 12.2 | Trace list | `aether -c localhost:5150 traces list` | Recent trace entries |
+| 12.3 | Trace detail | `aether -c localhost:5150 traces get {requestId}` | Full call tree |
+| 12.4 | Trace stats | `aether -c localhost:5150 traces stats` | Aggregated statistics |
+| 12.5 | Slow invocations | `aether -c localhost:5150 invocation-metrics slow` | Slowest calls |
 | 12.6 | Node metrics | `curl -s localhost:5150/api/node-metrics` | Per-node CPU/memory |
 | 12.7 | Comprehensive | `curl -s localhost:5150/api/metrics/comprehensive` | Full metrics snapshot |
 
@@ -670,12 +682,10 @@ for i in $(seq 1 20); do curl -s http://localhost:8070/api/hello/User$i > /dev/n
 
 ```bash
 # Set depth threshold for HelloWorld.greet to 3
-curl -s -X POST localhost:5150/api/observability/depth \
-  -H "Content-Type: application/json" \
-  -d '{"method":"HelloWorld.greet","depth":3}'
+aether -c localhost:5150 observability depth-set HelloWorld.greet 3
 
 # Verify
-curl -s localhost:5150/api/observability/depth
+aether -c localhost:5150 observability depth
 ```
 
 ---
@@ -706,20 +716,15 @@ cat target/blueprint.toml
 
 ### Verify
 
-| # | Check | Expected |
-|---|-------|----------|
-| 14.1 | Blueprint generated | File exists with `[[slices]]` entries |
-| 14.2 | Both slices present | HelloWorld and Analytics in blueprint |
-| 14.3 | Validate via API | `curl -s -X POST localhost:5150/api/blueprint/validate -d @target/blueprint.toml` returns valid |
-| 14.4 | List blueprints | `curl -s localhost:5150/api/blueprints` shows active blueprint |
-| 14.5 | Blueprint status | `curl -s localhost:5150/api/blueprint/{id}/status` shows deployed |
-
-### 14b. CLI blueprint management
-
-```bash
-aether -c localhost:5150 blueprint list
-aether -c localhost:5150 blueprint validate target/blueprint.toml
-```
+| # | Check | Command | Expected |
+|---|-------|---------|----------|
+| 14.1 | Blueprint generated | `cat target/blueprint.toml` | File exists with `[[slices]]` entries |
+| 14.2 | Both slices present | `cat target/blueprint.toml` | HelloWorld and Analytics in blueprint |
+| 14.3 | Validate blueprint | `aether -c localhost:5150 blueprint validate target/blueprint.toml` | Returns valid |
+| 14.4 | List blueprints | `aether -c localhost:5150 blueprint list` | Shows active blueprint |
+| 14.5 | Blueprint status | `aether -c localhost:5150 blueprint status {id}` | Shows deployed |
+| 14.6 | Apply blueprint | `aether -c localhost:5150 blueprint apply target/blueprint.toml` | Blueprint applied |
+| 14.7 | Get blueprint | `aether -c localhost:5150 blueprint get {id}` | Blueprint details |
 
 ---
 
@@ -731,11 +736,11 @@ aether -c localhost:5150 blueprint validate target/blueprint.toml
 
 | # | Check | Command | Expected |
 |---|-------|---------|----------|
-| 15.1 | Current scale | `curl -s localhost:5150/api/slices` | 3 instances each |
-| 15.2 | Scale up | `curl -s -X POST 'localhost:5150/api/scale?slice=HelloWorld&instances=5'` | Success |
-| 15.3 | Verify scale | `curl -s localhost:5150/api/slices` | HelloWorld at 5 instances |
-| 15.4 | Scale down | `curl -s -X POST 'localhost:5150/api/scale?slice=HelloWorld&instances=2'` | Success |
-| 15.5 | Via CLI | `aether -c localhost:5150 scale HelloWorld 3` | Scaled back to 3 |
+| 15.1 | Current scale | `aether -c localhost:5150 slices` | 3 instances each |
+| 15.2 | Scale up | `aether -c localhost:5150 scale HelloWorld -n 5` | Success |
+| 15.3 | Verify scale | `aether -c localhost:5150 slices` | HelloWorld at 5 instances |
+| 15.4 | Scale down | `aether -c localhost:5150 scale HelloWorld -n 2` | Success |
+| 15.5 | Scale back | `aether -c localhost:5150 scale HelloWorld -n 3` | Scaled back to 3 |
 
 ---
 
@@ -747,10 +752,10 @@ aether -c localhost:5150 blueprint validate target/blueprint.toml
 
 | # | Check | Command | Expected |
 |---|-------|---------|----------|
-| 16.1 | Node lifecycle | `curl -s localhost:5150/api/nodes/lifecycle` | All nodes ACTIVE |
-| 16.2 | Drain a node | `curl -s -X POST localhost:5150/api/node/drain/{nodeId}` | Node transitions to DRAINING |
+| 16.1 | Node lifecycle | `aether -c localhost:5150 node lifecycle` | All nodes ACTIVE |
+| 16.2 | Drain a node | `aether -c localhost:5150 node drain {nodeId}` | Node transitions to DRAINING |
 | 16.3 | API still works | `curl -s http://localhost:8070/api/hello/World` | Still responds (traffic re-routed) |
-| 16.4 | Activate node | `curl -s -X POST localhost:5150/api/node/activate/{nodeId}` | Node back to ACTIVE |
+| 16.4 | Activate node | `aether -c localhost:5150 node activate {nodeId}` | Node back to ACTIVE |
 
 ---
 
@@ -804,11 +809,11 @@ aether -c localhost:5150 blueprint validate target/blueprint.toml
 | 7 | Add database | 5 |
 | 8 | Add pub/sub topic | 4 |
 | 9 | JBCT format/lint | 5 |
-| 10 | CLI exploration | 5 |
+| 10 | CLI exploration | 6 |
 | 11 | Management API | 13 |
 | 12 | Observability | 7+ |
 | 13 | Dashboard | 4 |
-| 14 | Blueprint management | 5+ |
+| 14 | Blueprint management | 7+ |
 | 15 | Scaling | 5 |
 | 16 | Node lifecycle | 4 |
 | 17 | Error handling | 4 |
