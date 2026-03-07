@@ -191,9 +191,13 @@ public interface NodeDeploymentManager {
             }
 
             private void forceCleanupSlice(SliceNodeKey sliceKey) {
-                sliceStore.deactivateSlice(sliceKey.artifact())
-                          .flatMap(_ -> sliceStore.unloadSlice(sliceKey.artifact()))
-                          .onFailure(cause -> logCleanupFailure(sliceKey, cause));
+                unpublishEndpoints(sliceKey).flatMap(_ -> unpublishTopicSubscriptions(sliceKey))
+                                  .flatMap(_ -> unpublishScheduledTasks(sliceKey))
+                                  .flatMap(_ -> unpublishHttpRoutes(sliceKey))
+                                  .onSuccessRun(() -> unregisterSliceFromInvocation(sliceKey))
+                                  .flatMap(_ -> sliceStore.deactivateSlice(sliceKey.artifact()))
+                                  .flatMap(_ -> sliceStore.unloadSlice(sliceKey.artifact()))
+                                  .onFailure(cause -> logCleanupFailure(sliceKey, cause));
             }
 
             private void logCleanupFailure(SliceNodeKey sliceKey, Cause cause) {

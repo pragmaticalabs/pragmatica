@@ -161,6 +161,49 @@ class EventAdderTest {
                   .exists();
     }
 
+    @Test
+    void addEvent_appendsMessagingConfigToAetherToml() throws Exception {
+        var projectDir = setupProject();
+        Files.writeString(projectDir.resolve("aether.toml"), """
+            # Aether runtime configuration
+            [database]
+            async_url = "postgresql://localhost:5432/forge"
+            """);
+        EventAdder.eventAdder(projectDir, "expensive-order")
+                   .flatMap(EventAdder::addEvent);
+        var toml = Files.readString(projectDir.resolve("aether.toml"));
+        assertThat(toml)
+                  .contains("[messaging.expensive-order]");
+        assertThat(toml)
+                  .contains("topic_name = \"expensive-order\"");
+    }
+
+    @Test
+    void addEvent_skipsConfigIfSectionAlreadyExists() throws Exception {
+        var projectDir = setupProject();
+        var originalToml = """
+            [messaging.expensive-order]
+            topic_name = "custom-topic"
+            """;
+        Files.writeString(projectDir.resolve("aether.toml"), originalToml);
+        EventAdder.eventAdder(projectDir, "expensive-order")
+                   .flatMap(EventAdder::addEvent);
+        var toml = Files.readString(projectDir.resolve("aether.toml"));
+        assertThat(toml)
+                  .isEqualTo(originalToml);
+    }
+
+    @Test
+    void addEvent_succeedsWithoutAetherToml() throws Exception {
+        var projectDir = setupProject();
+        var result = EventAdder.eventAdder(projectDir, "test-event")
+                                .flatMap(EventAdder::addEvent);
+        assertThat(result.isSuccess())
+                  .isTrue();
+        assertThat(projectDir.resolve("aether.toml"))
+                  .doesNotExist();
+    }
+
     private Path setupProject() throws Exception {
         var projectDir = tempDir.resolve("my-slice-project");
         Files.createDirectories(projectDir);

@@ -483,7 +483,7 @@ This creates:
 - `src/main/java/com/example/myslice/shared/resource/GreetEventPublisher.java` — publisher annotation
 - `src/main/java/com/example/myslice/shared/resource/GreetEventSubscription.java` — subscription annotation
 
-Both annotations use the config key `messaging.greet-event`.
+It also appends a `[messaging.greet-event]` section to `aether.toml` so the runtime can find the messaging config.
 
 ### Verify add-event
 
@@ -491,6 +491,7 @@ Both annotations use the config key `messaging.greet-event`.
 |---|-------|---------|----------|
 | 8.0a | Publisher created | `cat src/main/java/com/example/myslice/shared/resource/GreetEventPublisher.java` | `@ResourceQualifier(type = Publisher.class, config = "messaging.greet-event")` |
 | 8.0b | Subscription created | `cat src/main/java/com/example/myslice/shared/resource/GreetEventSubscription.java` | `@ResourceQualifier(type = Subscriber.class, config = "messaging.greet-event")` |
+| 8.0c | Config added | `grep -A1 'messaging.greet-event' aether.toml` | `[messaging.greet-event]` with `topic_name = "greet-event"` |
 
 ### 8b. Define the event record
 

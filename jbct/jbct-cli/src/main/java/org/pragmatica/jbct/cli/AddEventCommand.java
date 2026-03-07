@@ -61,6 +61,7 @@ public class AddEventCommand implements Callable<Integer> {
         }
         System.out.println();
         System.out.println("Config key: " + result.adder().configKey());
+        System.out.println("Updated:    aether.toml (added [" + result.adder().configKey() + "] section)");
         System.out.println();
         System.out.println("Usage:");
         System.out.println("  Publisher:  @" + result.adder().eventCamelCase() + "Publisher Publisher<YourEvent> publisher");

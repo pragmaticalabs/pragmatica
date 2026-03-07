@@ -46,9 +46,11 @@ public final class EventAdder {
                   .flatMap(config -> buildEventAdder(projectDir, eventName, packageOverride, configKeyOverride, config));
     }
 
-    /// Add the event annotation files to the project.
+    /// Add the event annotation files and messaging config to the project.
     public Result<List<Path>> addEvent() {
-        return createDirectories().flatMap(_ -> createAnnotationFiles());
+        return createDirectories()
+                  .flatMap(_ -> createAnnotationFiles())
+                  .flatMap(paths -> appendMessagingConfig().map(_ -> paths));
     }
 
     public String eventName() {
@@ -88,6 +90,26 @@ public final class EventAdder {
                             ProjectFiles.writeNewFile(subscriptionPath, substituteVariables(SUBSCRIPTION_TEMPLATE)));
     }
 
+    private Result<Unit> appendMessagingConfig() {
+        var aetherToml = projectDir.resolve("aether.toml");
+        if (!Files.exists(aetherToml)) {
+            return Result.success(Unit.unit());
+        }
+        try {
+            var existing = Files.readString(aetherToml);
+            var sectionHeader = "[" + configKey + "]";
+            if (existing.contains(sectionHeader)) {
+                return Result.success(Unit.unit());
+            }
+            var configSection = substituteVariables(MESSAGING_CONFIG_TEMPLATE);
+            Files.writeString(aetherToml, existing + configSection);
+            return Result.success(Unit.unit());
+        } catch (Exception e) {
+            return Causes.cause("Failed to update aether.toml: " + e.getMessage())
+                         .result();
+        }
+    }
+
     private static Result<Unit> validateEventName(String eventName) {
         if (eventName == null || eventName.isBlank()) {
             return Causes.cause("Event name must not be null or empty")
@@ -118,6 +140,7 @@ public final class EventAdder {
         return template.replace("{{annotationPackage}}", annotationPackage)
                        .replace("{{eventCamelCase}}", eventCamelCase)
                        .replace("{{configKey}}", configKey)
+                       .replace("{{eventName}}", eventName)
                        .replace("{{eventDescription}}", eventDescription);
     }
 
@@ -157,5 +180,11 @@ public final class EventAdder {
         @Retention(RetentionPolicy.RUNTIME)
         @Target(ElementType.METHOD)
         public @interface {{eventCamelCase}}Subscription {}
+        """;
+
+    private static final String MESSAGING_CONFIG_TEMPLATE = """
+
+        [{{configKey}}]
+        topic_name = "{{eventName}}"
         """;
 }
