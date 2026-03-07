@@ -1,11 +1,9 @@
 package org.pragmatica.jbct.init;
 
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -44,8 +42,8 @@ public final class SliceAdder {
     /// Create a SliceAdder with an optional package override.
     public static Result<SliceAdder> sliceAdder(Path projectDir, String sliceName, String packageOverride) {
         return validateSliceName(sliceName)
-                  .flatMap(_ -> readPomProperties(projectDir))
-                  .flatMap(pom -> buildSliceAdder(projectDir, sliceName, packageOverride, pom));
+                  .flatMap(_ -> ProjectConfig.projectConfig(projectDir))
+                  .flatMap(config -> buildSliceAdder(projectDir, sliceName, packageOverride, config));
     }
 
     /// Add the slice files to the existing project.
@@ -84,16 +82,16 @@ public final class SliceAdder {
         var packagePath = slicePackage.replace(".", "/");
         var srcMainJava = projectDir.resolve("src/main/java");
         var srcTestJava = projectDir.resolve("src/test/java");
-        return Result.allOf(writeFile(srcMainJava.resolve(packagePath).resolve(sliceName + ".java"),
-                                      substituteVariables(SLICE_INTERFACE_TEMPLATE)),
-                            writeFile(projectDir.resolve("src/main/resources/" + packagePath + "/routes.toml"),
-                                      substituteVariables(ROUTES_TOML_TEMPLATE)),
-                            writeFile(projectDir.resolve("src/main/resources/slices/" + sliceName + ".toml"),
-                                      substituteVariables(SLICE_CONFIG_TEMPLATE)),
-                            writeFile(projectDir.resolve("src/main/resources/META-INF/dependencies/" + slicePackage + "." + sliceName),
-                                      "# Slice dependencies (one artifact per line)\n"),
-                            writeFile(srcTestJava.resolve(packagePath).resolve(sliceName + "Test.java"),
-                                      substituteVariables(SLICE_TEST_TEMPLATE)));
+        return Result.allOf(ProjectFiles.writeNewFile(srcMainJava.resolve(packagePath).resolve(sliceName + ".java"),
+                                                      substituteVariables(SLICE_INTERFACE_TEMPLATE)),
+                            ProjectFiles.writeNewFile(projectDir.resolve("src/main/resources/" + packagePath + "/routes.toml"),
+                                                      substituteVariables(ROUTES_TOML_TEMPLATE)),
+                            ProjectFiles.writeNewFile(projectDir.resolve("src/main/resources/slices/" + sliceName + ".toml"),
+                                                      substituteVariables(SLICE_CONFIG_TEMPLATE)),
+                            ProjectFiles.writeNewFile(projectDir.resolve("src/main/resources/META-INF/dependencies/" + slicePackage + "." + sliceName),
+                                                      "# Slice dependencies (one artifact per line)\n"),
+                            ProjectFiles.writeNewFile(srcTestJava.resolve(packagePath).resolve(sliceName + "Test.java"),
+                                                      substituteVariables(SLICE_TEST_TEMPLATE)));
     }
 
     private static Result<Unit> validateSliceName(String sliceName) {
@@ -108,61 +106,25 @@ public final class SliceAdder {
         return Result.success(Unit.unit());
     }
 
-    private static Result<PomProperties> readPomProperties(Path projectDir) {
-        var pomPath = projectDir.resolve("pom.xml");
-        if (!Files.exists(pomPath)) {
-            return Causes.cause("No pom.xml found in " + projectDir + ". Run this command from an existing slice project.")
-                         .result();
-        }
-        try {
-            var content = Files.readString(pomPath);
-            return extractPomProperty(content, "groupId")
-                      .flatMap(groupId -> extractPomProperty(content, "artifactId")
-                                             .map(artifactId -> new PomProperties(groupId, artifactId)));
-        } catch (IOException e) {
-            return Causes.cause("Failed to read pom.xml: " + e.getMessage())
-                         .result();
-        }
-    }
-
-    private static Result<String> extractPomProperty(String pomContent, String propertyName) {
-        var pattern = Pattern.compile("<" + propertyName + ">([^<]+)</" + propertyName + ">");
-        var matcher = pattern.matcher(pomContent);
-        if (matcher.find()) {
-            return Result.success(matcher.group(1).trim());
-        }
-        return Causes.cause("Could not find <" + propertyName + "> in pom.xml")
-                     .result();
-    }
-
     private static Result<SliceAdder> buildSliceAdder(Path projectDir,
                                                        String sliceName,
                                                        String packageOverride,
-                                                       PomProperties pom) {
-        var basePackage = pom.groupId() + "." + pom.artifactId().replace("-", "");
-        var slicePackage = Option.option(packageOverride)
-                                 .filter(s -> !s.isBlank())
-                                 .or(() -> basePackage + "." + sliceName.toLowerCase());
+                                                       ProjectConfig config) {
+        var basePackage = config.basePackage();
+        var slicePackage = resolveSlicePackage(config, sliceName, packageOverride);
         var slicePackagePath = projectDir.resolve("src/main/java/" + slicePackage.replace(".", "/"));
         if (Files.exists(slicePackagePath)) {
             return Causes.cause("Package already exists: " + slicePackage + ". Choose a different slice name or package.")
                          .result();
         }
-        return Result.success(new SliceAdder(projectDir, pom.groupId(), pom.artifactId(), basePackage, sliceName, slicePackage));
+        return Result.success(new SliceAdder(projectDir, config.groupId(), config.artifactId(), basePackage, sliceName, slicePackage));
     }
 
-    private static Result<Path> writeFile(Path targetPath, String content) {
-        if (Files.exists(targetPath)) {
-            return Causes.cause("File already exists: " + targetPath)
-                         .result();
+    private static String resolveSlicePackage(ProjectConfig config, String sliceName, String packageOverride) {
+        if (packageOverride == null || packageOverride.isBlank()) {
+            return config.basePackage() + "." + sliceName.toLowerCase();
         }
-        try {
-            Files.writeString(targetPath, content);
-            return Result.success(targetPath);
-        } catch (IOException e) {
-            return Causes.cause("Failed to write " + targetPath + ": " + e.getMessage())
-                         .result();
-        }
+        return config.resolvePackage(packageOverride);
     }
 
     private String substituteVariables(String template) {
@@ -173,8 +135,6 @@ public final class SliceAdder {
                        .replace("{{factoryMethodName}}", factoryMethodName)
                        .replace("{{kebabCase}}", kebabCase);
     }
-
-    private record PomProperties(String groupId, String artifactId) {}
 
     // Inline templates
 

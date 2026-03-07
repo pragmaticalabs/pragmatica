@@ -94,7 +94,7 @@ public final class SliceProjectInitializer {
         var basePackage = groupId + "." + artifactId.replace("-", "");
         var effectiveName = (sliceName != null && !sliceName.isBlank())
                             ? sliceName
-                            : toCamelCase(artifactId);
+                            : ProjectFiles.toCamelCase(artifactId);
         return Result.success(new SliceProjectInitializer(projectDir,
                                                           groupId,
                                                           artifactId,
@@ -127,9 +127,10 @@ public final class SliceProjectInitializer {
             Files.createDirectories(slicesDir);
             Files.createDirectories(schemaDir);
             var packagePath = basePackage.replace(".", "/");
-            Files.createDirectories(srcMainJava.resolve(packagePath));
-            Files.createDirectories(srcTestJava.resolve(packagePath));
-            Files.createDirectories(projectDir.resolve("src/main/resources/" + packagePath));
+            var sliceSubPackage = sliceName.toLowerCase();
+            Files.createDirectories(srcMainJava.resolve(packagePath + "/" + sliceSubPackage));
+            Files.createDirectories(srcTestJava.resolve(packagePath + "/" + sliceSubPackage));
+            Files.createDirectories(projectDir.resolve("src/main/resources/" + packagePath + "/" + sliceSubPackage));
             return Result.success(Unit.unit());
         } catch (Exception e) {
             return Causes.cause("Failed to create directories: " + e.getMessage())
@@ -174,7 +175,8 @@ public final class SliceProjectInitializer {
     }
 
     private Result<List<Path>> createSourceFiles() {
-        var packagePath = basePackage.replace(".", "/");
+        var sliceSubPackage = sliceName.toLowerCase();
+        var packagePath = basePackage.replace(".", "/") + "/" + sliceSubPackage;
         var srcMainJava = projectDir.resolve("src/main/java");
         var srcTestJava = projectDir.resolve("src/test/java");
         return Result.allOf(createFile("Slice.java.template",
@@ -216,7 +218,8 @@ public final class SliceProjectInitializer {
     }
 
     private Result<List<Path>> createRoutes() {
-        var packagePath = basePackage.replace(".", "/");
+        var sliceSubPackage = sliceName.toLowerCase();
+        var packagePath = basePackage.replace(".", "/") + "/" + sliceSubPackage;
         var routesDir = projectDir.resolve("src/main/resources/" + packagePath);
         return createFile("routes.toml.template", routesDir.resolve("routes.toml")).map(path -> List.of(path));
     }
@@ -228,7 +231,7 @@ public final class SliceProjectInitializer {
     private Result<Path> createDependencyManifest() {
         try{
             var resources = projectDir.resolve("src/main/resources/META-INF/dependencies");
-            var dependencyFile = resources.resolve(basePackage + "." + sliceName);
+            var dependencyFile = resources.resolve(basePackage + "." + sliceName.toLowerCase() + "." + sliceName);
             Files.writeString(dependencyFile, "# Slice dependencies (one artifact per line)\n");
             return Result.success(dependencyFile);
         } catch (Exception e) {
@@ -297,27 +300,17 @@ public final class SliceProjectInitializer {
     }
 
     private String substituteVariables(String content) {
+        var slicePackage = basePackage + "." + sliceName.toLowerCase();
         return content.replace("{{groupId}}", groupId)
                       .replace("{{artifactId}}", artifactId)
                       .replace("{{sliceName}}", sliceName)
+                      .replace("{{slicePackage}}", slicePackage)
                       .replace("{{basePackage}}", basePackage)
                       .replace("{{factoryMethodName}}",
                                Character.toLowerCase(sliceName.charAt(0)) + sliceName.substring(1))
                       .replace("{{jbctVersion}}", jbctVersion)
                       .replace("{{pragmaticaVersion}}", pragmaticaVersion)
                       .replace("{{aetherVersion}}", aetherVersion);
-    }
-
-    private static String toCamelCase(String s) {
-        var words = s.split("-");
-        var sb = new StringBuilder();
-        for (var word : words) {
-            if (!word.isEmpty()) {
-                sb.append(Character.toUpperCase(word.charAt(0)));
-                sb.append(word.substring(1));
-            }
-        }
-        return sb.toString();
     }
 
     private static void makeExecutable(Path path) {
@@ -502,6 +495,9 @@ public final class SliceProjectInitializer {
         """;
 
     private static final String JBCT_TOML_TEMPLATE = """
+        [project]
+        basePackage = "{{basePackage}}"
+
         [format]
         maxLineLength = 120
         indentSize = 4
@@ -522,7 +518,7 @@ public final class SliceProjectInitializer {
         """;
 
     private static final String SLICE_INTERFACE_TEMPLATE = """
-        package {{basePackage}};
+        package {{slicePackage}};
 
         import org.pragmatica.aether.slice.annotation.Slice;
         import org.pragmatica.lang.Cause;
@@ -568,7 +564,7 @@ public final class SliceProjectInitializer {
         """;
 
     private static final String SLICE_TEST_TEMPLATE = """
-        package {{basePackage}};
+        package {{slicePackage}};
 
         import org.junit.jupiter.api.Test;
 
