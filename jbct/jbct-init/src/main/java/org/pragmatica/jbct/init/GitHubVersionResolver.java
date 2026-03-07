@@ -82,7 +82,11 @@ public final class GitHubVersionResolver {
 
     /// Get latest jbct-cli version.
     /// Uses the newer of: running binary version or latest GitHub release.
+    /// Running version is only considered if it is a stable release (no "-" suffix like -SNAPSHOT or -candidate).
     public String jbctVersion() {
+        if (RUNNING_JBCT_VERSION.contains("-")) {
+            return monorepoVersion();
+        }
         return maxVersion(RUNNING_JBCT_VERSION, monorepoVersion());
     }
 
