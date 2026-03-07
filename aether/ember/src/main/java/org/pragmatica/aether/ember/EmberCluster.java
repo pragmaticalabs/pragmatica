@@ -2,6 +2,7 @@ package org.pragmatica.aether.ember;
 
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
+import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
@@ -602,7 +603,8 @@ public final class EmberCluster {
                                           configProvider,
                                           Option.some(emberEnvironment),
                                           AutoHealConfig.DEFAULT,
-                                          observability);
+                                          observability,
+                                          ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT);
         return AetherNode.aetherNode(config)
                          .unwrap();
     }

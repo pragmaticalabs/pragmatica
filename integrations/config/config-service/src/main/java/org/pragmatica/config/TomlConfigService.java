@@ -10,6 +10,7 @@ import org.pragmatica.lang.parse.Text;
 import org.pragmatica.lang.parse.TimeSpan;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
@@ -106,7 +107,7 @@ public final class TomlConfigService implements ConfigService {
             var components = configClass.getRecordComponents();
             var types = extractComponentTypes(components);
             Constructor<T> constructor = configClass.getDeclaredConstructor(types);
-            return collectComponentArgs(section, components).flatMap(args -> invokeFactoryOrConstructor(configClass, constructor, types, args));
+            return collectComponentArgs(section, components, configClass).flatMap(args -> invokeFactoryOrConstructor(configClass, constructor, types, args));
         } catch (Exception e) {
             return ConfigError.parseFailed(section, e)
                               .result();
@@ -156,16 +157,20 @@ public final class TomlConfigService implements ConfigService {
         }
     }
 
-    private Result<Object[]> collectComponentArgs(String section, RecordComponent[] components) {
+    private Result<Object[]> collectComponentArgs(String section, RecordComponent[] components, Class<?> configClass) {
         return IntStream.range(0, components.length)
-                        .mapToObj(i -> collectComponentAt(section, components[i], i))
+                        .mapToObj(i -> collectComponentAt(section, components[i], i, configClass))
                         .reduce(success(new Object[components.length]),
                                 TomlConfigService::accumulateArg,
                                 TomlConfigService::mergeArgs);
     }
 
-    private Result<IndexedValue> collectComponentAt(String section, RecordComponent component, int index) {
-        return extractValue(section, component).flatMap(v -> IndexedValue.indexedValue(index, v));
+    private Result<IndexedValue> collectComponentAt(String section, RecordComponent component, int index, Class<?> configClass) {
+        var extracted = extractValue(section, component);
+        if (extracted.isSuccess()) {
+            return extracted.flatMap(v -> IndexedValue.indexedValue(index, v));
+        }
+        return getDefaultComponentValue(configClass, component, index);
     }
 
     private static Result<Object[]> accumulateArg(Result<Object[]> acc, Result<IndexedValue> next) {
@@ -293,10 +298,47 @@ public final class TomlConfigService implements ConfigService {
     private Result<Object> lookupNestedRecord(String section, String tomlKey, Class<?> type) {
         var nestedSection = section + "." + tomlKey;
         if (!document.hasSection(nestedSection)) {
-            return ConfigError.sectionNotFound(nestedSection)
-                              .result();
+            return findDefaultOrError(type, nestedSection);
         }
         return (Result<Object>) bindToClass(nestedSection, type);
+    }
+
+    private static Result<Object> findDefaultOrError(Class<?> type, String nestedSection) {
+        return lookupDefaultField(type).map(Result::success)
+                                 .or(ConfigError.sectionNotFound(nestedSection)
+                                                .result());
+    }
+
+    // --- DEFAULT field lookup ---
+    private static Option<Object> lookupDefaultField(Class<?> type) {
+        try {
+            Field defaultField = type.getField("DEFAULT");
+            if (isStaticFinalFieldOfType(defaultField, type)) {
+                return Option.option(defaultField.get(type));
+            }
+        } catch (NoSuchFieldException | IllegalAccessException e) {}
+        return none();
+    }
+
+    private static boolean isStaticFinalFieldOfType(Field field, Class<?> type) {
+        var modifiers = field.getModifiers();
+        var isStaticFinal = Modifier.isStatic(modifiers) && Modifier.isFinal(modifiers);
+        return isStaticFinal && type.isAssignableFrom(field.getType());
+    }
+
+    private static Result<IndexedValue> getDefaultComponentValue(Class<?> configClass, RecordComponent component, int index) {
+        return lookupDefaultField(configClass)
+            .flatMap(defaultInstance -> invokeAccessor(defaultInstance, component))
+            .map(value -> new IndexedValue(index, value))
+            .toResult(ConfigError.sectionNotFound(configClass.getSimpleName() + "." + component.getName()));
+    }
+
+    private static Option<Object> invokeAccessor(Object instance, RecordComponent component) {
+        try {
+            return some(component.getAccessor().invoke(instance));
+        } catch (ReflectiveOperationException e) {
+            return none();
+        }
     }
 
     private Result<Object> extractOptionValue(String section, String tomlKey, String key, Type genericType) {

@@ -588,7 +588,7 @@ public interface AetherNode {
                                                                                          config.environment()
                                                                                                .flatMap(EnvironmentIntegration::compute),
                                                                                          config.autoHeal(),
-                                                                                         ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT);
+                                                                                         config.atomicity());
         // Create load balancer manager when provider is available
         var loadBalancerManager = config.environment()
                                         .flatMap(EnvironmentIntegration::loadBalancer)

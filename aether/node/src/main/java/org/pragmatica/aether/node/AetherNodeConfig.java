@@ -6,6 +6,7 @@ import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
+import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.invoke.ObservabilityConfig;
@@ -43,6 +44,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param environment      Environment integration for compute/secrets (empty to disable)
 /// @param autoHeal         Auto-heal retry configuration
 /// @param observability    Observability configuration (depth threshold, sampling target)
+/// @param atomicity        Blueprint deployment atomicity mode (BEST_EFFORT or ALL_OR_NOTHING)
 public record AetherNodeConfig(TopologyConfig topology,
                                ProtocolConfig protocol,
                                SliceActionConfig sliceAction,
@@ -58,7 +60,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                Option<ConfigurationProvider> configProvider,
                                Option<EnvironmentIntegration> environment,
                                AutoHealConfig autoHeal,
-                               ObservabilityConfig observability) {
+                               ObservabilityConfig observability,
+                               DeploymentAtomicity atomicity) {
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;
     public static final int MANAGEMENT_DISABLED = 0;
 
@@ -132,7 +135,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     Option.empty(),
                                     Option.empty(),
                                     AutoHealConfig.DEFAULT,
-                                    ObservabilityConfig.DEFAULT);
+                                    ObservabilityConfig.DEFAULT,
+                                    DeploymentAtomicity.BEST_EFFORT);
     }
 
     public static AetherNodeConfig testConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
@@ -157,7 +161,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     Option.empty(),
                                     Option.empty(),
                                     AutoHealConfig.DEFAULT,
-                                    ObservabilityConfig.DEFAULT);
+                                    ObservabilityConfig.DEFAULT,
+                                    DeploymentAtomicity.BEST_EFFORT);
     }
 
     /// Create a test configuration for Forge simulation environment.
@@ -183,7 +188,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     Option.empty(),
                                     Option.empty(),
                                     AutoHealConfig.DEFAULT,
-                                    ObservabilityConfig.DEFAULT);
+                                    ObservabilityConfig.DEFAULT,
+                                    DeploymentAtomicity.BEST_EFFORT);
     }
 
     /// Create a new configuration with TLS enabled for all components (HTTP and cluster).
@@ -212,7 +218,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     configProvider,
                                     environment,
                                     autoHeal,
-                                    observability);
+                                    observability,
+                                    atomicity);
     }
 
     /// Create a new configuration with TTM enabled.
@@ -232,7 +239,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     configProvider,
                                     environment,
                                     autoHeal,
-                                    observability);
+                                    observability,
+                                    atomicity);
     }
 
     /// Create a new configuration with rollback settings.
@@ -252,7 +260,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     configProvider,
                                     environment,
                                     autoHeal,
-                                    observability);
+                                    observability,
+                                    atomicity);
     }
 
     /// Create a new configuration with different slice configuration.
@@ -272,7 +281,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     configProvider,
                                     environment,
                                     autoHeal,
-                                    observability);
+                                    observability,
+                                    atomicity);
     }
 
     /// Create a new configuration with application HTTP server enabled.
@@ -292,7 +302,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     configProvider,
                                     environment,
                                     autoHeal,
-                                    observability);
+                                    observability,
+                                    atomicity);
     }
 
     /// Create a new configuration with different controller configuration.
@@ -312,7 +323,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     configProvider,
                                     environment,
                                     autoHeal,
-                                    observability);
+                                    observability,
+                                    atomicity);
     }
 
     /// Create a new configuration with a ConfigurationProvider for resource provisioning.
@@ -332,7 +344,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     Option.some(provider),
                                     environment,
                                     autoHeal,
-                                    observability);
+                                    observability,
+                                    atomicity);
     }
 
     /// Create a new configuration with an EnvironmentIntegration for compute/secrets.
@@ -352,7 +365,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     configProvider,
                                     Option.some(env),
                                     autoHeal,
-                                    observability);
+                                    observability,
+                                    atomicity);
     }
 
     /// Create a new configuration with custom auto-heal settings.
@@ -372,7 +386,29 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     configProvider,
                                     environment,
                                     autoHealConfig,
-                                    observability);
+                                    observability,
+                                    atomicity);
+    }
+
+    /// Create a new configuration with deployment atomicity mode.
+    public AetherNodeConfig withAtomicity(DeploymentAtomicity deploymentAtomicity) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    deploymentAtomicity);
     }
 
     public NodeId self() {

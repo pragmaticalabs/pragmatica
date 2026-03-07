@@ -203,6 +203,41 @@ class ProviderBasedConfigServiceTest {
     }
 
     @Nested
+    class PartialNestedRecordBinding {
+
+        @Test
+        void config_partialNestedRecord_mergesWithDefault() {
+            var service = serviceFrom(Map.of(
+                "test.name", "myapp",
+                "test.inner_config.max_connections", "50"
+            ));
+
+            var result = service.config("test", OuterConfig.class);
+
+            assertThat(result.isSuccess()).isTrue();
+            var config = result.unwrap();
+            assertThat(config.name()).isEqualTo("myapp");
+            assertThat(config.innerConfig().maxConnections()).isEqualTo(50);
+            assertThat(config.innerConfig().minConnections()).isEqualTo(2);
+        }
+
+        @Test
+        void config_partialNestedRecord_overridesOnlySpecifiedFields() {
+            var service = serviceFrom(Map.of(
+                "test.name", "myapp",
+                "test.inner_config.min_connections", "8"
+            ));
+
+            var result = service.config("test", OuterConfig.class);
+
+            assertThat(result.isSuccess()).isTrue();
+            var config = result.unwrap();
+            assertThat(config.innerConfig().minConnections()).isEqualTo(8);
+            assertThat(config.innerConfig().maxConnections()).isEqualTo(10);
+        }
+    }
+
+    @Nested
     class OptionFieldBinding {
 
         @Test
