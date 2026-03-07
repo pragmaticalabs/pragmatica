@@ -48,9 +48,9 @@ public final class EventAdder {
 
     /// Add the event annotation files and messaging config to the project.
     public Result<List<Path>> addEvent() {
-        return createDirectories()
-                  .flatMap(_ -> createAnnotationFiles())
-                  .flatMap(paths -> appendMessagingConfig().map(_ -> paths));
+        return appendMessagingConfig()
+                  .flatMap(_ -> createDirectories())
+                  .flatMap(_ -> createAnnotationFiles());
     }
 
     /// Whether aether.toml exists and could be updated.
