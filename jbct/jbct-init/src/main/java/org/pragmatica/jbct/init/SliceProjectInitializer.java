@@ -917,7 +917,7 @@ public final class SliceProjectInitializer {
 
         [errors]
         default = 500
-        HTTP_400 = ["*invalid*", "*empty*"]
+        HTTP_422 = ["*Invalid*"]
         """;
 
     public Path projectDir() {

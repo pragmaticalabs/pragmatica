@@ -222,7 +222,7 @@ public final class SliceAdder {
 
         [errors]
         default = 500
-        HTTP_400 = ["*invalid*", "*empty*"]
+        HTTP_422 = ["*Invalid*"]
         """;
 
     private static final String SLICE_CONFIG_TEMPLATE = """
