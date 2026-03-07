@@ -380,7 +380,7 @@ public class AetherCli implements Runnable {
 
         @Override
         public Integer call() {
-            var response = parent.fetchFromNode("/status");
+            var response = parent.fetchFromNode("/api/status");
             System.out.println(formatJson(response));
             return 0;
         }
@@ -393,7 +393,7 @@ public class AetherCli implements Runnable {
 
         @Override
         public Integer call() {
-            var response = parent.fetchFromNode("/nodes");
+            var response = parent.fetchFromNode("/api/nodes");
             System.out.println(formatJson(response));
             return 0;
         }
@@ -406,7 +406,7 @@ public class AetherCli implements Runnable {
 
         @Override
         public Integer call() {
-            var response = parent.fetchFromNode("/slices");
+            var response = parent.fetchFromNode("/api/slices");
             System.out.println(formatJson(response));
             return 0;
         }
@@ -419,7 +419,7 @@ public class AetherCli implements Runnable {
 
         @Override
         public Integer call() {
-            var response = parent.fetchFromNode("/metrics");
+            var response = parent.fetchFromNode("/api/metrics");
             System.out.println(formatJson(response));
             return 0;
         }
@@ -432,7 +432,7 @@ public class AetherCli implements Runnable {
 
         @Override
         public Integer call() {
-            var response = parent.fetchFromNode("/health");
+            var response = parent.fetchFromNode("/api/health");
             System.out.println(formatJson(response));
             return 0;
         }
@@ -452,7 +452,7 @@ public class AetherCli implements Runnable {
         @Override
         public Integer call() {
             var body = "{\"artifact\":\"" + artifact + "\",\"instances\":" + instances + "}";
-            var response = parent.postToNode("/scale", body);
+            var response = parent.postToNode("/api/scale", body);
             System.out.println(formatJson(response));
             return 0;
         }
@@ -673,7 +673,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = artifactParent.parent.fetchFromNode("/artifact-metrics");
+                var response = artifactParent.parent.fetchFromNode("/api/artifact-metrics");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1156,7 +1156,7 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var body = buildUpdateStartBody();
-                var response = updateParent.parent.postToNode("/rolling-update/start", body);
+                var response = updateParent.parent.postToNode("/api/rolling-update/start", body);
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1179,7 +1179,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = updateParent.parent.fetchFromNode("/rolling-update/" + updateId);
+                var response = updateParent.parent.fetchFromNode("/api/rolling-update/" + updateId);
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1192,7 +1192,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = updateParent.parent.fetchFromNode("/rolling-updates");
+                var response = updateParent.parent.fetchFromNode("/api/rolling-updates");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1212,7 +1212,7 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var body = "{\"routing\":\"" + ratio + "\"}";
-                var response = updateParent.parent.postToNode("/rolling-update/" + updateId + "/routing", body);
+                var response = updateParent.parent.postToNode("/api/rolling-update/" + updateId + "/routing", body);
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1228,7 +1228,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = updateParent.parent.postToNode("/rolling-update/" + updateId + "/approve", "{}");
+                var response = updateParent.parent.postToNode("/api/rolling-update/" + updateId + "/approve", "{}");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1244,7 +1244,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = updateParent.parent.postToNode("/rolling-update/" + updateId + "/complete", "{}");
+                var response = updateParent.parent.postToNode("/api/rolling-update/" + updateId + "/complete", "{}");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1260,7 +1260,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = updateParent.parent.postToNode("/rolling-update/" + updateId + "/rollback", "{}");
+                var response = updateParent.parent.postToNode("/api/rolling-update/" + updateId + "/rollback", "{}");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1276,7 +1276,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = updateParent.parent.fetchFromNode("/rolling-update/" + updateId + "/health");
+                var response = updateParent.parent.fetchFromNode("/api/rolling-update/" + updateId + "/health");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1296,7 +1296,7 @@ public class AetherCli implements Runnable {
         @Override
         public void run() {
             // Default: show all metrics
-            var response = parent.fetchFromNode("/invocation-metrics");
+            var response = parent.fetchFromNode("/api/invocation-metrics");
             System.out.println(formatJson(response));
         }
 
@@ -1307,7 +1307,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = metricsParent.parent.fetchFromNode("/invocation-metrics");
+                var response = metricsParent.parent.fetchFromNode("/api/invocation-metrics");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1320,7 +1320,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = metricsParent.parent.fetchFromNode("/invocation-metrics/slow");
+                var response = metricsParent.parent.fetchFromNode("/api/invocation-metrics/slow");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1349,7 +1349,7 @@ public class AetherCli implements Runnable {
             }
 
             private void showCurrentStrategy() {
-                var response = metricsParent.parent.fetchFromNode("/invocation-metrics/strategy");
+                var response = metricsParent.parent.fetchFromNode("/api/invocation-metrics/strategy");
                 System.out.println(formatJson(response));
             }
 
@@ -1365,7 +1365,7 @@ public class AetherCli implements Runnable {
                         return;
                     }
                 }
-                var response = metricsParent.parent.postToNode("/invocation-metrics/strategy", body);
+                var response = metricsParent.parent.postToNode("/api/invocation-metrics/strategy", body);
                 System.out.println(formatJson(response));
             }
 
@@ -1419,11 +1419,11 @@ public class AetherCli implements Runnable {
             public Integer call() {
                 if (hasConfigUpdate()) {
                     var body = buildConfigUpdateBody();
-                    var response = controllerParent.parent.postToNode("/controller/config", body);
+                    var response = controllerParent.parent.postToNode("/api/controller/config", body);
                     System.out.println(formatJson(response));
                 } else {
                     // Show current config
-                    var response = controllerParent.parent.fetchFromNode("/controller/config");
+                    var response = controllerParent.parent.fetchFromNode("/api/controller/config");
                     System.out.println(formatJson(response));
                 }
                 return 0;
@@ -1451,7 +1451,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = controllerParent.parent.fetchFromNode("/controller/status");
+                var response = controllerParent.parent.fetchFromNode("/api/controller/status");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1464,7 +1464,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = controllerParent.parent.postToNode("/controller/evaluate", "{}");
+                var response = controllerParent.parent.postToNode("/api/controller/evaluate", "{}");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1485,7 +1485,7 @@ public class AetherCli implements Runnable {
         @Override
         public void run() {
             // Default: show all alerts
-            var response = parent.fetchFromNode("/alerts");
+            var response = parent.fetchFromNode("/api/alerts");
             System.out.println(formatJson(response));
         }
 
@@ -1496,7 +1496,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = alertsParent.parent.fetchFromNode("/alerts");
+                var response = alertsParent.parent.fetchFromNode("/api/alerts");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1509,7 +1509,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = alertsParent.parent.fetchFromNode("/alerts/active");
+                var response = alertsParent.parent.fetchFromNode("/api/alerts/active");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1522,7 +1522,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = alertsParent.parent.fetchFromNode("/alerts/history");
+                var response = alertsParent.parent.fetchFromNode("/api/alerts/history");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1535,7 +1535,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = alertsParent.parent.postToNode("/alerts/clear", "{}");
+                var response = alertsParent.parent.postToNode("/api/alerts/clear", "{}");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1555,7 +1555,7 @@ public class AetherCli implements Runnable {
         @Override
         public void run() {
             // Default: show all thresholds
-            var response = parent.fetchFromNode("/thresholds");
+            var response = parent.fetchFromNode("/api/thresholds");
             System.out.println(formatJson(response));
         }
 
@@ -1566,7 +1566,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = thresholdsParent.parent.fetchFromNode("/thresholds");
+                var response = thresholdsParent.parent.fetchFromNode("/api/thresholds");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1589,7 +1589,7 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var body = "{\"metric\":\"" + metric + "\",\"warning\":" + warning + ",\"critical\":" + critical + "}";
-                var response = thresholdsParent.parent.postToNode("/thresholds", body);
+                var response = thresholdsParent.parent.postToNode("/api/thresholds", body);
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -1605,7 +1605,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = thresholdsParent.parent.deleteFromNode("/thresholds/" + metric);
+                var response = thresholdsParent.parent.deleteFromNode("/api/thresholds/" + metric);
                 System.out.println(formatJson(response));
                 return 0;
             }
