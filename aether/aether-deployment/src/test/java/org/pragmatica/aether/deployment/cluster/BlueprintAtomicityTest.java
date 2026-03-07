@@ -112,21 +112,21 @@ class BlueprintAtomicityTest {
         }
 
         @Test
-        void parse_null_defaultsToBestEffort() {
+        void parse_null_defaultsToAllOrNothing() {
             assertThat(DeploymentAtomicity.parse(null))
-                .isEqualTo(DeploymentAtomicity.BEST_EFFORT);
+                .isEqualTo(DeploymentAtomicity.ALL_OR_NOTHING);
         }
 
         @Test
-        void parse_empty_defaultsToBestEffort() {
+        void parse_empty_defaultsToAllOrNothing() {
             assertThat(DeploymentAtomicity.parse(""))
-                .isEqualTo(DeploymentAtomicity.BEST_EFFORT);
+                .isEqualTo(DeploymentAtomicity.ALL_OR_NOTHING);
         }
 
         @Test
-        void parse_unknown_defaultsToBestEffort() {
+        void parse_unknown_defaultsToAllOrNothing() {
             assertThat(DeploymentAtomicity.parse("unknown"))
-                .isEqualTo(DeploymentAtomicity.BEST_EFFORT);
+                .isEqualTo(DeploymentAtomicity.ALL_OR_NOTHING);
         }
     }
 }

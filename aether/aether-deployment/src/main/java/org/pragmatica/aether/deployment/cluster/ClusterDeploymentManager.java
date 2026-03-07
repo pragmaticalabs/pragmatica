@@ -120,21 +120,21 @@ public interface ClusterDeploymentManager {
 
     /// Controls whether multi-slice blueprint deployments are atomic.
     enum DeploymentAtomicity {
-        /// Default: each slice deploys independently; failures don't affect siblings.
+        /// Each slice deploys independently; failures don't affect siblings.
         BEST_EFFORT,
-        /// All slices in a blueprint must succeed; deterministic failure of any slice
+        /// Default: all slices in a blueprint must succeed; deterministic failure of any slice
         /// rolls back the entire blueprint.
         ALL_OR_NOTHING;
         /// Parse from TOML config string (case-insensitive, supports kebab-case).
         public static DeploymentAtomicity parse(String value) {
             if (value == null || value.isBlank()) {
-                return BEST_EFFORT;
+                return ALL_OR_NOTHING;
             }
             return switch (value.trim()
                                 .toLowerCase()
                                 .replace("-", "_")) {
-                case "all_or_nothing" -> ALL_OR_NOTHING;
-                default -> BEST_EFFORT;
+                case "best_effort" -> BEST_EFFORT;
+                default -> ALL_OR_NOTHING;
             };
         }
     }

@@ -136,7 +136,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     Option.empty(),
                                     AutoHealConfig.DEFAULT,
                                     ObservabilityConfig.DEFAULT,
-                                    DeploymentAtomicity.BEST_EFFORT);
+                                    DeploymentAtomicity.ALL_OR_NOTHING);
     }
 
     public static AetherNodeConfig testConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
@@ -162,7 +162,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     Option.empty(),
                                     AutoHealConfig.DEFAULT,
                                     ObservabilityConfig.DEFAULT,
-                                    DeploymentAtomicity.BEST_EFFORT);
+                                    DeploymentAtomicity.ALL_OR_NOTHING);
     }
 
     /// Create a test configuration for Forge simulation environment.
@@ -189,7 +189,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     Option.empty(),
                                     AutoHealConfig.DEFAULT,
                                     ObservabilityConfig.DEFAULT,
-                                    DeploymentAtomicity.BEST_EFFORT);
+                                    DeploymentAtomicity.ALL_OR_NOTHING);
     }
 
     /// Create a new configuration with TLS enabled for all components (HTTP and cluster).
