@@ -45,9 +45,9 @@ public final class R2dbcJooqConnectorFactory implements ResourceFactory<JooqConn
         var options = ConnectionFactoryOptions.parse(config.effectiveR2dbcUrl());
         var optionsBuilder = ConnectionFactoryOptions.builder()
                                                      .from(options);
-        config.username()
+        config.effectiveUsername()
               .onPresent(u -> optionsBuilder.option(ConnectionFactoryOptions.USER, u));
-        config.password()
+        config.effectivePassword()
               .onPresent(p -> optionsBuilder.option(ConnectionFactoryOptions.PASSWORD, p));
         var connectionFactory = ConnectionFactories.get(optionsBuilder.build());
         var poolConfig = ConnectionPoolConfiguration.builder(connectionFactory)

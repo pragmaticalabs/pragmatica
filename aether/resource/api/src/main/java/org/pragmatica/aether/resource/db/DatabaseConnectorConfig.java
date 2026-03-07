@@ -47,6 +47,7 @@ public record DatabaseConnectorConfig(Option<String> name,
                                       Option<String> r2dbcUrl,
                                       Option<String> asyncUrl) {
     private static final Pattern URL_PATTERN = Pattern.compile("(?:\\w+:)*(?://)?(?:[^@]+@)?([^/:]+)(?::(\\d+))?/(.+?)(?:\\?.*)?$");
+    private static final Pattern CREDENTIALS_PATTERN = Pattern.compile("://([^:]+):([^@]+)@");
 
     /// Returns the effective connector name: explicit name, or derived from URL database, or "default".
     ///
@@ -315,6 +316,44 @@ public record DatabaseConnectorConfig(Option<String> name,
         return "postgresql://" + host + ":" + actualPort + "/" + database;
     }
 
+    /// Returns the effective username, from explicit config or parsed from any available URL.
+    ///
+    /// @return Option with username if available
+    public Option<String> effectiveUsername() {
+        return username.orElse(() -> firstUrlUsername(jdbcUrl, r2dbcUrl, asyncUrl));
+    }
+
+    /// Returns the effective password, from explicit config or parsed from any available URL.
+    ///
+    /// @return Option with password if available
+    public Option<String> effectivePassword() {
+        return password.orElse(() -> firstUrlPassword(jdbcUrl, r2dbcUrl, asyncUrl));
+    }
+
+    /// Parse username from a database URL containing credentials.
+    ///
+    /// @param url Database URL (e.g., "postgresql://user:pass@host:port/db")
+    /// @return Option with username if present
+    public static Option<String> parseUsernameFromUrl(String url) {
+        return option(url).map(CREDENTIALS_PATTERN::matcher)
+                     .filter(Matcher::find)
+                     .map(m -> m.group(1))
+                     .flatMap(Option::option)
+                     .filter(u -> !u.isEmpty());
+    }
+
+    /// Parse password from a database URL containing credentials.
+    ///
+    /// @param url Database URL (e.g., "postgresql://user:pass@host:port/db")
+    /// @return Option with password if present
+    public static Option<String> parsePasswordFromUrl(String url) {
+        return option(url).map(CREDENTIALS_PATTERN::matcher)
+                     .filter(Matcher::find)
+                     .map(m -> m.group(2))
+                     .flatMap(Option::option)
+                     .filter(p -> !p.isEmpty());
+    }
+
     /// Converts additional properties to java.util.Properties for JDBC drivers.
     ///
     /// @return Properties object with user/password and additional properties
@@ -406,6 +445,22 @@ public record DatabaseConnectorConfig(Option<String> name,
         return jdbcUrl.flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl)
                       .orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl))
                       .orElse(() -> asyncUrl.flatMap(DatabaseConnectorConfig::parseDatabaseFromUrl));
+    }
+
+    private static Option<String> firstUrlUsername(Option<String> jdbcUrl,
+                                                   Option<String> r2dbcUrl,
+                                                   Option<String> asyncUrl) {
+        return jdbcUrl.flatMap(DatabaseConnectorConfig::parseUsernameFromUrl)
+                      .orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parseUsernameFromUrl))
+                      .orElse(() -> asyncUrl.flatMap(DatabaseConnectorConfig::parseUsernameFromUrl));
+    }
+
+    private static Option<String> firstUrlPassword(Option<String> jdbcUrl,
+                                                   Option<String> r2dbcUrl,
+                                                   Option<String> asyncUrl) {
+        return jdbcUrl.flatMap(DatabaseConnectorConfig::parsePasswordFromUrl)
+                      .orElse(() -> r2dbcUrl.flatMap(DatabaseConnectorConfig::parsePasswordFromUrl))
+                      .orElse(() -> asyncUrl.flatMap(DatabaseConnectorConfig::parsePasswordFromUrl));
     }
 
     /// Builder for DatabaseConnectorConfig.

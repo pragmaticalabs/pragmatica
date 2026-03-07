@@ -42,9 +42,9 @@ public final class JdbcJooqConnectorFactory implements ResourceFactory<JooqConne
     private static HikariDataSource hikariDataSource(DatabaseConnectorConfig config) {
         var hikariConfig = new HikariConfig();
         hikariConfig.setJdbcUrl(config.effectiveJdbcUrl());
-        config.username()
+        config.effectiveUsername()
               .onPresent(hikariConfig::setUsername);
-        config.password()
+        config.effectivePassword()
               .onPresent(hikariConfig::setPassword);
         hikariConfig.setConnectionTimeout(config.poolConfig()
                                                 .connectionTimeout()

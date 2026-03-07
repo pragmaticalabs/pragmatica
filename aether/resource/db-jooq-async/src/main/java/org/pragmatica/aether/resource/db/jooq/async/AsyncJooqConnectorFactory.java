@@ -44,9 +44,9 @@ public final class AsyncJooqConnectorFactory implements ResourceFactory<JooqConn
         builder.hostname(config.effectiveHost())
                .port(config.effectivePort())
                .database(config.effectiveDatabase());
-        config.username()
+        config.effectiveUsername()
               .onPresent(builder::username);
-        config.password()
+        config.effectivePassword()
               .onPresent(builder::password);
         builder.maxConnections(config.poolConfig()
                                      .maxConnections());

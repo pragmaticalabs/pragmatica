@@ -48,9 +48,9 @@ public final class AsyncSqlConnectorFactory implements ResourceFactory<SqlConnec
         builder.hostname(config.effectiveHost());
         builder.port(config.effectivePort());
         builder.database(config.effectiveDatabase());
-        config.username()
+        config.effectiveUsername()
               .onPresent(builder::username);
-        config.password()
+        config.effectivePassword()
               .onPresent(builder::password);
     }
 
