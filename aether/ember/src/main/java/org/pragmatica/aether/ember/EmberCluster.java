@@ -604,7 +604,7 @@ public final class EmberCluster {
                                           Option.some(emberEnvironment),
                                           AutoHealConfig.DEFAULT,
                                           observability,
-                                          ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT);
+                                          ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING);
         return AetherNode.aetherNode(config)
                          .unwrap();
     }
