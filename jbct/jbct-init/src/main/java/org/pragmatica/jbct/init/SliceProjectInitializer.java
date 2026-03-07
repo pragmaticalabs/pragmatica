@@ -735,11 +735,17 @@ public final class SliceProjectInitializer {
         # Aether runtime configuration
         # Uncomment to enable database access (requires running PostgreSQL):
         # [database]
-        # type = "POSTGRESQL"
-        # async_url = "postgresql://localhost:5432/forge"
+        # async_url = "postgresql://postgres:postgres@localhost:5432/forge"
+        #
         # [database.pool_config]
-        # min_connections = 5
+        # min_connections = 4
         # max_connections = 20
+        # connection_timeout = "30s"
+        # idle_timeout = "10m"
+        # max_lifetime = "30m"
+        # validation_query = ""
+        # leak_detection_timeout = "0s"
+        # io_threads = 0
         """;
 
     private static final String RUN_FORGE_SH_TEMPLATE = """
