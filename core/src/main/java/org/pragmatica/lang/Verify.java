@@ -662,7 +662,7 @@ public sealed interface Verify {
         /// @param value the char sequence to check
         /// @return true if the char sequence is blank, false otherwise
         static <T extends CharSequence> boolean blank(T value) {
-            return value.isEmpty() ||
+            return value == null || value.isEmpty() ||
                    value.chars()
                         .allMatch(Character::isWhitespace);
         }

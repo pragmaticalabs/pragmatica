@@ -153,7 +153,7 @@ public final class SliceAdder {
             record ValidGreetRequest(String name) {
                 public static Result<ValidGreetRequest> validGreetRequest(String name) {
                     return Verify.ensure(name,
-                                         Verify.Is::notBlank,
+                                         Verify.Is::present,
                                          GreetError.invalidName())
                                  .map(ValidGreetRequest::new);
                 }

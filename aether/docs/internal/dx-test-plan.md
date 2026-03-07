@@ -216,7 +216,7 @@ public interface Analytics {
     record ValidCountRequest(String name) {
         public static Result<ValidCountRequest> validCountRequest(String name) {
             return Verify.ensure(name,
-                                 Verify.Is::notBlank,
+                                 Verify.Is::present,
                                  CountError.invalidName())
                          .map(ValidCountRequest::new);
         }
@@ -384,7 +384,7 @@ public interface HelloWorld {
     record ValidGreetRequest(String name) {
         public static Result<ValidGreetRequest> validGreetRequest(String name) {
             return Verify.ensure(name,
-                                 Verify.Is::notBlank,
+                                 Verify.Is::present,
                                  GreetError.invalidName())
                          .map(ValidGreetRequest::new);
         }
