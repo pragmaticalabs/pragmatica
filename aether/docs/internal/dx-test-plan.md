@@ -506,26 +506,18 @@ Update the factory method to accept a publisher:
 
 ```java
 import com.example.myslice.shared.resource.GreetEventPublisher;
+import org.pragmatica.aether.slice.Publisher;
 
 static HelloWorld helloWorld(@Sql SqlConnector db,
                              @GreetEventPublisher Publisher<GreetEvent> greetPublisher) {
-    record impl(SqlConnector db, Publisher<GreetEvent> greetPublisher) implements HelloWorld {
-        private static final String INSERT_GREETING = "INSERT INTO greetings (name) VALUES (?)";
-
-        @Override
-        public Promise<GreetResponse> greet(String name) {
-            return ValidGreetRequest.validGreetRequest(name)
+    return name -> ValidGreetRequest.validGreetRequest(name)
                                     .async()
-                                    .flatMap(request -> db.update(INSERT_GREETING, request.name())
+                                    .flatMap(request -> db.update("INSERT INTO greetings (name) VALUES (?)",
+                                                                  request.name())
                                                           .flatMap(_ -> greetPublisher.publish(new GreetEvent(request.name())))
                                                           .map(_ -> new GreetResponse("Hello, " + request.name() + "!")));
-        }
-    }
-    return new impl(db, greetPublisher);
 }
 ```
-
-> **Note:** Add `import org.pragmatica.aether.slice.Publisher;` to the imports.
 
 ### 8d. Update Analytics to subscribe to events
 
@@ -542,7 +534,7 @@ Promise<Unit> onGreetEvent(HelloWorld.GreetEvent event);
 
 // Update the factory implementation to handle the event:
 static Analytics analytics() {
-    record impl() implements Analytics {
+    record analyticsSlice() implements Analytics {
         @Override
         public Promise<CountResponse> getCount(String name) {
             return ValidCountRequest.validCountRequest(name)
@@ -556,7 +548,7 @@ static Analytics analytics() {
             return Promise.success(Unit.unit());
         }
     }
-    return new impl();
+    return new analyticsSlice();
 }
 ```
 
