@@ -83,8 +83,10 @@ public interface SliceRouter {
 
             private Promise<HttpResponseData> handleRoute(Route<?> route, HttpRequestContext request) {
                 var context = SliceRequestContext.sliceRequestContext(request, route, jsonMapper);
-                return invokeHandler(route, context)
-                .map(result -> resultToResponse(result, route.contentType(), request));
+                return invokeHandler(route, context).map(result -> resultToResponse(result,
+                                                                                    route.contentType(),
+                                                                                    request))
+                                    .recover(cause -> errorToResponse(cause, request));
             }
 
             private HttpResponseData resultToResponse(Object result,
