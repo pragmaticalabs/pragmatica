@@ -927,7 +927,9 @@ public interface NodeDeploymentManager {
             private void handleReactivationFailure(SliceNodeKey sliceKey, Cause cause) {
                 log.error("Failed to reactivate slice {}: {}", sliceKey.artifact(), cause.message());
                 unregisterSliceFromInvocation(sliceKey);
-                unpublishHttpRoutes(sliceKey);
+                unpublishEndpoints(sliceKey).flatMap(_ -> unpublishTopicSubscriptions(sliceKey))
+                                  .flatMap(_ -> unpublishScheduledTasks(sliceKey))
+                                  .flatMap(_ -> unpublishHttpRoutes(sliceKey));
                 deployments.remove(sliceKey);
             }
 

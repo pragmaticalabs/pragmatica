@@ -53,6 +53,11 @@ public final class EventAdder {
                   .flatMap(paths -> appendMessagingConfig().map(_ -> paths));
     }
 
+    /// Whether aether.toml exists and could be updated.
+    public boolean hasAetherToml() {
+        return Files.exists(projectDir.resolve("aether.toml"));
+    }
+
     public String eventName() {
         return eventName;
     }
