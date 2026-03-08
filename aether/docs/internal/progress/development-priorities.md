@@ -98,6 +98,11 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 - **Docker Infrastructure** - Separate images for node and forge
 - **Blueprint-Only Deployment** - Removed individual slice deploy/undeploy to enforce dependency validation. Scale guarded by blueprint membership. Eliminates the correctness gap where undeploying a dependency could orphan active slices.
 
+### Container, Install/Upgrade, Rolling Upgrade (v0.19.3)
+- **Official Container Image Publishing** — Dockerfiles use build-arg `VERSION` for OCI labels, `release.yml` builds multi-arch (amd64+arm64) images via buildx, publishes to GHCR and Docker Hub, generates SHA256 checksums for all release artifacts
+- **Install/Upgrade Scripts** — `aether/install.sh` enhanced with `--version` flag, SHA256 checksum verification, WSL2 detection. New `aether/upgrade.sh` with version detection, atomic binary swap (backup → move → cleanup), running process warning. Root `install.sh` fixed to reference `main` branch
+- **Rolling Cluster Upgrade** — `aether/script/rolling-aether-upgrade.sh` API-driven script: discovers nodes via `/api/nodes/lifecycle`, drains → shuts down → waits for restart → activates → canary checks each node one at a time. Supports `--dry-run`, `--canary-wait`, `--api-key`, `--skip-download`. Mixed-version clusters safe via envelope versioning
+
 ### Slice Lifecycle (v0.8.0)
 - **start()/stop() Timeouts** - Configurable via `SliceActionConfig.startStopTimeout`
 - **Eager Dependency Validation** - Dependencies verified during ACTIVATING before start()
@@ -201,33 +206,6 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
     - **First deliverable:** Comprehensive design spec covering pool architecture, scheduling, failure modes, and edge cases
     - **Reference:** Consensus store assessment doc exists; needs comprehensive design spec
 
-4. **Official Aether Container Image**
-    - Production-ready OCI container for `aether-node`
-    - Dockerfile already production-ready; only publishing to registry remains
-    - Multi-stage build: build layer (Maven + JDK) → runtime layer (JRE-only)
-    - Base image: Eclipse Temurin JRE (Alpine or distroless for minimal attack surface)
-    - Non-root user, health check endpoint, signal handling for graceful shutdown
-    - Published to GitHub Container Registry (ghcr.io) and/or Docker Hub
-    - Versioned tags: `latest`, `0.19.3`, `0.19.3-alpine`
-    - **Target:** 0.19.3
-
-5. **Installation and Upgrade Scripts**
-    - `install.sh` — works, downloads correct binary for platform, places in PATH, verifies checksum
-    - `upgrade-aether.sh` — detect current version, download new version, swap binaries, restart services if running
-    - Covers all three artifacts: Ember (local dev), Forge (testing), Aether node (production)
-    - Version pinning support: `install.sh --version 0.19.3`
-    - Idempotent: safe to run multiple times
-    - **Target:** 0.19.3
-
-6. **Aether Runtime Rolling Upgrade**
-    - Upgrade the Aether node software across a running cluster without downtime
-    - Sequence: upgrade one node at a time → verify health → proceed to next
-    - Interacts with envelope versioning: multi-version support ensures old-format slices still load on new runtime
-    - Upgrade orchestration: `upgrade-aether.sh` script or Management API-driven (leader coordinates)
-    - Rollback: if upgraded node fails health check, revert to previous version before continuing
-    - CLI + API complete; remaining work is the `upgrade-aether.sh` orchestration script
-    - Prerequisite: Official Container (#4) or Official Binaries (FUTURE)
-
 ### Cloud Provider Support
 
 Part of Cloud Integration (#1). Per-provider status:
@@ -254,7 +232,7 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### MEDIUM PRIORITY - Developer Tooling & Deployment
 
-7. **Forge Modular Rework**
+4. **Forge Modular Rework**
     - ~80% done: modules separated (`forge-simulator`, `forge-load`, `forge-cluster`), Ember works
     - **Remaining scope:**
       - Remote cluster support in load generator (target remote clusters, not just embedded)
@@ -264,24 +242,24 @@ Part of Cloud Integration (#1). Per-provider status:
       - **Tester** — load generator + chaos testing + Forge Script DSL. Standalone for remote clusters, embedded for local
       - **Forge** — Ember + Tester + dashboard for local development convenience
 
-8. **TLS Certificate Management**
+5. **TLS Certificate Management**
      - Certificate provisioning and rotation
      - Mutual TLS between nodes
      - Integration with external CA or self-signed
 
-9. **Canary & Blue-Green Deployment Strategies**
+6. **Canary & Blue-Green Deployment Strategies**
      - Current: Rolling updates with weighted routing exist
      - Add explicit canary deployment with automatic rollback on error threshold
      - Add blue-green deployment with instant switchover
      - A/B testing support with traffic splitting by criteria
 
-10. **RBAC Tier 2 — Per-Endpoint Role Authorization**
+7. **RBAC Tier 2 — Per-Endpoint Role Authorization**
      - Per-endpoint role-based authorization rules (admin, operator, viewer)
      - Route-level security policy from KV-Store
      - Auth failure rate limiting
      - Currently all authenticated keys have equivalent access; Tier 2 differentiates by role
 
-11. **Notification Resource**
+8. **Notification Resource**
     - Unified notification facade with pluggable backends via SPI (same `@ResourceQualifier` pattern)
     - **Channels:** Email, SMS, push notifications
     - **Email backends (SPI):** SMTP, AWS SES, SendGrid, Mailgun
@@ -292,14 +270,14 @@ Part of Cloud Integration (#1). Per-provider status:
     - **Scope exclusions:** no template engine (slices own their content), no mailing list management
     - **Depends on:** Cloud Integration (#1) for SES/SNS/cloud-based backends; SMTP backend standalone
 
-12. **Dead Letter Handling**
+9. **Dead Letter Handling**
     - Failed pub-sub messages and failed scheduled task invocations currently logged and lost
     - DLQ storage: KV-Store backed dead letter queue per topic/task
     - Retry policy: configurable max attempts with exponential backoff before dead-lettering
     - Inspection: Management API endpoints to list, inspect, replay, or purge dead letters
     - CLI: `aether dead-letters list`, `aether dead-letters replay <id>`
 
-13. **Slice Development IDE Plugins**
+10. **Slice Development IDE Plugins**
     - IDE plugins for Aether slice development, providing deep integration with the JBCT toolchain
     - **Recommended approach:** build a shared **Language Server (LSP)** backend first, then thin IDE-specific clients. IntelliJ IDEA gets a native plugin for features that LSP cannot express (refactoring, inspections, run configs). VS Code, Eclipse, and NetBeans consume the LSP directly.
 
@@ -345,7 +323,7 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### LOWER PRIORITY
 
-14. **Configurable Rate Limiting per HTTP Route**
+11. **Configurable Rate Limiting per HTTP Route**
      - Per-route rate limiting configuration in blueprint or management API
      - Token bucket or sliding window algorithm
      - Configurable limits: requests/second, burst size
@@ -353,19 +331,19 @@ Part of Cloud Integration (#1). Per-provider status:
      - Cluster-aware: distributed counters via consensus or per-node local limits
      - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
 
-15. **KV-Store State Backup/Snapshot**
+12. **KV-Store State Backup/Snapshot**
     - Periodic snapshot of consensus KV-Store state to durable external storage
     - Recovery: bootstrap a new cluster from snapshot when quorum is permanently lost
     - Storage targets: local filesystem, S3-compatible object storage
     - Configurable snapshot interval and retention policy
     - Complements re-replication (handles single-node failures) with full disaster recovery
 
-16. **Observability Dashboard UI**
+13. **Observability Dashboard UI**
    - Wire `ObservabilityDepthRegistry` data to dashboard with UI for configuring per-method depth thresholds
    - Backend REST API (`/api/observability/depth`) and KV-store sync already implemented
    - Current state is functional; production value but no customers yet
 
-17. **Invocation Observability Dashboard Tab**
+14. **Invocation Observability Dashboard Tab**
    - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
    - Click-to-expand tree view showing invocation depth with input/output at each level
    - Waterfall view for multi-hop request visualization
