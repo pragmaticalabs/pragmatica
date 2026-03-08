@@ -24,6 +24,18 @@ Forge provides:
 
 ## Quick Start
 
+### Using run-forge.sh (Recommended)
+
+If your project was created with `jbct init --slice`, it includes a `run-forge.sh` script:
+
+```bash
+./run-forge.sh
+```
+
+This starts Forge with sensible defaults. Open the dashboard at `http://localhost:8888`.
+
+### Using java -jar (Manual)
+
 ```bash
 # Build Forge
 mvn package -pl aether/forge/forge-core -am -DskipTests

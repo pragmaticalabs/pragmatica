@@ -537,7 +537,10 @@ Verify the deployment:
 aether blueprint status order-system:1.0.0
 
 # Or use the Management API directly
-curl http://localhost:8080/api/blueprint/order-system:1.0.0/status
+curl http://localhost:5150/api/blueprint/order-system:1.0.0/status
+
+# Or use the CLI:
+aether -c localhost:5150 blueprint status order-system:1.0.0
 ```
 
 ## Step 5: Route Traffic
@@ -588,7 +591,7 @@ Then configure your reverse proxy:
 ```nginx
 # nginx.conf - route order traffic to Aether
 location /api/orders {
-    proxy_pass http://aether-cluster:8080;
+    proxy_pass http://aether-cluster:8070;
 }
 
 # Everything else goes to monolith
@@ -606,9 +609,12 @@ Now you can scale the extracted slice using the CLI or Management API:
 aether scale com.example:order-processor:1.0.0 -n 5
 
 # Or scale via Management API
-curl -X POST http://localhost:8080/api/scale \
+curl -X POST http://localhost:5150/api/scale \
   -H "Content-Type: application/json" \
   -d '{"artifact": "com.example:order-processor:1.0.0", "instances": 5}'
+
+# Or use the CLI:
+aether -c localhost:5150 scale com.example:order-processor:1.0.0 -n 5
 ```
 
 Check cluster status:
@@ -618,8 +624,12 @@ Check cluster status:
 aether status
 
 # Via Management API
-curl http://localhost:8080/api/status
-curl http://localhost:8080/api/slices/status
+curl http://localhost:5150/api/status
+curl http://localhost:5150/api/slices/status
+
+# Or use the CLI:
+aether -c localhost:5150 status
+aether -c localhost:5150 slices status
 ```
 
 Adding more nodes for capacity:
@@ -798,9 +808,12 @@ If something goes wrong, scale the slice down via CLI or Management API:
 aether scale com.example:order-processor:1.0.0 -n 0
 
 # Or via Management API
-curl -X POST http://localhost:8080/api/scale \
+curl -X POST http://localhost:5150/api/scale \
   -H "Content-Type: application/json" \
   -d '{"artifact": "com.example:order-processor:1.0.0", "instances": 0}'
+
+# Or use the CLI:
+aether -c localhost:5150 scale com.example:order-processor:1.0.0 -n 0
 
 # Or remove the blueprint entirely
 aether blueprint delete order-system:1.0.0

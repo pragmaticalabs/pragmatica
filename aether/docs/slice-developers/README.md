@@ -12,7 +12,14 @@ public interface OrderService {
     Promise<OrderResult> placeOrder(PlaceOrderRequest request);
 
     static OrderService orderService(InventoryService inventory) {
-        return OrderServiceImpl.orderServiceImpl(inventory);
+        record orderService(InventoryService inventory) implements OrderService {
+            @Override
+            public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
+                return inventory.reserve(new ReserveRequest(request.items()))
+                                .map(reserved -> new OrderResult(reserved.orderId()));
+            }
+        }
+        return new orderService(inventory);
     }
 }
 ```
@@ -24,7 +31,7 @@ public interface OrderService {
 | [Getting Started](getting-started.md) | Create your first slice in 5 minutes |
 | [Development Guide](development-guide.md) | Complete development workflow |
 | [Slice Patterns](slice-patterns.md) | Service vs Lean slices, common patterns |
-| [Testing Slices](testing-slices.md) | Unit and integration testing |
+| [Testing Slices](testing-slices.md) | End-to-end testing with Testcontainers |
 | [Deployment](deployment.md) | Blueprints, environments, CI/CD |
 | [Infrastructure Services](infra-services.md) | Using infrastructure slices |
 | [Resource Reference](resource-reference.md) | Resource provisioning & configuration |
@@ -35,7 +42,7 @@ public interface OrderService {
 
 ## Key Concepts
 
-1. **Single-param methods** - All slice API methods take one request parameter and return `Promise<T>`
+1. **Method parameters** - Slice methods support 0, 1, or multiple parameters, all returning `Promise<T>`. Multi-parameter methods use synthetic request records at the transport layer.
 2. **Factory method** - Static method creating the slice instance with its dependencies
 3. **Internal vs External** - Dependencies in the same base package are internal; others are external
 4. **Blueprint** - TOML file listing slices in dependency order for deployment
@@ -53,8 +60,9 @@ public interface OrderService {
 ## Quick Start
 
 ```bash
-jbct init --slice my-service
+jbct init my-service --slice
 cd my-service
 mvn verify
+./run-forge.sh
 ./deploy-forge.sh
 ```

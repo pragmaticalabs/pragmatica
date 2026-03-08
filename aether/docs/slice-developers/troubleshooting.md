@@ -177,14 +177,14 @@ C → D
 
 **Error:**
 ```
-Failed to deploy: Connection refused (localhost:8080)
+Failed to deploy: Connection refused (localhost:5150)
 ```
 
 **Cause:** Forge not running.
 
 **Fix:**
 ```bash
-aether-forge start
+./run-forge.sh
 # Wait for startup, then deploy
 ./deploy-forge.sh
 ```
@@ -199,7 +199,11 @@ SliceNotFoundException: org.example:order-service:1.0.0
 **Cause:** Slice JAR not deployed or wrong artifact coordinates.
 
 **Fix:**
-1. Check deployed slices: `curl http://localhost:8080/slices`
+1. Check deployed slices: `curl http://localhost:5150/api/slices/status`
+   ```bash
+   # Or use the CLI:
+   aether -c localhost:5150 slices status
+   ```
 2. Verify artifact coordinates in blueprint match JAR
 3. Redeploy: `./deploy-forge.sh`
 
@@ -295,7 +299,7 @@ TimeoutException: Timeout after 30000ms waiting for org.example:inventory-servic
 - Deadlock in slice code
 
 **Fix:**
-1. Check target slice health: `curl http://localhost:8080/slices/org.example:inventory-service:1.0.0/health`
+1. Check target slice health: `curl http://localhost:5150/api/slices/status`
 2. Increase timeout if needed:
 ```toml
 [[slices]]
@@ -478,6 +482,36 @@ public class OrderServiceImpl implements OrderService {
     }
 }
 ```
+
+### "Scale fails: blueprint minimum instances"
+
+**Error:**
+```
+Scale rejected: requested instances (1) below blueprint minimum (3)
+```
+
+**Cause:** The blueprint defines a `minInstances` floor. The scale command preserves this floor.
+
+**Fix:** Either scale to at least the minimum, or update the blueprint with a lower instance count.
+
+### "Deployment rollback leaves stale routes"
+
+**Error:** After a failed deployment and rollback, HTTP routes from the failed slice remain registered.
+
+**Cause:** Fixed in 0.19.2. The `forceCleanupSlice` operation now cleans up routes, endpoints, and subscriptions.
+
+**Fix:** Upgrade to 0.19.2+. If stuck on an older version, restart the affected nodes.
+
+### "CLI returns 404 for all commands"
+
+**Error:**
+```
+Error: 404 Not Found
+```
+
+**Cause:** Older CLI versions were missing the `/api/` prefix on management API paths.
+
+**Fix:** Update to CLI version 0.19.2+ which includes the `/api/` prefix fix for all 31 management API paths.
 
 ## Getting Help
 

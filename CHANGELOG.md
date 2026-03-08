@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.19.2] - Unreleased
 
+### Added
+- **`jbct add-slice`** — scaffold new slice into existing project (creates source, test, routes, config, manifest in sub-package)
+- **`jbct add-event`** — generate pub-sub event annotations + auto-append messaging config to `aether.toml`
+- **`jbct init --version`** — override dependency versions for pre-release testing
+- **Unified installer** (`install.sh`) — downloads jbct, aether CLI, and aether-forge
+- **Scaffold scripts** — `run-forge.sh`, `start-postgres.sh`, `stop-postgres.sh`, `deploy-forge.sh`, `deploy-test.sh`, `deploy-prod.sh`, `generate-blueprint.sh`
+- **ALL_OR_NOTHING deployment atomicity** — default for all blueprint deployments; no partial deploys
+- **Blueprint auto-rollback** — on deployment failure, all slices revert to previous state automatically
+- **Cause-based deployment retry** — error propagation through KV store with `SliceLoadingFailure` hierarchy
+- **Database URL inference** — type, host, and database name inferred from JDBC URL; explicit fields optional
+- **Optional database port** — URL-only configuration supported (no separate port field required)
+- **Config service factory methods** — record validation via factory methods in config records
+
+### Fixed
+- CLI REPL mode with `-c` connection flag now works correctly
+- CLI missing `/api/` prefix on 31 management API paths
+- Double JSON serialization in management API responses (pre-serialized strings no longer re-wrapped)
+- Scale command preserves existing `minInstances` from blueprint
+- Rollback route/endpoint/subscription cleanup via `forceCleanupSlice`
+- Reactivation failure cleanup — full cleanup chain on slice reload failure
+- Topology graph edge routing — links start right, arrows enter left
+- `Verify.Is.blank()` null-safe (no longer throws on null input)
+- Format-check error message now includes file names
+- Slice processor error messages include file reference and slice name
+- Domain error recovery from failed Promises in `SliceRouter`
+- Infinite reconciliation loop for deterministic deployment failures
+- `install.sh` uses semver sort instead of `/releases/latest`
+
+### Changed
+- `TimeSpan` instead of `Duration` in `PoolConfig` (plain-number-as-seconds support)
+- Partial nested record merge with `DEFAULT` strategy
+- HelloWorld scaffold in own subpackage (consistent with `add-slice`)
+
 ## [0.19.1] - 2026-03-05
 
 ### Added

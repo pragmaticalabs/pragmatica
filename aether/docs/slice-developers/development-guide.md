@@ -126,7 +126,7 @@ To depend on another slice:
 </dependency>
 ```
 
-2. Add the interface to your factory method:
+2. Use the dependency in your implementation via the inline record pattern:
 ```java
 @Slice
 public interface OrderService {
@@ -134,31 +134,16 @@ public interface OrderService {
 
     static OrderService orderService(InventoryService inventory,
                                      PricingEngine pricing) {
-        return OrderServiceImpl.orderServiceImpl(inventory, pricing);
-    }
-}
-```
-
-3. Use the dependency in your implementation:
-```java
-public class OrderServiceImpl implements OrderService {
-    private final InventoryService inventory;
-    private final PricingEngine pricing;
-
-    OrderServiceImpl(InventoryService inventory, PricingEngine pricing) {
-        this.inventory = inventory;
-        this.pricing = pricing;
-    }
-
-    static OrderServiceImpl orderServiceImpl(InventoryService inventory, PricingEngine pricing) {
-        return new OrderServiceImpl(inventory, pricing);
-    }
-
-    @Override
-    public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
-        return inventory.reserve(new ReserveRequest(request.items()))
-                        .flatMap(reserved -> pricing.calculate(new PriceRequest(reserved)))
-                        .map(priced -> new OrderResult(priced.orderId(), priced.total()));
+        record orderService(InventoryService inventory,
+                            PricingEngine pricing) implements OrderService {
+            @Override
+            public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
+                return inventory.reserve(new ReserveRequest(request.items()))
+                                .flatMap(reserved -> pricing.calculate(new PriceRequest(reserved)))
+                                .map(priced -> new OrderResult(priced.orderId(), priced.total()));
+            }
+        }
+        return new orderService(inventory, pricing);
     }
 }
 ```
@@ -181,7 +166,14 @@ public interface OrderService {
     Promise<OrderResult> placeOrder(PlaceOrderRequest request);
 
     static OrderService orderService(OrderValidator validator) {
-        return OrderServiceImpl.orderServiceImpl(validator);
+        record orderService(OrderValidator validator) implements OrderService {
+            @Override
+            public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
+                return validator.validate(request)
+                                .flatMap(valid -> processOrder(valid));
+            }
+        }
+        return new orderService(validator);
     }
 }
 ```
@@ -268,28 +260,39 @@ A single Maven module can contain multiple slices. Each slice **must** live in i
 package — the annotation processor enforces this at compile time. If two `@Slice` interfaces
 share a package, the build fails with a clear error message suggesting separate packages.
 
+### Adding a Slice with jbct
+
 Use `jbct add-slice` to scaffold a new slice into an existing project:
 
 ```bash
 jbct add-slice Analytics
 ```
 
-This creates the slice in a sub-package (`analytics/`) with all required files: interface,
-test, routes, config, and dependency manifest. The command reads your `pom.xml` to determine
-the base package automatically.
+This creates the slice in a sub-package (`analytics/`) with all required files:
+
+| Generated File | Purpose |
+|----------------|---------|
+| `src/main/java/.../analytics/Analytics.java` | Slice interface + implementation |
+| `src/test/java/.../analytics/AnalyticsTest.java` | Unit test |
+| `src/main/resources/routes.toml` → `analytics/routes.toml` | HTTP route definitions |
+| `src/main/resources/slices/Analytics.toml` | Runtime config (instances, timeout) |
+| `src/main/resources/META-INF/dependencies/...Analytics` | Dependency manifest |
+
+The command reads your `pom.xml` to determine the base package automatically. After adding, build and verify:
+
+```bash
+mvn clean verify
+```
 
 ```
 commerce/
 └── src/main/java/org/example/
     ├── order/
-    │   ├── OrderService.java      # @Slice
-    │   └── OrderServiceImpl.java
+    │   └── OrderService.java      # @Slice
     ├── payment/
-    │   ├── PaymentService.java    # @Slice
-    │   └── PaymentServiceImpl.java
+    │   └── PaymentService.java    # @Slice
     └── shipping/
-        ├── ShippingService.java   # @Slice
-        └── ShippingServiceImpl.java
+        └── ShippingService.java   # @Slice
 ```
 
 Each `@Slice` interface generates:
@@ -316,7 +319,15 @@ public interface OrderService {
 
     static OrderService orderService(PaymentService payments,
                                      ShippingService shipping) {
-        return OrderServiceImpl.orderServiceImpl(payments, shipping);
+        record orderService(PaymentService payments,
+                            ShippingService shipping) implements OrderService {
+            @Override
+            public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
+                return payments.charge(request)
+                               .flatMap(paid -> shipping.schedule(paid));
+            }
+        }
+        return new orderService(payments, shipping);
     }
 }
 ```
@@ -346,28 +357,24 @@ public record OrderResult(
 All request/response types must be immutable. The runtime serializes/deserializes them across the network.
 
 ### Validation
-Validate in your implementation, not in records:
+
+Use parse-don't-validate with the `Verify` API and `Result` types:
 
 ```java
-@Override
-public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
-    if (request.items().isEmpty()) {
-        return Promise.failure(Causes.cause("Order must have items"));
+public record PlaceOrderRequest(String customerId, List<LineItem> items) {
+    public static Result<PlaceOrderRequest> placeOrderRequest(String customerId,
+                                                               List<LineItem> items) {
+        var validCustomer = Verify.ensure(customerId, Verify.Is::present,
+                                          OrderError.missingCustomerId());
+        var validItems = Verify.ensure(items, list -> !list.isEmpty(),
+                                       OrderError.emptyItems());
+        return Result.all(validCustomer, validItems)
+                     .map(PlaceOrderRequest::new);
     }
-    // ... process order
 }
 ```
 
-Or use parse-don't-validate with Result types:
-
-```java
-public static Result<ValidatedOrder> validate(PlaceOrderRequest request) {
-    return Result.all(
-        validateItems(request.items()),
-        validateAddress(request.address())
-    ).map(ValidatedOrder::new);
-}
-```
+This follows the parse-don't-validate pattern from the [Getting Started](getting-started.md) guide — invalid objects can never exist because the factory method returns `Result<T>`, not the raw type.
 
 ## Testing Slices
 
@@ -387,7 +394,7 @@ class OrderServiceTest {
         when(pricing.calculate(any()))
             .thenReturn(Promise.success(new PriceResult("ORD-456", 99.99)));
 
-        var service = OrderServiceImpl.orderServiceImpl(inventory, pricing);
+        var service = OrderService.orderService(inventory, pricing);
         var request = new PlaceOrderRequest("CUST-1", List.of(item), address);
 
         var result = service.placeOrder(request).await();
@@ -518,12 +525,66 @@ public interface OrderProcessor {
 
 **3. Configure the topic in TOML:**
 ```toml
-# src/main/resources/slices/OrderProcessor.toml
+# aether.toml
 [messaging.orders]
 topic = "order-events"
 ```
 
 Subscription methods must return `Promise<Unit>`. The runtime registers the handler with the cluster pub-sub system and routes messages to any node with the slice loaded.
+
+### Adding Events with jbct
+
+Use `jbct add-event` to generate pub-sub event scaffolding:
+
+```bash
+jbct add-event order-placed
+```
+
+This generates:
+- `@OrderPlacedPublisher` annotation for the publishing slice
+- `@OrderPlacedSubscription` annotation for subscribing slices
+- Auto-appends a `[messaging.order-placed]` section to `aether.toml`
+
+**Wire the publisher** into the publishing slice:
+
+```java
+@Slice
+public interface OrderService {
+    Promise<OrderResult> placeOrder(PlaceOrderRequest request);
+
+    static OrderService orderService(@OrderPlacedPublisher Publisher<OrderEvent> publisher) {
+        record orderService(Publisher<OrderEvent> publisher) implements OrderService {
+            @Override
+            public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
+                return processOrder(request)
+                    .onSuccess(result -> publisher.publish(new OrderEvent(result.orderId())));
+            }
+        }
+        return new orderService(publisher);
+    }
+}
+```
+
+**Wire the subscriber** into the subscribing slice:
+
+```java
+@Slice
+public interface AnalyticsService {
+    @OrderPlacedSubscription
+    Promise<Unit> handleOrderPlaced(OrderEvent event);
+
+    static AnalyticsService analyticsService(@Sql SqlConnector db) {
+        record analyticsService(SqlConnector db) implements AnalyticsService {
+            @Override
+            public Promise<Unit> handleOrderPlaced(OrderEvent event) {
+                return db.update("INSERT INTO analytics_events ...", event.orderId())
+                         .map(_ -> Unit.unit());
+            }
+        }
+        return new analyticsService(db);
+    }
+}
+```
 
 ### Scheduled Invocation
 
@@ -549,7 +610,7 @@ public interface OrderService {
 
 **3. Configure the schedule in TOML:**
 ```toml
-# src/main/resources/slices/OrderService.toml
+# aether.toml
 [scheduling.cleanup]
 interval = "5m"       # fixed-rate: "30s", "5m", "1h", "1d"
 leaderOnly = true     # only the leader node triggers (default: true)
@@ -557,6 +618,7 @@ leaderOnly = true     # only the leader node triggers (default: true)
 
 Or use cron expressions:
 ```toml
+# aether.toml
 [scheduling.report]
 cron = "0 0 * * *"    # standard 5-field: min hour dom month dow
 leaderOnly = true

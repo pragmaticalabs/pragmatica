@@ -35,38 +35,55 @@ By default it uses `com.example` as the group ID and derives the artifact ID fro
 > jbct init my-first-slice -g org.mycompany -a my-first-slice --slice
 > ```
 
+> **Pre-release testing:** To test against a specific pre-release version:
+> ```bash
+> jbct init my-first-slice --slice --version 0.19.2-SNAPSHOT
+> ```
+
 Here's the generated directory tree:
 
 ```
 my-first-slice/
 ├── pom.xml                                        # Maven build (Java 25, JBCT plugin)
 ├── jbct.toml                                      # JBCT formatter/linter config
+├── forge.toml                                     # Forge cluster configuration
+├── aether.toml                                    # Runtime resource configuration
 ├── CLAUDE.md                                      # AI agent instructions
 ├── .gitignore
+├── run-forge.sh                                   # Start local Forge server
+├── start-postgres.sh                              # Start PostgreSQL container (podman)
+├── stop-postgres.sh                               # Stop PostgreSQL container
 ├── deploy-forge.sh                                # Deploy to local Forge
 ├── deploy-test.sh                                 # Deploy to test environment
 ├── deploy-prod.sh                                 # Deploy to production
 ├── generate-blueprint.sh                          # Generate deployment blueprint
+├── schema/
+│   └── init.sql                                   # Database initialization script
 └── src/
     ├── main/
     │   ├── java/com/example/myfirstslice/
-    │   │   └── MyFirstSlice.java                  # Your slice (interface + impl)
+    │   │   └── helloworld/
+    │   │       └── HelloWorld.java                # Sample slice (interface + impl)
     │   └── resources/
     │       ├── slices/
-    │       │   └── MyFirstSlice.toml              # Slice runtime config
+    │       │   └── HelloWorld.toml                # Slice runtime config
     │       └── META-INF/dependencies/
-    │           └── com.example.myfirstslice.MyFirstSlice  # Dependency manifest
+    │           └── com.example.myfirstslice.helloworld.HelloWorld
     └── test/
         ├── java/com/example/myfirstslice/
-        │   └── MyFirstSliceTest.java              # Unit test
+        │   └── helloworld/
+        │       └── HelloWorldTest.java            # Unit test
         └── resources/
             └── log4j2-test.xml                    # Test logging config
 ```
 
-Notice something unusual? There's only **one Java source file** — `MyFirstSlice.java`.
-In Aether, the slice interface, request/response types, error types, factory method,
-and implementation all live together. This isn't an accident — it's a deliberate design
-that keeps related code together and eliminates scattered files.
+Notice something unusual? There's only **one Java source file** — `HelloWorld.java`
+in the `helloworld/` subpackage. Slices are organized in subpackages (matching the
+output of `jbct add-slice`). In Aether, the slice interface, request/response types,
+error types, factory method, and implementation all live together. This isn't an
+accident — it's a deliberate design that keeps related code together and eliminates
+scattered files. The generated `HelloWorld` is a starting point that you'll replace
+with your own slice in the steps below.
 
 ## Step 2: Build and Test
 
@@ -115,8 +132,9 @@ The JBCT CLI isn't installed or isn't on your PATH. Install it with `mvn depende
 
 ## Step 3: Understand the Generated Code
 
-Open `src/main/java/com/example/myfirstslice/MyFirstSlice.java`. Let's walk through it
-section by section.
+Open `src/main/java/com/example/myfirstslice/helloworld/HelloWorld.java` — this is the
+generated sample slice. Let's walk through the structure section by section (the tutorial
+uses `MyFirstSlice` as the name for the slice you'll build).
 
 ### The Full Generated Code
 
@@ -908,6 +926,12 @@ The `instances = 3` comes from `src/main/resources/slices/MyFirstSlice.toml`.
 
 ### Start Forge
 
+```bash
+./run-forge.sh
+```
+
+This starts the Aether Forge development server. The dashboard is available at `http://localhost:8888`.
+
 If Forge is running with `repositories=["local"]`, it automatically picks up the slice.
 Your slice is now live and can be called through the Forge API.
 
@@ -922,6 +946,8 @@ Here's where to go next:
 - **[Testing Slices](testing-slices.md)** — unit testing, integration testing, mocking dependencies
 - **[Forge Guide](forge-guide.md)** — running Forge, dashboard, load testing
 - **[Troubleshooting](troubleshooting.md)** — common errors and their solutions
+- **Add more slices** — use `jbct add-slice Analytics` to scaffold a new slice into this project
+- **Add pub-sub events** — use `jbct add-event order-placed` to generate event annotations and config
 
 ## Quick Reference
 
