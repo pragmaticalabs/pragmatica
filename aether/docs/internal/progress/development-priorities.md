@@ -188,23 +188,21 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
     - Expand-contract support for zero-downtime schema changes
     - Lightweight `AetherSchemaManager` — plain JDBC, no Flyway/Liquibase dependency
 
-3. **Cluster Scalability via Passive Worker Pools**
+3. **Cluster Scalability via Passive Worker Pools** — [design spec](../../specs/passive-worker-pools-spec.md)
     - **Problem:** Current design limits cluster to 5-7-9-11 consensus nodes max. Production clusters need tens/hundreds/thousands of nodes.
-    - **Architecture:** Small consensus core (5-7-9 active nodes) + large passive worker pools running slices.
-    - **Layering:**
-      - Consensus core — active nodes participating in Rabia consensus
-      - Main worker pool — always active, bounded scaling, runs slices without consensus overhead
-      - Spot pool — elastic workers for peak load, tolerant of termination
-    - **Foundation:** Existing `PassiveNode<K,V>` abstraction (`integrations/cluster/.../node/passive/PassiveNode.java`) and `AetherPassiveLB` provide the core infrastructure.
-    - **Includes (formerly separate items):**
-      - Zone-aware placement hints — affinity/anti-affinity rules, spread across nodes/zones, co-locate related slices
-      - Spot instance support — elastic passive pool variant, 60-90% cost savings for traffic spikes
-      - Management API proxy — passive node exposes management endpoints, forwards mutations to leader
-      - Read replica / query gateway — passive node serves read-only KV-Store queries
-      - Multi-cluster bridge — passive node forwards Decisions/events between clusters
-      - DHT client node — passive node with DHT read access for external systems (CI/CD, monitoring)
-    - **First deliverable:** Comprehensive design spec covering pool architecture, scheduling, failure modes, and edge cases
-    - **Reference:** Consensus store assessment doc exists; needs comprehensive design spec
+    - **Architecture:** Small consensus core (5-7-9 active nodes) + self-organizing worker pools with elected governors.
+    - **Key design decisions (v0.19.3):**
+      - **Elected governors** — workers self-organize into groups, elect a governor (lowest NodeId). Governor is a regular worker that additionally relays Decisions, aggregates health, and proxies mutations. Stateless — no data that can't be reconstructed.
+      - **Automatic flat ↔ layered transition** — at 3 workers = flat. At 500 workers = multiple groups with governors. No config change needed — emergent from group size threshold (~100-150 per group).
+      - **SWIM gossip** — O(1) per-member overhead for worker membership/failure detection. Proven to 10K+ nodes.
+      - **KV-Store split** — consensus holds desired state (<1 MB); new Worker Endpoint Registry holds runtime state (endpoints, routes). Governors aggregate endpoints per group → core sees O(governors) not O(workers).
+      - **Zone-aware grouping** — consistent hashing with zone prefix in NodeId. Workers in same zone auto-group.
+    - **Phased rollout:**
+      - Phase 1 (0.20.x): Flat with election infrastructure, SWIM, worker runtime, single group
+      - Phase 2 (0.21.x): Auto-layering, multi-governor, spot pool, zone-aware grouping
+      - Phase 3 (future): Multi-region, cross-region governors, DHT worker participation
+    - **Foundation exists:** `PassiveNode<K,V>`, `AetherPassiveLB`, `NodeRole.ACTIVE/PASSIVE`, Decision stream to passive nodes
+    - **Research:** [10-system comparative analysis](../../internal/passive-worker-pool-research.md) (K8s, Consul, Hazelcast, Nomad, Mesos, CockroachDB, TiKV, FoundationDB, Akka, Orleans, Ray)
 
 ### Cloud Provider Support
 

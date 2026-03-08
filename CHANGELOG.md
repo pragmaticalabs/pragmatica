@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.19.3] - Unreleased
 
+### Added
+- **Container image publishing** — `release.yml` builds multi-arch Docker images (amd64+arm64) via buildx, publishes to GHCR and Docker Hub. SHA256 checksums generated for all release artifacts
+- **Upgrade script** (`aether/upgrade.sh`) — detects current version, downloads new JARs to temp dir, verifies SHA256 checksums, atomic binary swap with backup, running process detection
+- **Rolling cluster upgrade script** (`aether/script/rolling-aether-upgrade.sh`) — API-driven zero-downtime upgrades: discovers nodes, drains → shuts down → waits for restart → activates → canary checks each node. Supports `--dry-run`, `--canary-wait`, `--api-key`, `--skip-download`
+- **Passive worker pools design spec** (`aether/docs/specs/passive-worker-pools-spec.md`) — architecture for scaling to 10K+ nodes: elected governors, SWIM gossip, KV-Store split, auto flat↔layered transition, 3-phase rollout plan
+
+### Changed
+- Dockerfile version labels now use build-arg `VERSION` instead of hardcoded values
+- Dockerfile source URLs updated to `pragmaticalabs/pragmatica`
+- `install.sh` enhanced with `--version` flag, SHA256 checksum verification, WSL2 detection
+- Root `install.sh` references `main` branch instead of `release-0.19.3`
+
+### Fixed
+- `AetherNode.VERSION` updated from `0.19.0` to `0.19.3`
+- `AetherUp.VERSION` updated from `0.7.2` to `0.19.3`
+
 ## [0.19.2] - 2026-03-08
 
 ### Added
