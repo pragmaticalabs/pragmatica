@@ -106,7 +106,7 @@ public final class ForgeServer {
         this.forgeConfig = forgeConfig;
     }
 
-    private static final String VERSION = "Aether Forge 0.19.2";
+    private static final String VERSION = "Aether Forge 0.19.3";
 
     public static void main(String[] args) {
         if (hasFlag(args, "--help", "-h")) {

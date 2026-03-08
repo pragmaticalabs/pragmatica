@@ -12,7 +12,7 @@ modify it to make it your own, and deploy it to a local Forge.
 |----------|----------|------------------|
 | Java     | 25+      | `java --version` |
 | Maven    | 3.8+     | `mvn --version`  |
-| JBCT CLI | 0.19.2+  | `jbct --version` |
+| JBCT CLI | 0.19.3+  | `jbct --version` |
 
 > **Don't have the JBCT CLI?** Install it with `mvn dependency:copy` or download from Maven Central.
 
@@ -37,7 +37,7 @@ By default it uses `com.example` as the group ID and derives the artifact ID fro
 
 > **Pre-release testing:** To test against a specific pre-release version:
 > ```bash
-> jbct init my-first-slice --slice --version 0.19.2-SNAPSHOT
+> jbct init my-first-slice --slice --version 0.19.3-SNAPSHOT
 > ```
 
 Here's the generated directory tree:

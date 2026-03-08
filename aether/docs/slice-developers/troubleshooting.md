@@ -498,9 +498,9 @@ Scale rejected: requested instances (1) below blueprint minimum (3)
 
 **Error:** After a failed deployment and rollback, HTTP routes from the failed slice remain registered.
 
-**Cause:** Fixed in 0.19.2. The `forceCleanupSlice` operation now cleans up routes, endpoints, and subscriptions.
+**Cause:** Fixed in 0.19.3. The `forceCleanupSlice` operation now cleans up routes, endpoints, and subscriptions.
 
-**Fix:** Upgrade to 0.19.2+. If stuck on an older version, restart the affected nodes.
+**Fix:** Upgrade to 0.19.3+. If stuck on an older version, restart the affected nodes.
 
 ### "CLI returns 404 for all commands"
 
@@ -511,7 +511,7 @@ Error: 404 Not Found
 
 **Cause:** Older CLI versions were missing the `/api/` prefix on management API paths.
 
-**Fix:** Update to CLI version 0.19.2+ which includes the `/api/` prefix fix for all 31 management API paths.
+**Fix:** Update to CLI version 0.19.3+ which includes the `/api/` prefix fix for all 31 management API paths.
 
 ## Getting Help
 
