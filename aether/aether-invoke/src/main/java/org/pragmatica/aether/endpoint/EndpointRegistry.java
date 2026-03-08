@@ -112,6 +112,10 @@ public interface EndpointRegistry {
                     MethodName methodName,
                     int instanceNumber,
                     NodeId nodeId) {
+        public static Endpoint endpoint(Artifact artifact, MethodName methodName, int instanceNumber, NodeId nodeId) {
+            return new Endpoint(artifact, methodName, instanceNumber, nodeId);
+        }
+
         public EndpointKey toKey() {
             return new EndpointKey(artifact, methodName, instanceNumber);
         }
@@ -130,10 +134,10 @@ public interface EndpointRegistry {
                                           .key();
                 var endpointValue = valuePut.cause()
                                             .value();
-                var endpoint = new Endpoint(endpointKey.artifact(),
-                                            endpointKey.methodName(),
-                                            endpointKey.instanceNumber(),
-                                            endpointValue.nodeId());
+                var endpoint = Endpoint.endpoint(endpointKey.artifact(),
+                                                 endpointKey.methodName(),
+                                                 endpointKey.instanceNumber(),
+                                                 endpointValue.nodeId());
                 endpoints.put(endpointKey, endpoint);
                 log.debug("Registered endpoint: {}", endpoint);
             }

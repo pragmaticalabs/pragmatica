@@ -156,6 +156,17 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 74 | Remote Maven repositories | Complete | Resolve slices from Maven Central or private Nexus. SHA-1 verification, local `~/.m2/repository` cache, `settings.xml` auth. Config: `repositories = ["local", "remote:central"]` |
 | 75 | Load Balancer | Complete | Standalone `aether/lb/` module. Round-robin routing, active health checking (GET /health/ready), automatic retry, X-Forwarded-* headers, hop-by-hop stripping. Integrated into Ember lifecycle |
 
+## Worker Pools
+
+| # | Feature | Status | Description |
+|---|---------|--------|-------------|
+| 80 | SWIM failure detection | Partial | UDP-based protocol with periodic probes, indirect probing, piggybacked membership updates. Standalone `integrations/swim/` module. **Gap:** No TCP fallback for cloud environments blocking UDP |
+| 81 | Worker node | Partial | Passive compute nodes that run slices without participating in Rabia consensus. WorkerNode composes PassiveNode + SWIM + Governor. **Gap:** Phase 1 only — single group, flat topology, no auto-splitting |
+| 82 | Governor election | Partial | Pure deterministic computation — lowest ALIVE NodeId from SWIM membership. No election messages exchanged. **Gap:** No sticky incumbent yet |
+| 83 | Worker endpoint registry | Partial | Non-consensus ConcurrentHashMap-based registry populated by governor health reports. SliceInvoker dual lookup: core endpoints first, worker endpoints fallback. **Gap:** Not yet unified with consensus-driven EndpointRegistry |
+| 84 | CDM pool awareness | Partial | AllocationPool for core + worker node sets. WorkerSliceDirectiveKey/Value in consensus KV-Store for worker slice deployment directives. PlacementPolicy enum (CORE_ONLY, WORKERS_PREFERRED, WORKERS_ONLY, ALL). **Gap:** Not yet wired to CDM allocation logic |
+| 85 | Worker management API | Partial | `GET /api/workers`, `GET /api/workers/health`, `GET /api/workers/endpoints`. CLI commands: `workers list`, `workers health`. **Gap:** No worker-specific deployment or scaling endpoints |
+
 ## Known Limitations
 
 | Area | Limitation | Planned Fix |
@@ -190,9 +201,9 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 |--------|-------|
 | Battle-tested | 23 |
 | Complete | 46 |
-| Partial | 2 |
+| Partial | 8 |
 | Planned | 11 |
-| Total | 82 |
+| Total | 88 |
 
 **Battle-tested features (23):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), Forge integration tests
 
@@ -202,6 +213,12 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 |---------|---------|
 | TTM predictive scaling | Disabled by default, no live model training |
 | Web dashboard | Node management dashboard in active development (v0.19.0) — observability UI, trace viewer, log levels pending |
+| SWIM failure detection | No TCP fallback for UDP-blocked cloud environments |
+| Worker node | Phase 1 — single group, flat topology, no auto-splitting |
+| Governor election | No sticky incumbent yet |
+| Worker endpoint registry | Not unified with consensus-driven EndpointRegistry |
+| CDM pool awareness | Not yet wired to CDM allocation logic |
+| Worker management API | No worker-specific deployment or scaling endpoints |
 
 **Planned features:**
 
@@ -221,4 +238,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-03-04 (v0.19.3)*
+*Last updated: 2026-03-08 (v0.19.3)*

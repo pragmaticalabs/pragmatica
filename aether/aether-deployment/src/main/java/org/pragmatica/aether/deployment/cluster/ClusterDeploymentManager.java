@@ -3,6 +3,7 @@ package org.pragmatica.aether.deployment.cluster;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.endpoint.WorkerEndpointRegistry;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
@@ -197,7 +198,8 @@ public interface ClusterDeploymentManager {
                       Map<BlueprintId, InFlightBlueprint> inFlightBlueprints,
                       Set<BlueprintId> restoringBlueprints,
                       Set<Artifact> permanentlyFailed,
-                      DeploymentAtomicity atomicity) implements ClusterDeploymentState {
+                      DeploymentAtomicity atomicity,
+                      Option<WorkerEndpointRegistry> workerEndpointRegistry) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
             private static final int MAX_RETRIES = 5;
             private static final long MAX_RETRY_DELAY_SECONDS = 30;
@@ -454,6 +456,14 @@ public interface ClusterDeploymentManager {
                                   .stream()
                                   .filter(this::isNodeOnDuty)
                                   .toList();
+            }
+
+            /// Build an AllocationPool combining core nodes and worker nodes.
+            /// Used for policy-based placement decisions.
+            AllocationPool buildAllocationPool() {
+                var workerNodes = workerEndpointRegistry.map(WorkerEndpointRegistry::allWorkerNodeIds)
+                                                        .or(List.of());
+                return AllocationPool.allocationPool(allocatableNodes(), workerNodes);
             }
 
             /// Check if a node has ON_DUTY lifecycle state in KV store.
@@ -1570,6 +1580,7 @@ public interface ClusterDeploymentManager {
     /// @param computeProvider Compute provider for auto-healing (empty to disable)
     /// @param autoHealConfig  Auto-heal retry configuration
     /// @param atomicity       Blueprint deployment atomicity mode
+    /// @param workerRegistry  Worker endpoint registry for pool-aware allocation (empty to disable)
     static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
                                                              ClusterNode<KVCommand<AetherKey>> cluster,
                                                              KVStore<AetherKey, AetherValue> kvStore,
@@ -1578,7 +1589,8 @@ public interface ClusterDeploymentManager {
                                                              TopologyManager topologyManager,
                                                              Option<ComputeProvider> computeProvider,
                                                              AutoHealConfig autoHealConfig,
-                                                             DeploymentAtomicity atomicity) {
+                                                             DeploymentAtomicity atomicity,
+                                                             Option<WorkerEndpointRegistry> workerRegistry) {
         record clusterDeploymentManager(NodeId self,
                                         ClusterNode<KVCommand<AetherKey>> cluster,
                                         KVStore<AetherKey, AetherValue> kvStore,
@@ -1587,6 +1599,7 @@ public interface ClusterDeploymentManager {
                                         Option<ComputeProvider> computeProvider,
                                         AutoHealConfig autoHealConfig,
                                         DeploymentAtomicity atomicity,
+                                        Option<WorkerEndpointRegistry> workerRegistry,
                                         AtomicReference<ClusterDeploymentState> state,
                                         AtomicReference<List<NodeId>> topologyRef) implements ClusterDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(clusterDeploymentManager.class);
@@ -1619,7 +1632,8 @@ public interface ClusterDeploymentManager {
                                                                         new ConcurrentHashMap<>(),
                                                                         ConcurrentHashMap.newKeySet(),
                                                                         ConcurrentHashMap.newKeySet(),
-                                                                        atomicity);
+                                                                        atomicity,
+                                                                        workerRegistry);
                     // Swap to Active FIRST — ensures topology changes arriving on other threads
                     // are dispatched to Active.onTopologyChange() instead of being lost in Dormant.
                     state.set(activeState);
@@ -1747,6 +1761,7 @@ public interface ClusterDeploymentManager {
                                             computeProvider,
                                             autoHealConfig,
                                             atomicity,
+                                            workerRegistry,
                                             new AtomicReference<>(new ClusterDeploymentState.Dormant()),
                                             new AtomicReference<>(List.copyOf(initialTopology)));
     }

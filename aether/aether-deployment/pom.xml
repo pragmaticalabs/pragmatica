@@ -34,6 +34,10 @@
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-config</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-api</artifactId>
             <version>${project.version}</version>
         </dependency>

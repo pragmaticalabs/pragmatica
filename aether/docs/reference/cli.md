@@ -761,6 +761,27 @@ aether node activate node-2
 aether node shutdown node-3
 ```
 
+#### workers
+
+Manage worker pool nodes:
+
+```bash
+# List all worker nodes
+aether workers list
+
+# Show worker pool health summary
+aether workers health
+```
+
+Example:
+```bash
+# Check worker pool status
+aether workers list
+
+# Verify worker health
+aether workers health
+```
+
 #### scheduled-tasks
 
 Manage scheduled tasks:

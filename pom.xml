@@ -211,6 +211,11 @@
                 <artifactId>hetzner</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>swim</artifactId>
+                <version>${project.version}</version>
+            </dependency>
 
             <!-- JBCT modules -->
             <dependency>

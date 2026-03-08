@@ -11,6 +11,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Upgrade script** (`aether/upgrade.sh`) — detects current version, downloads new JARs to temp dir, verifies SHA256 checksums, atomic binary swap with backup, running process detection
 - **Rolling cluster upgrade script** (`aether/script/rolling-aether-upgrade.sh`) — API-driven zero-downtime upgrades: discovers nodes, drains → shuts down → waits for restart → activates → canary checks each node. Supports `--dry-run`, `--canary-wait`, `--api-key`, `--skip-download`
 - **Passive worker pools design spec** (`aether/docs/specs/passive-worker-pools-spec.md`) — architecture for scaling to 10K+ nodes: elected governors, SWIM gossip, KV-Store split, auto flat↔layered transition, 3-phase rollout plan
+- **Passive worker pools Phase 1** — foundation for scaling beyond Rabia consensus limits (5-9 nodes) with passive compute nodes:
+  - **SWIM protocol module** (`integrations/swim/`) — UDP-based failure detection with periodic probes, indirect probing, piggybacked membership updates
+  - **Worker node module** (`aether/worker/`) — WorkerNode composes PassiveNode + SWIM + Governor election + Decision relay + Mutation forwarding + Bootstrap
+  - **Governor election** — pure deterministic computation (lowest ALIVE NodeId), no election messages exchanged
+  - **Worker configuration** — `WorkerConfig` with SWIM settings, core node addresses, placement policy (CORE_ONLY, WORKERS_PREFERRED, WORKERS_ONLY, ALL)
+  - **Worker endpoint registry** — non-consensus ConcurrentHashMap-based registry with round-robin load balancing, governor health report population
+  - **SliceInvoker dual lookup** — core endpoints first, worker endpoints fallback via governor routing
+  - **CDM pool awareness** — `AllocationPool` record, `WorkerSliceDirectiveKey`/`WorkerSliceDirectiveValue` in consensus KV-Store
+  - **Worker management API** — `GET /api/workers`, `GET /api/workers/health`, `GET /api/workers/endpoints`
+  - **CLI commands** — `aether workers list`, `aether workers health`
 
 ### Changed
 - Dockerfile version labels now use build-arg `VERSION` instead of hardcoded values

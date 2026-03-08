@@ -67,6 +67,7 @@
         <!-- TTM modules - after control and metrics -->
         <module>aether-ttm</module>
         <module>aether-ttm-onnx</module>
+        <module>worker</module>
         <module>node</module>
         <!-- E2E test slices - pure function, no dependencies -->
         <module>e2e-tests/echo-slice</module>
@@ -169,6 +170,11 @@
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>dashboard</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>aether-config</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -329,6 +335,11 @@
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>forge-load</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>worker</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

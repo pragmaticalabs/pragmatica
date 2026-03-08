@@ -74,7 +74,8 @@ AetherCli.LoggingCommand.class,
 AetherCli.ConfigCommand.class,
 AetherCli.ScheduledTasksCommand.class,
 AetherCli.EventsCommand.class,
-AetherCli.NodeCommand.class})
+AetherCli.NodeCommand.class,
+AetherCli.WorkersCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -2279,6 +2280,49 @@ public class AetherCli implements Runnable {
                 if (!Character.isWhitespace(c)) {
                     sb.append(c);
                 }
+            }
+        }
+    }
+
+    // ===== Workers Commands =====
+    @Command(name = "workers",
+    description = "Worker pool management",
+    subcommands = {WorkersCommand.ListCommand.class,
+    WorkersCommand.HealthCommand.class})
+    static class WorkersCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            // Default: show all workers
+            var response = parent.fetchFromNode("/api/workers");
+            System.out.println(formatJson(response));
+        }
+
+        @Command(name = "list", description = "List all workers")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private WorkersCommand workersParent;
+
+            @Override
+            public Integer call() {
+                var response = workersParent.parent.fetchFromNode("/api/workers");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "health", description = "Show worker pool health")
+        static class HealthCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private WorkersCommand workersParent;
+
+            @Override
+            public Integer call() {
+                var response = workersParent.parent.fetchFromNode("/api/workers/health");
+                System.out.println(formatJson(response));
+                return 0;
             }
         }
     }

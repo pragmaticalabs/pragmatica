@@ -1544,6 +1544,57 @@ When no API keys are configured, WebSocket connections are immediately authorize
 
 ---
 
+## Worker Pools
+
+### GET /api/workers
+
+List all known worker nodes across all worker groups.
+
+**Response:**
+```json
+[
+  {
+    "nodeId": "worker-1",
+    "groupId": "default"
+  },
+  {
+    "nodeId": "worker-2",
+    "groupId": "default"
+  }
+]
+```
+
+### GET /api/workers/health
+
+Get worker pool health summary.
+
+**Response:**
+```json
+{
+  "totalWorkers": 5,
+  "totalGroups": 1,
+  "isEmpty": false
+}
+```
+
+### GET /api/workers/endpoints
+
+List all worker-hosted slice endpoints across all groups.
+
+**Response:**
+```json
+[
+  {
+    "artifact": "org.example:my-slice:1.0.0",
+    "methodName": "processOrder",
+    "workerNodeId": "worker-1",
+    "instanceNumber": 0
+  }
+]
+```
+
+---
+
 ## Endpoint Summary
 
 | Method | Path | Section |
@@ -1629,6 +1680,9 @@ When no API keys are configured, WebSocket connections are immediately authorize
 | POST | `/api/node/shutdown/{nodeId}` | Node Lifecycle |
 | GET | `/api/scheduled-tasks` | Scheduled Tasks |
 | GET | `/api/scheduled-tasks/{configSection}` | Scheduled Tasks |
+| GET | `/api/workers` | Worker Pools |
+| GET | `/api/workers/health` | Worker Pools |
+| GET | `/api/workers/endpoints` | Worker Pools |
 
 ---
 

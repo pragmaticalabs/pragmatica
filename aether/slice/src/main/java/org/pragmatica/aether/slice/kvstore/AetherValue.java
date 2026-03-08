@@ -1,5 +1,6 @@
 package org.pragmatica.aether.slice.kvstore;
 
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
@@ -358,6 +359,28 @@ public sealed interface AetherValue {
         /// Creates a new config value with current timestamp.
         public static ConfigValue configValue(String key, String value) {
             return new ConfigValue(key, value, System.currentTimeMillis());
+        }
+    }
+
+    /// Directive for workers to activate/deactivate slices.
+    /// CDM writes this to consensus KV-Store; governors/workers watch for it.
+    ///
+    /// @param artifact the slice artifact to deploy
+    /// @param targetInstances total desired instances across worker pool
+    /// @param placement which pool(s) are eligible (matches PlacementPolicy enum name)
+    /// @param updatedAt timestamp of last update
+    record WorkerSliceDirectiveValue(Artifact artifact,
+                                     int targetInstances,
+                                     String placement,
+                                     long updatedAt) implements AetherValue {
+        public static WorkerSliceDirectiveValue workerSliceDirectiveValue(Artifact artifact,
+                                                                          int targetInstances,
+                                                                          String placement) {
+            return new WorkerSliceDirectiveValue(artifact, targetInstances, placement, System.currentTimeMillis());
+        }
+
+        public WorkerSliceDirectiveValue withInstances(int newCount) {
+            return new WorkerSliceDirectiveValue(artifact, newCount, placement, System.currentTimeMillis());
         }
     }
 

@@ -30,5 +30,6 @@
         <module>cluster</module>
         <module>cloud</module>
         <module>statemachine</module>
+        <module>swim</module>
     </modules>
 </project>
