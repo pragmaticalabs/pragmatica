@@ -5,8 +5,9 @@ FROM eclipse-temurin:25-alpine
 
 LABEL org.opencontainers.image.title="Aether Forge"
 LABEL org.opencontainers.image.description="Aether cluster testing simulator with visual dashboard"
-LABEL org.opencontainers.image.version="0.16.0"
-LABEL org.opencontainers.image.source="https://github.com/siy/aether"
+ARG VERSION=dev
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.source="https://github.com/pragmaticalabs/pragmatica"
 
 # Create non-root user for security
 RUN addgroup -g 1000 aether && \

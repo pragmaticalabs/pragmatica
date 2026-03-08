@@ -33,6 +33,16 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
+      - name: Generate SHA256 checksums
+        run: |
+          cd ${{ github.workspace }}
+          sha256sum \
+            jbct/jbct-cli/target/jbct.jar \
+            aether/cli/target/aether.jar \
+            aether/node/target/aether-node.jar \
+            aether/forge/forge-core/target/aether-forge.jar \
+            > SHA256SUMS
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -45,8 +55,83 @@ jobs:
             aether/cli/target/aether.jar
             aether/node/target/aether-node.jar
             aether/forge/forge-core/target/aether-forge.jar
+            SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  docker-publish:
+    runs-on: ubuntu-latest
+    needs: build-and-release
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'zulu'
+          cache: 'maven'
+
+      - name: Bootstrap and build
+        run: |
+          mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor -am
+          mvn package -B -DskipTests
+
+      - name: Build and push aether-node
+        uses: docker/build-push-action@v6
+        with:
+          context: aether
+          file: aether/docker/aether-node/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ steps.version.outputs.VERSION }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/aether-node:${{ steps.version.outputs.VERSION }}
+            ghcr.io/${{ github.repository_owner }}/aether-node:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/aether-node:${{ steps.version.outputs.VERSION }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/aether-node:latest
+
+      - name: Build and push aether-forge
+        uses: docker/build-push-action@v6
+        with:
+          context: aether
+          file: aether/docker/aether-forge/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ steps.version.outputs.VERSION }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/aether-forge:${{ steps.version.outputs.VERSION }}
+            ghcr.io/${{ github.repository_owner }}/aether-forge:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/aether-forge:${{ steps.version.outputs.VERSION }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/aether-forge:latest
 
   e2e-tests:
     runs-on: ubuntu-latest

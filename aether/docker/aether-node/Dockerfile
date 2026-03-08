@@ -5,8 +5,9 @@ FROM eclipse-temurin:25-alpine
 
 LABEL org.opencontainers.image.title="Aether Node"
 LABEL org.opencontainers.image.description="Aether distributed runtime node"
-LABEL org.opencontainers.image.version="0.17.0"
-LABEL org.opencontainers.image.source="https://github.com/siy/aether"
+ARG VERSION=dev
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.source="https://github.com/pragmaticalabs/pragmatica"
 
 # Create non-root user for security
 RUN addgroup -g 1000 aether && \
