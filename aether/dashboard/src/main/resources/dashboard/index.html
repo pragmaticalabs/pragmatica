@@ -55,7 +55,10 @@
                             <template x-for="node in $store.cluster.nodes" :key="node.nodeId">
                                 <div class="node-row" @click="navigateToNode(node.nodeId)">
                                     <span class="node-id" x-text="node.nodeId"></span>
-                                    <span class="node-badge leader" x-show="node.isLeader">LEADER</span>
+                                    <span class="node-leader-col">
+                                        <span class="node-badge leader" x-show="node.isLeader">LEADER</span>
+                                    </span>
+                                    <span class="node-badge lifecycle" x-text="(node.lifecycleState || 'ON_DUTY').toLowerCase().replace('_', ' ')"></span>
                                     <span class="node-stat" x-text="'CPU ' + String(Math.round(node.cpuUsage * 100)).padStart(3) + '%'"></span>
                                     <span class="node-stat" x-text="'Heap ' + String(node.heapUsedMb).padStart(4) + '/' + node.heapMaxMb + ' MB'"></span>
                                     <span class="node-slice-badges">
@@ -214,19 +217,6 @@
                     <div class="chart-panel half"><h3>CPU Per Node</h3><div class="chart-container" x-ref="chartCpu"></div></div>
                     <div class="chart-panel half"><h3>Heap Per Node</h3><div class="chart-container" x-ref="chartHeap"></div></div>
                 </div>
-                <div class="panel">
-                    <h2>NODE DETAIL</h2>
-                    <template x-for="node in $store.cluster.nodes" :key="node.nodeId">
-                        <div class="node-detail-row">
-                            <span class="node-id" x-text="node.nodeId"></span>
-                            <span class="node-badge leader" x-show="node.isLeader">LEADER</span>
-                            <span class="node-stat" x-text="'CPU ' + String(Math.round(node.cpuUsage * 100)).padStart(3) + '%'"></span>
-                            <span class="node-stat" x-text="'Heap ' + String(node.heapUsedMb).padStart(4) + '/' + node.heapMaxMb + ' MB'"></span>
-                            <span x-text="(node.slices || []).length + ' slices'"></span>
-                            <span class="node-badge lifecycle" x-text="node.lifecycleState || 'ON_DUTY'"></span>
-                        </div>
-                    </template>
-                </div>
             </div>
 
             <!-- Requests Page -->
@@ -266,6 +256,7 @@
                             </template>
                         </tbody>
                     </table>
+                    <div x-show="filteredInvocations().length === 0" class="no-data">No invocations recorded</div>
                 </div>
             </div>
 
@@ -392,6 +383,7 @@
                                 </select>
                             </div>
                         </template>
+                        <div x-show="!$store.cluster.logLevels || Object.keys($store.cluster.logLevels).length === 0" class="no-data">No log levels configured</div>
                     </div>
                     <div class="panel">
                         <h2>OBSERVABILITY DEPTH</h2>
@@ -401,6 +393,7 @@
                                 <input type="number" :value="depth" @change="$store.cluster.setObservabilityDepth(key, parseInt($event.target.value))" class="obs-depth-input">
                             </div>
                         </template>
+                        <div x-show="!$store.cluster.observabilityDepth || Object.keys($store.cluster.observabilityDepth).length === 0" class="no-data">No observability depth configured</div>
                     </div>
                 </div>
             </div>

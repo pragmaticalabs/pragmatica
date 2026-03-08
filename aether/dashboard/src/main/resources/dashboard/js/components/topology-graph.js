@@ -244,9 +244,9 @@ var TopologyGraph = (function() {
             g += renderArrow(toCx, toCy, -1, 0, color, '0.7');
         } else if (type === 'dependency') {
             var slot2 = gutterSlots.leftSlots[edgeIndex] || 0;
-            var rightChannelX = leftOffset + layout.colX[1] + layout.colNodeWidth[1] + 10 + slot2 * 12;
-            var leftChannelX = leftOffset + layout.colX[0] + layout.colNodeWidth[0] + 10 + slot2 * 12;
-            var midY2 = (fromCy + toCy) / 2;
+            var rightChannelX = fromCx + 10 + slot2 * 12;
+            var leftChannelX = toCx - 10 - slot2 * 12;
+            var midY2 = gapMidY(fromCy, toCy, layout.laneYRanges);
 
             g += '<path d="M' + fromCx + ',' + fromCy + ' H' + rightChannelX + ' V' + midY2 + ' H' + leftChannelX + ' V' + toCy + ' H' + toCx + '"';
             g += ' fill="none" stroke="#8b949e" stroke-width="1.5" opacity="0.5"/>';

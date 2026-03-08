@@ -193,13 +193,18 @@
 }
 
 .node-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: 52px 60px 70px 90px 160px 1fr;
     align-items: center;
-    gap: var(--space-md);
+    gap: var(--space-sm);
     padding: var(--space-sm) var(--space-md);
     border-bottom: 1px solid var(--border-light);
     cursor: pointer;
     transition: background 0.15s;
+}
+
+.node-leader-col {
+    text-align: center;
 }
 
 .node-row:last-child { border-bottom: none; }
@@ -210,7 +215,6 @@
     font-size: var(--font-size-sm);
     color: var(--text-primary);
     font-weight: 600;
-    min-width: 52px;
 }
 
 .node-stat {
@@ -219,15 +223,12 @@
     color: var(--text-secondary);
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
-    min-width: 7em;
-    text-align: right;
 }
 
 .node-slice-badges {
     display: flex;
     flex-wrap: wrap;
     gap: var(--space-xs);
-    margin-left: 2em;
 }
 
 .slice-badge {
@@ -282,6 +283,7 @@
 .node-badge.lifecycle {
     background: rgba(63, 185, 80, 0.1);
     color: var(--accent-green);
+    white-space: nowrap;
 }
 
 /* Resource Bars */

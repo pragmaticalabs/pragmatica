@@ -6,6 +6,7 @@ document.addEventListener('alpine:init', function() {
             pollTimer: null,
             sparklines: {},
             charts: {},
+            chartsInitialized: false,
             requestFilters: { artifact: '', method: '', status: '' },
             invocationSort: { field: 'count', dir: -1 },
             newThreshold: { metric: '', warning: 0.7, critical: 0.9 },
@@ -31,6 +32,17 @@ document.addEventListener('alpine:init', function() {
                 // Initialize sparklines after DOM ready
                 this.$nextTick(function() {
                     self.initSparklines();
+                });
+
+                // Lazy-init charts when metrics tab is first shown
+                this.$watch('currentPage', function(page) {
+                    if (page === 'metrics' && !self.chartsInitialized) {
+                        self.$nextTick(function() {
+                            self.initCharts();
+                            self.chartsInitialized = true;
+                            self.updateCharts();
+                        });
+                    }
                 });
 
                 // Resize handler for charts
@@ -88,6 +100,8 @@ document.addEventListener('alpine:init', function() {
                     Alpine.store('metrics').updateFromStatus(data);
                     Alpine.store('deployments').updateFromStatus(data);
                     Alpine.store('forge').updateFromStatus(data);
+                    Alpine.store('metrics').updateNodeHistory(Alpine.store('cluster').nodes);
+                    this.updateCharts();
                 }
             },
 
@@ -122,6 +136,8 @@ document.addEventListener('alpine:init', function() {
 
             initCharts() {
                 var refs = this.$refs;
+                var nodes = Alpine.store('cluster').nodes;
+                var nodeNames = nodes.map(function(n) { return n.nodeId; });
                 if (refs.chartRps) {
                     this.charts.rps = TimeSeries.create(refs.chartRps, { series: ['RPS'], height: 200, fill: true, yLabel: 'req/s' });
                 }
@@ -130,6 +146,12 @@ document.addEventListener('alpine:init', function() {
                 }
                 if (refs.chartSuccess) {
                     this.charts.success = TimeSeries.create(refs.chartSuccess, { series: ['Success Rate'], height: 180, fill: true, yLabel: '%' });
+                }
+                if (refs.chartCpu && nodeNames.length > 0) {
+                    this.charts.cpu = TimeSeries.create(refs.chartCpu, { series: nodeNames, height: 180, yLabel: '%' });
+                }
+                if (refs.chartHeap && nodeNames.length > 0) {
+                    this.charts.heap = TimeSeries.create(refs.chartHeap, { series: nodeNames, height: 180, yLabel: 'MB' });
                 }
             },
 
@@ -145,6 +167,18 @@ document.addEventListener('alpine:init', function() {
                 }
                 if (this.charts.success) {
                     TimeSeries.updateData(this.charts.success, h.timestamps, [h.successRate.map(function(r) { return r * 100; })]);
+                }
+                if (this.charts.cpu) {
+                    var nodes = Alpine.store('cluster').nodes;
+                    var cpuSeries = nodes.map(function(n) {
+                        return (h.cpu[n.nodeId] || []).map(function(v) { return Math.round(v * 100); });
+                    });
+                    if (cpuSeries.length > 0) TimeSeries.updateData(this.charts.cpu, h.timestamps, cpuSeries);
+                }
+                if (this.charts.heap) {
+                    var nodes2 = Alpine.store('cluster').nodes;
+                    var heapSeries = nodes2.map(function(n) { return h.heap[n.nodeId] || []; });
+                    if (heapSeries.length > 0) TimeSeries.updateData(this.charts.heap, h.timestamps, heapSeries);
                 }
             },
 

@@ -74,6 +74,7 @@ document.addEventListener('alpine:init', function() {
                     };
                 });
             }
+            this.pushHistory();
         },
 
         updateFromWsDashboard(data) {
