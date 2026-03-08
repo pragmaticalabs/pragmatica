@@ -25,7 +25,7 @@ podman run -it --rm \
 >
 > **`-v .m2/repository`** — mounts local Maven cache so locally-built deps resolve (not published to Central yet). Remove this mount for a true clean-room test once 0.19.2 is published.
 >
-> **`--version` flag** — when testing unreleased versions, use `jbct init --version 0.19.2` to override the dependency versions in generated pom.xml. Without this flag, `jbct init` uses the latest published release from GitHub (0.19.1).
+> **`--version` flag** — when testing unreleased versions, use `jbct init --version 0.19.2` to override the dependency versions in generated pom.xml. Without this flag, `jbct init` uses the latest published release from GitHub (0.19.2).
 
 ### Inside the container — prerequisites
 
