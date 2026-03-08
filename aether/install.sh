@@ -25,6 +25,11 @@ detect_platform() {
     case "$OS" in
         Linux*)  PLATFORM="linux" ;;
         Darwin*) PLATFORM="macos" ;;
+        MINGW*|MSYS*|CYGWIN*)
+            echo "Windows detected. Aether requires WSL2 for Windows."
+            echo "Install WSL2: https://learn.microsoft.com/en-us/windows/wsl/install"
+            exit 1
+            ;;
         *)       echo "Unsupported OS: $OS"; exit 1 ;;
     esac
 }
@@ -62,6 +67,32 @@ download_and_install() {
 
     echo "  Downloading aether-forge.jar..."
     curl -fsSL "$BASE_URL/aether-forge.jar" -o "$INSTALL_DIR/lib/aether-forge.jar"
+
+    # Download and verify checksums
+    echo "  Downloading SHA256SUMS..."
+    if curl -fsSL "$BASE_URL/SHA256SUMS" -o "$INSTALL_DIR/lib/SHA256SUMS" 2>/dev/null; then
+        echo "  Verifying checksums..."
+        cd "$INSTALL_DIR/lib"
+        # Extract only relevant entries and verify
+        for jar in aether.jar aether-node.jar aether-forge.jar; do
+            expected=$(grep "$jar" SHA256SUMS | awk '{print $1}')
+            if [ -n "$expected" ]; then
+                actual=$(sha256sum "$jar" 2>/dev/null || shasum -a 256 "$jar" 2>/dev/null)
+                actual=$(echo "$actual" | awk '{print $1}')
+                if [ "$expected" != "$actual" ]; then
+                    echo "Error: Checksum mismatch for $jar"
+                    echo "  Expected: $expected"
+                    echo "  Actual:   $actual"
+                    exit 1
+                fi
+            fi
+        done
+        echo "  Checksums verified."
+        rm -f SHA256SUMS
+        cd - > /dev/null
+    else
+        echo "  Warning: SHA256SUMS not available, skipping verification."
+    fi
 
     # Create wrapper scripts
     cat > "$INSTALL_DIR/bin/aether" << WRAPPER
@@ -139,5 +170,34 @@ print_success() {
     echo "  aether --help       # CLI help"
     echo "  aether-forge        # Start simulator at http://localhost:8888"
 }
+
+# Parse arguments
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --version)
+            VERSION="$2"
+            shift 2
+            ;;
+        --version=*)
+            VERSION="${1#*=}"
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: install.sh [--version VERSION]"
+            echo ""
+            echo "Options:"
+            echo "  --version VERSION  Install specific version (default: latest)"
+            echo ""
+            echo "Environment:"
+            echo "  AETHER_HOME        Install directory (default: ~/.aether)"
+            echo "  VERSION            Version to install (alternative to --version flag)"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
 
 main
