@@ -198,6 +198,21 @@ var TopologyGraph = (function() {
         };
     }
 
+    function gapMidY(fromY, toY, laneYRanges) {
+        var fromLane = -1, toLane = -1;
+        for (var i = 0; i < laneYRanges.length; i++) {
+            var lr = laneYRanges[i];
+            if (fromY >= lr.yStart && fromY <= lr.yEnd) fromLane = i;
+            if (toY >= lr.yStart && toY <= lr.yEnd) toLane = i;
+        }
+        if (fromLane >= 0 && toLane >= 0 && fromLane !== toLane) {
+            var upper = Math.min(fromLane, toLane);
+            var lower = Math.max(fromLane, toLane);
+            return (laneYRanges[upper].yEnd + laneYRanges[lower].yStart) / 2;
+        }
+        return (fromY + toY) / 2;
+    }
+
     function renderEdge(edge, edgeIndex, positions, gutterSlots, nodeMap, leftOffset, layout) {
         var from = positions[edge.from];
         var to = positions[edge.to];
@@ -220,9 +235,9 @@ var TopologyGraph = (function() {
         } else if (type === 'topic') {
             var slot = gutterSlots.rightSlots[edgeIndex] || 0;
             var rightGutterX = leftOffset + layout.colX[2] + layout.colNodeWidth[2] + 10 + slot * 12;
-            var leftGutterX = 10 + slot * 12;
+            var leftGutterX = toCx - 10 - slot * 12;
             var color = topicColorForConfig(topicConfig);
-            var midY = (fromCy + toCy) / 2;
+            var midY = gapMidY(fromCy, toCy, layout.laneYRanges);
 
             g += '<path d="M' + fromCx + ',' + fromCy + ' H' + rightGutterX + ' V' + midY + ' H' + leftGutterX + ' V' + toCy + ' H' + toCx + '"';
             g += ' fill="none" stroke="' + color + '" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.7"/>';
