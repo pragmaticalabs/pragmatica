@@ -1,8 +1,125 @@
 # Resource Reference
 
-## Overview
+## How Resource Provisioning Works
 
-Resources are infrastructure components that Aether provisions and injects into slices based on TOML configuration. A resource encapsulates a connection, client, or cross-cutting concern (such as retry or caching) that slices need but should not create themselves.
+Slices access infrastructure — databases, HTTP clients, caches — through **resource qualifiers**. You annotate factory method parameters, and the annotation processor generates the provisioning code. You never create connections or clients manually.
+
+### Built-In Qualifiers
+
+Aether ships two built-in qualifiers:
+
+| Annotation | Resource Type | Config Section |
+|------------|--------------|----------------|
+| `@Sql` | `SqlConnector` | `"database"` |
+| `@Http` | `HttpClient` | `"http"` |
+
+```java
+import org.pragmatica.aether.resource.db.Sql;
+import org.pragmatica.aether.resource.db.SqlConnector;
+
+@Slice
+public interface UserRepository {
+
+    record FindRequest(long userId) {}
+    record User(long id, String name, String email) {}
+
+    Promise<User> findUser(FindRequest request);
+
+    static UserRepository userRepository(@Sql SqlConnector db) {
+        return request -> db.query(
+            "SELECT id, name, email FROM users WHERE id = ?",
+            request.userId()
+        ).map(UserRepository::toUser);
+    }
+
+    private static User toUser(/* row mapping */) {
+        // Map database row to User record
+    }
+}
+```
+
+The `@Sql` annotation tells the processor this parameter is a resource dependency configured from the `"database"` section of `aether.toml`. At runtime, the generated factory calls `ctx.resources().provide(SqlConnector.class, "database")` and passes the result to your factory.
+
+### Custom Qualifiers
+
+When you need multiple databases or want descriptive naming, create custom qualifier annotations:
+
+```java
+@ResourceQualifier(type = SqlConnector.class, config = "database.orders")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+@interface OrderDb {}
+
+@ResourceQualifier(type = SqlConnector.class, config = "database.analytics")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+@interface AnalyticsDb {}
+```
+
+Use them on factory parameters:
+
+```java
+@Slice
+public interface OrderAnalytics {
+
+    record ReportRequest(String period) {}
+    record Report(int orderCount, double totalRevenue) {}
+
+    Promise<Report> generateReport(ReportRequest request);
+
+    static OrderAnalytics orderAnalytics(@OrderDb SqlConnector orders,
+                                         @AnalyticsDb SqlConnector analytics) {
+        record orderAnalytics(SqlConnector orders,
+                              SqlConnector analytics) implements OrderAnalytics {
+            @Override
+            public Promise<Report> generateReport(ReportRequest request) {
+                return Promise.all(
+                    countOrders(request.period()),
+                    sumRevenue(request.period())
+                ).map(Report::new);
+            }
+
+            private Promise<Integer> countOrders(String period) {
+                return orders.query("SELECT count(*) FROM orders WHERE period = ?", period)
+                             .map(OrderAnalytics::extractCount);
+            }
+
+            private Promise<Double> sumRevenue(String period) {
+                return analytics.query("SELECT sum(revenue) FROM sales WHERE period = ?", period)
+                                .map(OrderAnalytics::extractSum);
+            }
+        }
+        return new orderAnalytics(orders, analytics);
+    }
+
+    private static Integer extractCount(/* row */) { /* ... */ }
+    private static Double extractSum(/* row */) { /* ... */ }
+}
+```
+
+Each qualifier maps to a separate configuration section in `aether.toml`:
+
+```toml
+[database.orders]
+jdbc_url = "jdbc:postgresql://localhost:5432/orders"
+username = "app"
+password = "secret"
+
+[database.analytics]
+jdbc_url = "jdbc:postgresql://localhost:5432/analytics"
+username = "app"
+password = "secret"
+```
+
+### Dependency Classification
+
+The annotation processor classifies factory parameters automatically:
+
+| Parameter Pattern | Classification | What Happens |
+|-------------------|----------------|--------------|
+| `@Sql SqlConnector db` | Resource dependency | Provisioned from `aether.toml` |
+| `InventoryService inventory` | Slice dependency | Proxy generated for remote calls |
+| `OrderValidator validator` | Plain interface | Factory method called directly |
 
 ### Configuration Section Naming
 
@@ -20,45 +137,7 @@ database = "orders"
 
 The `type` prefix determines which `ResourceFactory` handles provisioning. The `qualifier` suffix distinguishes multiple instances of the same resource type.
 
-### @ResourceQualifier Annotation
-
-Slices declare resource dependencies on factory method parameters using qualifier annotations. Each qualifier is a custom annotation meta-annotated with `@ResourceQualifier`:
-
-```java
-@ResourceQualifier(type = HttpClient.class, config = "http")
-@Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.PARAMETER)
-public @interface Http {}
-```
-
-Usage in a slice factory:
-
-```java
-@Slice
-public interface PaymentGateway {
-    Promise<PaymentResult> charge(ChargeRequest request);
-
-    static PaymentGateway paymentGateway(@Http HttpClient http) {
-        return PaymentGatewayImpl.paymentGatewayImpl(http);
-    }
-}
-```
-
-The annotation processor detects `@ResourceQualifier` on the parameter annotation and generates code that calls `ctx.resources().provide(HttpClient.class, "http")`.
-
-For multiple instances of the same resource type, create custom qualifiers:
-
-```java
-@ResourceQualifier(type = SqlConnector.class, config = "database.primary")
-@Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.PARAMETER)
-public @interface PrimaryDb {}
-
-@ResourceQualifier(type = SqlConnector.class, config = "database.analytics")
-@Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.PARAMETER)
-public @interface AnalyticsDb {}
-```
+### Secret Handling
 
 ### Secret Handling
 
@@ -657,6 +736,6 @@ Factories are registered in `META-INF/services/org.pragmatica.aether.resource.Re
 
 ## Related Documents
 
-- [Infrastructure Services](infra-services.md) - Built-in infrastructure services (artifact repository, DHT)
-- [Development Guide](development-guide.md) - Complete development workflow
-- [Slice Patterns](slice-patterns.md) - Service vs Lean slices
+- [Slice Patterns](slice-patterns.md) — structural patterns, error modeling, routing
+- [Getting Started](getting-started.md) — build your first slice from scratch
+- [Testing Slices](testing-slices.md) — unit and integration testing
