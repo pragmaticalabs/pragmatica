@@ -276,17 +276,18 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    /// HTTP route key format:
+    /// HTTP node route key format:
     /// ```
-    /// http-routes/{httpMethod}:{pathPrefix}
+    /// http-node-routes/{httpMethod}:{pathPrefix}:{nodeId}
     /// ```
-    /// Maps HTTP method + path prefix to artifact + slice method for cluster-wide HTTP routing.
-    record HttpRouteKey(String httpMethod, String pathPrefix) implements AetherKey {
-        private static final String PREFIX = "http-routes/";
+    /// Per-node HTTP route registration. Each node writes only its own key — no read-modify-write races.
+    /// Consumers (LB, HttpRouteRegistry) reconstruct node sets from flat keys in-memory.
+    record HttpNodeRouteKey(String httpMethod, String pathPrefix, NodeId nodeId) implements AetherKey {
+        private static final String PREFIX = "http-node-routes/";
 
         @Override
         public String asString() {
-            return PREFIX + httpMethod + ":" + pathPrefix;
+            return PREFIX + httpMethod + ":" + pathPrefix + ":" + nodeId.id();
         }
 
         @Override
@@ -294,29 +295,39 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
-        @SuppressWarnings("JBCT-VO-02")
-        public static HttpRouteKey httpRouteKey(String httpMethod, String pathPrefix) {
-            return new HttpRouteKey(httpMethod.toUpperCase(), normalizePrefix(pathPrefix));
+        /// Returns a route-level identity key (method + prefix) for grouping by route.
+        public String routeIdentity() {
+            return httpMethod + ":" + pathPrefix;
         }
 
-        public static Result<HttpRouteKey> httpRouteKey(String key) {
+        @SuppressWarnings("JBCT-VO-02")
+        public static HttpNodeRouteKey httpNodeRouteKey(String httpMethod, String pathPrefix, NodeId nodeId) {
+            return new HttpNodeRouteKey(httpMethod.toUpperCase(), normalizePrefix(pathPrefix), nodeId);
+        }
+
+        public static Result<HttpNodeRouteKey> httpNodeRouteKey(String key) {
             if (!key.startsWith(PREFIX)) {
-                return HTTP_ROUTE_KEY_FORMAT_ERROR.apply(key)
-                                                  .result();
+                return HTTP_NODE_ROUTE_KEY_FORMAT_ERROR.apply(key)
+                                                       .result();
             }
             var content = key.substring(PREFIX.length());
-            var colonIndex = content.indexOf(':');
-            if (colonIndex == - 1) {
-                return HTTP_ROUTE_KEY_FORMAT_ERROR.apply(key)
-                                                  .result();
+            // Format: {method}:{path/with/slashes/}:{nodeId}
+            // Find first colon (after method), then last colon (before nodeId)
+            var firstColon = content.indexOf(':');
+            var lastColon = content.lastIndexOf(':');
+            if (firstColon == - 1 || lastColon == - 1 || firstColon == lastColon) {
+                return HTTP_NODE_ROUTE_KEY_FORMAT_ERROR.apply(key)
+                                                       .result();
             }
-            var httpMethod = content.substring(0, colonIndex);
-            var pathPrefix = content.substring(colonIndex + 1);
-            if (httpMethod.isEmpty() || pathPrefix.isEmpty()) {
-                return HTTP_ROUTE_KEY_FORMAT_ERROR.apply(key)
-                                                  .result();
+            var httpMethod = content.substring(0, firstColon);
+            var pathPrefix = content.substring(firstColon + 1, lastColon);
+            var nodeIdPart = content.substring(lastColon + 1);
+            if (httpMethod.isEmpty() || pathPrefix.isEmpty() || nodeIdPart.isEmpty()) {
+                return HTTP_NODE_ROUTE_KEY_FORMAT_ERROR.apply(key)
+                                                       .result();
             }
-            return success(new HttpRouteKey(httpMethod, pathPrefix));
+            return NodeId.nodeId(nodeIdPart)
+                         .map(nodeId -> new HttpNodeRouteKey(httpMethod, pathPrefix, nodeId));
         }
 
         private static String normalizePrefix(String path) {
@@ -695,7 +706,7 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> VERSION_ROUTING_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid version-routing key format: %s");
     Fn1<Cause, String> ROLLING_UPDATE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid rolling-update key format: %s");
     Fn1<Cause, String> PREVIOUS_VERSION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid previous-version key format: %s");
-    Fn1<Cause, String> HTTP_ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid http-routes key format: %s");
+    Fn1<Cause, String> HTTP_NODE_ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid http-node-routes key format: %s");
     Fn1<Cause, String> ALERT_THRESHOLD_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid alert-threshold key format: %s");
     Fn1<Cause, String> LOG_LEVEL_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid log-level key format: %s");
 

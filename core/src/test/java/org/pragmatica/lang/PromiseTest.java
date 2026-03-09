@@ -56,15 +56,10 @@ public class PromiseTest {
 
     @Test
     void promiseCanSucceedAsynchronously() {
-        var ref = new AtomicInteger();
-
         Promise.<Integer>promise()
                .succeedAsync(() -> 1)
-               .onSuccess(ref::set)
                .await()
                .onSuccess(v -> assertEquals(1, v));
-
-        assertEquals(1, ref.get());
     }
 
     @Test

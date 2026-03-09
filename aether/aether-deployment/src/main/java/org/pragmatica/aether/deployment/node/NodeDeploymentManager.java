@@ -255,6 +255,9 @@ public interface NodeDeploymentManager {
             }
 
             private static final Fn1<Cause, String> SLICE_NOT_FOUND_FOR_ACTIVATION = Causes.forOneValue("Slice %s state is ACTIVATE but not found in SliceStore");
+            private static final long ACTIVATION_CHAIN_TIMEOUT_MS = 120_000;
+            private static final int MAX_TRANSITION_RETRIES = 5;
+            private static final long TRANSITION_RETRY_DELAY_MS = 2000;
 
             private void handleSliceNotFoundForActivation(SliceNodeKey sliceKey) {
                 var cause = SLICE_NOT_FOUND_FOR_ACTIVATION.apply(sliceKey.artifact()
@@ -265,12 +268,16 @@ public interface NodeDeploymentManager {
 
             private void performActivation(SliceNodeKey sliceKey) {
                 // 1. Write ACTIVATING first - wait for consensus before starting activation
+                // 2. Routes are published AFTER ACTIVE transition to avoid forwarding traffic
+                //    to a node that is still activating (cold start thundering herd)
+                // 3. Overall chain timeout prevents slices stuck in ACTIVATING if any step hangs
                 transitionTo(sliceKey, SliceState.ACTIVATING).flatMap(_ -> activateSliceWithTimeout(sliceKey))
                             .flatMap(_ -> registerSliceForInvocation(sliceKey))
-                            .flatMap(_ -> publishEndpointsAndRoutes(sliceKey))
                             .flatMap(_ -> publishTopicSubscriptions(sliceKey))
                             .flatMap(_ -> publishScheduledTasks(sliceKey))
                             .flatMap(_ -> transitionTo(sliceKey, SliceState.ACTIVE))
+                            .flatMap(_ -> publishEndpointsAndRoutes(sliceKey))
+                            .timeout(timeSpan(ACTIVATION_CHAIN_TIMEOUT_MS).millis())
                             .onFailure(cause -> handleActivationFailure(sliceKey, cause));
             }
 
@@ -804,7 +811,32 @@ public interface NodeDeploymentManager {
             }
 
             private Promise<Unit> transitionToFailed(SliceNodeKey sliceKey, Cause cause) {
-                return updateSliceState(sliceKey, SliceNodeValue.failedSliceNodeValue(cause));
+                return transitionToFailedWithRetry(sliceKey, cause, 0);
+            }
+
+            private Promise<Unit> transitionToFailedWithRetry(SliceNodeKey sliceKey, Cause originalCause, int attempt) {
+                return updateSliceState(sliceKey, SliceNodeValue.failedSliceNodeValue(originalCause))
+                .onFailure(writeCause -> handleFailedTransitionRetry(sliceKey, originalCause, writeCause, attempt));
+            }
+
+            private void handleFailedTransitionRetry(SliceNodeKey sliceKey,
+                                                     Cause originalCause,
+                                                     Cause writeCause,
+                                                     int attempt) {
+                if (attempt < MAX_TRANSITION_RETRIES) {
+                    log.warn("Failed to write FAILED state for {} (attempt {}/{}), retrying in {}ms: {}",
+                             sliceKey.artifact(),
+                             attempt + 1,
+                             MAX_TRANSITION_RETRIES,
+                             TRANSITION_RETRY_DELAY_MS,
+                             writeCause.message());
+                    SharedScheduler.schedule(() -> transitionToFailedWithRetry(sliceKey, originalCause, attempt + 1),
+                                             timeSpan(TRANSITION_RETRY_DELAY_MS).millis());
+                } else {
+                    log.error("CRITICAL: Failed to write FAILED state for {} after {} attempts. Slice stuck in transitional state.",
+                              sliceKey.artifact(),
+                              MAX_TRANSITION_RETRIES);
+                }
             }
 
             private void removeFromDeployments(SliceNodeKey sliceKey) {

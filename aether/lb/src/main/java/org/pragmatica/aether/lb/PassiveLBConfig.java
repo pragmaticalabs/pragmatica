@@ -11,27 +11,19 @@ import java.util.List;
 /// @param clusterNodes      Active cluster nodes to connect to
 /// @param clusterSize       Active cluster size (for quorum calculations - excludes passive nodes)
 /// @param forwardTimeoutMs  Timeout for forwarded requests in milliseconds
-/// @param forwardMaxRetries Maximum retry attempts for forwarded requests
 public record PassiveLBConfig(int httpPort,
                               NodeInfo selfInfo,
                               List<NodeInfo> clusterNodes,
                               int clusterSize,
-                              long forwardTimeoutMs,
-                              int forwardMaxRetries) {
+                              long forwardTimeoutMs) {
     public static final int DEFAULT_HTTP_PORT = 8080;
     public static final long DEFAULT_FORWARD_TIMEOUT_MS = 5000;
-    public static final int DEFAULT_FORWARD_MAX_RETRIES = 2;
 
-    /// Create config with defaults for timeout and retries.
+    /// Create config with defaults for timeout.
     public static PassiveLBConfig passiveLBConfig(int httpPort,
                                                   NodeInfo selfInfo,
                                                   List<NodeInfo> clusterNodes,
                                                   int clusterSize) {
-        return new PassiveLBConfig(httpPort,
-                                   selfInfo,
-                                   clusterNodes,
-                                   clusterSize,
-                                   DEFAULT_FORWARD_TIMEOUT_MS,
-                                   DEFAULT_FORWARD_MAX_RETRIES);
+        return new PassiveLBConfig(httpPort, selfInfo, clusterNodes, clusterSize, DEFAULT_FORWARD_TIMEOUT_MS);
     }
 }

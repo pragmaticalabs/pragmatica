@@ -12,7 +12,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
 
-import java.util.HashSet;
 import java.util.Set;
 
 import static org.pragmatica.lang.Option.none;
@@ -263,33 +262,46 @@ public sealed interface AetherValue {
         }
     }
 
-    /// HTTP route mapping stored in consensus.
-    /// Tracks which nodes have registered a particular HTTP route.
+    /// Per-node HTTP route registration stored in consensus.
+    /// Each node publishes its own entry with route-specific metadata.
+    /// Consumers reconstruct node sets from flat keys in-memory.
     ///
-    /// @param nodes set of node IDs that have this route available
-    record HttpRouteValue(Set<NodeId> nodes) implements AetherValue {
-        /// Creates HTTP route value with given nodes (immutable copy).
-        public static HttpRouteValue httpRouteValue(Set<NodeId> nodes) {
-            return new HttpRouteValue(Set.copyOf(nodes));
+    /// @param artifactCoord full artifact coordinates (e.g., "com.example:users:1.2.0")
+    /// @param sliceMethod factory method name for context
+    /// @param state node's route state: ACTIVE, DRAINING, or CANARY
+    /// @param weight relative load factor (100 = normal, 0 = don't route)
+    /// @param registeredAt epoch millis when this node registered the route
+    record HttpNodeRouteValue(String artifactCoord,
+                              String sliceMethod,
+                              String state,
+                              int weight,
+                              long registeredAt) implements AetherValue {
+        /// Creates a new active route registration with default weight.
+        public static HttpNodeRouteValue httpNodeRouteValue(String artifactCoord, String sliceMethod) {
+            return new HttpNodeRouteValue(artifactCoord, sliceMethod, "ACTIVE", 100, System.currentTimeMillis());
         }
 
-        /// Returns a new value with the given node added.
-        public HttpRouteValue withNode(NodeId nodeId) {
-            var updated = new HashSet<>(nodes);
-            updated.add(nodeId);
-            return new HttpRouteValue(Set.copyOf(updated));
+        /// Creates a route registration with explicit state and weight.
+        public static HttpNodeRouteValue httpNodeRouteValue(String artifactCoord,
+                                                            String sliceMethod,
+                                                            String state,
+                                                            int weight) {
+            return new HttpNodeRouteValue(artifactCoord, sliceMethod, state, weight, System.currentTimeMillis());
         }
 
-        /// Returns a new value with the given node removed.
-        public HttpRouteValue withoutNode(NodeId nodeId) {
-            var updated = new HashSet<>(nodes);
-            updated.remove(nodeId);
-            return new HttpRouteValue(Set.copyOf(updated));
+        /// Returns a new value with updated state.
+        public HttpNodeRouteValue withState(String newState) {
+            return new HttpNodeRouteValue(artifactCoord, sliceMethod, newState, weight, registeredAt);
         }
 
-        /// Checks if no nodes have this route.
-        public boolean isEmpty() {
-            return nodes.isEmpty();
+        /// Returns a new value with updated weight.
+        public HttpNodeRouteValue withWeight(int newWeight) {
+            return new HttpNodeRouteValue(artifactCoord, sliceMethod, state, newWeight, registeredAt);
+        }
+
+        /// Returns true if this route is active and routable.
+        public boolean isRoutable() {
+            return "ACTIVE".equals(state) && weight > 0;
         }
     }
 

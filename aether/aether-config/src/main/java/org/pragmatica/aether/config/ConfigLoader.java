@@ -222,11 +222,9 @@ public final class ConfigLoader {
                       .or(AppHttpConfig.DEFAULT_APP_HTTP_PORT);
         var forwardTimeoutMs = doc.getLong("app-http", "forward_timeout_ms")
                                   .or(AppHttpConfig.DEFAULT_FORWARD_TIMEOUT_MS);
-        var forwardMaxRetries = doc.getInt("app-http", "forward_max_retries")
-                                   .or(AppHttpConfig.DEFAULT_FORWARD_MAX_RETRIES);
         var apiKeys = resolveApiKeys(doc);
         if (enabled || !apiKeys.isEmpty()) {
-            builder.appHttp(AppHttpConfig.appHttpConfig(enabled, port, apiKeys, forwardTimeoutMs, forwardMaxRetries)
+            builder.appHttp(AppHttpConfig.appHttpConfig(enabled, port, apiKeys, forwardTimeoutMs)
                                          .unwrap());
         }
     }

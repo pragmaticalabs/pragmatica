@@ -2,6 +2,7 @@ package org.pragmatica.aether.slice;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.CoreError;
 
 import static org.pragmatica.lang.Option.some;
 
@@ -185,6 +186,9 @@ public sealed interface SliceLoadingFailure extends Cause
     static SliceLoadingFailure classify(Cause cause) {
         if (cause instanceof SliceLoadingFailure failure) {
             return failure;
+        }
+        if (cause instanceof CoreError.Timeout) {
+            return new Intermittent.Timeout("slice activation", cause);
         }
         return new Fatal.UnexpectedError(cause);
     }

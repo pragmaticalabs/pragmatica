@@ -17,8 +17,8 @@ import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationContext;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
-import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue;
+import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -74,11 +74,11 @@ public interface AppHttpServer {
 
     /// Handle KV-Store updates to rebuild router when routes change.
     @MessageReceiver
-    void onRoutePut(ValuePut<HttpRouteKey, HttpRouteValue> valuePut);
+    void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut);
 
     /// Handle KV-Store removals to rebuild router when routes change.
     @MessageReceiver
-    void onRouteRemove(ValueRemove<HttpRouteKey, HttpRouteValue> valueRemove);
+    void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove);
 
     /// Handle incoming HTTP forward request from another node.
     @MessageReceiver
@@ -246,9 +246,12 @@ class AppHttpServerImpl implements AppHttpServer {
     public void rebuildRouter() {
         var localRoutes = httpRoutePublisher.map(HttpRoutePublisher::allLocalRoutes)
                                             .or(Set.of());
+        var localIdentities = localRoutes.stream()
+                                         .map(HttpNodeRouteKey::routeIdentity)
+                                         .collect(java.util.stream.Collectors.toSet());
         var remoteRoutes = routeRegistry.allRoutes()
                                         .stream()
-                                        .filter(route -> !localRoutes.contains(route.toKey()))
+                                        .filter(route -> !localIdentities.contains(route.httpMethod() + ":" + route.pathPrefix()))
                                         .toList();
         var newTable = RouteTable.routeTable(localRoutes, remoteRoutes);
         routeTableRef.set(newTable);
@@ -261,16 +264,16 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     @Override
-    public void onRoutePut(ValuePut<HttpRouteKey, HttpRouteValue> valuePut) {
+    public void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut) {
         routeSyncReceived.set(true);
-        log.debug("HttpRouteKey added, rebuilding router");
+        log.debug("HttpNodeRouteKey added, rebuilding router");
         rebuildRouter();
     }
 
     @Override
-    public void onRouteRemove(ValueRemove<HttpRouteKey, HttpRouteValue> valueRemove) {
+    public void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove) {
         routeSyncReceived.set(true);
-        log.debug("HttpRouteKey removed, rebuilding router");
+        log.debug("HttpNodeRouteKey removed, rebuilding router");
         rebuildRouter();
     }
 
@@ -400,9 +403,9 @@ class AppHttpServerImpl implements AppHttpServer {
         sendProblem(response, status, cause.message(), path, requestId);
     }
 
-    private Option<HttpRouteKey> findMatchingLocalRoute(Set<HttpRouteKey> localRoutes,
-                                                        String method,
-                                                        String normalizedPath) {
+    private Option<HttpNodeRouteKey> findMatchingLocalRoute(Set<HttpNodeRouteKey> localRoutes,
+                                                            String method,
+                                                            String normalizedPath) {
         return Option.from(localRoutes.stream()
                                       .filter(key -> key.httpMethod()
                                                         .equalsIgnoreCase(method))
@@ -462,7 +465,7 @@ class AppHttpServerImpl implements AppHttpServer {
     // ================== Local Route Handling ==================
     private void handleLocalRoute(RequestContext request,
                                   ResponseWriter response,
-                                  HttpRouteKey routeKey,
+                                  HttpNodeRouteKey routeKey,
                                   String requestId) {
         log.trace("Handling local route {} {} [{}]", routeKey.httpMethod(), routeKey.pathPrefix(), requestId);
         httpRoutePublisher.flatMap(pub -> pub.findLocalRouter(routeKey.httpMethod(),
@@ -476,7 +479,7 @@ class AppHttpServerImpl implements AppHttpServer {
 
     private void handleMissingLocalRouter(ResponseWriter response,
                                           String path,
-                                          HttpRouteKey routeKey,
+                                          HttpNodeRouteKey routeKey,
                                           String requestId) {
         log.error("Local router not found for route {} [{}]", routeKey, requestId);
         sendProblem(response, HttpStatus.INTERNAL_SERVER_ERROR, "Local router not found", path, requestId);
@@ -485,7 +488,7 @@ class AppHttpServerImpl implements AppHttpServer {
     private void invokeLocalRouter(RequestContext request,
                                    ResponseWriter response,
                                    SliceRouter router,
-                                   HttpRouteKey routeKey,
+                                   HttpNodeRouteKey routeKey,
                                    String requestId) {
         var context = toHttpRequestContext(request, requestId);
         var routeInfo = resolveRouteInfo(routeKey.httpMethod(), routeKey.pathPrefix());
@@ -575,9 +578,9 @@ class AppHttpServerImpl implements AppHttpServer {
         var context = toHttpRequestContext(request, requestId);
         httpForwarder.unwrap()
                      .forward(context,
-                              route.toKey(),
-                              requestId,
-                              config.forwardMaxRetries())
+                              route.httpMethod(),
+                              route.pathPrefix(),
+                              requestId)
                      .onSuccess(responseData -> sendResponse(response, responseData, requestId))
                      .onFailure(cause -> sendProblem(response,
                                                      HttpStatus.GATEWAY_TIMEOUT,
@@ -871,13 +874,13 @@ class AppHttpServerImpl implements AppHttpServer {
 
     // ================== Route Table ==================
     /// Snapshot of current route state for thread-safe access.
-    record RouteTable(Set<HttpRouteKey> localRoutes,
+    record RouteTable(Set<HttpNodeRouteKey> localRoutes,
                       List<HttpRouteRegistry.RouteInfo> remoteRoutes) {
         static RouteTable empty() {
             return new RouteTable(Set.of(), List.of());
         }
 
-        static RouteTable routeTable(Set<HttpRouteKey> localRoutes,
+        static RouteTable routeTable(Set<HttpNodeRouteKey> localRoutes,
                                      List<HttpRouteRegistry.RouteInfo> remoteRoutes) {
             return new RouteTable(Set.copyOf(localRoutes), List.copyOf(remoteRoutes));
         }

@@ -97,20 +97,18 @@ class ConfigLoaderSecurityTest {
     }
 
     @Test
-    void loadFromString_parsesForwardTimeoutAndRetries() {
+    void loadFromString_parsesForwardTimeout() {
         var toml = MINIMAL_CLUSTER + """
 
             [app-http]
             enabled = "true"
             forward_timeout_ms = 10000
-            forward_max_retries = 5
             """;
 
         ConfigLoader.loadFromString(toml)
             .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
                 assertThat(config.appHttp().forwardTimeoutMs()).isEqualTo(10000);
-                assertThat(config.appHttp().forwardMaxRetries()).isEqualTo(5);
             });
     }
 

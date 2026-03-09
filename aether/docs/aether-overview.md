@@ -299,7 +299,7 @@ Aether uses the **Rabia** crash-fault-tolerant consensus algorithm. Unlike Raft,
 - `SliceTargetKey` — desired deployment state (artifact, instance count, blueprint)
 - `SliceNodeKey` — actual per-node slice state (LOADING, ACTIVE, etc.)
 - `EndpointKey` — service discovery (which node hosts which method)
-- `HttpRouteKey` — HTTP route-to-node mapping
+- `HttpNodeRouteKey` — HTTP route-to-node mapping (one entry per node per route)
 - `AppBlueprintKey` — application blueprints
 - Alert thresholds, controller configuration, dynamic aspect settings
 
@@ -325,7 +325,7 @@ Artifacts are stored in a consistent hash ring with configurable replication:
 Everything is reactive. KV-Store changes emit notifications:
 - `SliceTargetKey` put → `ClusterDeploymentManager` schedules deployment
 - `EndpointKey` put → `EndpointRegistry` updates local routing cache
-- `HttpRouteKey` put → `HttpRouteRegistry` updates local route table
+- `HttpNodeRouteKey` put → `HttpRouteRegistry` updates local route table
 - Node removed → `SliceInvoker` immediately retries in-flight requests on surviving nodes
 
 No polling. No periodic reconciliation loops for core state.

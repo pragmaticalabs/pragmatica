@@ -26,20 +26,26 @@ When an HTTP request arrives at a node, it may need to be handled locally (if th
 
 ## Key Components
 
-### HttpRouteValue
+### HttpNodeRouteKey / HttpNodeRouteValue
 
-Stores which nodes can handle a specific HTTP route. Published to KVStore via consensus.
+Each node writes its own route entry. The key includes the node ID, eliminating read-modify-write races.
 
 ```java
-record HttpRouteValue(Set<NodeId> nodes) implements AetherValue {
-    HttpRouteValue withNode(NodeId nodeId);     // Add node to set
-    HttpRouteValue withoutNode(NodeId nodeId);  // Remove node from set
-    boolean isEmpty();                          // Check if no nodes available
-}
+record HttpNodeRouteKey(String httpMethod, String pathPrefix, NodeId nodeId) implements AetherKey {}
+
+record HttpNodeRouteValue(
+    String artifactCoord,
+    String sliceMethod,
+    SliceState state,
+    int weight,
+    Instant registeredAt
+) implements AetherValue {}
 ```
 
-**Key format:** `http-routes/{METHOD}:{PATH}`
-**Example:** `http-routes/GET:/api/v1/users/`
+**Key format:** `http-routes/{METHOD}:{PATH}:{NODE_ID}`
+**Example:** `http-routes/GET:/api/v1/users/:node-3`
+
+Consumers (e.g., `HttpRouteRegistry`) reconstruct the set of nodes per route in-memory by scanning all keys with the same method and path prefix.
 
 ### HttpRouteRegistry
 
@@ -47,7 +53,7 @@ Local cache of HTTP routes learned from KVStore. Watches for `ValuePut`/`ValueRe
 
 ```java
 record RouteInfo(String httpMethod, String pathPrefix, Set<NodeId> nodes) {
-    HttpRouteKey toKey();
+    // Node sets are reconstructed in-memory from individual HttpNodeRouteKey entries
 }
 ```
 
@@ -56,20 +62,17 @@ record RouteInfo(String httpMethod, String pathPrefix, Set<NodeId> nodes) {
 Manages publishing/unpublishing of routes for locally deployed slices.
 
 **On slice deploy:**
-1. Read current `HttpRouteValue` from KVStore (may not exist)
-2. Add self to node set
-3. Write updated value via consensus
+1. Write an `HttpNodeRouteValue` keyed by `HttpNodeRouteKey(method, path, selfNodeId)`
+2. No read-modify-write — each node writes only its own key
 
 **On slice undeploy:**
-1. Read current `HttpRouteValue`
-2. Remove self from node set
-3. If empty, delete the key; otherwise write updated value
+1. Delete the `HttpNodeRouteKey(method, path, selfNodeId)` entry
 
 ```java
 interface HttpRoutePublisher {
     void publishRoutes(SliceRouter router, String artifact);
     void unpublishRoutes(String artifact);
-    Set<HttpRouteKey> allLocalRoutes();
+    Set<HttpNodeRouteKey> allLocalRoutes();
     Option<SliceRouter> findLocalRouter(String method, String path);
 }
 ```
@@ -149,12 +152,12 @@ forwardRequestWithRetry(request, response, availableNodes, triedNodes, routeKey,
 
 **Configuration (`AppHttpConfig`):**
 - `forwardTimeoutMs` - Timeout per attempt (default: 5000ms)
-- `forwardMaxRetries` - Max retries before failing (default: 2, so 3 total attempts)
 
 **Retry behavior:**
-1. On timeout/failure, select different node from `availableNodes - triedNodes`
-2. If no untried nodes remain, return 504 Gateway Timeout
-3. Track tried nodes to avoid repeating failures
+1. Retry count is derived automatically from connected nodes: `connectedNodes.size() - 1` (try every available node exactly once)
+2. On timeout/failure, select different node from `availableNodes - triedNodes`
+3. If no untried nodes remain, return 504 Gateway Timeout
+4. Track tried nodes to avoid repeating failures
 
 ## Node Connectivity Filtering
 
@@ -181,9 +184,8 @@ When a node is removed from the cluster:
 
 ```java
 private List<KVCommand<AetherKey>> cleanupHttpRoutesForNode(NodeId removedNode) {
-    // Scan all HttpRouteValue entries
-    // Remove the dead node from each
-    // If route becomes empty, delete it
+    // Scan all HttpNodeRouteKey entries
+    // Delete entries where key.nodeId() == removedNode
 }
 ```
 
@@ -194,10 +196,8 @@ New leader scans for stale routes during reconciliation:
 ```java
 private void cleanupStaleHttpRoutes() {
     var currentNodes = new HashSet<>(activeNodes.get());
-    // For each HttpRouteValue:
-    //   Find nodes NOT in current topology
-    //   Remove them from the route
-    //   Delete route if empty
+    // For each HttpNodeRouteKey:
+    //   If key.nodeId() is NOT in current topology, delete the entry
 }
 ```
 
@@ -217,11 +217,12 @@ private void cleanupStaleHttpRoutes() {
 public record AppHttpConfig(
     boolean enabled,
     int port,
-    Set<String> apiKeys,
-    long forwardTimeoutMs,    // Default: 5000ms
-    int forwardMaxRetries     // Default: 2 (3 total attempts)
+    Map<String, ApiKeyEntry> apiKeys,
+    long forwardTimeoutMs    // Default: 5000ms
 ) { }
 ```
+
+Retry count is derived automatically from the number of connected nodes for the route (`connectedNodes.size() - 1`), ensuring every available node is tried exactly once.
 
 ## Sequence Diagram: Remote Forward with Retry
 
@@ -245,7 +246,7 @@ Client          Node A              Node B (dead)      Node C
 
 | File | Purpose |
 |------|---------|
-| `slice/.../kvstore/AetherValue.java` | `HttpRouteValue` record |
+| `slice/.../kvstore/AetherValue.java` | `HttpNodeRouteKey`/`HttpNodeRouteValue` records |
 | `node/.../http/HttpRouteRegistry.java` | Route cache with KV notifications |
 | `node/.../http/HttpRoutePublisher.java` | Route publish/unpublish logic |
 | `node/.../http/AppHttpServer.java` | Request handling and forwarding |
@@ -265,9 +266,11 @@ The previous design used `SliceInvoker` (designed for inter-slice RPC) for HTTP 
 
 The new design uses dedicated `HttpForwardRequest`/`HttpForwardResponse` messages with HTTP-specific handling.
 
-### Why store Set<NodeId> instead of artifact/method?
+### Why flat keys (one per node) instead of Set<NodeId>?
 
-The route value only needs to track which nodes can serve the route. The artifact/method information is implicit in the key and available locally via `HttpRoutePublisher.findLocalRoute()`.
+The previous design stored `HttpRouteValue(Set<NodeId>)` — a single key per route with a set-valued payload. This required read-modify-write on every publish/unpublish, creating races when multiple nodes deployed the same slice concurrently.
+
+The flat `HttpNodeRouteKey(method, path, nodeId)` design eliminates these races: each node writes only its own key, with no contention. The value now carries `artifactCoord`, `sliceMethod`, `state`, and `weight`, enabling richer routing decisions. Consumers reconstruct the node set in-memory by scanning matching keys.
 
 ### Why filter connected nodes at request time?
 

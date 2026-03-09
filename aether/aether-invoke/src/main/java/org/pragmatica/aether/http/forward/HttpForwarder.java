@@ -5,13 +5,14 @@ import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
-import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.serialization.Deserializer;
@@ -41,9 +42,9 @@ public interface HttpForwarder {
     /// Returns a Promise that resolves with the HttpResponseData from the remote node.
     /// Handles round-robin selection, retry with backoff, and node departure failover.
     Promise<HttpResponseData> forward(HttpRequestContext requestContext,
-                                      HttpRouteKey routeKey,
-                                      String requestId,
-                                      int maxRetries);
+                                      String httpMethod,
+                                      String pathPrefix,
+                                      String requestId);
 
     /// Handle HTTP forward response from another node.
     @MessageReceiver
@@ -73,9 +74,11 @@ public interface HttpForwarder {
                              long forwardTimeoutMs,
                              Map<String, PendingForward> pendingForwards,
                              Map<NodeId, Set<String>> pendingForwardsByNode,
-                             Map<HttpRouteKey, AtomicInteger> roundRobinCounters) implements HttpForwarder {
+                             Map<String, AtomicInteger> roundRobinCounters) implements HttpForwarder {
             private static final Logger log = LoggerFactory.getLogger(HttpForwarder.class);
             private static final long RETRY_DELAY_MS = 200;
+            private static final int MAX_PENDING_FORWARDS = 10_000;
+            private static final int MAX_FORWARD_RETRIES = 3;
 
             record PendingForward(Promise<HttpResponseData> promise,
                                   long createdAtMs,
@@ -85,29 +88,26 @@ public interface HttpForwarder {
 
             @Override
             public Promise<HttpResponseData> forward(HttpRequestContext requestContext,
-                                                     HttpRouteKey routeKey,
-                                                     String requestId,
-                                                     int maxRetries) {
+                                                     String httpMethod,
+                                                     String pathPrefix,
+                                                     String requestId) {
                 var resultPromise = Promise.<HttpResponseData>promise();
-                var connectedNodes = filterConnectedNodes(routeRegistry.findRoute(routeKey.httpMethod(),
-                                                                                  routeKey.pathPrefix())
+                var connectedNodes = filterConnectedNodes(routeRegistry.findRoute(httpMethod, pathPrefix)
                                                                        .map(HttpRouteRegistry.RouteInfo::nodes)
                                                                        .or(Set.of()));
                 if (connectedNodes.isEmpty()) {
-                    log.warn("No connected nodes available for route {} {} [{}]",
-                             routeKey.httpMethod(),
-                             routeKey.pathPrefix(),
-                             requestId);
+                    log.warn("No connected nodes available for route {} {} [{}]", httpMethod, pathPrefix, requestId);
                     resultPromise.fail(Causes.cause("No available nodes for route"));
                     return resultPromise;
                 }
+                var routeIdentity = httpMethod + ":" + pathPrefix;
                 forwardWithRetry(requestContext,
                                  resultPromise,
                                  connectedNodes,
                                  Set.of(),
-                                 routeKey,
+                                 routeIdentity,
                                  requestId,
-                                 maxRetries);
+                                 Math.min(connectedNodes.size() - 1, MAX_FORWARD_RETRIES));
                 return resultPromise;
             }
 
@@ -118,9 +118,9 @@ public interface HttpForwarder {
                           response.correlationId(),
                           response.success());
                 Option.option(pendingForwards.remove(response.correlationId()))
-                      .onEmpty(() -> log.warn("[{}] Received forward response for unknown correlationId: {}",
-                                              response.requestId(),
-                                              response.correlationId()))
+                      .onEmpty(() -> log.debug("[{}] Received forward response for unknown correlationId: {}",
+                                               response.requestId(),
+                                               response.correlationId()))
                       .onPresent(pending -> processForwardResponse(pending, response));
             }
 
@@ -142,18 +142,21 @@ public interface HttpForwarder {
                             .toList();
             }
 
-            private List<NodeId> freshCandidatesForRoute(HttpRouteKey routeKey) {
-                return Option.from(routeRegistry.allRoutes()
-                                                .stream()
-                                                .filter(r -> r.toKey()
-                                                              .equals(routeKey))
-                                                .findFirst())
-                             .map(r -> filterConnectedNodes(r.nodes()))
-                             .or(List.of());
+            private List<NodeId> freshCandidatesForRoute(String routeIdentity) {
+                // Parse routeIdentity back to method:prefix
+                var colonIdx = routeIdentity.indexOf(':');
+                if (colonIdx == - 1) {
+                    return List.of();
+                }
+                var method = routeIdentity.substring(0, colonIdx);
+                var prefix = routeIdentity.substring(colonIdx + 1);
+                return routeRegistry.findRoute(method, prefix)
+                                    .map(r -> filterConnectedNodes(r.nodes()))
+                                    .or(List.of());
             }
 
-            private NodeId selectNodeFromCandidates(HttpRouteKey routeKey, List<NodeId> candidates) {
-                var counter = roundRobinCounters.computeIfAbsent(routeKey, _ -> new AtomicInteger(0));
+            private NodeId selectNodeFromCandidates(String routeIdentity, List<NodeId> candidates) {
+                var counter = roundRobinCounters.computeIfAbsent(routeIdentity, _ -> new AtomicInteger(0));
                 var index = Math.abs(counter.getAndIncrement() % candidates.size());
                 return candidates.get(index);
             }
@@ -162,17 +165,17 @@ public interface HttpForwarder {
                                           Promise<HttpResponseData> resultPromise,
                                           List<NodeId> availableNodes,
                                           Set<NodeId> triedNodes,
-                                          HttpRouteKey routeKey,
+                                          String routeIdentity,
                                           String requestId,
                                           int retriesRemaining) {
                 var candidates = availableNodes.stream()
                                                .filter(n -> !triedNodes.contains(n))
                                                .toList();
                 if (candidates.isEmpty()) {
-                    handleNoCandidates(requestContext, resultPromise, routeKey, requestId, retriesRemaining);
+                    handleNoCandidates(requestContext, resultPromise, routeIdentity, requestId, retriesRemaining);
                     return;
                 }
-                var targetNode = selectNodeFromCandidates(routeKey, candidates);
+                var targetNode = selectNodeFromCandidates(routeIdentity, candidates);
                 var newTriedNodes = new HashSet<>(triedNodes);
                 newTriedNodes.add(targetNode);
                 forwardToNode(requestContext,
@@ -182,20 +185,19 @@ public interface HttpForwarder {
                               () -> handleRetryOrExhausted(requestContext,
                                                            resultPromise,
                                                            newTriedNodes,
-                                                           routeKey,
+                                                           routeIdentity,
                                                            requestId,
                                                            retriesRemaining));
             }
 
             private void handleNoCandidates(HttpRequestContext requestContext,
                                             Promise<HttpResponseData> resultPromise,
-                                            HttpRouteKey routeKey,
+                                            String routeIdentity,
                                             String requestId,
                                             int retriesRemaining) {
                 if (retriesRemaining > 0) {
-                    log.debug("No candidates for {} {} [{}], waiting {}ms before re-query ({} retries remaining)",
-                              routeKey.httpMethod(),
-                              routeKey.pathPrefix(),
+                    log.debug("No candidates for {} [{}], waiting {}ms before re-query ({} retries remaining)",
+                              routeIdentity,
                               requestId,
                               RETRY_DELAY_MS,
                               retriesRemaining);
@@ -203,29 +205,26 @@ public interface HttpForwarder {
                            .timeout(timeSpan(RETRY_DELAY_MS).millis())
                            .onResult(_ -> retryAfterDelay(requestContext,
                                                           resultPromise,
-                                                          routeKey,
+                                                          routeIdentity,
                                                           requestId,
                                                           retriesRemaining));
                     return;
                 }
-                log.error("No more nodes to try for {} {} [{}] after all retries exhausted",
-                          routeKey.httpMethod(),
-                          routeKey.pathPrefix(),
-                          requestId);
+                log.error("No more nodes to try for {} [{}] after all retries exhausted", routeIdentity, requestId);
                 resultPromise.fail(Causes.cause("All nodes failed or unavailable"));
             }
 
             private void retryAfterDelay(HttpRequestContext requestContext,
                                          Promise<HttpResponseData> resultPromise,
-                                         HttpRouteKey routeKey,
+                                         String routeIdentity,
                                          String requestId,
                                          int retriesRemaining) {
-                var freshNodes = freshCandidatesForRoute(routeKey);
+                var freshNodes = freshCandidatesForRoute(routeIdentity);
                 forwardWithRetry(requestContext,
                                  resultPromise,
                                  freshNodes,
                                  Set.of(),
-                                 routeKey,
+                                 routeIdentity,
                                  requestId,
                                  retriesRemaining - 1);
             }
@@ -233,19 +232,19 @@ public interface HttpForwarder {
             private void handleRetryOrExhausted(HttpRequestContext requestContext,
                                                 Promise<HttpResponseData> resultPromise,
                                                 Set<NodeId> triedNodes,
-                                                HttpRouteKey routeKey,
+                                                String routeIdentity,
                                                 String requestId,
                                                 int retriesRemaining) {
                 if (retriesRemaining > 0) {
                     log.debug("Retrying request [{}], {} retries remaining, re-querying route",
                               requestId,
                               retriesRemaining);
-                    var freshNodes = freshCandidatesForRoute(routeKey);
+                    var freshNodes = freshCandidatesForRoute(routeIdentity);
                     forwardWithRetry(requestContext,
                                      resultPromise,
                                      freshNodes,
                                      triedNodes,
-                                     routeKey,
+                                     routeIdentity,
                                      requestId,
                                      retriesRemaining - 1);
                 } else {
@@ -277,6 +276,14 @@ public interface HttpForwarder {
                     resultPromise.fail(Causes.cause("Request serialization failed"));
                     return;
                 }
+                // Backpressure: reject if too many pending forwards
+                if (pendingForwards.size() >= MAX_PENDING_FORWARDS) {
+                    log.warn("Pending forwards limit reached ({}), rejecting forward [{}]",
+                             MAX_PENDING_FORWARDS,
+                             requestId);
+                    resultPromise.fail(Causes.cause("Too many pending forwards"));
+                    return;
+                }
                 // Create pending forward entry with onFailure callback
                 var internalPromise = Promise.<HttpResponseData>promise();
                 var pending = new PendingForward(internalPromise,
@@ -288,20 +295,33 @@ public interface HttpForwarder {
                 pendingForwardsByNode.computeIfAbsent(targetNode,
                                                       _ -> ConcurrentHashMap.newKeySet())
                                      .add(correlationId);
-                // Set up timeout
-                internalPromise.timeout(timeSpan(forwardTimeoutMs).millis())
-                               .onResult(_ -> removePendingForward(correlationId, targetNode));
+                // Set up timeout — will resolve internalPromise with CoreError.Timeout
+                internalPromise.timeout(timeSpan(forwardTimeoutMs).millis());
                 // Send forward request
                 var forwardRequest = new HttpForwardRequest(selfNodeId, correlationId, requestId, requestData);
                 clusterNetwork.send(targetNode, forwardRequest);
                 log.trace("Forwarded request to {} [{}] correlationId={}", targetNode, requestId, correlationId);
-                // Handle response
+                // Handle resolution — atomic removal ensures only one path processes the result
                 internalPromise.onSuccess(resultPromise::succeed)
-                               .onFailure(cause -> handleForwardFailure(requestId, targetNode, onFailure));
+                               .onFailure(cause -> handleInternalFailure(cause,
+                                                                         correlationId,
+                                                                         targetNode,
+                                                                         requestId,
+                                                                         onFailure));
             }
 
-            private void handleForwardFailure(String requestId, NodeId targetNode, Runnable onFailure) {
-                log.warn("Failed to forward request [{}] to {}, attempting retry", requestId, targetNode);
+            private void handleInternalFailure(Cause cause,
+                                               String correlationId,
+                                               NodeId targetNode,
+                                               String requestId,
+                                               Runnable onFailure) {
+                var removed = pendingForwards.remove(correlationId);
+                if (removed != null) {
+                    removeFromNodeIndex(correlationId, targetNode);
+                }
+                if (cause instanceof CoreError.Timeout) {
+                    log.warn("Forward to {} timed out after {}ms [{}]", targetNode, forwardTimeoutMs, requestId);
+                }
                 onFailure.run();
             }
 
@@ -370,11 +390,6 @@ public interface HttpForwarder {
             }
 
             // ================== Cleanup ==================
-            private void removePendingForward(String correlationId, NodeId targetNode) {
-                pendingForwards.remove(correlationId);
-                removeFromNodeIndex(correlationId, targetNode);
-            }
-
             private void removeFromNodeIndex(String correlationId, NodeId targetNode) {
                 Option.option(pendingForwardsByNode.get(targetNode))
                       .onPresent(nodeCorrelations -> cleanupNodeCorrelation(nodeCorrelations, correlationId, targetNode));

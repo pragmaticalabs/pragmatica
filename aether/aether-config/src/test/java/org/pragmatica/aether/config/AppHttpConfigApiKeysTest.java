@@ -104,18 +104,9 @@ class AppHttpConfigApiKeysTest {
     }
 
     @Test
-    void withForwardMaxRetries_overridesDefault() {
-        var config = AppHttpConfig.appHttpConfig()
-                                  .withForwardMaxRetries(5);
-
-        assertThat(config.forwardMaxRetries()).isEqualTo(5);
-    }
-
-    @Test
-    void defaults_forwardTimeoutAndRetries() {
+    void defaults_forwardTimeout() {
         var config = AppHttpConfig.appHttpConfig();
 
         assertThat(config.forwardTimeoutMs()).isEqualTo(AppHttpConfig.DEFAULT_FORWARD_TIMEOUT_MS);
-        assertThat(config.forwardMaxRetries()).isEqualTo(AppHttpConfig.DEFAULT_FORWARD_MAX_RETRIES);
     }
 }

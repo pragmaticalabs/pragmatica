@@ -25,7 +25,7 @@ Assessment of data stored in the Rabia consensus KV-store, how it scales with cl
 | `PreviousVersionValue` | ~100B | S |
 | `ScheduledTaskValue` | ~80B | SC |
 | `RollingUpdateValue` | ~200B | active updates |
-| `HttpRouteValue` | ~30B + 20B x N | R |
+| `HttpNodeRouteValue` | ~80B | N x R |
 | `AppBlueprintValue` | variable | B |
 
 Variables: N=nodes, S=slices, M=methods/slice, I=instances/method, B=blueprints, R=routes, T=topics, SC=scheduled tasks.
@@ -52,7 +52,7 @@ An `ExpandedBlueprint` is: `BlueprintId` (~40B) + `List<ResolvedSlice>`. No meth
 
 1. **Endpoints** — `N x S x M x I` is the fastest-growing dimension
 2. **SliceNode state** — `N x S`
-3. **HTTP routes** — `R` entries, each with `Set<NodeId>`
+3. **HTTP routes** — `N x R` entries (one per node per route, flat keys)
 4. **Blueprints** — constant per cluster, not per node
 5. **Everything else** — O(S) or operator-driven, negligible
 
@@ -87,7 +87,7 @@ With 10,000 passive nodes running slices:
 |---|---|---|
 | EndpointKey | N x S x M x I | 60,000,000 entries (~1.2 GB) |
 | SliceNodeKey | N x S | 2,000,000 entries (~80 MB) |
-| HttpRouteValue | R x Set<NodeId> | 500 routes x 10K NodeIds (~200 MB) |
+| HttpNodeRouteValue | N x R | 10K nodes x 500 routes = 5M entries (~400 MB) |
 
 **Total: ~1.5 GB+** — untenable for consensus.
 
@@ -96,7 +96,7 @@ With 10,000 passive nodes running slices:
 1. **Consensus throughput** — 60M entries = 60M consensus rounds during initial deployment
 2. **Snapshot size** — 1.5 GB for node recovery
 3. **Full replication** — all 5-11 core nodes hold 1.5 GB+ in-memory; Propose+Decision double-send amplifies network cost
-4. **HttpRouteValue** — `Set<NodeId>` with 10K entries per route; every node join/leave mutates every route entry through consensus
+4. **HttpNodeRouteValue** — N x R entries; each node writes only its own keys (no read-modify-write races), but total entry count still scales with node count
 
 ### Root Cause
 
@@ -130,7 +130,7 @@ The current design puts **per-instance, per-node state** into the consensus KV-s
 |---|---|---|
 | EndpointKey/Value | O(N x S x M x I) | Passive nodes report to core; core maintains routing table outside consensus |
 | SliceNodeKey/Value | O(N x S) | Passive nodes report state via heartbeat/gossip |
-| HttpRouteKey/Value | Set<NodeId> grows to 10K | Derived from endpoint registry, not stored |
+| HttpNodeRouteKey/Value | N x R entries grows to millions | Derived from endpoint registry, not stored |
 | NodeLifecycleValue (passive) | O(N) passive nodes | Tracked by core layer via connection state |
 
 ### Target Architecture
@@ -177,4 +177,4 @@ The Endpoint Registry would be:
 
 ## Conclusion
 
-The current all-in-consensus design is appropriate for the single-layer architecture (3-30 nodes). For the 2-layer topology, **EndpointKey, SliceNodeKey, and HttpRouteKey must be extracted out of consensus** into a separate registry. This is a clean separation: consensus holds desired state and configuration, the registry holds observed/runtime state. The consensus KV-store stays under 1 MB regardless of passive node count.
+The current all-in-consensus design is appropriate for the single-layer architecture (3-30 nodes). For the 2-layer topology, **EndpointKey, SliceNodeKey, and HttpNodeRouteKey must be extracted out of consensus** into a separate registry. This is a clean separation: consensus holds desired state and configuration, the registry holds observed/runtime state. The consensus KV-store stays under 1 MB regardless of passive node count.

@@ -4,8 +4,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.AppHttpConfig;
-import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue;
+import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
@@ -16,7 +16,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -83,7 +82,7 @@ class AppHttpServerTest {
     @Test
     void request_to_known_route_returns_503_when_no_forwarding() throws Exception {
         // Register a route (not local, so needs forwarding)
-        registerRoute("GET", "/users/", Set.of(NODE_1));
+        registerNodeRoute("GET", "/users/", NODE_1);
 
         server.start().await();
 
@@ -119,7 +118,7 @@ class AppHttpServerTest {
 
     @Test
     void post_request_routes_correctly() throws Exception {
-        registerRoute("POST", "/orders/", Set.of(NODE_1));
+        registerNodeRoute("POST", "/orders/", NODE_1);
 
         server.start().await();
 
@@ -152,10 +151,10 @@ class AppHttpServerTest {
         assertThat(response.body()).contains("title");
     }
 
-    private void registerRoute(String method, String path, Set<NodeId> nodes) {
-        var key = HttpRouteKey.httpRouteKey(method, path);
-        var value = HttpRouteValue.httpRouteValue(nodes);
-        var command = new KVCommand.Put<HttpRouteKey, HttpRouteValue>(key, value);
+    private void registerNodeRoute(String method, String path, NodeId nodeId) {
+        var key = HttpNodeRouteKey.httpNodeRouteKey(method, path, nodeId);
+        var value = HttpNodeRouteValue.httpNodeRouteValue("test:artifact:1.0", "create");
+        var command = new KVCommand.Put<HttpNodeRouteKey, HttpNodeRouteValue>(key, value);
         var notification = new ValuePut<>(command, Option.none());
         registry.onRoutePut(notification);
     }

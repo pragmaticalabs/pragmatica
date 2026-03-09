@@ -960,8 +960,8 @@ public interface AetherNode {
                                                             clusterDeploymentManager::onSliceNodeRemove)
                                                   .onRemove(AetherKey.VersionRoutingKey.class,
                                                             clusterDeploymentManager::onVersionRoutingRemove)
-                                                  .onPut(AetherKey.HttpRouteKey.class, httpRouteRegistry::onRoutePut)
-                                                  .onRemove(AetherKey.HttpRouteKey.class,
+                                                  .onPut(AetherKey.HttpNodeRouteKey.class, httpRouteRegistry::onRoutePut)
+                                                  .onRemove(AetherKey.HttpNodeRouteKey.class,
                                                             httpRouteRegistry::onRouteRemove)
                                                   .onPut(AetherKey.SliceNodeKey.class,
                                                          artifactMetricsCollector.deploymentTracker()::onSliceNodePut)
@@ -990,8 +990,9 @@ public interface AetherNode {
                                                          rollbackManager::onSliceTargetPut)
                                                   .onPut(AetherKey.PreviousVersionKey.class,
                                                          rollbackManager::onPreviousVersionPut)
-                                                  .onPut(AetherKey.HttpRouteKey.class, appHttpServer::onRoutePut)
-                                                  .onRemove(AetherKey.HttpRouteKey.class, appHttpServer::onRouteRemove)
+                                                  .onPut(AetherKey.HttpNodeRouteKey.class, appHttpServer::onRoutePut)
+                                                  .onRemove(AetherKey.HttpNodeRouteKey.class,
+                                                            appHttpServer::onRouteRemove)
                                                   .onPut(AetherKey.TopicSubscriptionKey.class,
                                                          topicSubscriptionRegistry::onSubscriptionPut)
                                                   .onRemove(AetherKey.TopicSubscriptionKey.class,
@@ -1008,8 +1009,9 @@ public interface AetherNode {
         dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
                                                              .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
         // Load balancer manager KV routes (optional)
-        loadBalancerManager.onPresent(lbm -> kvRouterBuilder.onPut(AetherKey.HttpRouteKey.class, lbm::onRoutePut)
-                                                            .onRemove(AetherKey.HttpRouteKey.class, lbm::onRouteRemove));
+        loadBalancerManager.onPresent(lbm -> kvRouterBuilder.onPut(AetherKey.HttpNodeRouteKey.class, lbm::onRoutePut)
+                                                            .onRemove(AetherKey.HttpNodeRouteKey.class,
+                                                                      lbm::onRouteRemove));
         entries.addAll(kvRouterBuilder.build()
                                       .asRouteEntries());
         // Quorum state notifications - these handlers activate/deactivate components.

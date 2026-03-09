@@ -164,9 +164,9 @@ public final class AetherPassiveLB {
                                                             request.body(),
                                                             requestId);
         httpForwarder.forward(context,
-                              route.toKey(),
-                              requestId,
-                              config.forwardMaxRetries())
+                              route.httpMethod(),
+                              route.pathPrefix(),
+                              requestId)
                      .onSuccess(responseData -> sendResponse(response, responseData, requestId))
                      .onFailure(cause -> response.error(HttpStatus.BAD_GATEWAY,
                                                         cause.message()));
@@ -202,8 +202,9 @@ public final class AetherPassiveLB {
                                    HttpRouteRegistry routeRegistry,
                                    HttpForwarder httpForwarder) {
         var kvNotificationRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
-                                                       .onPut(AetherKey.HttpRouteKey.class, routeRegistry::onRoutePut)
-                                                       .onRemove(AetherKey.HttpRouteKey.class,
+                                                       .onPut(AetherKey.HttpNodeRouteKey.class,
+                                                              routeRegistry::onRoutePut)
+                                                       .onRemove(AetherKey.HttpNodeRouteKey.class,
                                                                  routeRegistry::onRouteRemove)
                                                        .build();
         var topologyChangeRoutes = SealedBuilder.from(TopologyChangeNotification.class)

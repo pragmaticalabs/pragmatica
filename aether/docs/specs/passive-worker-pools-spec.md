@@ -27,6 +27,8 @@
 13. [Phased Implementation Plan](#13-phased-implementation-plan)
 14. [Prior Art Comparison](#14-prior-art-comparison)
 15. [Open Questions](#15-open-questions)
+16. [Automatic Topology Growth](#16-automatic-topology-growth)
+17. [SWIM as Universal Health Detection](#17-swim-as-universal-health-detection)
 
 ---
 
@@ -200,6 +202,8 @@ Each update has an incarnation number. Higher incarnation = more recent. Nodes m
 Propagation: epidemic spread. After O(log N) protocol periods, all nodes have received the update with high probability.
 
 ### 3.4 Aether SWIM Implementation
+
+> **Note:** SWIM is used for ALL node types, not just workers. The `integrations/swim/` module serves both core-to-core and worker group health detection. Core-to-core SWIM uses tighter parameters for faster failure detection among consensus participants. See [Section 17](#17-swim-as-universal-health-detection) for full details on universal SWIM health detection.
 
 **REQ-SWIM-01:** Implement SWIM as a new module: `integrations/swim/`.
 
@@ -455,7 +459,7 @@ The current KV-Store puts ALL state through Rabia consensus. At 10,000 workers w
 |------------|-------|------|
 | `EndpointKey/Value` | 60,000,000 | ~1.2 GB |
 | `SliceNodeKey/Value` | 2,000,000 | ~80 MB |
-| `HttpRouteValue` (per-route `Set<NodeId>`) | 500 x 10K | ~200 MB |
+| `HttpNodeRouteValue` (per-node per-route) | 10K x 500 = 5M | ~400 MB |
 | **Total** | | **~1.5 GB** |
 
 This is untenable. Consensus throughput, snapshot size, and memory usage all break.
@@ -489,7 +493,7 @@ These entries are operator-driven or O(S) (slices) at most. Total stays under 1 
 |-----------------|---------|----------|
 | `EndpointKey/Value` | O(N x S x M x I) | Worker Endpoint Registry |
 | `SliceNodeKey/Value` | O(N x S) | Worker Endpoint Registry |
-| `HttpRouteKey/Value` | `Set<NodeId>` grows to 10K | Derived from endpoints |
+| `HttpNodeRouteKey/Value` | N x R entries grows to millions | Derived from endpoints |
 | `NodeLifecycleKey` (passive) | O(N) passive nodes | SWIM membership |
 
 ### 6.5 Worker Endpoint Registry (New Component)
@@ -548,7 +552,7 @@ Result: Core sees O(G x S) entries where G = governor count (~10-100),
 
 ### 6.7 HTTP Route Derivation
 
-**REQ-KV-06:** `HttpRouteKey/Value` is no longer stored directly. HTTP routes are derived from:
+**REQ-KV-06:** `HttpNodeRouteKey/Value` is no longer stored directly. HTTP routes are derived from:
 - Consensus: blueprint defines which slices expose HTTP routes (from `routes.toml`)
 - Worker Endpoint Registry: which nodes have those slices active
 
@@ -556,7 +560,7 @@ The `HttpRouteRegistry` on each node constructs routes by combining these two so
 
 ### 6.8 Migration Path
 
-**REQ-KV-07:** During Phase 1, the existing KV-Store entries (`EndpointKey`, `SliceNodeKey`, `HttpRouteKey`) continue to function for CORE nodes only. Workers use the new registry path. This allows incremental migration.
+**REQ-KV-07:** During Phase 1, the existing KV-Store entries (`EndpointKey`, `SliceNodeKey`, `HttpNodeRouteKey`) continue to function for CORE nodes only. Workers use the new registry path. This allows incremental migration.
 
 **REQ-KV-08:** In Phase 2, core nodes also switch to the Worker Endpoint Registry for endpoint/route data, and the old KV-Store entries are deprecated.
 
@@ -1118,6 +1122,8 @@ Duration: 3-8 seconds (two SWIM detection cycles)
 | P1.10 | Worker configuration | `worker.toml` for pool type, core addresses, zone | `aether/worker/` |
 | P1.11 | Management API | Worker list, worker health, worker endpoints | `aether/node/` |
 | P1.12 | CLI commands | `aether workers list`, `aether workers health` | `aether/cli/` |
+| P1.13 | SWIM for core nodes | SWIM health detection replacing TCP disconnect for core-to-core | `integrations/swim/` |
+| P1.14 | Automatic topology growth | CDM auto-assigns core vs worker role based on topology config | `aether/aether-deployment/` |
 
 #### Phase 1 Architecture
 
@@ -1150,6 +1156,8 @@ Core (5-9 nodes, unchanged)
 | Mutation forwarding | Worker mutation reaches consensus, Decision relayed back |
 | Mixed routing | HTTP request at core routes to worker-hosted slice |
 | Worker scaling | Add/remove workers, slices rebalance |
+| Core auto-growth | Start 3-node cluster, add nodes, core grows to `core-max` then workers join |
+| SWIM core detection | SWIM detects core node failure faster than TCP, triggers proper recovery |
 
 ### 13.2 Phase 2: Auto-Layering (0.21.x)
 
@@ -1245,6 +1253,9 @@ Core (5-9 nodes)
 | Worker-to-worker communication | Within group: direct. Cross-group: via core. |
 | Decision stream catch-up | KV snapshot from governor + subsequent Decisions |
 | Consensus core scaling | Out of scope for this feature (Rabia supports dynamic membership separately) |
+| Node role assignment | Automatic: CDM assigns core (up to core-max) or worker role on join |
+| Failure detection mechanism | SWIM for all node types, TCP for data transport only |
+| Core scaling policy | Auto-grow to core-max, explicit-only shrink |
 
 ### Open (Requires Further Design)
 
@@ -1258,6 +1269,222 @@ Core (5-9 nodes)
 | OQ-6 | **Worker management API:** Should workers expose a management API directly, or proxy all management through core? | Phase 1 | Direct API is simpler for debugging. Proxy is more secure. |
 | OQ-7 | **Scheduled tasks on workers:** Can scheduled tasks run on worker nodes, or only on core? | Phase 2 | Leader-only tasks must run on core. All-node tasks could run on workers for better distribution. |
 | OQ-8 | **Pub/sub on workers:** Can workers be pub/sub subscribers? Topic subscriptions are currently per-node in consensus. | Phase 2 | Would require moving `TopicSubscriptionKey` to the non-consensus registry or allowing workers to subscribe through governors. |
+
+---
+
+## 16. Automatic Topology Growth
+
+### 16.1 Design Principle
+
+Nodes do not need to know their role at boot. A new node connects to seed nodes, receives the current topology, and CDM assigns its role (core or worker) based on the cluster's needs. This means:
+
+- **Single binary for all node types** -- role is runtime state, not deployment configuration. The same binary starts as core or worker depending on the cluster's current topology.
+- **Slices and HTTP clients are topology-unaware** -- routing is transparent. A slice running on a worker invokes other slices the same way as on a core node. The `SliceInvoker` handles routing differences internally.
+- **Growth is transparent** -- adding nodes to a cluster requires no configuration changes on existing nodes. New nodes connect to seed nodes and CDM places them automatically.
+
+### 16.2 Declarative Topology Configuration
+
+Topology boundaries are declared in cluster configuration:
+
+```toml
+[cluster.topology]
+core-max = 9                    # stop adding core nodes after this
+core-min = 3                    # minimum for quorum safety
+
+[[cluster.topology.core-pinning]]
+zone = "us-east-1a"
+count = 3
+
+[[cluster.topology.core-pinning]]
+zone = "us-east-1b"
+count = 2
+
+[[cluster.topology.core-pinning]]
+zone = "eu-west-1a"
+count = 2
+
+[cluster.topology.workers]
+group-max-size = 100            # SWIM group split threshold
+```
+
+Core pinning expresses a preference for distributing core nodes across availability zones. The `count` per zone is a target, not a hard constraint (see REQ-TOPO-05).
+
+### 16.3 Growth Lifecycle
+
+| Cluster Size | Core | Workers | Governors | Behavior |
+|---|---|---|---|---|
+| 3 | 3 | 0 | 0 | Pure core, flat, current Aether |
+| 5 | 5 | 0 | 0 | Larger core, still flat |
+| 9 | 9 | 0 | 0 | Max core reached |
+| 10 | 9 | 1 | 1 (self-governor) | First worker, trivial group |
+| 50 | 9 | 41 | 1 | Single worker group |
+| 150 | 9 | 141 | 2 | Auto-split into 2 groups |
+| 10,000 | 9 | 9,991 | ~100 | Fully layered |
+
+The transition from 3 core nodes to 10,000+ is continuous and automatic. No configuration change, no operator intervention, no restart.
+
+### 16.4 Core Membership Growth Protocol
+
+When a new node joins and core is below `core-max`:
+
+1. **Announce:** Node connects to seed nodes, announces candidacy.
+2. **Evaluate:** CDM (leader) evaluates: is core below `core-max`? Does the candidate satisfy pinning constraints (zone matching)?
+3. **Propose:** If yes: CDM proposes a Rabia membership change (add node as voter).
+4. **Commit:** Rabia consensus round commits the membership change.
+5. **Participate:** New node begins participating in consensus.
+6. **Overflow:** If core is full (`currentCoreCount >= core-max`): node joins as worker, governor election handles the rest.
+
+This is a controlled, sequenced operation. Core growth happens at most 6 times in a cluster's lifetime (from 3 to 9). It is not a hot path.
+
+### 16.5 Core Shrinking -- Explicit Only
+
+Automatic core shrinking (9 to 7 to 5) is NOT supported. Removing a node from Rabia consensus is risky under load -- it changes quorum requirements and can cause brief unavailability if timed poorly.
+
+If core was over-provisioned, leave it. Core nodes can also run slices, so they are not wasted capacity. The overhead of extra consensus participants at 9 nodes is negligible.
+
+Core shrinking is an explicit operational action via Management API, never automatic.
+
+### 16.6 Requirements
+
+- **REQ-TOPO-01:** Nodes connect to seed nodes and receive role assignment from CDM. No pre-configured role.
+- **REQ-TOPO-02:** CDM evaluates core candidacy on each new node join: `currentCoreCount < coreMax AND pinningConstraintsSatisfied(node)`.
+- **REQ-TOPO-03:** Core promotion is a Rabia membership change -- requires consensus round to commit.
+- **REQ-TOPO-04:** Worker assignment is immediate -- no consensus required, CDM notifies the node directly.
+- **REQ-TOPO-05:** Pinning constraints are evaluated as preferences, not hard requirements. If no candidate in a pinned zone is available, the system fills core from any available zone.
+- **REQ-TOPO-06:** Core shrinking requires explicit operator action via Management API (`POST /management/topology/shrink-core`).
+
+---
+
+## 17. SWIM as Universal Health Detection
+
+### 17.1 Problem with TCP-Based Detection
+
+The current implementation relies on TCP/IP disconnect detection for core-to-core failure detection. This is unreliable in modern deployment environments:
+
+- **Containerized environments:** Network namespaces, overlay networks, and silent connection drops obscure real connectivity state.
+- **Keepalive mismatches:** OS-level TCP keepalive settings and container runtime settings often conflict, leading to stale connections.
+- **Variable detection latency:** TCP disconnect detection ranges from 15 seconds to 2+ minutes depending on OS, network configuration, and whether the failure is a crash vs. network partition.
+- **False negatives:** Half-open connections where TCP considers the connection alive but data is not flowing. The remote process may have crashed while the local TCP stack retains the connection.
+
+### 17.2 Unified SWIM Health Layer
+
+SWIM replaces TCP disconnect as the PRIMARY failure detector for ALL node types:
+
+- **Core to Core:** SWIM probes alongside Rabia messages.
+- **Core to Governor:** SWIM probes alongside Decision stream.
+- **Worker to Worker:** SWIM probes within group (already specified in Section 3).
+
+TCP connections remain for DATA transport (Rabia messages, Decisions, mutations). SWIM is the HEALTH layer only. This separation of concerns means that a lost TCP connection triggers reconnection, not a topology change.
+
+### 17.3 Architecture Change
+
+```
+Before (current):
+  TCP connect/disconnect → TopologyChangeNotification.NodeDown/NodeUp
+
+After (proposed):
+  SWIM probe failure → TopologyChangeNotification.NodeDown
+  SWIM probe success → TopologyChangeNotification.NodeUp
+  TCP connection      → data transport only (no health signaling)
+```
+
+The change is in the SOURCE of health signals, not in how those signals are consumed. All downstream logic (Rabia recovery, leader election, CDM reconciliation) receives the same `TopologyChangeNotification` events.
+
+### 17.4 Core-to-Core SWIM
+
+The same SWIM protocol used for worker groups applies to core nodes, with tighter parameters for faster detection among consensus participants:
+
+| Parameter | Core Value | Worker Value | Rationale |
+|-----------|-----------|-------------|-----------|
+| Probe period | 500ms | 1s | Faster detection for consensus participants |
+| Probe timeout | 300ms | 500ms | Core nodes are typically co-located, lower latency |
+| Indirect probes (K) | 3 | 3 | Same reliability guarantee |
+| Suspect timeout | 3s | 5s | Quicker declaration for core nodes |
+
+The core SWIM group consists of all core nodes (5-9 members). This is a very small group with negligible overhead: 5-9 probes per second total.
+
+### 17.5 What Changes in Existing Code
+
+- **`TcpTopologyManager`:** TCP disconnect no longer triggers `NodeDown`. It triggers a reconnection attempt only. The connection is considered unhealthy only when SWIM declares the remote node FAULTY.
+- **`TopologyChangeNotification`:** Fired by SWIM membership changes, not by TCP events. The notification type and payload remain identical.
+- **`NettyClusterNetwork`:** Connection loss enters a reconnect loop. No topology notification is emitted. If SWIM also declares the node FAULTY, the topology notification fires from the SWIM layer.
+- **Rabia:** `NodeDown` from SWIM triggers the same recovery path as today (stall detection, re-election, state reconstruction).
+
+### 17.6 What Stays the Same
+
+- **Rabia consensus protocol** -- untouched. Rabia does not depend on the source of failure detection.
+- **All message routing over TCP** -- unchanged. SWIM is health-only, not a data transport.
+- **Leader election logic** -- same triggers, different source (SWIM instead of TCP).
+- **Decision stream delivery** -- TCP connections with reconnect on failure.
+
+### 17.7 Benefits
+
+- **Uniform detection:** 1-2 seconds across all environments (bare metal, containers, VMs, multi-cloud). No dependency on OS TCP stack behavior.
+- **Fewer false positives:** Indirect probes confirm before declaring failure. A single missed probe does not trigger a topology change.
+- **Single protocol:** One health detection mechanism to configure, tune, and debug across the entire cluster.
+- **Predictable timing:** SWIM parameters directly control detection latency. No hidden dependency on TCP keepalive or OS kernel settings.
+
+### 17.8 Configuration
+
+```toml
+[cluster.swim]
+enabled = true                  # default true; false falls back to TCP detection (migration)
+
+[cluster.swim.core]
+period = "500ms"                # probe period for core-to-core
+probe-timeout = "300ms"         # direct ping timeout
+indirect-probes = 3             # K parameter
+suspect-timeout = "3s"          # time in SUSPECT before FAULTY
+
+[cluster.swim.workers]
+period = "1s"                   # probe period for worker groups
+probe-timeout = "500ms"
+indirect-probes = 3
+suspect-timeout = "5s"
+```
+
+### 17.9 Migration Path
+
+- **REQ-SWIM-MIGRATION-01:** `cluster.swim.enabled = true` activates SWIM health detection. When `false`, TCP disconnect detection remains active (backward compatibility during migration).
+- **REQ-SWIM-MIGRATION-02:** During migration, both SWIM and TCP can be active simultaneously. SWIM takes priority -- if SWIM declares a node alive, TCP disconnect is treated as a reconnect event, not a failure.
+
+### 17.10 SWIM Transport: UDP with TCP Fallback
+
+The canonical SWIM protocol uses UDP for ping/ack messages. However, some container networking environments restrict or degrade UDP:
+
+- **Kubernetes with certain CNI plugins:** UDP may traverse additional encapsulation layers (VXLAN, Geneve) adding latency and packet loss.
+- **Cloud security groups / firewalls:** UDP ports may be blocked by default while TCP is allowed.
+- **Service meshes (Istio, Linkerd):** Typically proxy TCP only; UDP bypasses the mesh entirely, losing observability.
+- **Corporate networks:** UDP is sometimes blocked at the network level.
+
+**REQ-SWIM-TRANSPORT-01:** The SWIM implementation supports two transport modes:
+
+| Mode | Protocol | Use Case |
+|------|----------|----------|
+| `udp` (default) | UDP datagrams | Standard deployments, bare metal, most cloud environments |
+| `tcp` | TCP connections with SWIM message framing | Restricted environments where UDP is blocked or unreliable |
+
+**REQ-SWIM-TRANSPORT-02:** In TCP mode, SWIM messages (PING, ACK, PING-REQ) are framed as length-prefixed messages over persistent TCP connections. Each SWIM member maintains a TCP connection to its probe targets. Connection pooling keeps overhead manageable.
+
+**REQ-SWIM-TRANSPORT-03:** TCP mode preserves all SWIM semantics -- probe periods, indirect probes, suspect timeouts, piggybacked dissemination. The only difference is the transport layer. Detection timing may be slightly different (TCP has connection-level flow control that UDP lacks), but the protocol behavior is identical.
+
+**REQ-SWIM-TRANSPORT-04:** Transport mode is configured per cluster, not per node. All nodes in a cluster must use the same transport:
+
+```toml
+[cluster.swim]
+transport = "udp"               # "udp" (default) or "tcp"
+```
+
+**REQ-SWIM-TRANSPORT-05:** Auto-detection mode (`transport = "auto"`) attempts UDP first. If UDP probes fail consistently during the first 3 probe periods (initial startup), the node falls back to TCP and logs a warning. This handles environments where UDP availability is unknown at deployment time.
+
+### 17.11 Requirements
+
+- **REQ-HEALTH-01:** SWIM is the primary health detection mechanism for all node types when enabled.
+- **REQ-HEALTH-02:** TCP disconnection triggers reconnection, NOT topology change notifications.
+- **REQ-HEALTH-03:** Core SWIM parameters are tighter than worker parameters (faster detection for consensus participants).
+- **REQ-HEALTH-04:** SWIM configuration is per-tier (core vs worker) to allow independent tuning.
+- **REQ-HEALTH-05:** Fallback to TCP detection is supported for migration via configuration flag.
+- **REQ-HEALTH-06:** SWIM transport supports UDP (default), TCP (fallback), and auto-detection modes.
 
 ---
 

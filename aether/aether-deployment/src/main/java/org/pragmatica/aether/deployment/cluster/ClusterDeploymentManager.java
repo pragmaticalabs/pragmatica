@@ -11,7 +11,7 @@ import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -19,7 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
@@ -199,10 +199,12 @@ public interface ClusterDeploymentManager {
                       Set<BlueprintId> restoringBlueprints,
                       Set<Artifact> permanentlyFailed,
                       DeploymentAtomicity atomicity,
-                      Option<WorkerEndpointRegistry> workerEndpointRegistry) implements ClusterDeploymentState {
+                      Option<WorkerEndpointRegistry> workerEndpointRegistry,
+                      Map<SliceNodeKey, Long> transitionalStateTimestamps) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
             private static final int MAX_RETRIES = 5;
             private static final long MAX_RETRY_DELAY_SECONDS = 30;
+            private static final int STUCK_TIMEOUT_MULTIPLIER = 2;
 
             /// Tracks an in-flight blueprint deployment for atomicity enforcement.
             record InFlightBlueprint(BlueprintId id,
@@ -340,6 +342,7 @@ public interface ClusterDeploymentManager {
 
             private void restoreSliceState(SliceNodeKey sliceNodeKey, SliceNodeValue sliceNodeValue) {
                 sliceStates.put(sliceNodeKey, sliceNodeValue.state());
+                updateTransitionalTimestamp(sliceNodeKey, sliceNodeValue.state());
                 log.trace("Restored slice state: {} = {}", sliceNodeKey, sliceNodeValue.state());
             }
 
@@ -395,6 +398,7 @@ public interface ClusterDeploymentManager {
 
             private void handleSliceNodeRemoval(SliceNodeKey sliceNodeKey) {
                 sliceStates.remove(sliceNodeKey);
+                transitionalStateTimestamps.remove(sliceNodeKey);
                 if (permanentlyFailed.contains(sliceNodeKey.artifact())) {
                     return;
                 }
@@ -805,6 +809,7 @@ public interface ClusterDeploymentManager {
             private void trackSliceState(SliceNodeKey sliceKey, SliceNodeValue sliceNodeValue) {
                 var state = sliceNodeValue.state();
                 var previousState = sliceStates.put(sliceKey, state);
+                updateTransitionalTimestamp(sliceKey, state);
                 log.trace("Slice {} on {} state: {} -> {}",
                           sliceKey.artifact(),
                           sliceKey.nodeId(),
@@ -832,6 +837,7 @@ public interface ClusterDeploymentManager {
                 var failureReason = sliceNodeValue.failureReason()
                                                   .or("Unknown failure");
                 sliceStates.remove(sliceKey);
+                transitionalStateTimestamps.remove(sliceKey);
                 issueUnloadCommand(sliceKey);
                 if (sliceNodeValue.fatal()) {
                     handleDeterministicFailure(sliceKey, failureReason);
@@ -1002,6 +1008,7 @@ public interface ClusterDeploymentManager {
                                                    .toList();
                 // Remove from in-memory state immediately
                 sliceKeysToRemove.forEach(sliceStates::remove);
+                sliceKeysToRemove.forEach(transitionalStateTimestamps::remove);
                 // Find endpoint keys for the removed node by scanning KVStore snapshot
                 var endpointKeysToRemove = findEndpointKeysForNode(removedNode);
                 // Clean up HTTP routes containing the removed node
@@ -1050,35 +1057,21 @@ public interface ClusterDeploymentManager {
             }
 
             /// Clean up HTTP routes that reference the removed node.
-            /// For each HttpRouteValue, remove the node from the node set.
-            /// If the node set becomes empty, delete the entry.
+            /// Each node has independent route keys — just remove the departed node's keys.
             private List<KVCommand<AetherKey>> cleanupHttpRoutesForNode(NodeId removedNode) {
                 var commands = new java.util.ArrayList<KVCommand<AetherKey>>();
-                kvStore.forEach(HttpRouteKey.class,
-                                HttpRouteValue.class,
-                                (key, value) -> collectRouteCleanupCommand(commands, key, value, removedNode));
+                kvStore.forEach(HttpNodeRouteKey.class,
+                                HttpNodeRouteValue.class,
+                                (key, value) -> collectRouteKeyForNode(commands, key, removedNode));
                 return commands;
             }
 
-            private void collectRouteCleanupCommand(List<KVCommand<AetherKey>> commands,
-                                                    HttpRouteKey routeKey,
-                                                    HttpRouteValue routeValue,
-                                                    NodeId removedNode) {
-                if (!routeValue.nodes()
-                               .contains(removedNode)) {
-                    return;
-                }
-                var updatedValue = routeValue.withoutNode(removedNode);
-                if (updatedValue.isEmpty()) {
-                    commands.add(new KVCommand.Remove<>(routeKey));
-                    log.debug("Removing HTTP route {} (last node {} departed)", routeKey, removedNode);
-                } else {
-                    commands.add(new KVCommand.Put<>(routeKey, updatedValue));
-                    log.debug("Updating HTTP route {} - removed departed node {}, {} nodes remaining",
-                              routeKey,
-                              removedNode,
-                              updatedValue.nodes()
-                                          .size());
+            private void collectRouteKeyForNode(List<KVCommand<AetherKey>> commands,
+                                                HttpNodeRouteKey key,
+                                                NodeId removedNode) {
+                if (key.nodeId()
+                       .equals(removedNode)) {
+                    commands.add(new KVCommand.Remove<>(key));
                 }
             }
 
@@ -1087,38 +1080,22 @@ public interface ClusterDeploymentManager {
             private void cleanupStaleHttpRoutes() {
                 var currentNodes = new HashSet<>(activeNodes.get());
                 var commands = new java.util.ArrayList<KVCommand<AetherKey>>();
-                kvStore.forEach(HttpRouteKey.class,
-                                HttpRouteValue.class,
-                                (key, value) -> collectStaleRouteCleanupCommand(commands, key, value, currentNodes));
+                kvStore.forEach(HttpNodeRouteKey.class,
+                                HttpNodeRouteValue.class,
+                                (key, _) -> collectStaleRouteKey(commands, key, currentNodes));
                 if (!commands.isEmpty()) {
-                    log.debug("Cleaning up {} stale HTTP route entries", commands.size());
+                    log.debug("Cleaning up {} stale HTTP node route entries", commands.size());
                     cluster.apply(commands)
                            .onFailure(cause -> log.error("Failed to clean up stale HTTP routes: {}",
                                                          cause.message()));
                 }
             }
 
-            private void collectStaleRouteCleanupCommand(List<KVCommand<AetherKey>> commands,
-                                                         HttpRouteKey routeKey,
-                                                         HttpRouteValue routeValue,
-                                                         Set<NodeId> currentNodes) {
-                var staleNodes = routeValue.nodes()
-                                           .stream()
-                                           .filter(n -> !currentNodes.contains(n))
-                                           .toList();
-                if (staleNodes.isEmpty()) {
-                    return;
-                }
-                var updatedValue = routeValue;
-                for (var staleNode : staleNodes) {
-                    updatedValue = updatedValue.withoutNode(staleNode);
-                }
-                if (updatedValue.isEmpty()) {
-                    commands.add(new KVCommand.Remove<>(routeKey));
-                    log.debug("Removing stale HTTP route {} (no valid nodes)", routeKey);
-                } else {
-                    commands.add(new KVCommand.Put<>(routeKey, updatedValue));
-                    log.debug("Cleaning up HTTP route {} - removed {} stale nodes", routeKey, staleNodes.size());
+            private void collectStaleRouteKey(List<KVCommand<AetherKey>> commands,
+                                              HttpNodeRouteKey key,
+                                              Set<NodeId> currentNodes) {
+                if (!currentNodes.contains(key.nodeId())) {
+                    commands.add(new KVCommand.Remove<>(key));
                 }
             }
 
@@ -1413,6 +1390,78 @@ public interface ClusterDeploymentManager {
                 return state != SliceState.FAILED && state != SliceState.UNLOAD && state != SliceState.UNLOADING;
             }
 
+            /// Record or clear the timestamp when a slice enters or leaves a transitional state.
+            private void updateTransitionalTimestamp(SliceNodeKey sliceKey, SliceState state) {
+                if (state.isTransitional()) {
+                    transitionalStateTimestamps.putIfAbsent(sliceKey, System.currentTimeMillis());
+                } else {
+                    transitionalStateTimestamps.remove(sliceKey);
+                }
+            }
+
+            /// Detect slices stuck in transitional states (LOADING, ACTIVATING, DEACTIVATING, UNLOADING)
+            /// longer than 2x their configured timeout. For stuck LOADING/ACTIVATING, issue UNLOAD to reset
+            /// and let normal reconciliation re-deploy. For stuck DEACTIVATING/UNLOADING, force-remove
+            /// from KV store to clean up.
+            private void detectStuckTransitionalStates() {
+                var now = System.currentTimeMillis();
+                var stuckEntries = transitionalStateTimestamps.entrySet()
+                                                              .stream()
+                                                              .filter(entry -> isStuckTransitional(entry.getKey(),
+                                                                                                   entry.getValue(),
+                                                                                                   now))
+                                                              .map(Map.Entry::getKey)
+                                                              .toList();
+                if (stuckEntries.isEmpty()) {
+                    return;
+                }
+                log.warn("Detected {} slices stuck in transitional states", stuckEntries.size());
+                var commands = new ArrayList<KVCommand<AetherKey>>();
+                stuckEntries.forEach(key -> collectStuckRemediationCommand(commands, key));
+                submitBatch(commands);
+            }
+
+            /// Check whether a slice has exceeded 2x its transitional state timeout.
+            private boolean isStuckTransitional(SliceNodeKey sliceKey, long enteredAt, long now) {
+                var state = sliceStates.get(sliceKey);
+                if (state == null || !state.isTransitional()) {
+                    return false;
+                }
+                return state.timeout()
+                            .filter(timeout -> (now - enteredAt) > timeout.millis() * STUCK_TIMEOUT_MULTIPLIER)
+                            .isPresent();
+            }
+
+            /// Collect the appropriate remediation command for a stuck slice.
+            /// LOADING/ACTIVATING: issue UNLOAD to reset, reconciliation will re-deploy.
+            /// DEACTIVATING/UNLOADING: force-remove from KV store to clean up.
+            private void collectStuckRemediationCommand(List<KVCommand<AetherKey>> commands, SliceNodeKey sliceKey) {
+                var state = sliceStates.get(sliceKey);
+                if (state == null) {
+                    return;
+                }
+                transitionalStateTimestamps.remove(sliceKey);
+                switch (state) {
+                    case LOADING, ACTIVATING -> {
+                        log.warn("Force-resetting stuck {} slice {} on {} — issuing UNLOAD",
+                                 state,
+                                 sliceKey.artifact(),
+                                 sliceKey.nodeId());
+                        sliceStates.remove(sliceKey);
+                        commands.add(new KVCommand.Put<>(sliceKey, SliceNodeValue.sliceNodeValue(SliceState.UNLOAD)));
+                    }
+                    case DEACTIVATING, UNLOADING -> {
+                        log.warn("Force-removing stuck {} slice {} on {} from KV store",
+                                 state,
+                                 sliceKey.artifact(),
+                                 sliceKey.nodeId());
+                        sliceStates.remove(sliceKey);
+                        commands.add(new KVCommand.Remove<>(sliceKey));
+                    }
+                    default -> {}
+                }
+            }
+
             private void issueUnloadCommand(SliceNodeKey sliceKey) {
                 submitBatch(List.of(prepareUnloadCommand(sliceKey)));
             }
@@ -1457,6 +1506,7 @@ public interface ClusterDeploymentManager {
                           blueprints.size());
                 submitBatch(allCommands);
                 cleanupOrphanedSliceEntries();
+                detectStuckTransitionalStates();
             }
 
             /// Track a slice becoming ACTIVE in its parent blueprint.
@@ -1633,7 +1683,8 @@ public interface ClusterDeploymentManager {
                                                                         ConcurrentHashMap.newKeySet(),
                                                                         ConcurrentHashMap.newKeySet(),
                                                                         atomicity,
-                                                                        workerRegistry);
+                                                                        workerRegistry,
+                                                                        new ConcurrentHashMap<>());
                     // Swap to Active FIRST — ensures topology changes arriving on other threads
                     // are dispatched to Active.onTopologyChange() instead of being lost in Dormant.
                     state.set(activeState);

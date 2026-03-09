@@ -9,8 +9,8 @@ import org.pragmatica.aether.http.handler.HttpRouteDefinition;
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue;
+import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -30,8 +30,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue.httpRouteValue;
-
 /// Publishes HTTP routes to KV-Store when slices become active.
 ///
 ///
@@ -39,9 +37,8 @@ import static org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue.htt
 /// creates handlers, and publishes their route definitions to the cluster.
 ///
 ///
-/// Routes track which nodes have registered them. When a node publishes a route,
-/// it adds itself to the node set. When unpublishing, it removes itself. The route
-/// key is only deleted when no nodes have it registered.
+/// Each node writes flat per-node keys (HttpNodeRouteKey) containing (method, prefix, nodeId).
+/// No read-modify-write, no races. Consumers reconstruct node sets from flat keys in-memory.
 public interface HttpRoutePublisher {
     /// Publish HTTP routes for a slice that just became active.
     ///
@@ -85,8 +82,8 @@ public interface HttpRoutePublisher {
     /// Get all HTTP routes that this node can handle locally.
     /// Used by AppHttpServer to distinguish local vs remote routes.
     ///
-    /// @return Set of HttpRouteKey for locally available routes
-    Set<HttpRouteKey> allLocalRoutes();
+    /// @return Set of HttpNodeRouteKey for locally available routes
+    Set<HttpNodeRouteKey> allLocalRoutes();
 
     /// Find a local SliceRouter that can handle the given HTTP method and path prefix.
     /// Used by AppHttpServer for local request handling.
@@ -132,7 +129,6 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
     private final NodeId selfNodeId;
     private final ClusterNode<KVCommand<AetherKey>> cluster;
-    private final KVStore<AetherKey, ?> kvStore;
     private final Map<Artifact, HttpRequestHandler> handlers = new ConcurrentHashMap<>();
     private final Map<Artifact, SliceRouter> sliceRouters = new ConcurrentHashMap<>();
     private final Map<Artifact, List<HttpRouteDefinition>> publishedRoutes = new ConcurrentHashMap<>();
@@ -143,7 +139,6 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                            KVStore<AetherKey, ?> kvStore) {
         this.selfNodeId = selfNodeId;
         this.cluster = cluster;
-        this.kvStore = kvStore;
     }
 
     @Override
@@ -177,7 +172,6 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         }
         // Store published routes for unpublishing later
         publishedRoutes.put(artifact, routes);
-        // Publish routes using read-modify-write pattern
         return publishRoutesToCluster(routes, artifact);
     }
 
@@ -245,25 +239,23 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     }
 
     private Promise<Unit> publishRoutesToCluster(List<HttpRouteDefinition> routes, Artifact artifact) {
-        // Build commands using read-modify-write pattern
-        var commands = new ArrayList<KVCommand<AetherKey>>();
-        for (var route : routes) {
-            var key = HttpRouteKey.httpRouteKey(route.httpMethod(), route.pathPrefix());
-            var currentValue = kvStore.get(key);
-            var newValue = currentValue.map(v -> (HttpRouteValue) v)
-                                       .map(v -> v.withNode(selfNodeId))
-                                       .or(() -> httpRouteValue(Set.of(selfNodeId)));
-            commands.add(new KVCommand.Put<>(key, newValue));
-        }
-        log.debug("Calling cluster.apply() with {} commands for slice {}", commands.size(), artifact);
+        var commands = buildPublishCommands(routes);
+        log.debug("Publishing {} HTTP routes for slice {}", commands.size(), artifact);
         return cluster.apply(commands)
                       .mapToUnit()
-                      .onSuccess(_ -> log.debug("cluster.apply() SUCCESS: Published {} HTTP routes for slice {}",
+                      .onSuccess(_ -> log.debug("Published {} HTTP routes for slice {}",
                                                 routes.size(),
-                                                artifact))
-                      .onFailure(cause -> log.error("cluster.apply() FAILED for {}: {}",
-                                                    artifact,
-                                                    cause.message()));
+                                                artifact));
+    }
+
+    private List<KVCommand<AetherKey>> buildPublishCommands(List<HttpRouteDefinition> routes) {
+        var commands = new ArrayList<KVCommand<AetherKey>>();
+        for (var route : routes) {
+            var key = HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(), route.pathPrefix(), selfNodeId);
+            var value = HttpNodeRouteValue.httpNodeRouteValue(route.artifactCoord(), route.sliceMethod());
+            commands.add(new KVCommand.Put<>(key, value));
+        }
+        return commands;
     }
 
     @Override
@@ -277,32 +269,23 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     }
 
     private Promise<Unit> unpublishRoutesFromCluster(List<HttpRouteDefinition> routes) {
-        // Build commands using read-modify-write pattern
-        var commands = new ArrayList<KVCommand<AetherKey>>();
-        for (var route : routes) {
-            var key = HttpRouteKey.httpRouteKey(route.httpMethod(), route.pathPrefix());
-            var currentValue = kvStore.get(key);
-            currentValue.map(v -> (HttpRouteValue) v)
-                        .onPresent(value -> {
-                                       var updated = value.withoutNode(selfNodeId);
-                                       if (updated.isEmpty()) {
-                                           // No more nodes have this route, delete the key
-            commands.add(new KVCommand.Remove<>(key));
-                                       } else {
-                                           // Other nodes still have this route, update the value
-            commands.add(new KVCommand.Put<>(key, updated));
-                                       }
-                                   });
-        }
-        if (commands.isEmpty()) {
-            return Promise.unitPromise();
-        }
+        var commands = buildUnpublishCommands(routes);
         return cluster.apply(commands)
                       .mapToUnit()
                       .onSuccess(_ -> log.debug("Unpublished {} HTTP routes",
                                                 routes.size()))
                       .onFailure(cause -> log.error("Failed to unpublish HTTP routes: {}",
                                                     cause.message()));
+    }
+
+    private List<KVCommand<AetherKey>> buildUnpublishCommands(List<HttpRouteDefinition> routes) {
+        var commands = new ArrayList<KVCommand<AetherKey>>();
+        for (var route : routes) {
+            commands.add(new KVCommand.Remove<>(HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(),
+                                                                                  route.pathPrefix(),
+                                                                                  selfNodeId)));
+        }
+        return commands;
     }
 
     @Override
@@ -316,11 +299,11 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     }
 
     @Override
-    public Set<HttpRouteKey> allLocalRoutes() {
-        var localRoutes = new java.util.HashSet<HttpRouteKey>();
+    public Set<HttpNodeRouteKey> allLocalRoutes() {
+        var localRoutes = new java.util.HashSet<HttpNodeRouteKey>();
         for (var routes : publishedRoutes.values()) {
             for (var route : routes) {
-                localRoutes.add(HttpRouteKey.httpRouteKey(route.httpMethod(), route.pathPrefix()));
+                localRoutes.add(HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(), route.pathPrefix(), selfNodeId));
             }
         }
         return Set.copyOf(localRoutes);

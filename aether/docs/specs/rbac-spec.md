@@ -139,8 +139,7 @@ Current state (line 16-20):
 public record AppHttpConfig(boolean enabled,
                             int port,
                             Set<String> apiKeys,      // <-- flat set of raw key strings
-                            long forwardTimeoutMs,
-                            int forwardMaxRetries)
+                            long forwardTimeoutMs)
 ```
 
 **Required change:** Replace `Set<String> apiKeys` with a richer structure that maps key values to their metadata.
@@ -173,8 +172,7 @@ Updated `AppHttpConfig`:
 public record AppHttpConfig(boolean enabled,
                             int port,
                             Map<String, ApiKeyEntry> apiKeys,  // key_value -> entry
-                            long forwardTimeoutMs,
-                            int forwardMaxRetries) {
+                            long forwardTimeoutMs) {
     // ...
     public boolean securityEnabled() {
         return !apiKeys.isEmpty();
@@ -206,7 +204,6 @@ TOML format:
 enabled = true
 port = 8070
 forward_timeout_ms = 5000
-forward_max_retries = 2
 
 # Simple format: list of key strings (backward compatible)
 # All keys get default name and SERVICE role
