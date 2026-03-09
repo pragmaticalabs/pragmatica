@@ -72,7 +72,15 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     public Promise<Unit> start() {
         var selfPort = findSelfPort();
         var swimPort = selfPort + 1;
-        var selfAddress = new InetSocketAddress("0.0.0.0", swimPort);
+        var selfHost = topologyConfig.coreNodes()
+                                     .stream()
+                                     .filter(n -> n.id()
+                                                   .equals(topologyConfig.self()))
+                                     .findFirst()
+                                     .map(n -> n.address()
+                                                .host())
+                                     .orElse("localhost");
+        var selfAddress = new InetSocketAddress(selfHost, swimPort);
         return NettySwimTransport.nettySwimTransport(serializer, deserializer)
                                  .flatMap(transport -> createAndStartProtocol(transport, selfAddress, swimPort))
                                  .async()

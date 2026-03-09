@@ -6,7 +6,6 @@ import org.pragmatica.aether.http.forward.HttpForwarder;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.node.NodeCodecs;
-import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.node.passive.PassiveNode;
@@ -22,7 +21,6 @@ import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter.Entry;
 import org.pragmatica.messaging.MessageRouter.Entry.SealedBuilder;
 import org.pragmatica.serialization.Deserializer;
@@ -60,19 +58,16 @@ public final class AetherPassiveLB {
     private final PassiveNode<AetherKey, AetherValue> passiveNode;
     private final HttpRouteRegistry routeRegistry;
     private final HttpForwarder httpForwarder;
-    private final CoreSwimHealthDetector swimHealthDetector;
     private volatile Option<HttpServer> httpServer = Option.empty();
 
     private AetherPassiveLB(PassiveLBConfig config,
                             PassiveNode<AetherKey, AetherValue> passiveNode,
                             HttpRouteRegistry routeRegistry,
-                            HttpForwarder httpForwarder,
-                            CoreSwimHealthDetector swimHealthDetector) {
+                            HttpForwarder httpForwarder) {
         this.config = config;
         this.passiveNode = passiveNode;
         this.routeRegistry = routeRegistry;
         this.httpForwarder = httpForwarder;
-        this.swimHealthDetector = swimHealthDetector;
     }
 
     /// Create a passive LB node.
@@ -99,13 +94,8 @@ public final class AetherPassiveLB {
                                                         serializer,
                                                         deserializer,
                                                         config.forwardTimeoutMs());
-        // Create SWIM-based health detector for core node failure detection
-        var swimHealthDetector = CoreSwimHealthDetector.coreSwimHealthDetector(passiveNode.delegateRouter(),
-                                                                               topologyConfig,
-                                                                               serializer,
-                                                                               deserializer);
         wireRoutes(passiveNode, routeRegistry, httpForwarder);
-        return new AetherPassiveLB(config, passiveNode, routeRegistry, httpForwarder, swimHealthDetector);
+        return new AetherPassiveLB(config, passiveNode, routeRegistry, httpForwarder);
     }
 
     /// Start the passive LB: start cluster network, then HTTP server.
@@ -116,7 +106,6 @@ public final class AetherPassiveLB {
                        .address()
                        .port());
         return passiveNode.start()
-                          .flatMap(_ -> deferSwimStart())
                           .flatMap(_ -> startHttpServer())
                           .onSuccess(_ -> log.info("Passive LB started on port {}",
                                                    config.httpPort()))
@@ -127,7 +116,6 @@ public final class AetherPassiveLB {
     /// Stop the passive LB.
     public Promise<Unit> stop() {
         log.info("Stopping passive LB");
-        swimHealthDetector.stop();
         return stopHttpServer().flatMap(_ -> passiveNode.stop())
                              .onSuccess(_ -> log.info("Passive LB stopped"));
     }
@@ -135,11 +123,6 @@ public final class AetherPassiveLB {
     /// Get the HTTP port.
     public int port() {
         return config.httpPort();
-    }
-
-    private Promise<Unit> deferSwimStart() {
-        SharedScheduler.schedule(() -> swimHealthDetector.start(), timeSpan(5).seconds());
-        return Promise.unitPromise();
     }
 
     private Promise<Unit> startHttpServer() {
