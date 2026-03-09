@@ -36,6 +36,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 - `AetherNode.VERSION` updated from `0.19.0` to `0.19.3`
 - `AetherUp.VERSION` updated from `0.7.2` to `0.19.3`
+- **SWIM codecs not registered** — `NodeCodecs` was missing `SwimCodecs.CODECS`, causing all SWIM probes to fail silently
+- **SWIM false positives during startup** — deferred SWIM start to after quorum establishment to prevent marking alive nodes FAULTY during cluster formation
+- **Activation gating** — `isSeedNode()` always returned true because `TcpTopologyManager` requires self in `coreNodes`. Replaced with explicit `activationGated` boolean on `AetherNodeConfig`/`NodeConfig`, passed through to `RabiaEngine`
+- **Passive LB false FAULTY** — removed SWIM from passive LB; core nodes don't know about the LB as a SWIM peer, so indirect probes always fail, cascading to false FAULTY for all core nodes. LB gets health info through consensus data stream instead
+- **SWIM selfAddress corruption** — `CoreSwimHealthDetector` used `0.0.0.0` as selfAddress, which would corrupt member addresses when piggybacked via SWIM refutation updates. Now uses actual host from topology config
 
 ## [0.19.2] - 2026-03-08
 
