@@ -34,6 +34,7 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.aether.http.forward.ForwardCodecs.CODECS);
         all.addAll(org.pragmatica.aether.http.handler.HandlerCodecs.CODECS);
         all.addAll(org.pragmatica.aether.http.handler.security.SecurityCodecs.CODECS);
+        all.addAll(org.pragmatica.swim.SwimCodecs.CODECS);
         // Manual entries for types in shared packages (can't use processor without registry name conflict)
         all.add(methodNameCodec());
         return SliceCodec.sliceCodec(parent, all);

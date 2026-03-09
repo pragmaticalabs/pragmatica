@@ -260,7 +260,7 @@ public interface AetherNode {
         var sliceRegistry = SliceRegistry.sliceRegistry();
         var deferredInvoker = DeferredSliceInvokerFacade.deferredSliceInvokerFacade();
         // Create Rabia cluster node with metrics
-        var nodeConfig = NodeConfig.nodeConfig(config.protocol(), config.topology());
+        var nodeConfig = NodeConfig.nodeConfig(config.protocol(), config.topology(), config.activationGated());
         var rabiaMetricsCollector = RabiaMetricsCollector.rabiaMetricsCollector();
         var networkMetricsHandler = NetworkMetricsHandler.networkMetricsHandler();
         // Assemble all components and collect routes

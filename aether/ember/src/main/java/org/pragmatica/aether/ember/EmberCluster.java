@@ -310,7 +310,7 @@ public final class EmberCluster {
             var port = basePort + slot;
             var mgmtPort = baseMgmtPort + slot;
             var appHttpPort = baseAppHttpPort + slot;
-            var node = createNode(nodeInfo.id(), port, mgmtPort, appHttpPort, initialNodes);
+            var node = createNode(nodeInfo.id(), port, mgmtPort, appHttpPort, initialNodes, false);
             nodes.put(nodeIdStr, node);
             // Wrap start() to capture success/failure with node context
             startPromises.add(node.start()
@@ -430,11 +430,11 @@ public final class EmberCluster {
         var info = NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
         log.info("Adding new node {} on port {}", nodeId.id(), port);
         slotsByNodeId.put(nodeId.id(), slot);
-        // Build coreNodes from existing topology — new node must NOT see itself in coreNodes,
-        // otherwise isSeedNode() returns true and the node auto-activates without CDM authorization
-        var existingNodes = new ArrayList<>(nodeInfos.values());
-        var node = createNode(nodeId, port, mgmtPort, appHttpPort, existingNodes);
+        // Register the new node in coreNodes BEFORE creating it — TcpTopologyManager requires self in coreNodes.
+        // Activation gating prevents auto-activation; the node waits for CDM authorization instead.
         nodeInfos.put(nodeId.id(), info);
+        var allNodes = new ArrayList<>(nodeInfos.values());
+        var node = createNode(nodeId, port, mgmtPort, appHttpPort, allNodes, true);
         nodes.put(nodeId.id(), node);
         return node.start()
                    .map(_ -> nodeId)
@@ -582,7 +582,12 @@ public final class EmberCluster {
                     .toList();
     }
 
-    private AetherNode createNode(NodeId nodeId, int port, int mgmtPort, int appHttpPort, List<NodeInfo> coreNodes) {
+    private AetherNode createNode(NodeId nodeId,
+                                  int port,
+                                  int mgmtPort,
+                                  int appHttpPort,
+                                  List<NodeInfo> coreNodes,
+                                  boolean activationGated) {
         var topology = new TopologyConfig(nodeId,
                                           targetClusterSize,
                                           timeSpan(1).seconds(),
@@ -605,7 +610,8 @@ public final class EmberCluster {
                                           Option.some(emberEnvironment),
                                           AutoHealConfig.DEFAULT,
                                           observability,
-                                          ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING);
+                                          ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
+                                          activationGated);
         return AetherNode.aetherNode(config)
                          .unwrap();
     }

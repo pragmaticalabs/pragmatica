@@ -215,7 +215,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                               deserializer,
                                               delegateRouter,
                                               additionalHandlers);
-        var activationGated = !config.topology().isSeedNode();
+        var activationGated = config.activationGated();
         var consensus = new RabiaEngine<>(topologyManager, network, stateMachine, config.protocol(), metrics, activationGated);
         // Create leader manager - for consensus mode, we wire the proposal handler
         // Extract expected cluster members for deterministic leader selection
