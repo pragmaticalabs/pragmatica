@@ -29,17 +29,16 @@ import org.slf4j.LoggerFactory;
 /// SWIM detects node failures via UDP probing, which is more reliable than TCP disconnect
 /// for determining actual node health. TCP disconnects may be transient network glitches;
 /// SWIM's probe-suspect-faulty progression provides confirmed failure detection.
+@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03", "JBCT-EX-01"})
 public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private static final Logger log = LoggerFactory.getLogger(CoreSwimHealthDetector.class);
 
     /// Core SWIM config: faster probing for core consensus nodes.
-    private static final SwimConfig CORE_SWIM_CONFIG = SwimConfig.swimConfig(
-        Duration.ofMillis(500),
-        Duration.ofMillis(300),
-        3,
-        Duration.ofSeconds(3),
-        8
-    );
+    private static final SwimConfig CORE_SWIM_CONFIG = SwimConfig.swimConfig(Duration.ofMillis(500),
+                                                                             Duration.ofMillis(300),
+                                                                             3,
+                                                                             Duration.ofSeconds(3),
+                                                                             8);
 
     private final MessageRouter router;
     private final TopologyConfig topologyConfig;
@@ -101,7 +100,6 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     }
 
     // ---- SwimMembershipListener ----
-
     @Override
     public void onMemberJoined(SwimMember member) {
         log.info("SWIM member joined: {}", member.nodeId());
@@ -125,7 +123,6 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     }
 
     // ---- Internal ----
-
     private void routeNodeRemoved(NodeId nodeId) {
         currentTopology.remove(nodeId);
         var notification = TopologyChangeNotification.nodeRemoved(nodeId, List.copyOf(currentTopology));
@@ -149,13 +146,18 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                             int swimPort) {
         this.swimTransport = transport;
         // Start transport to bind the UDP port for receiving messages
-        transport.start(swimPort, (sender, message) -> {
-            var protocol = swimProtocol;
-            if (protocol != null) {
-                protocol.onMessage(sender, message);
-            }
-        });
-        return SwimProtocol.swimProtocol(CORE_SWIM_CONFIG, transport, this, topologyConfig.self(), selfAddress)
+        transport.start(swimPort,
+                        (sender, message) -> {
+                            var protocol = swimProtocol;
+                            if (protocol != null) {
+                                protocol.onMessage(sender, message);
+                            }
+                        });
+        return SwimProtocol.swimProtocol(CORE_SWIM_CONFIG,
+                                         transport,
+                                         this,
+                                         topologyConfig.self(),
+                                         selfAddress)
                            .flatMap(SwimProtocol::start)
                            .map(this::storeAndSeed);
     }
@@ -178,7 +180,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         var swimPort = node.address()
                            .port() + 1;
         var swimAddress = new InetSocketAddress(node.address()
-                                                    .host(), swimPort);
+                                                    .host(),
+                                                swimPort);
         protocol.addSeedMember(node.id(), swimAddress);
     }
 
