@@ -22,6 +22,7 @@ import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter.Entry;
 import org.pragmatica.messaging.MessageRouter.Entry.SealedBuilder;
 import org.pragmatica.serialization.Deserializer;
@@ -115,7 +116,7 @@ public final class AetherPassiveLB {
                        .address()
                        .port());
         return passiveNode.start()
-                          .flatMap(_ -> swimHealthDetector.start())
+                          .flatMap(_ -> deferSwimStart())
                           .flatMap(_ -> startHttpServer())
                           .onSuccess(_ -> log.info("Passive LB started on port {}",
                                                    config.httpPort()))
@@ -134,6 +135,11 @@ public final class AetherPassiveLB {
     /// Get the HTTP port.
     public int port() {
         return config.httpPort();
+    }
+
+    private Promise<Unit> deferSwimStart() {
+        SharedScheduler.schedule(() -> swimHealthDetector.start(), timeSpan(5).seconds());
+        return Promise.unitPromise();
     }
 
     private Promise<Unit> startHttpServer() {

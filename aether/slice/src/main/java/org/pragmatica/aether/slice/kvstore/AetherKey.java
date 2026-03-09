@@ -697,6 +697,44 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Activation directive key format:
+    /// ```
+    /// activation/{nodeId}
+    /// ```
+    /// CDM writes activation directives for joining nodes (core or worker role).
+    record ActivationDirectiveKey(NodeId nodeId) implements AetherKey {
+        private static final String PREFIX = "activation/";
+
+        @Override
+        public String asString() {
+            return PREFIX + nodeId.id();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static ActivationDirectiveKey activationDirectiveKey(NodeId nodeId) {
+            return new ActivationDirectiveKey(nodeId);
+        }
+
+        public static Result<ActivationDirectiveKey> activationDirectiveKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return ACTIVATION_DIRECTIVE_KEY_FORMAT_ERROR.apply(key)
+                                                            .result();
+            }
+            var nodeIdPart = key.substring(PREFIX.length());
+            if (nodeIdPart.isEmpty()) {
+                return ACTIVATION_DIRECTIVE_KEY_FORMAT_ERROR.apply(key)
+                                                            .result();
+            }
+            return NodeId.nodeId(nodeIdPart)
+                         .map(ActivationDirectiveKey::new);
+        }
+    }
+
     Fn1<Cause, String> SCHEDULED_TASK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid scheduled-task key format: %s");
     Fn1<Cause, String> TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid topic-sub key format: %s");
     Fn1<Cause, String> SLICE_TARGET_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-target key format: %s");
@@ -714,4 +752,5 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid config key format: %s");
     Fn1<Cause, String> NODE_LIFECYCLE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-lifecycle key format: %s");
     Fn1<Cause, String> WORKER_DIRECTIVE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid worker-directive key format: %s");
+    Fn1<Cause, String> ACTIVATION_DIRECTIVE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid activation key format: %s");
 }

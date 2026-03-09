@@ -24,7 +24,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
 
     @Override
     public Stream<Route<?>> routes() {
-        return Stream.of(Route.<ClusterTopologyStatusResponse>get("/api/cluster/topology")
+        return Stream.of(Route.<ClusterTopologyStatusResponse> get("/api/cluster/topology")
                               .toJson(this::buildTopologyStatus));
     }
 
@@ -39,10 +39,10 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var coreCount = coreNodeIds.size();
         var workerCount = Math.max(0, connectedCount - coreCount);
         return new ClusterTopologyStatusResponse(coreCount,
-                                                  topologyConfig.coreMax(),
-                                                  topologyConfig.coreMin(),
-                                                  workerCount,
-                                                  topologyConfig.clusterSize(),
-                                                  coreNodeIds);
+                                                 topologyConfig.coreMax(),
+                                                 topologyConfig.coreMin(),
+                                                 workerCount,
+                                                 topologyConfig.clusterSize(),
+                                                 coreNodeIds);
     }
 }

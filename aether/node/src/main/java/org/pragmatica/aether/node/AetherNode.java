@@ -75,7 +75,6 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.consensus.topology.TopologyGrowthMessage;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTAntiEntropy;
 import org.pragmatica.dht.DHTClient;
@@ -100,7 +99,9 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -378,7 +379,6 @@ public interface AetherNode {
                                        .or(Promise.unitPromise())
                                        .flatMap(_ -> appHttpServer.start())
                                        .flatMap(_ -> startClusterAsync())
-                                       .flatMap(_ -> swimHealthDetector.start())
                                        .onSuccess(_ -> log.info("Aether node {} started, cluster forming...",
                                                                 self()));
             }
@@ -807,21 +807,28 @@ public interface AetherNode {
                                                     dhtTopologyListener::onNodeAdded));
         aetherEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
                                                     dhtTopologyListener::onNodeRemoved));
-        // Topology growth routes — handle CDM role assignment for joining nodes
+        // Activation directive KV handler — CDM submits activation through consensus,
+        // so all nodes see committed directives. Each node checks if the directive targets itself.
         var growthLog = LoggerFactory.getLogger(AetherNode.class);
-        aetherEntries.add(MessageRouter.Entry.SealedBuilder.from(TopologyGrowthMessage.class)
-                                              .route(MessageRouter.Entry.route(TopologyGrowthMessage.ActivateConsensus.class,
-                                                                               msg -> clusterNode.authorizeActivation()),
-                                                     MessageRouter.Entry.route(TopologyGrowthMessage.AssignWorkerRole.class,
-                                                                               msg -> growthLog.info("Node {} assigned worker role by CDM",
-                                                                                                     msg.target()))));
+        var selfId = config.self();
+        var activationKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                                     .onPut(AetherKey.ActivationDirectiveKey.class,
+                                                            (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> handleActivationDirective(put,
+                                                                                                                                                                                selfId,
+                                                                                                                                                                                clusterNode,
+                                                                                                                                                                                growthLog))
+                                                     .build();
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
         allEntries.addAll(aetherEntries);
+        allEntries.addAll(activationKvRouter.asRouteEntries());
         // Create SWIM health detector for core-to-core failure detection
         var swimHealthDetector = CoreSwimHealthDetector.coreSwimHealthDetector(delegateRouter,
                                                                                config.topology(),
                                                                                serializer,
                                                                                deserializer);
+        // Defer SWIM start until quorum is established — peers are not ready before quorum
+        allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
+                                                 notification -> startSwimOnQuorum(notification, swimHealthDetector)));
         // Create the node first (without management server reference)
         var startTimeMs = System.currentTimeMillis();
         var node = new aetherNode(config,
@@ -932,6 +939,33 @@ public interface AetherNode {
                                  }
                                  return node;
                              });
+    }
+
+    private static void startSwimOnQuorum(QuorumStateNotification notification,
+                                          CoreSwimHealthDetector swimHealthDetector) {
+        if (notification.state() == QuorumStateNotification.State.ESTABLISHED) {
+            swimHealthDetector.start();
+        }
+    }
+
+    private static void handleActivationDirective(ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put,
+                                                  NodeId selfId,
+                                                  RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                                  Logger growthLog) {
+        if (!put.cause()
+                .key()
+                .nodeId()
+                .equals(selfId)) {
+            return;
+        }
+        if (AetherValue.ActivationDirectiveValue.CORE.equals(put.cause()
+                                                                .value()
+                                                                .role())) {
+            growthLog.info("Received core activation directive from CDM");
+            clusterNode.authorizeActivation();
+        } else {
+            growthLog.info("Received worker role assignment from CDM");
+        }
     }
 
     private static List<MessageRouter.Entry<?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,

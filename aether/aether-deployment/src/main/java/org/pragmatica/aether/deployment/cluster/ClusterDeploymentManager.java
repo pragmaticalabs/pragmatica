@@ -35,7 +35,6 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
-import org.pragmatica.consensus.topology.TopologyGrowthMessage;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
 import org.pragmatica.aether.environment.AutoHealConfig;
@@ -458,19 +457,31 @@ public interface ClusterDeploymentManager {
             /// Assign a role to a newly joined non-seed node.
             /// If below coreMax (or unlimited), promote to core consensus participant.
             /// Otherwise, assign as a passive worker.
+            /// Submits through consensus KV-Store so ALL nodes see the committed directive.
             private void assignNodeRole(NodeId addedNode) {
                 var currentCoreCount = activeNodes.get()
                                                   .size();
                 if (shouldPromoteToCore(currentCoreCount)) {
                     log.info("Promoting node {} to core consensus participant (core count: {}/{})",
-                             addedNode, currentCoreCount, coreMax == 0
-                                                          ? "unlimited"
-                                                          : coreMax);
-                    router.route(new TopologyGrowthMessage.ActivateConsensus(addedNode));
+                             addedNode,
+                             currentCoreCount,
+                             coreMax == 0
+                             ? "unlimited"
+                             : coreMax);
+                    submitActivationDirective(addedNode, AetherValue.ActivationDirectiveValue.core());
                 } else {
                     log.info("Assigning node {} as worker (core count at max: {})", addedNode, coreMax);
-                    router.route(new TopologyGrowthMessage.AssignWorkerRole(addedNode));
+                    submitActivationDirective(addedNode, AetherValue.ActivationDirectiveValue.worker());
                 }
+            }
+
+            private void submitActivationDirective(NodeId targetNode, AetherValue.ActivationDirectiveValue directive) {
+                var command = new KVCommand.Put<AetherKey, AetherValue>(AetherKey.ActivationDirectiveKey.activationDirectiveKey(targetNode),
+                                                                        directive);
+                cluster.apply(List.of(command))
+                       .onFailure(cause -> log.error("Failed to submit activation directive for {}: {}",
+                                                     targetNode,
+                                                     cause.message()));
             }
 
             private boolean shouldPromoteToCore(int currentCoreCount) {

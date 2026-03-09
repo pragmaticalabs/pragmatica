@@ -429,11 +429,12 @@ public final class EmberCluster {
         var appHttpPort = baseAppHttpPort + slot;
         var info = NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
         log.info("Adding new node {} on port {}", nodeId.id(), port);
-        nodeInfos.put(nodeId.id(), info);
         slotsByNodeId.put(nodeId.id(), slot);
-        // Get current topology including the new node
-        var allNodes = new ArrayList<>(nodeInfos.values());
-        var node = createNode(nodeId, port, mgmtPort, appHttpPort, allNodes);
+        // Build coreNodes from existing topology — new node must NOT see itself in coreNodes,
+        // otherwise isSeedNode() returns true and the node auto-activates without CDM authorization
+        var existingNodes = new ArrayList<>(nodeInfos.values());
+        var node = createNode(nodeId, port, mgmtPort, appHttpPort, existingNodes);
+        nodeInfos.put(nodeId.id(), info);
         nodes.put(nodeId.id(), node);
         return node.start()
                    .map(_ -> nodeId)

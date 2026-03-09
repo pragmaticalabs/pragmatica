@@ -396,6 +396,23 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Activation role assignment from CDM to joining node.
+    /// Written to consensus KV-Store so ALL nodes see the committed directive.
+    ///
+    /// @param role the assigned role: "CORE" for consensus participant, "WORKER" for passive worker
+    record ActivationDirectiveValue(String role) implements AetherValue {
+        public static final String CORE = "CORE";
+        public static final String WORKER = "WORKER";
+
+        public static ActivationDirectiveValue core() {
+            return new ActivationDirectiveValue(CORE);
+        }
+
+        public static ActivationDirectiveValue worker() {
+            return new ActivationDirectiveValue(WORKER);
+        }
+    }
+
     /// Node lifecycle states for the state machine.
     ///
     /// State machine:
