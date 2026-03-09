@@ -91,6 +91,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// Check if the consensus engine is active and ready for commands.
     boolean isActive();
 
+    /// Authorize a gated consensus engine to start participating.
+    /// Only meaningful for non-seed nodes with activation gating enabled.
+    void authorizeActivation();
+
     /// Get the route entries for RabiaNode's internal components.
     /// These should be combined with other entries when building the final router.
     List<Entry<?>> routeEntries();
@@ -211,7 +215,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                               deserializer,
                                               delegateRouter,
                                               additionalHandlers);
-        var consensus = new RabiaEngine<>(topologyManager, network, stateMachine, config.protocol(), metrics);
+        var activationGated = !config.topology().isSeedNode();
+        var consensus = new RabiaEngine<>(topologyManager, network, stateMachine, config.protocol(), metrics, activationGated);
         // Create leader manager - for consensus mode, we wire the proposal handler
         // Extract expected cluster members for deterministic leader selection
         var expectedCluster = config.topology()
@@ -319,6 +324,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public boolean isActive() {
                 return consensus().isActive();
+            }
+
+            @Override
+            public void authorizeActivation() {
+                consensus().authorizeActivation();
             }
 
             @Override

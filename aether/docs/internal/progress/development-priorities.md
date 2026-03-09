@@ -98,6 +98,10 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 - **Docker Infrastructure** - Separate images for node and forge
 - **Blueprint-Only Deployment** - Removed individual slice deploy/undeploy to enforce dependency validation. Scale guarded by blueprint membership. Eliminates the correctness gap where undeploying a dependency could orphan active slices.
 
+### Passive Worker Pools Phase 1 Completion (v0.19.3)
+- **SWIM Core-to-Core Health Detection (P1.13)** — `CoreSwimHealthDetector` bridges SWIM membership events to `TopologyChangeNotification.nodeRemoved`. TCP disconnect decoupled from topology — no longer fires `RemoveNode`, only triggers reconnection. SWIM port = cluster port + 1. Config: period=500ms, probeTimeout=300ms, K=3, suspectTimeout=3s. Detection latency: 1-2s (vs 15s-2min with TCP)
+- **Automatic Topology Growth (P1.14)** — CDM dynamically assigns core vs worker role to joining non-seed nodes. `RabiaEngine` activation gating: seed nodes auto-activate on quorum, non-seed nodes wait for CDM `ActivateConsensus` signal. `TopologyConfig` extended with `coreMax`/`coreMin`. New `TopologyGrowthMessage` sealed interface (`ActivateConsensus`, `AssignWorkerRole`). Management API: `GET /api/cluster/topology`. CLI: `aether topology status`
+
 ### Container, Install/Upgrade, Rolling Upgrade (v0.19.3)
 - **Official Container Image Publishing** — Dockerfiles use build-arg `VERSION` for OCI labels, `release.yml` builds multi-arch (amd64+arm64) images via buildx, publishes to GHCR and Docker Hub, generates SHA256 checksums for all release artifacts
 - **Install/Upgrade Scripts** — `aether/install.sh` enhanced with `--version` flag, SHA256 checksum verification, WSL2 detection. New `aether/upgrade.sh` with version detection, atomic binary swap (backup → move → cleanup), running process warning. Root `install.sh` fixed to reference `main` branch
@@ -198,7 +202,7 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
       - **KV-Store split** — consensus holds desired state (<1 MB); new Worker Endpoint Registry holds runtime state (endpoints, routes). Governors aggregate endpoints per group → core sees O(governors) not O(workers).
       - **Zone-aware grouping** — consistent hashing with zone prefix in NodeId. Workers in same zone auto-group.
     - **Phased rollout:**
-      - Phase 1 (0.20.x): Flat with election infrastructure, SWIM, worker runtime, single group
+      - Phase 1 (0.19.3): ✅ Complete — SWIM protocol, worker node, governor election, worker endpoint registry, CDM pool awareness, worker management API, core-to-core SWIM health detection, automatic topology growth
       - Phase 2 (0.21.x): Auto-layering, multi-governor, spot pool, zone-aware grouping
       - Phase 3 (future): Multi-region, cross-region governors, DHT worker participation
     - **Foundation exists:** `PassiveNode<K,V>`, `AetherPassiveLB`, `NodeRole.ACTIVE/PASSIVE`, Decision stream to passive nodes

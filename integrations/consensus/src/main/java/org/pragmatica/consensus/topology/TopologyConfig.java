@@ -20,6 +20,8 @@ import java.util.List;
 /// @param coreNodes              Initial cluster members
 /// @param tls                    TLS configuration for cluster communication (empty for plain TCP)
 /// @param backoff                Backoff configuration for connection retries and node disabling
+/// @param coreMax                Maximum number of core consensus nodes (0 = unlimited)
+/// @param coreMin                Minimum number of core consensus nodes (defaults to clusterSize)
 public record TopologyConfig(NodeId self,
                              int clusterSize,
                              TimeSpan reconciliationInterval,
@@ -27,7 +29,9 @@ public record TopologyConfig(NodeId self,
                              TimeSpan helloTimeout,
                              List<NodeInfo> coreNodes,
                              Option<TlsConfig> tls,
-                             BackoffConfig backoff) {
+                             BackoffConfig backoff,
+                             int coreMax,
+                             int coreMin) {
     public TopologyConfig {
         if (clusterSize < 1) {
             throw new IllegalArgumentException("Cluster size must be at least 1");
@@ -51,10 +55,12 @@ public record TopologyConfig(NodeId self,
              DEFAULT_HELLO_TIMEOUT,
              coreNodes,
              Option.empty(),
-             BackoffConfig.DEFAULT);
+             BackoffConfig.DEFAULT,
+             0,
+             clusterSize);
     }
 
-    /// Create TopologyConfig with all parameters except backoff (uses default).
+    /// Create TopologyConfig with all parameters except backoff and core limits (uses defaults).
     public TopologyConfig(NodeId self,
                           int clusterSize,
                           TimeSpan reconciliationInterval,
@@ -69,6 +75,35 @@ public record TopologyConfig(NodeId self,
              helloTimeout,
              coreNodes,
              tls,
-             BackoffConfig.DEFAULT);
+             BackoffConfig.DEFAULT,
+             0,
+             clusterSize);
+    }
+
+    /// Create TopologyConfig with all parameters except core limits (uses defaults).
+    public TopologyConfig(NodeId self,
+                          int clusterSize,
+                          TimeSpan reconciliationInterval,
+                          TimeSpan pingInterval,
+                          TimeSpan helloTimeout,
+                          List<NodeInfo> coreNodes,
+                          Option<TlsConfig> tls,
+                          BackoffConfig backoff) {
+        this(self,
+             clusterSize,
+             reconciliationInterval,
+             pingInterval,
+             helloTimeout,
+             coreNodes,
+             tls,
+             backoff,
+             0,
+             clusterSize);
+    }
+
+    /// Check whether this node is a seed node (present in coreNodes).
+    public boolean isSeedNode() {
+        return coreNodes.stream()
+                        .anyMatch(node -> node.id().equals(self));
     }
 }

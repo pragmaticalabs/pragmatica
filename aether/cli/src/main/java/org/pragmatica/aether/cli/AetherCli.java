@@ -53,7 +53,7 @@ import static org.pragmatica.lang.Option.some;
 /// ```
 @Command(name = "aether",
 mixinStandardHelpOptions = true,
-version = "Aether 0.19.3",
+version = "Aether 0.19.2",
 description = "Command-line interface for Aether cluster management",
 subcommands = {AetherCli.StatusCommand.class,
 AetherCli.NodesCommand.class,
@@ -75,7 +75,7 @@ AetherCli.ConfigCommand.class,
 AetherCli.ScheduledTasksCommand.class,
 AetherCli.EventsCommand.class,
 AetherCli.NodeCommand.class,
-AetherCli.WorkersCommand.class})
+AetherCli.TopologyStatusCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -204,7 +204,7 @@ public class AetherCli implements Runnable {
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-UTIL-02"})
     private void runRepl(CommandLine cmd) {
-        System.out.println("Aether v0.19.3 - Connected to " + nodeAddress);
+        System.out.println("Aether v0.19.2 - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
         System.out.println();
         try (var reader = new BufferedReader(new InputStreamReader(System.in))) {
@@ -2284,54 +2284,25 @@ public class AetherCli implements Runnable {
         }
     }
 
-    // ===== Workers Commands =====
-    @Command(name = "workers",
-    description = "Worker pool management",
-    subcommands = {WorkersCommand.ListCommand.class,
-    WorkersCommand.HealthCommand.class})
-    static class WorkersCommand implements Runnable {
-        @CommandLine.ParentCommand
-        private AetherCli parent;
-
-        @Override
-        public void run() {
-            // Default: show all workers
-            var response = parent.fetchFromNode("/api/workers");
-            System.out.println(formatJson(response));
-        }
-
-        @Command(name = "list", description = "List all workers")
-        static class ListCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private WorkersCommand workersParent;
-
-            @Override
-            public Integer call() {
-                var response = workersParent.parent.fetchFromNode("/api/workers");
-                System.out.println(formatJson(response));
-                return 0;
-            }
-        }
-
-        @Command(name = "health", description = "Show worker pool health")
-        static class HealthCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private WorkersCommand workersParent;
-
-            @Override
-            public Integer call() {
-                var response = workersParent.parent.fetchFromNode("/api/workers/health");
-                System.out.println(formatJson(response));
-                return 0;
-            }
-        }
-    }
-
     private static int updateIndent(char c, int indent) {
         return switch (c) {
             case '{', '[' -> indent + 1;
             case '}', ']' -> indent - 1;
             default -> indent;
         };
+    }
+
+    // ===== Topology Commands =====
+    @Command(name = "topology", description = "Show cluster topology growth status")
+    static class TopologyStatusCommand implements Callable<Integer> {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public Integer call() {
+            var response = parent.fetchFromNode("/api/cluster/topology");
+            System.out.println(formatJson(response));
+            return 0;
+        }
     }
 }

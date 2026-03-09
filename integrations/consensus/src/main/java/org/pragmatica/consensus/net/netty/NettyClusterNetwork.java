@@ -238,8 +238,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
               .filter(nodeId -> peerLinks.remove(nodeId, channel))
               .onPresent(nodeId -> {
                              passivePeers.remove(nodeId);
-                             processViewChange(REMOVE, nodeId);
-                             log.info("Node {} disconnected, triggering topology change", nodeId);
+                             log.info("Node {} TCP disconnected, awaiting SWIM health check", nodeId);
                          });
     }
 

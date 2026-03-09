@@ -204,21 +204,16 @@ public interface TcpTopologyManager extends TopologyManager {
                 var newAttempts = state.failedAttempts() + 1;
                 var backoff = config.backoff();
                 var now = now();
-                if (backoff.shouldDisable(newAttempts)) {
-                    log.warn("Node {} removed after {} failed attempts: {}", nodeId, newAttempts, cause.message());
-                    router.route(new TopologyManagementMessage.RemoveNode(nodeId));
-                } else {
-                    var delay = backoff.backoffStrategy()
-                                       .nextTimeout(newAttempts);
-                    var nextAttempt = now.plusNanos(delay.nanos());
-                    var suspectedState = NodeState.suspected(state.info(), newAttempts, now, nextAttempt);
-                    nodeStatesById.put(nodeId, suspectedState);
-                    log.debug("Node {} connection failed (attempt {}), next attempt after {}: {}",
-                              nodeId,
-                              newAttempts,
-                              delay,
-                              cause.message());
-                }
+                var delay = backoff.backoffStrategy()
+                                   .nextTimeout(newAttempts);
+                var nextAttempt = now.plusNanos(delay.nanos());
+                var suspectedState = NodeState.suspected(state.info(), newAttempts, now, nextAttempt);
+                nodeStatesById.put(nodeId, suspectedState);
+                log.debug("Node {} connection failed (attempt {}), next attempt after {}: {}",
+                          nodeId,
+                          newAttempts,
+                          delay,
+                          cause.message());
             }
 
             @Override

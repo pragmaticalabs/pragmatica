@@ -22,8 +22,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - **Worker management API** — `GET /api/workers`, `GET /api/workers/health`, `GET /api/workers/endpoints`
   - **CLI commands** — `aether workers list`, `aether workers health`
 
+- **SWIM core-to-core health detection** (P1.13) — replaces TCP disconnect as health signal for core nodes. `CoreSwimHealthDetector` bridges SWIM membership events to `TopologyChangeNotification`. 1-2s failure detection vs 15s-2min with TCP. TCP disconnect no longer triggers topology removal — only SWIM `FAULTY`/`LEFT` does
+- **Automatic topology growth** (P1.14) — CDM dynamically assigns core vs worker role to joining nodes. `RabiaEngine` activation gating: seed nodes auto-activate, non-seed nodes wait for CDM authorization. `TopologyConfig` extended with `coreMax`/`coreMin`. New `TopologyGrowthMessage` sealed interface (`ActivateConsensus`, `AssignWorkerRole`). Management API: `GET /api/cluster/topology`. CLI: `aether topology status`
+
 ### Changed
 - Dockerfile version labels now use build-arg `VERSION` instead of hardcoded values
+- TCP disconnect in `NettyClusterNetwork` no longer fires topology removal — reconnection continues while SWIM handles health detection
+- `TcpTopologyManager` never routes `RemoveNode` on connection failure — always continues reconnection with backoff
 - Dockerfile source URLs updated to `pragmaticalabs/pragmatica`
 - `install.sh` enhanced with `--version` flag, SHA256 checksum verification, WSL2 detection
 - Root `install.sh` references `main` branch instead of `release-0.19.3`

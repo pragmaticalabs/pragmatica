@@ -504,6 +504,71 @@ class RabiaEngineTest {
         }
     }
 
+    @Nested
+    class ActivationGating {
+
+        @Test
+        void gated_engine_stays_stopped_on_quorum_established() throws InterruptedException {
+            var gatedEngine = new RabiaEngine<>(topologyManager, network, stateMachine,
+                                                 ProtocolConfig.testConfig(), ConsensusMetrics.noop(), true);
+            gatedEngine.quorumState(QuorumStateNotification.established());
+            Thread.sleep(100);
+
+            assertThat(gatedEngine.isActive()).as("Gated engine should stay inactive").isFalse();
+            gatedEngine.stop().await();
+        }
+
+        @Test
+        void gated_engine_activates_after_authorize() throws InterruptedException {
+            var gatedEngine = new RabiaEngine<>(topologyManager, network, stateMachine,
+                                                 ProtocolConfig.testConfig(), ConsensusMetrics.noop(), true);
+            gatedEngine.quorumState(QuorumStateNotification.established());
+            Thread.sleep(100);
+
+            assertThat(gatedEngine.isActive()).isFalse();
+
+            gatedEngine.authorizeActivation();
+            Thread.sleep(200);
+
+            // Send sync responses to complete activation
+            gatedEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
+            gatedEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
+            Thread.sleep(100);
+
+            assertThat(gatedEngine.isActive()).as("Gated engine should activate after authorization").isTrue();
+            gatedEngine.stop().await();
+        }
+
+        @Test
+        void ungated_engine_activates_normally() throws InterruptedException {
+            var ungatedEngine = new RabiaEngine<>(topologyManager, network, stateMachine,
+                                                   ProtocolConfig.testConfig(), ConsensusMetrics.noop(), false);
+            ungatedEngine.quorumState(QuorumStateNotification.established());
+            Thread.sleep(200);
+
+            ungatedEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
+            ungatedEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
+            Thread.sleep(100);
+
+            assertThat(ungatedEngine.isActive()).as("Ungated engine should activate on quorum").isTrue();
+            ungatedEngine.stop().await();
+        }
+
+        @Test
+        void gated_engine_handles_disappeared_normally() throws InterruptedException {
+            var gatedEngine = new RabiaEngine<>(topologyManager, network, stateMachine,
+                                                 ProtocolConfig.testConfig(), ConsensusMetrics.noop(), true);
+            // Even when gated, DISAPPEARED should propagate normally
+            gatedEngine.quorumState(QuorumStateNotification.established());
+            Thread.sleep(50);
+            gatedEngine.quorumState(QuorumStateNotification.disappeared());
+            Thread.sleep(50);
+
+            assertThat(gatedEngine.isActive()).isFalse();
+            gatedEngine.stop().await();
+        }
+    }
+
     // ==================== Stub Implementations ====================
 
     static class TestTopologyManager implements TopologyManager {

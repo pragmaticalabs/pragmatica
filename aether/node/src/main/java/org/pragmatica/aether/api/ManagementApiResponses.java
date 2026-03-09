@@ -298,6 +298,14 @@ public sealed interface ManagementApiResponses {
                             String style,
                             String topicConfig) {}
 
+    // ===== Cluster Topology Growth Routes =====
+    record ClusterTopologyStatusResponse(int coreCount,
+                                         int coreMax,
+                                         int coreMin,
+                                         int workerCount,
+                                         int clusterSize,
+                                         List<String> coreNodes) {}
+
     // ===== Repository Routes =====
     record ArtifactInfoResponse(String artifact,
                                 long size,

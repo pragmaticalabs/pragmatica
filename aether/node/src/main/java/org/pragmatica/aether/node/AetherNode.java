@@ -72,8 +72,10 @@ import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.TopologyGrowthMessage;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTAntiEntropy;
 import org.pragmatica.dht.DHTClient;
@@ -91,6 +93,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -214,6 +217,9 @@ public interface AetherNode {
     /// Get the initial topology node IDs from configuration.
     /// This includes all core nodes that were configured at startup.
     List<NodeId> initialTopology();
+
+    /// Get the topology configuration for this node.
+    TopologyConfig topologyConfig();
 
     /// Route a message to registered handlers via the internal MessageRouter.
     void route(Message message);
@@ -352,6 +358,7 @@ public interface AetherNode {
                           DeploymentMap deploymentMap,
                           ClusterEventAggregator eventAggregator,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
+                          CoreSwimHealthDetector swimHealthDetector,
                           Option<ManagementServer> managementServer,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
@@ -371,6 +378,7 @@ public interface AetherNode {
                                        .or(Promise.unitPromise())
                                        .flatMap(_ -> appHttpServer.start())
                                        .flatMap(_ -> startClusterAsync())
+                                       .flatMap(_ -> swimHealthDetector.start())
                                        .onSuccess(_ -> log.info("Aether node {} started, cluster forming...",
                                                                 self()));
             }
@@ -390,7 +398,9 @@ public interface AetherNode {
                 scheduledTaskManager.stop();
                 snapshotCollector.stop();
                 SliceRuntime.clear();
-                // 4. Stop servers and network
+                // 4. Stop SWIM health detector
+                swimHealthDetector.stop();
+                // 5. Stop servers and network
                 return managementServer.map(ManagementServer::stop)
                                        .or(Promise.unitPromise())
                                        .flatMap(_ -> appHttpServer.stop())
@@ -538,6 +548,11 @@ public interface AetherNode {
             }
 
             @Override
+            public TopologyConfig topologyConfig() {
+                return config.topology();
+            }
+
+            @Override
             public void route(Message message) {
                 router.route(message);
             }
@@ -589,7 +604,8 @@ public interface AetherNode {
                                                                                                .flatMap(EnvironmentIntegration::compute),
                                                                                          config.autoHeal(),
                                                                                          config.atomicity(),
-                                                                                         Option.none());
+                                                                                         config.topology()
+                                                                                               .coreMax());
         // Create load balancer manager when provider is available
         var loadBalancerManager = config.environment()
                                         .flatMap(EnvironmentIntegration::loadBalancer)
@@ -791,8 +807,21 @@ public interface AetherNode {
                                                     dhtTopologyListener::onNodeAdded));
         aetherEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
                                                     dhtTopologyListener::onNodeRemoved));
+        // Topology growth routes — handle CDM role assignment for joining nodes
+        var growthLog = LoggerFactory.getLogger(AetherNode.class);
+        aetherEntries.add(MessageRouter.Entry.SealedBuilder.from(TopologyGrowthMessage.class)
+                                              .route(MessageRouter.Entry.route(TopologyGrowthMessage.ActivateConsensus.class,
+                                                                               msg -> clusterNode.authorizeActivation()),
+                                                     MessageRouter.Entry.route(TopologyGrowthMessage.AssignWorkerRole.class,
+                                                                               msg -> growthLog.info("Node {} assigned worker role by CDM",
+                                                                                                     msg.target()))));
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
         allEntries.addAll(aetherEntries);
+        // Create SWIM health detector for core-to-core failure detection
+        var swimHealthDetector = CoreSwimHealthDetector.coreSwimHealthDetector(delegateRouter,
+                                                                               config.topology(),
+                                                                               serializer,
+                                                                               deserializer);
         // Create the node first (without management server reference)
         var startTimeMs = System.currentTimeMillis();
         var node = new aetherNode(config,
@@ -832,6 +861,7 @@ public interface AetherNode {
                                   deploymentMap,
                                   eventAggregator,
                                   eventLoopMetricsCollector,
+                                  swimHealthDetector,
                                   Option.empty(),
                                   startTimeMs);
         // Wire remote shutdown: when SHUTTING_DOWN lifecycle is received, stop the node
@@ -896,6 +926,7 @@ public interface AetherNode {
                                                            deploymentMap,
                                                            eventAggregator,
                                                            eventLoopMetricsCollector,
+                                                           swimHealthDetector,
                                                            Option.some(managementServer),
                                                            startTimeMs);
                                  }

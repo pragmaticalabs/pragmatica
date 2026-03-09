@@ -79,6 +79,9 @@ public class RabiaEngine<C extends Command> {
     private final StateMachine<C> stateMachine;
     private final ProtocolConfig config;
     private final ConsensusMetrics metrics;
+    private final boolean activationGated;
+    private volatile boolean activationAuthorized;
+    private final AtomicReference<QuorumStateNotification> pendingQuorum = new AtomicReference<>();
 
     // Single-thread executor with DiscardPolicy to silently drop tasks after shutdown
     private final ExecutorService executor = new ThreadPoolExecutor(1,
@@ -105,7 +108,7 @@ public class RabiaEngine<C extends Command> {
     private final AtomicLong quorumSequence = new AtomicLong();
 
     //--------------------------------- Node State End
-    /// Creates a new Rabia consensus engine without metrics.
+    /// Creates a new Rabia consensus engine without metrics or activation gating.
     ///
     /// @param topologyManager The topology manager for node communication
     /// @param network         The network implementation
@@ -115,10 +118,10 @@ public class RabiaEngine<C extends Command> {
                        ClusterNetwork network,
                        StateMachine<C> stateMachine,
                        ProtocolConfig config) {
-        this(topologyManager, network, stateMachine, config, ConsensusMetrics.noop());
+        this(topologyManager, network, stateMachine, config, ConsensusMetrics.noop(), false);
     }
 
-    /// Creates a new Rabia consensus engine with metrics.
+    /// Creates a new Rabia consensus engine with metrics but without activation gating.
     ///
     /// @param topologyManager The topology manager for node communication
     /// @param network         The network implementation
@@ -130,6 +133,27 @@ public class RabiaEngine<C extends Command> {
                        StateMachine<C> stateMachine,
                        ProtocolConfig config,
                        ConsensusMetrics metrics) {
+        this(topologyManager, network, stateMachine, config, metrics, false);
+    }
+
+    /// Creates a new Rabia consensus engine with metrics and activation gating.
+    ///
+    /// When `activationGated` is true, the engine will not start consensus on quorum ESTABLISHED
+    /// until `authorizeActivation()` is called. This allows the CDM to decide whether a joining
+    /// node should participate in consensus or become a worker.
+    ///
+    /// @param topologyManager The topology manager for node communication
+    /// @param network         The network implementation
+    /// @param stateMachine    The state machine to apply commands to
+    /// @param config          Configuration for the consensus engine
+    /// @param metrics         Metrics collector for observability
+    /// @param activationGated Whether consensus activation requires explicit authorization
+    public RabiaEngine(TopologyManager topologyManager,
+                       ClusterNetwork network,
+                       StateMachine<C> stateMachine,
+                       ProtocolConfig config,
+                       ConsensusMetrics metrics,
+                       boolean activationGated) {
         this.self = topologyManager.self()
                                    .id();
         this.topologyManager = topologyManager;
@@ -138,6 +162,8 @@ public class RabiaEngine<C extends Command> {
         this.config = config;
         this.metrics = Option.option(metrics)
                              .or(ConsensusMetrics.noop());
+        this.activationGated = activationGated;
+        this.activationAuthorized = !activationGated;
         this.cleanupTask = Option.some(SharedScheduler.scheduleAtFixedRate(this::cleanupOldPhases,
                                                                            config.cleanupInterval()));
     }
@@ -150,8 +176,29 @@ public class RabiaEngine<C extends Command> {
         }
         log.trace("Node {} received quorum state {}", self, quorumStateNotification);
         switch (quorumStateNotification.state()) {
-            case ESTABLISHED -> clusterConnected();
+            case ESTABLISHED -> handleEstablished(quorumStateNotification);
             case DISAPPEARED -> clusterDisconnected();
+        }
+    }
+
+    private void handleEstablished(QuorumStateNotification notification) {
+        if (activationGated && !activationAuthorized) {
+            log.info("Node {}: quorum established but activation gated, storing notification", self);
+            pendingQuorum.set(notification);
+            return;
+        }
+        clusterConnected();
+    }
+
+    /// Authorize a gated engine to start consensus participation.
+    /// If a quorum ESTABLISHED notification was received while gated, it is replayed.
+    public void authorizeActivation() {
+        log.info("Node {}: consensus activation authorized", self);
+        activationAuthorized = true;
+        var pending = pendingQuorum.getAndSet(null);
+        if (pending != null) {
+            log.info("Node {}: replaying stored quorum notification", self);
+            clusterConnected();
         }
     }
 

@@ -33,6 +33,12 @@
             <artifactId>cluster</artifactId>
         </dependency>
 
+        <!-- SWIM failure detection for core health -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>swim</artifactId>
+        </dependency>
+
         <!-- Aether Invoke (HttpForwarder, HttpRouteRegistry, HttpForwardMessage) -->
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>

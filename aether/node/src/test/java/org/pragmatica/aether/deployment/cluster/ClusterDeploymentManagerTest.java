@@ -61,7 +61,7 @@ class ClusterDeploymentManagerTest {
         kvStore = new TestKVStore();
         router = MessageRouter.mutable();
         manager = ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3),
-                                                                      clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, Option.none());
+                                                                      clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
     }
 
     // === Leader State Tests ===
@@ -163,7 +163,7 @@ class ClusterDeploymentManagerTest {
         // Create manager with empty initial topology
         var emptyTopologyManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, kvStore, router, List.of(),
-            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, Option.none());
+            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
         emptyTopologyManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
         clusterNode.appliedCommands.clear();
 
@@ -349,7 +349,7 @@ class ClusterDeploymentManagerTest {
         // Create manager with ComputeProvider and TopologyManager that expects 3 nodes
         var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, prePopulatedKvStore, router, List.of(self, node2),
-            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, Option.none());
+            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
 
         clusterNode.appliedCommands.clear();
 
@@ -369,7 +369,7 @@ class ClusterDeploymentManagerTest {
         // Create manager with ComputeProvider, no pre-populated blueprints (initial startup)
         var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, kvStore, router, List.of(self, node2),
-            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, Option.none());
+            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
 
         clusterNode.appliedCommands.clear();
 
@@ -389,7 +389,7 @@ class ClusterDeploymentManagerTest {
         // Create manager with 3 nodes already present (matches target)
         var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, kvStore, router, List.of(self, node2, node3),
-            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, Option.none());
+            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
 
         clusterNode.appliedCommands.clear();
 
@@ -414,7 +414,7 @@ class ClusterDeploymentManagerTest {
 
         var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, prePopulatedKvStore, router, List.of(self, node2, node3),
-            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, Option.none());
+            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
 
         // Become leader with full topology (no deficit)
         healingManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
@@ -678,7 +678,7 @@ class ClusterDeploymentManagerTest {
 
     private ClusterDeploymentManager createAllOrNothingManager() {
         return ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3),
-            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING, Option.none());
+            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING, 0);
     }
 
     private void sendAppBlueprintPut(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint) {

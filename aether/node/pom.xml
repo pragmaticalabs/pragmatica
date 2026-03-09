@@ -35,6 +35,12 @@
             <artifactId>cluster</artifactId>
         </dependency>
 
+        <!-- SWIM failure detection for core-to-core health -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>swim</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>slice-api</artifactId>

@@ -35,6 +35,7 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
+import org.pragmatica.consensus.topology.TopologyGrowthMessage;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
 import org.pragmatica.aether.environment.AutoHealConfig;
@@ -199,6 +200,8 @@ public interface ClusterDeploymentManager {
                       Set<BlueprintId> restoringBlueprints,
                       Set<Artifact> permanentlyFailed,
                       DeploymentAtomicity atomicity,
+                      int coreMax,
+                      Set<NodeId> seedNodes,
                       Option<WorkerEndpointRegistry> workerEndpointRegistry,
                       Map<SliceNodeKey, Long> transitionalStateTimestamps) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
@@ -430,8 +433,11 @@ public interface ClusterDeploymentManager {
             public void onTopologyChange(TopologyChangeNotification topologyChange) {
                 log.info("Received topology change: {}", topologyChange);
                 switch (topologyChange) {
-                    case NodeAdded(_, List<NodeId> topology) -> {
+                    case NodeAdded(NodeId addedNode, List<NodeId> topology) -> {
                         updateTopology(topology);
+                        if (!seedNodes.contains(addedNode)) {
+                            assignNodeRole(addedNode);
+                        }
                         reconcile();
                     }
                     case NodeRemoved(NodeId removedNode, List<NodeId> topology) -> {
@@ -447,6 +453,28 @@ public interface ClusterDeploymentManager {
                     }
                     default -> {}
                 }
+            }
+
+            /// Assign a role to a newly joined non-seed node.
+            /// If below coreMax (or unlimited), promote to core consensus participant.
+            /// Otherwise, assign as a passive worker.
+            private void assignNodeRole(NodeId addedNode) {
+                var currentCoreCount = activeNodes.get()
+                                                  .size();
+                if (shouldPromoteToCore(currentCoreCount)) {
+                    log.info("Promoting node {} to core consensus participant (core count: {}/{})",
+                             addedNode, currentCoreCount, coreMax == 0
+                                                          ? "unlimited"
+                                                          : coreMax);
+                    router.route(new TopologyGrowthMessage.ActivateConsensus(addedNode));
+                } else {
+                    log.info("Assigning node {} as worker (core count at max: {})", addedNode, coreMax);
+                    router.route(new TopologyGrowthMessage.AssignWorkerRole(addedNode));
+                }
+            }
+
+            private boolean shouldPromoteToCore(int currentCoreCount) {
+                return coreMax == 0 || currentCoreCount <= coreMax;
             }
 
             private void updateTopology(List<NodeId> topology) {
@@ -1640,7 +1668,7 @@ public interface ClusterDeploymentManager {
                                                              Option<ComputeProvider> computeProvider,
                                                              AutoHealConfig autoHealConfig,
                                                              DeploymentAtomicity atomicity,
-                                                             Option<WorkerEndpointRegistry> workerRegistry) {
+                                                             int coreMax) {
         record clusterDeploymentManager(NodeId self,
                                         ClusterNode<KVCommand<AetherKey>> cluster,
                                         KVStore<AetherKey, AetherValue> kvStore,
@@ -1649,7 +1677,8 @@ public interface ClusterDeploymentManager {
                                         Option<ComputeProvider> computeProvider,
                                         AutoHealConfig autoHealConfig,
                                         DeploymentAtomicity atomicity,
-                                        Option<WorkerEndpointRegistry> workerRegistry,
+                                        int coreMax,
+                                        Set<NodeId> seedNodes,
                                         AtomicReference<ClusterDeploymentState> state,
                                         AtomicReference<List<NodeId>> topologyRef) implements ClusterDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(clusterDeploymentManager.class);
@@ -1683,7 +1712,9 @@ public interface ClusterDeploymentManager {
                                                                         ConcurrentHashMap.newKeySet(),
                                                                         ConcurrentHashMap.newKeySet(),
                                                                         atomicity,
-                                                                        workerRegistry,
+                                                                        coreMax,
+                                                                        seedNodes,
+                                                                        Option.none(),
                                                                         new ConcurrentHashMap<>());
                     // Swap to Active FIRST — ensures topology changes arriving on other threads
                     // are dispatched to Active.onTopologyChange() instead of being lost in Dormant.
@@ -1812,7 +1843,8 @@ public interface ClusterDeploymentManager {
                                             computeProvider,
                                             autoHealConfig,
                                             atomicity,
-                                            workerRegistry,
+                                            coreMax,
+                                            new HashSet<>(initialTopology),
                                             new AtomicReference<>(new ClusterDeploymentState.Dormant()),
                                             new AtomicReference<>(List.copyOf(initialTopology)));
     }
