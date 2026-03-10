@@ -165,7 +165,23 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 
 ### HIGH PRIORITY - Core & Operations
 
-1. **Cloud Integration**
+1. **Inter-Node TLS & Certificate Management**
+   - **Problem:** No encryption between any nodes (core-core, core-worker, worker-worker, SWIM UDP, DHT). Current design assumes private network. Multi-zone/multi-cloud (Phase 2) makes this untenable.
+   - **Scope:** mTLS for all TCP connections (consensus, DHT, worker network, management API). DTLS or encrypted payload for SWIM UDP.
+   - **Certificate management:** auto-provisioned cluster CA, per-node certificates, rotation without restart.
+   - **Integration:** external CA support (Let's Encrypt, HashiCorp Vault PKI, cloud-native).
+   - **Prerequisite for:** multi-zone deployment, governor-to-governor mesh (Phase 2 DD-16), any production deployment on non-private networks.
+   - **Phase 2 dependency:** must be complete before Phase 2 multi-zone features go live.
+
+2. **KV-Store Durable Backup & Recovery**
+   - **Problem:** KV-store is in-memory, replicated via Rabia. Simultaneous quorum loss (all nodes restart, datacenter power loss) = total state loss — blueprints, targets, config, routing rules, everything.
+   - **Scope:** Periodic snapshot of consensus KV-store state to durable external storage. Recovery: bootstrap a new cluster from snapshot when quorum is permanently lost.
+   - **Storage targets:** cloud object storage (S3, GCS, Azure Blob), git repository (versioned config-as-code), local filesystem (fallback).
+   - **Features:** configurable snapshot interval and retention policy, point-in-time recovery, snapshot integrity verification (checksum).
+   - **Git integration:** snapshots committed to a git repo provide version history, diff visibility, and audit trail for cluster state changes.
+   - **Phase 2 relevance:** at 10K workers, operational stakes increase (more blueprints, more config). Backup is operational maturity baseline.
+
+3. **Cloud Integration**
    - Implement `NodeLifecycleManager.executeAction(NodeAction)`
    - Cloud provider adapters: Hetzner (primary), AWS, GCP, Azure
    - Execute `StartNode`, `StopNode`, `MigrateSlices` decisions from controller
@@ -181,9 +197,9 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
      - Drain connections before node removal (graceful deregistration delay)
      - TLS termination configuration (certificate ARN/ID passthrough)
    - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
-   - **Enables:** Spot Instance Support (part of #3 passive worker pools), Expense Tracking in FUTURE section
+   - **Enables:** Spot Instance Support (part of #5 passive worker pools), Expense Tracking in FUTURE section
 
-2. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
+4. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
     - Cluster-level schema migration managed by Aether runtime, not individual nodes
     - Per-datasource lifecycle with independent history tables (`aether_schema_history`)
     - Leader-driven execution via Rabia consensus; exactly one node runs migrations
@@ -192,7 +208,7 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
     - Expand-contract support for zero-downtime schema changes
     - Lightweight `AetherSchemaManager` — plain JDBC, no Flyway/Liquibase dependency
 
-3. **Cluster Scalability via Passive Worker Pools** — [design spec](../../specs/passive-worker-pools-spec.md)
+5. **Cluster Scalability via Passive Worker Pools** — [design spec](../../specs/passive-worker-pools-spec.md)
     - **Problem:** Current design limits cluster to 5-7-9-11 consensus nodes max. Production clusters need tens/hundreds/thousands of nodes.
     - **Architecture:** Small consensus core (5-7-9 active nodes) + self-organizing worker pools with elected governors.
     - **Key design decisions (v0.19.3):**
@@ -234,7 +250,7 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### MEDIUM PRIORITY - Developer Tooling & Deployment
 
-4. **Forge Modular Rework**
+6. **Forge Modular Rework**
     - ~80% done: modules separated (`forge-simulator`, `forge-load`, `forge-cluster`), Ember works
     - **Remaining scope:**
       - Remote cluster support in load generator (target remote clusters, not just embedded)
@@ -244,24 +260,19 @@ Part of Cloud Integration (#1). Per-provider status:
       - **Tester** — load generator + chaos testing + Forge Script DSL. Standalone for remote clusters, embedded for local
       - **Forge** — Ember + Tester + dashboard for local development convenience
 
-5. **TLS Certificate Management**
-     - Certificate provisioning and rotation
-     - Mutual TLS between nodes
-     - Integration with external CA or self-signed
-
-6. **Canary & Blue-Green Deployment Strategies**
+7. **Canary & Blue-Green Deployment Strategies**
      - Current: Rolling updates with weighted routing exist
      - Add explicit canary deployment with automatic rollback on error threshold
      - Add blue-green deployment with instant switchover
      - A/B testing support with traffic splitting by criteria
 
-7. **RBAC Tier 2 — Per-Endpoint Role Authorization**
+8. **RBAC Tier 2 — Per-Endpoint Role Authorization**
      - Per-endpoint role-based authorization rules (admin, operator, viewer)
      - Route-level security policy from KV-Store
      - Auth failure rate limiting
      - Currently all authenticated keys have equivalent access; Tier 2 differentiates by role
 
-8. **Notification Resource**
+9. **Notification Resource**
     - Unified notification facade with pluggable backends via SPI (same `@ResourceQualifier` pattern)
     - **Channels:** Email, SMS, push notifications
     - **Email backends (SPI):** SMTP, AWS SES, SendGrid, Mailgun
@@ -272,14 +283,14 @@ Part of Cloud Integration (#1). Per-provider status:
     - **Scope exclusions:** no template engine (slices own their content), no mailing list management
     - **Depends on:** Cloud Integration (#1) for SES/SNS/cloud-based backends; SMTP backend standalone
 
-9. **Dead Letter Handling**
+10. **Dead Letter Handling**
     - Failed pub-sub messages and failed scheduled task invocations currently logged and lost
     - DLQ storage: KV-Store backed dead letter queue per topic/task
     - Retry policy: configurable max attempts with exponential backoff before dead-lettering
     - Inspection: Management API endpoints to list, inspect, replay, or purge dead letters
     - CLI: `aether dead-letters list`, `aether dead-letters replay <id>`
 
-10. **Slice Development IDE Plugins**
+11. **Slice Development IDE Plugins**
     - IDE plugins for Aether slice development, providing deep integration with the JBCT toolchain
     - **Recommended approach:** build a shared **Language Server (LSP)** backend first, then thin IDE-specific clients. IntelliJ IDEA gets a native plugin for features that LSP cannot express (refactoring, inspections, run configs). VS Code, Eclipse, and NetBeans consume the LSP directly.
 
@@ -325,20 +336,13 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### LOWER PRIORITY
 
-11. **Configurable Rate Limiting per HTTP Route**
+12. **Configurable Rate Limiting per HTTP Route**
      - Per-route rate limiting configuration in blueprint or management API
      - Token bucket or sliding window algorithm
      - Configurable limits: requests/second, burst size
      - 429 Too Many Requests response with Retry-After header
      - Cluster-aware: distributed counters via consensus or per-node local limits
      - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
-
-12. **KV-Store State Backup/Snapshot**
-    - Periodic snapshot of consensus KV-Store state to durable external storage
-    - Recovery: bootstrap a new cluster from snapshot when quorum is permanently lost
-    - Storage targets: local filesystem, S3-compatible object storage
-    - Configurable snapshot interval and retention policy
-    - Complements re-replication (handles single-node failures) with full disaster recovery
 
 13. **Observability Dashboard UI**
    - Wire `ObservabilityDepthRegistry` data to dashboard with UI for configuring per-method depth thresholds
@@ -390,6 +394,8 @@ Part of Cloud Integration (#1). Per-provider status:
     **Guarantees:**
     - Aether's "each call eventually succeeds, if cluster is alive" applies
     - DB failure = transaction failure (expected behavior)
+
+- **Multi-Region Federation** — Current architecture is single-region (Rabia all-to-all consensus requires low-latency links). Multi-region requires federation: independent Aether clusters per region, cross-region data sync (async replication, conflict resolution), global load balancing, region-aware client routing. Not a single-cluster stretch — fundamentally different architecture. Phase 2 adds zones within a region but not cross-region.
 
 - **Distributed Saga Orchestration** — Long-running transaction orchestration (saga pattern). Durable state transitions with compensation on failure. Differs from local state machine — coordinates across multiple slices. Automatic retry, timeout, and dead-letter handling. Visualization of in-flight sagas and their states.
 
