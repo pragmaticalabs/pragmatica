@@ -102,6 +102,16 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 - **SWIM Core-to-Core Health Detection (P1.13)** — `CoreSwimHealthDetector` bridges SWIM membership events to `TopologyChangeNotification.nodeRemoved`. TCP disconnect decoupled from topology — no longer fires `RemoveNode`, only triggers reconnection. SWIM port = cluster port + 1. Config: period=500ms, probeTimeout=300ms, K=3, suspectTimeout=3s. Detection latency: 1-2s (vs 15s-2min with TCP)
 - **Automatic Topology Growth (P1.14)** — CDM dynamically assigns core vs worker role to joining non-seed nodes. `RabiaEngine` activation gating: seed nodes auto-activate on quorum, non-seed nodes wait for CDM `ActivateConsensus` signal. `TopologyConfig` extended with `coreMax`/`coreMin`. New `TopologyGrowthMessage` sealed interface (`ActivateConsensus`, `AssignWorkerRole`). Management API: `GET /api/cluster/topology`. CLI: `aether topology status`
 
+### Inter-Node TLS & Certificate Management (v0.19.3)
+- **CertificateProvider SPI** — narrow interface for certificate issuance, CA access, gossip key management
+- **SelfSignedCertificateProvider** — BouncyCastle EC P-256, HKDF deterministic CA from shared `clusterSecret`. All nodes with same secret produce identical CA certificate
+- **mTLS for all TCP** — consensus, DHT, management API, app HTTP. `TlsConfig.fromProvider()` bridge produces `Mutual` config from `CertificateProvider`
+- **SWIM gossip encryption** — AES-256-GCM symmetric encryption. Wire format: `[4B keyId][12B nonce][ciphertext+16B GCM tag]`. Dual-key support for seamless rotation
+- **Certificate lifecycle** — `CertificateRenewalScheduler` renews at 50% of validity (3.5 days for 7-day certs). Gossip key rotation via consensus KV store (`GossipKeyRotationKey`/`Value`)
+- **TLS by default** — DOCKER and KUBERNETES environments enable TLS automatically. `clusterSecret` via TOML `[tls]` section or `AETHER_CLUSTER_SECRET` env var
+- **Config integration** — `ConfigLoader` parses `[tls]` section with `auto_generate`, cert paths, cluster secret. `Main.java` bootstrap: resolves secret → creates provider → wires mTLS + gossip encryption
+- **Tests** — SelfSignedCertificateProviderTest (8 tests), AesGcmGossipEncryptorTest (10 tests), TlsConfig fromProvider bridge (4 tests). E2E: all existing tests now run with mTLS active (67 pass)
+
 ### Container, Install/Upgrade, Rolling Upgrade (v0.19.3)
 - **Official Container Image Publishing** — Dockerfiles use build-arg `VERSION` for OCI labels, `release.yml` builds multi-arch (amd64+arm64) images via buildx, publishes to GHCR and Docker Hub, generates SHA256 checksums for all release artifacts
 - **Install/Upgrade Scripts** — `aether/install.sh` enhanced with `--version` flag, SHA256 checksum verification, WSL2 detection. New `aether/upgrade.sh` with version detection, atomic binary swap (backup → move → cleanup), running process warning. Root `install.sh` fixed to reference `main` branch
@@ -165,15 +175,7 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 
 ### HIGH PRIORITY - Core & Operations
 
-1. **Inter-Node TLS & Certificate Management**
-   - **Problem:** No encryption between any nodes (core-core, core-worker, worker-worker, SWIM UDP, DHT). Current design assumes private network. Multi-zone/multi-cloud (Phase 2) makes this untenable.
-   - **Scope:** mTLS for all TCP connections (consensus, DHT, worker network, management API). DTLS or encrypted payload for SWIM UDP.
-   - **Certificate management:** auto-provisioned cluster CA, per-node certificates, rotation without restart.
-   - **Integration:** external CA support (Let's Encrypt, HashiCorp Vault PKI, cloud-native).
-   - **Prerequisite for:** multi-zone deployment, governor-to-governor mesh (Phase 2 DD-16), any production deployment on non-private networks.
-   - **Phase 2 dependency:** must be complete before Phase 2 multi-zone features go live.
-
-2. **KV-Store Durable Backup & Recovery**
+1. **KV-Store Durable Backup & Recovery**
    - **Problem:** KV-store is in-memory, replicated via Rabia. Simultaneous quorum loss (all nodes restart, datacenter power loss) = total state loss — blueprints, targets, config, routing rules, everything.
    - **Scope:** Periodic snapshot of consensus KV-store state to durable external storage. Recovery: bootstrap a new cluster from snapshot when quorum is permanently lost.
    - **Storage targets:** cloud object storage (S3, GCS, Azure Blob), git repository (versioned config-as-code), local filesystem (fallback).
@@ -181,7 +183,7 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
    - **Git integration:** snapshots committed to a git repo provide version history, diff visibility, and audit trail for cluster state changes.
    - **Phase 2 relevance:** at 10K workers, operational stakes increase (more blueprints, more config). Backup is operational maturity baseline.
 
-3. **Cloud Integration**
+2. **Cloud Integration**
    - Implement `NodeLifecycleManager.executeAction(NodeAction)`
    - Cloud provider adapters: Hetzner (primary), AWS, GCP, Azure
    - Execute `StartNode`, `StopNode`, `MigrateSlices` decisions from controller
@@ -197,9 +199,9 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
      - Drain connections before node removal (graceful deregistration delay)
      - TLS termination configuration (certificate ARN/ID passthrough)
    - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
-   - **Enables:** Spot Instance Support (part of #5 passive worker pools), Expense Tracking in FUTURE section
+   - **Enables:** Spot Instance Support (part of #4 passive worker pools), Expense Tracking in FUTURE section
 
-4. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
+3. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
     - Cluster-level schema migration managed by Aether runtime, not individual nodes
     - Per-datasource lifecycle with independent history tables (`aether_schema_history`)
     - Leader-driven execution via Rabia consensus; exactly one node runs migrations
@@ -208,7 +210,7 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
     - Expand-contract support for zero-downtime schema changes
     - Lightweight `AetherSchemaManager` — plain JDBC, no Flyway/Liquibase dependency
 
-5. **Cluster Scalability via Passive Worker Pools** — [design spec](../../specs/passive-worker-pools-spec.md)
+4. **Cluster Scalability via Passive Worker Pools** — [design spec](../../specs/passive-worker-pools-spec.md)
     - **Problem:** Current design limits cluster to 5-7-9-11 consensus nodes max. Production clusters need tens/hundreds/thousands of nodes.
     - **Architecture:** Small consensus core (5-7-9 active nodes) + self-organizing worker pools with elected governors.
     - **Key design decisions (v0.19.3):**
@@ -226,7 +228,7 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 
 ### Cloud Provider Support
 
-Part of Cloud Integration (#1). Per-provider status:
+Part of Cloud Integration (#2). Per-provider status:
 
 | Provider | Tier | Compute | Load Balancer | Discovery | Secrets | Status |
 |----------|------|---------|---------------|-----------|---------|--------|
@@ -250,7 +252,7 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### MEDIUM PRIORITY - Developer Tooling & Deployment
 
-6. **Forge Modular Rework**
+5. **Forge Modular Rework**
     - ~80% done: modules separated (`forge-simulator`, `forge-load`, `forge-cluster`), Ember works
     - **Remaining scope:**
       - Remote cluster support in load generator (target remote clusters, not just embedded)
@@ -260,19 +262,19 @@ Part of Cloud Integration (#1). Per-provider status:
       - **Tester** — load generator + chaos testing + Forge Script DSL. Standalone for remote clusters, embedded for local
       - **Forge** — Ember + Tester + dashboard for local development convenience
 
-7. **Canary & Blue-Green Deployment Strategies**
+6. **Canary & Blue-Green Deployment Strategies**
      - Current: Rolling updates with weighted routing exist
      - Add explicit canary deployment with automatic rollback on error threshold
      - Add blue-green deployment with instant switchover
      - A/B testing support with traffic splitting by criteria
 
-8. **RBAC Tier 2 — Per-Endpoint Role Authorization**
+7. **RBAC Tier 2 — Per-Endpoint Role Authorization**
      - Per-endpoint role-based authorization rules (admin, operator, viewer)
      - Route-level security policy from KV-Store
      - Auth failure rate limiting
      - Currently all authenticated keys have equivalent access; Tier 2 differentiates by role
 
-9. **Notification Resource**
+8. **Notification Resource**
     - Unified notification facade with pluggable backends via SPI (same `@ResourceQualifier` pattern)
     - **Channels:** Email, SMS, push notifications
     - **Email backends (SPI):** SMTP, AWS SES, SendGrid, Mailgun
@@ -281,16 +283,16 @@ Part of Cloud Integration (#1). Per-provider status:
     - **API shape:** `NotificationSender` resource type with channel-specific configuration
     - **Config:** per-backend TOML section (`[notifications.smtp]`, `[notifications.ses]`, `[notifications.twilio]`, etc.)
     - **Scope exclusions:** no template engine (slices own their content), no mailing list management
-    - **Depends on:** Cloud Integration (#1) for SES/SNS/cloud-based backends; SMTP backend standalone
+    - **Depends on:** Cloud Integration (#2) for SES/SNS/cloud-based backends; SMTP backend standalone
 
-10. **Dead Letter Handling**
+9. **Dead Letter Handling**
     - Failed pub-sub messages and failed scheduled task invocations currently logged and lost
     - DLQ storage: KV-Store backed dead letter queue per topic/task
     - Retry policy: configurable max attempts with exponential backoff before dead-lettering
     - Inspection: Management API endpoints to list, inspect, replay, or purge dead letters
     - CLI: `aether dead-letters list`, `aether dead-letters replay <id>`
 
-11. **Slice Development IDE Plugins**
+10. **Slice Development IDE Plugins**
     - IDE plugins for Aether slice development, providing deep integration with the JBCT toolchain
     - **Recommended approach:** build a shared **Language Server (LSP)** backend first, then thin IDE-specific clients. IntelliJ IDEA gets a native plugin for features that LSP cannot express (refactoring, inspections, run configs). VS Code, Eclipse, and NetBeans consume the LSP directly.
 
@@ -336,7 +338,7 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### LOWER PRIORITY
 
-12. **Configurable Rate Limiting per HTTP Route**
+11. **Configurable Rate Limiting per HTTP Route**
      - Per-route rate limiting configuration in blueprint or management API
      - Token bucket or sliding window algorithm
      - Configurable limits: requests/second, burst size
@@ -344,12 +346,12 @@ Part of Cloud Integration (#1). Per-provider status:
      - Cluster-aware: distributed counters via consensus or per-node local limits
      - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
 
-13. **Observability Dashboard UI**
+12. **Observability Dashboard UI**
    - Wire `ObservabilityDepthRegistry` data to dashboard with UI for configuring per-method depth thresholds
    - Backend REST API (`/api/observability/depth`) and KV-store sync already implemented
    - Current state is functional; production value but no customers yet
 
-14. **Invocation Observability Dashboard Tab**
+13. **Invocation Observability Dashboard Tab**
    - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
    - Click-to-expand tree view showing invocation depth with input/output at each level
    - Waterfall view for multi-hop request visualization
@@ -362,7 +364,7 @@ Part of Cloud Integration (#1). Per-provider status:
 
 - **Official Installation Binaries** — Pre-built distribution archives (`aether-node`, `aether-cli`, `aether-forge`). Formats: `.tar.gz`, `.zip`, `.deb`, `.rpm`, Homebrew. Self-contained via jlink/jpackage. Java audience already has JDK — low priority.
 
-- **Cluster Expense Tracking** — Real-time cost visibility for cluster operations. Cloud billing API integration (AWS Cost Explorer, GCP Billing, Azure Cost Management). Cost per node/slice/request. Spot savings tracking. Budget alerts. **Prerequisite:** Cloud Integration (#1)
+- **Cluster Expense Tracking** — Real-time cost visibility for cluster operations. Cloud billing API integration (AWS Cost Explorer, GCP Billing, Azure Cost Management). Cost per node/slice/request. Spot savings tracking. Budget alerts. **Prerequisite:** Cloud Integration (#2)
 
 - **LLM Integration (Layer 3)** — Claude/GPT API integration. Complex reasoning workflows. Multi-cloud decision support.
 
@@ -407,7 +409,7 @@ All infrastructure modules transition to unified `@ResourceQualifier(type, confi
 
 | Module | Target | Status |
 |--------|--------|--------|
-| infra-notifications | `@ResourceQualifier(type=NotificationSender.class)` | **Planned** — email + SMS + push (#11) |
+| infra-notifications | `@ResourceQualifier(type=NotificationSender.class)` | **Planned** — email + SMS + push (#8) |
 | infra-config | Superseded by Dynamic Configuration via KV store | **Remove** |
 | infra-aspect | Fn1 composition utilities (`Aspects.withCaching()`, `@Key`, etc.) | **Keep** |
 
