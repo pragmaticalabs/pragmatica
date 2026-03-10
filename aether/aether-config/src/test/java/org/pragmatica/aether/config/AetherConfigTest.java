@@ -25,7 +25,9 @@ class AetherConfigTest {
         assertThat(config.environment()).isEqualTo(Environment.DOCKER);
         assertThat(config.cluster().nodes()).isEqualTo(5);
         assertThat(config.node().heap()).isEqualTo("512m");
-        assertThat(config.tlsEnabled()).isFalse();
+        assertThat(config.tlsEnabled()).isTrue();
+        assertThat(config.tls().isPresent()).isTrue();
+        assertThat(config.tls().unwrap().autoGenerate()).isTrue();
         assertThat(config.docker().isPresent()).isTrue();
         assertThat(config.docker().unwrap().network()).isEqualTo(DockerConfig.DEFAULT_NETWORK);
         assertThat(config.kubernetes().isEmpty()).isTrue();

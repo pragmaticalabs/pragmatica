@@ -17,8 +17,16 @@
 package org.pragmatica.net.tcp;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.net.tcp.security.CertificateBundle;
+import org.pragmatica.net.tcp.security.CertificateProvider;
+import org.pragmatica.net.tcp.security.GossipKey;
 
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -164,5 +172,81 @@ class TlsConfigTest {
         var config = TlsConfig.fromFiles(Path.of("c"), Path.of("k"));
 
         assertThat(config).isInstanceOf(TlsConfig.Server.class);
+    }
+
+    @Test
+    void fromProvider_creates_mutualConfig_withProviderIdentityAndTrust() {
+        var certBytes = "cert-pem".getBytes();
+        var keyBytes = "key-pem".getBytes();
+        var caBytes = "ca-pem".getBytes();
+        var bundle = CertificateBundle.certificateBundle(certBytes, keyBytes, caBytes, Instant.now().plus(Duration.ofDays(7)));
+        CertificateProvider provider = stubProvider(Result.success(bundle));
+
+        var result = TlsConfig.fromProvider(provider, "node-1", "localhost");
+
+        result.onFailure(_ -> assertThat(true).as("Expected success").isFalse())
+              .onSuccess(this::assertMutualWithProviderIdentityAndCaBytesTrust);
+    }
+
+    @Test
+    void fromProvider_failsWhenProviderFails() {
+        var cause = Causes.cause("Certificate issuance failed");
+        CertificateProvider provider = stubProvider(cause.result());
+
+        var result = TlsConfig.fromProvider(provider, "node-1", "localhost");
+
+        result.onSuccess(_ -> assertThat(true).as("Expected failure").isFalse())
+              .onFailure(failure -> assertThat(failure.message()).isEqualTo("Certificate issuance failed"));
+    }
+
+    @Test
+    void identity_fromProvider_holdsCorrectBytes() {
+        var certBytes = "test-certificate-pem".getBytes();
+        var keyBytes = "test-private-key-pem".getBytes();
+
+        var identity = new TlsConfig.Identity.FromProvider(certBytes, keyBytes);
+
+        assertThat(identity.certificatePem()).isEqualTo(certBytes);
+        assertThat(identity.privateKeyPem()).isEqualTo(keyBytes);
+    }
+
+    @Test
+    void trust_fromCaBytes_holdsCorrectBytes() {
+        var caBytes = "test-ca-certificate-pem".getBytes();
+
+        var trust = new TlsConfig.Trust.FromCaBytes(caBytes);
+
+        assertThat(trust.caCertificatePem()).isEqualTo(caBytes);
+    }
+
+    private void assertMutualWithProviderIdentityAndCaBytesTrust(TlsConfig config) {
+        assertThat(config).isInstanceOf(TlsConfig.Mutual.class);
+        var mutual = (TlsConfig.Mutual) config;
+        assertThat(mutual.identity()).isInstanceOf(TlsConfig.Identity.FromProvider.class);
+        assertThat(mutual.trust()).isInstanceOf(TlsConfig.Trust.FromCaBytes.class);
+    }
+
+    private static CertificateProvider stubProvider(Result<CertificateBundle> issueResult) {
+        return new CertificateProvider() {
+            @Override
+            public Result<CertificateBundle> issueCertificate(String nodeId, String hostname) {
+                return issueResult;
+            }
+
+            @Override
+            public Result<CertificateBundle> caCertificate() {
+                return Causes.cause("Not implemented").result();
+            }
+
+            @Override
+            public Result<GossipKey> currentGossipKey() {
+                return Causes.cause("Not implemented").result();
+            }
+
+            @Override
+            public Option<GossipKey> previousGossipKey() {
+                return Option.empty();
+            }
+        };
     }
 }

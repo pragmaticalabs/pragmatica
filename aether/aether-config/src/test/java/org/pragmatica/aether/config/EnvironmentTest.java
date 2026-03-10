@@ -21,7 +21,7 @@ class EnvironmentTest {
 
         assertThat(env.defaultNodes()).isEqualTo(5);
         assertThat(env.defaultHeap()).isEqualTo("512m");
-        assertThat(env.defaultTls()).isFalse();
+        assertThat(env.defaultTls()).isTrue();
     }
 
     @Test
