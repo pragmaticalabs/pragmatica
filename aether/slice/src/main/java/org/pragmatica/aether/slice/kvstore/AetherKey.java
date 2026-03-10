@@ -735,6 +735,40 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Gossip key rotation key format:
+    /// ```
+    /// gossip-key-rotation
+    /// ```
+    /// Stores the current gossip encryption key rotation state.
+    /// Leader initiates rotation; all nodes watch for updates.
+    record GossipKeyRotationKey() implements AetherKey {
+        private static final String KEY = "gossip-key-rotation";
+
+        @Override
+        public String asString() {
+            return KEY;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static GossipKeyRotationKey gossipKeyRotationKey() {
+            return new GossipKeyRotationKey();
+        }
+
+        public static Result<GossipKeyRotationKey> gossipKeyRotationKey(String key) {
+            if (!KEY.equals(key)) {
+                return GOSSIP_KEY_ROTATION_KEY_FORMAT_ERROR.apply(key)
+                                                           .result();
+            }
+            return success(new GossipKeyRotationKey());
+        }
+    }
+
+    Fn1<Cause, String> GOSSIP_KEY_ROTATION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid gossip-key-rotation key format: %s");
     Fn1<Cause, String> SCHEDULED_TASK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid scheduled-task key format: %s");
     Fn1<Cause, String> TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid topic-sub key format: %s");
     Fn1<Cause, String> SLICE_TARGET_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-target key format: %s");

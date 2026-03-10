@@ -93,6 +93,8 @@ import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
+import org.pragmatica.swim.AesGcmGossipEncryptor;
+import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -821,11 +823,14 @@ public interface AetherNode {
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
         allEntries.addAll(aetherEntries);
         allEntries.addAll(activationKvRouter.asRouteEntries());
+        // Create gossip encryptor from certificate provider (if available)
+        var gossipEncryptor = createGossipEncryptor(config);
         // Create SWIM health detector for core-to-core failure detection
         var swimHealthDetector = CoreSwimHealthDetector.coreSwimHealthDetector(delegateRouter,
                                                                                config.topology(),
                                                                                serializer,
-                                                                               deserializer);
+                                                                               deserializer,
+                                                                               gossipEncryptor);
         // Defer SWIM start until quorum is established — peers are not ready before quorum
         allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
                                                  notification -> startSwimOnQuorum(notification, swimHealthDetector)));
@@ -966,6 +971,17 @@ public interface AetherNode {
         } else {
             growthLog.info("Received worker role assignment from CDM");
         }
+    }
+
+    @SuppressWarnings("JBCT-RET-01")
+    private static GossipEncryptor createGossipEncryptor(AetherNodeConfig config) {
+        return config.certificateProvider()
+                     .flatMap(provider -> provider.currentGossipKey()
+                                                  .option())
+                     .flatMap(gossipKey -> AesGcmGossipEncryptor.aesGcmGossipEncryptor(gossipKey.key(),
+                                                                                       gossipKey.keyId())
+                                                                .option())
+                     .or(GossipEncryptor.none());
     }
 
     private static List<MessageRouter.Entry<?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,

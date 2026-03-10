@@ -147,6 +147,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 60 | Blueprint membership guard | Complete | `POST /api/scale` rejects slices not deployed via blueprint |
 | 61 | Health check endpoint | Battle-tested | `/api/health` with ready flag, quorum status, connected peers, node count |
 | 62 | Orphaned entry cleanup | Complete | CDM `reconcile()` cleans up orphaned UNLOADING entries after blueprint removal |
+| 88 | Inter-node mTLS | Complete | CertificateProvider SPI, SelfSignedCertificateProvider (BouncyCastle, HKDF-derived deterministic CA, EC P-256), automatic mTLS for all TCP transports |
+| 89 | SWIM gossip encryption | Complete | AES-256-GCM encryption for SWIM protocol messages with dual-key rotation support, wire format [keyId][nonce][ciphertext+tag] |
+| 90 | Certificate lifecycle | Complete | CertificateRenewalScheduler with automatic renewal at 50% validity, gossip key rotation via consensus KV store |
+| 91 | TLS default for containers | Complete | TLS enabled by default for DOCKER and KUBERNETES environments (LOCAL remains plain for development) |
 
 ## Embeddable Runtime
 
@@ -174,7 +178,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Area | Limitation | Planned Fix |
 |------|-----------|-------------|
 | Security | No per-endpoint role authorization (all API keys get same access) | RBAC Tier 2 (#63) |
-| Security | No TLS between cluster nodes | TLS Certificate Management (#66) |
+| Security | No per-slice TLS certificate provisioning | TLS per-slice certificates (#66) |
 | Data durability | No KV-Store backup/restore; quorum loss = data loss | KV-Store State Backup (#72) |
 | Networking | Single-region only; no multi-region deployment | Not yet planned |
 | Storage | KV-Store in-memory only (recovered from peers via consensus) | KV-Store State Backup (#72) |
@@ -189,7 +193,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 64 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
 | 65 | Spot instance support | Planned | Elastic pool of spot/preemptible instances for cost-optimized scaling. Core (on-demand) + elastic (spot) pools. Prerequisite: Cloud Integration |
 | 66 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts. Prerequisite: Cloud Integration |
-| 67 | TLS certificate management | Planned | Mutual TLS between cluster nodes and management API authentication |
+| 67 | TLS certificate management | Complete | Mutual TLS between cluster nodes with CertificateProvider SPI, deterministic self-signed CA, certificate renewal, gossip encryption |
 | 69 | KV-Store state backup | Planned | Periodic KV-Store snapshots to durable storage (filesystem, S3). Disaster recovery when quorum permanently lost |
 | 70 | Aether runtime rolling upgrade | Planned | Upgrade Aether node software across running cluster without downtime. Node-by-node with health verification |
 | 71 | Email messaging resource | Planned | Facade with pluggable backends (SMTP, AWS SES, SendGrid). Sending (plain text + HTML, attachments) and receiving (automated conversations). SPI-based |
@@ -202,10 +206,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 23 |
-| Complete | 49 |
+| Complete | 54 |
 | Partial | 6 |
-| Planned | 11 |
-| Total | 89 |
+| Planned | 10 |
+| Total | 93 |
 
 **Battle-tested features (23):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), Forge integration tests
 
@@ -227,7 +231,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Per-data-source DB schema management | Design spec ready |
 | Canary & blue-green deployment | — |
 | RBAC Tier 2 — per-endpoint authorization | RBAC Tier 1 complete |
-| TLS certificate management | — |
+| ~~TLS certificate management~~ | Complete in 0.19.3 |
 | Per-route rate limiting | — |
 | Spot instance support | Cloud Integration |
 | Cluster expense tracking | Cloud Integration |

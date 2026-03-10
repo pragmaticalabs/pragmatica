@@ -42,17 +42,25 @@ public final class NettySwimTransport implements SwimTransport {
 
     private final Serializer serializer;
     private final Deserializer deserializer;
+    private final GossipEncryptor encryptor;
     private volatile Channel channel;
     private volatile NioEventLoopGroup group;
 
-    private NettySwimTransport(Serializer serializer, Deserializer deserializer) {
+    private NettySwimTransport(Serializer serializer, Deserializer deserializer, GossipEncryptor encryptor) {
         this.serializer = serializer;
         this.deserializer = deserializer;
+        this.encryptor = encryptor;
     }
 
-    /// Factory creating a Netty-based SWIM transport.
+    /// Factory creating a Netty-based SWIM transport with gossip encryption.
+    public static Result<SwimTransport> nettySwimTransport(Serializer serializer, Deserializer deserializer,
+                                                            GossipEncryptor encryptor) {
+        return Result.success(new NettySwimTransport(serializer, deserializer, encryptor));
+    }
+
+    /// Factory creating a Netty-based SWIM transport without encryption.
     public static Result<SwimTransport> nettySwimTransport(Serializer serializer, Deserializer deserializer) {
-        return Result.success(new NettySwimTransport(serializer, deserializer));
+        return nettySwimTransport(serializer, deserializer, GossipEncryptor.none());
     }
 
     @Override
@@ -78,7 +86,13 @@ public final class NettySwimTransport implements SwimTransport {
 
     private void doSend(Channel ch, InetSocketAddress target, SwimMessage message) {
         var bytes = serializer.encode(message);
-        var packet = new DatagramPacket(Unpooled.wrappedBuffer(bytes), target);
+        encryptor.encrypt(bytes)
+                 .onSuccess(encrypted -> sendEncrypted(ch, target, encrypted))
+                 .onFailure(cause -> LOG.error("Failed to encrypt gossip message: {}", cause.message()));
+    }
+
+    private static void sendEncrypted(Channel ch, InetSocketAddress target, byte[] encrypted) {
+        var packet = new DatagramPacket(Unpooled.wrappedBuffer(encrypted), target);
         ch.writeAndFlush(packet);
     }
 
@@ -131,7 +145,14 @@ public final class NettySwimTransport implements SwimTransport {
         var bytes = new byte[buf.readableBytes()];
         buf.readBytes(bytes);
 
-        SwimMessage message = deserializer.decode(bytes);
-        handler.onMessage(packet.sender(), message);
+        encryptor.decrypt(bytes)
+                 .onSuccess(decrypted -> dispatchDecrypted(handler, packet.sender(), decrypted))
+                 .onFailure(cause -> LOG.warn("Failed to decrypt gossip from {}: {}",
+                                               packet.sender(), cause.message()));
+    }
+
+    private void dispatchDecrypted(SwimMessageHandler handler, InetSocketAddress sender, byte[] decrypted) {
+        SwimMessage message = deserializer.decode(decrypted);
+        handler.onMessage(sender, message);
     }
 }

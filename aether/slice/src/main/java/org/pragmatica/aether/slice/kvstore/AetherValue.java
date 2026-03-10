@@ -413,6 +413,42 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Gossip key rotation value stored in consensus.
+    /// Contains the current and previous gossip encryption keys for rolling rotation.
+    ///
+    /// @param currentKeyId  ID of the current gossip key
+    /// @param currentKey    base64-encoded current gossip key (32 bytes AES-256)
+    /// @param previousKeyId ID of the previous gossip key (0 if none)
+    /// @param previousKey   base64-encoded previous gossip key (empty if none)
+    /// @param rotatedAt     timestamp when rotation occurred
+    record GossipKeyRotationValue(int currentKeyId,
+                                  String currentKey,
+                                  int previousKeyId,
+                                  String previousKey,
+                                  long rotatedAt) implements AetherValue {
+        /// Creates a new rotation value with current key only (initial state).
+        public static GossipKeyRotationValue gossipKeyRotationValue(int currentKeyId, String currentKey) {
+            return new GossipKeyRotationValue(currentKeyId, currentKey, 0, "", System.currentTimeMillis());
+        }
+
+        /// Creates a rotation value with both current and previous keys (during rotation).
+        public static GossipKeyRotationValue gossipKeyRotationValue(int currentKeyId,
+                                                                    String currentKey,
+                                                                    int previousKeyId,
+                                                                    String previousKey) {
+            return new GossipKeyRotationValue(currentKeyId,
+                                              currentKey,
+                                              previousKeyId,
+                                              previousKey,
+                                              System.currentTimeMillis());
+        }
+
+        /// Returns true if a previous key is available for dual-key decryption.
+        public boolean hasPreviousKey() {
+            return ! previousKey.isEmpty();
+        }
+    }
+
     /// Node lifecycle states for the state machine.
     ///
     /// State machine:

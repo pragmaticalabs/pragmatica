@@ -35,6 +35,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `LoadBalancerFailoverE2ETest` — slice invocation rerouting after failure
   - `LeaderIsolationE2ETest` — leader disconnect recovery without split-brain
 
+### Security
+- Add inter-node mTLS with CertificateProvider SPI and deterministic self-signed CA
+- Add AES-256-GCM encryption for SWIM gossip protocol messages
+- Add certificate renewal scheduler with automatic 50% validity renewal
+- Add gossip key rotation support via consensus KV store
+- Enable TLS by default for DOCKER environment (matching KUBERNETES)
+- Add `clusterSecret` configuration for deterministic CA key derivation (TOML + env var)
+
 ### Changed
 - Dockerfile version labels now use build-arg `VERSION` instead of hardcoded values
 - TCP disconnect in `NettyClusterNetwork` no longer fires topology removal — reconnection continues while SWIM handles health detection

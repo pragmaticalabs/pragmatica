@@ -9,6 +9,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.NettySwimTransport;
 import org.pragmatica.swim.SwimConfig;
 import org.pragmatica.swim.SwimMember;
@@ -44,6 +45,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private final TopologyConfig topologyConfig;
     private final Serializer serializer;
     private final Deserializer deserializer;
+    private final GossipEncryptor encryptor;
     private final List<NodeId> currentTopology;
     private volatile SwimProtocol swimProtocol;
     private volatile SwimTransport swimTransport;
@@ -51,20 +53,31 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private CoreSwimHealthDetector(MessageRouter router,
                                    TopologyConfig topologyConfig,
                                    Serializer serializer,
-                                   Deserializer deserializer) {
+                                   Deserializer deserializer,
+                                   GossipEncryptor encryptor) {
         this.router = router;
         this.topologyConfig = topologyConfig;
         this.serializer = serializer;
         this.deserializer = deserializer;
+        this.encryptor = encryptor;
         this.currentTopology = new CopyOnWriteArrayList<>(extractNodeIds(topologyConfig.coreNodes()));
     }
 
-    /// Factory method for creating a CoreSwimHealthDetector.
+    /// Factory method for creating a CoreSwimHealthDetector with encryption.
+    public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
+                                                                TopologyConfig topologyConfig,
+                                                                Serializer serializer,
+                                                                Deserializer deserializer,
+                                                                GossipEncryptor encryptor) {
+        return new CoreSwimHealthDetector(router, topologyConfig, serializer, deserializer, encryptor);
+    }
+
+    /// Factory method for creating a CoreSwimHealthDetector without encryption (backward-compatible).
     public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
                                                                 TopologyConfig topologyConfig,
                                                                 Serializer serializer,
                                                                 Deserializer deserializer) {
-        return new CoreSwimHealthDetector(router, topologyConfig, serializer, deserializer);
+        return coreSwimHealthDetector(router, topologyConfig, serializer, deserializer, GossipEncryptor.none());
     }
 
     /// Start the SWIM protocol for core node health detection.
@@ -81,7 +94,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                 .host())
                                      .orElse("localhost");
         var selfAddress = new InetSocketAddress(selfHost, swimPort);
-        return NettySwimTransport.nettySwimTransport(serializer, deserializer)
+        return NettySwimTransport.nettySwimTransport(serializer, deserializer, encryptor)
                                  .flatMap(transport -> createAndStartProtocol(transport, selfAddress, swimPort))
                                  .async()
                                  .mapToUnit();

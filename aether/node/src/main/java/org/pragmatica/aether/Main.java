@@ -9,7 +9,11 @@ import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.net.tcp.security.CertificateProvider;
+import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -62,10 +66,59 @@ public record Main(String[] args) {
                                                        sliceConfig,
                                                        managementPort,
                                                        org.pragmatica.dht.DHTConfig.DEFAULT);
-        var node = AetherNode.aetherNode(config)
+        var finalConfig = wireTlsIfEnabled(config, aetherConfig);
+        var node = AetherNode.aetherNode(finalConfig)
                              .unwrap();
         registerShutdownHook(node);
         startNodeAndWait(node, nodeId);
+    }
+
+    private AetherNodeConfig wireTlsIfEnabled(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
+        return aetherConfig.filter(AetherConfig::tlsEnabled)
+                           .flatMap(AetherConfig::tls)
+                           .filter(org.pragmatica.aether.config.TlsConfig::autoGenerate)
+                           .map(tlsCfg -> wireAutoTls(config, tlsCfg))
+                           .or(config);
+    }
+
+    private AetherNodeConfig wireAutoTls(AetherNodeConfig config, org.pragmatica.aether.config.TlsConfig tlsCfg) {
+        var secret = resolveClusterSecret(tlsCfg);
+        return SelfSignedCertificateProvider.selfSignedCertificateProvider(secret)
+                                            .flatMap(provider -> wireProviderToConfig(config, provider))
+                                            .onFailure(cause -> log.error("Failed to setup TLS: {}",
+                                                                          cause.message()))
+                                            .or(config);
+    }
+
+    private static byte[] resolveClusterSecret(org.pragmatica.aether.config.TlsConfig tlsCfg) {
+        return Option.option(tlsCfg.clusterSecret())
+                     .filter(s -> !s.isBlank())
+                     .orElse(Option.option(System.getenv("AETHER_CLUSTER_SECRET"))
+                                   .filter(s -> !s.isBlank()))
+                     .map(s -> s.getBytes(StandardCharsets.UTF_8))
+                     .or("aether-dev-cluster-secret".getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static Result<AetherNodeConfig> wireProviderToConfig(AetherNodeConfig config,
+                                                                 CertificateProvider provider) {
+        var nodeId = config.self()
+                           .id();
+        var hostname = findHostname(config);
+        return org.pragmatica.net.tcp.TlsConfig.fromProvider(provider, nodeId, hostname)
+                  .map(tlsConfig -> config.withTls(tlsConfig)
+                                          .withCertificateProvider(provider));
+    }
+
+    private static String findHostname(AetherNodeConfig config) {
+        return config.topology()
+                     .coreNodes()
+                     .stream()
+                     .filter(n -> n.id()
+                                   .equals(config.self()))
+                     .findFirst()
+                     .map(n -> n.address()
+                                .host())
+                     .orElse("localhost");
     }
 
     private SliceConfig parseSliceConfig(Option<AetherConfig> aetherConfig) {

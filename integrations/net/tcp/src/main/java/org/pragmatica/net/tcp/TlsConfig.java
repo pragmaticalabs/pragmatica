@@ -17,6 +17,8 @@
 package org.pragmatica.net.tcp;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.net.tcp.security.CertificateProvider;
 
 import java.nio.file.Path;
 
@@ -47,6 +49,10 @@ public sealed interface TlsConfig {
         record FromFiles(Path certificatePath,
                          Path privateKeyPath,
                          Option<String> keyPassword) implements Identity {}
+
+        /// Certificate and private key provided as in-memory PEM bytes.
+        /// Suitable for programmatic certificate provisioning.
+        record FromProvider(byte[] certificatePem, byte[] privateKeyPem) implements Identity {}
     }
 
     // ===== Trust Configuration =====
@@ -63,6 +69,10 @@ public sealed interface TlsConfig {
         /// Trust all certificates without verification.
         /// **WARNING: FOR DEVELOPMENT ONLY!** Disables certificate verification.
         record InsecureTrustAll() implements Trust {}
+
+        /// Trust CA certificate provided as in-memory PEM bytes.
+        /// Suitable for programmatic certificate provisioning.
+        record FromCaBytes(byte[] caCertificatePem) implements Trust {}
     }
 
     // ===== TLS Modes =====
@@ -182,6 +192,21 @@ public sealed interface TlsConfig {
     /// **WARNING: FOR DEVELOPMENT ONLY!**
     static TlsConfig selfSignedMutual() {
         return new Mutual(new Identity.SelfSigned(), new Trust.InsecureTrustAll());
+    }
+
+    // ===== Provider-based Factory Methods =====
+    /// Create mutual TLS configuration from a CertificateProvider.
+    /// Issues a node certificate and configures mTLS with the provider's CA.
+    ///
+    /// @param provider  certificate provider (e.g., self-signed CA)
+    /// @param nodeId    this node's identity
+    /// @param hostname  hostname for SAN
+    /// @return mutual TLS configuration or error
+    static Result<TlsConfig> fromProvider(CertificateProvider provider, String nodeId, String hostname) {
+        return provider.issueCertificate(nodeId, hostname)
+                       .map(bundle -> new Mutual(
+                           new Identity.FromProvider(bundle.certificatePem(), bundle.privateKeyPem()),
+                           new Trust.FromCaBytes(bundle.caCertificatePem())));
     }
 
     // ===== Deprecated Legacy API =====

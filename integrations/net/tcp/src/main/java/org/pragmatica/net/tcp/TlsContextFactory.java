@@ -19,6 +19,7 @@ package org.pragmatica.net.tcp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 
 import io.netty.handler.ssl.ClientAuth;
@@ -88,9 +89,7 @@ public final class TlsContextFactory {
         return loadIdentity(identity)
         .flatMap(keyMaterial -> {
                      try{
-                         var builder = SslContextBuilder.forServer(keyMaterial.certFile(),
-                                                                   keyMaterial.keyFile(),
-                                                                   keyMaterial.password());
+                         var builder = configureServerIdentity(keyMaterial);
                          // Configure client authentication if required
         clientAuth.onPresent(trust -> {
                              configureTrust(builder, trust);
@@ -108,9 +107,7 @@ public final class TlsContextFactory {
         return loadIdentity(identity)
         .flatMap(keyMaterial -> {
                      try{
-                         var builder = SslContextBuilder.forServer(keyMaterial.certFile(),
-                                                                   keyMaterial.keyFile(),
-                                                                   keyMaterial.password());
+                         var builder = configureServerIdentity(keyMaterial);
                          configureTrust(builder, trust);
                          builder.clientAuth(ClientAuth.REQUIRE);
                          return Result.success(builder.build());
@@ -139,7 +136,7 @@ public final class TlsContextFactory {
                      try{
                          var builder = SslContextBuilder.forClient();
                          configureTrust(builder, trust);
-                         builder.keyManager(keyMaterial.certFile(), keyMaterial.keyFile(), keyMaterial.password());
+                         configureClientIdentity(builder, keyMaterial);
                          return Result.success(builder.build());
                      } catch (Exception e) {
                          return new TlsError.ContextBuildFailed(e).result();
@@ -154,7 +151,7 @@ public final class TlsContextFactory {
                      try{
                          var builder = SslContextBuilder.forClient();
                          configureTrust(builder, trust);
-                         builder.keyManager(keyMaterial.certFile(), keyMaterial.keyFile(), keyMaterial.password());
+                         configureClientIdentity(builder, keyMaterial);
                          return Result.success(builder.build());
                      } catch (Exception e) {
                          return new TlsError.ContextBuildFailed(e).result();
@@ -166,32 +163,54 @@ public final class TlsContextFactory {
     private static void configureTrust(SslContextBuilder builder, TlsConfig.Trust trust) {
         switch (trust) {
             case TlsConfig.Trust.SystemDefault() -> {}
-            case TlsConfig.Trust.FromCaFile(var caPath) -> {
-                builder.trustManager(caPath.toFile());
-            }
+            case TlsConfig.Trust.FromCaFile(var caPath) -> builder.trustManager(caPath.toFile());
             case TlsConfig.Trust.InsecureTrustAll() -> {
                 log.warn("Using InsecureTrustAll - FOR DEVELOPMENT ONLY! Certificate verification is disabled.");
                 builder.trustManager(InsecureTrustManagerFactory.INSTANCE);
             }
+            case TlsConfig.Trust.FromCaBytes(var caPem) -> builder.trustManager(new ByteArrayInputStream(caPem));
         }
     }
 
     // ===== Identity Loading =====
-    private record KeyMaterial(File certFile, File keyFile, String password) {}
+    private sealed interface KeyMaterial {
+        record FromFile(File certFile, File keyFile, String password) implements KeyMaterial {}
+        record FromBytes(byte[] certPem, byte[] keyPem) implements KeyMaterial {}
+    }
 
     private static Result<KeyMaterial> loadIdentity(TlsConfig.Identity identity) {
         return switch (identity) {
             case TlsConfig.Identity.SelfSigned() -> generateSelfSigned();
             case TlsConfig.Identity.FromFiles(var certPath, var keyPath, var password) ->
             loadFromFiles(certPath, keyPath, password);
+            case TlsConfig.Identity.FromProvider(var certPem, var keyPem) ->
+            Result.success(new KeyMaterial.FromBytes(certPem, keyPem));
         };
+    }
+
+    private static SslContextBuilder configureServerIdentity(KeyMaterial keyMaterial) {
+        return switch (keyMaterial) {
+            case KeyMaterial.FromFile(var certFile, var keyFile, var password) ->
+            SslContextBuilder.forServer(certFile, keyFile, password);
+            case KeyMaterial.FromBytes(var certPem, var keyPem) ->
+            SslContextBuilder.forServer(new ByteArrayInputStream(certPem), new ByteArrayInputStream(keyPem), null);
+        };
+    }
+
+    private static void configureClientIdentity(SslContextBuilder builder, KeyMaterial keyMaterial) {
+        switch (keyMaterial) {
+            case KeyMaterial.FromFile(var certFile, var keyFile, var password) ->
+            builder.keyManager(certFile, keyFile, password);
+            case KeyMaterial.FromBytes(var certPem, var keyPem) ->
+            builder.keyManager(new ByteArrayInputStream(certPem), new ByteArrayInputStream(keyPem), null);
+        }
     }
 
     @SuppressWarnings("deprecation") // SelfSignedCertificate is for dev/testing only
     private static Result<KeyMaterial> generateSelfSigned() {
         try{
             var ssc = new SelfSignedCertificate();
-            return Result.success(new KeyMaterial(ssc.certificate(), ssc.privateKey(), null));
+            return Result.success(new KeyMaterial.FromFile(ssc.certificate(), ssc.privateKey(), null));
         } catch (Exception e) {
             return new TlsError.SelfSignedGenerationFailed(e).result();
         }
@@ -210,6 +229,6 @@ public final class TlsContextFactory {
             return new TlsError.PrivateKeyLoadFailed(keyPath,
                                                      new java.io.FileNotFoundException("Private key file not found or not readable: " + keyPath)).result();
         }
-        return Result.success(new KeyMaterial(certFile, keyFile, password.or((String) null)));
+        return Result.success(new KeyMaterial.FromFile(certFile, keyFile, password.or((String) null)));
     }
 }

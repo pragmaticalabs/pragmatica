@@ -2308,7 +2308,6 @@ public class AetherCli implements Runnable {
     }
 
     // ===== Workers Commands =====
-
     @Command(name = "workers", description = "Manage worker nodes",
     subcommands = {WorkersCommand.ListCommand.class,
     WorkersCommand.HealthCommand.class,

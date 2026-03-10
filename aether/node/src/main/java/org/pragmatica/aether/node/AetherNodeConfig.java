@@ -21,6 +21,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.net.tcp.security.CertificateProvider;
 
 import java.util.List;
 
@@ -28,24 +29,25 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Configuration for an Aether cluster node.
 ///
-/// @param topology         Cluster topology configuration
-/// @param protocol         Consensus protocol configuration
-/// @param sliceAction      Slice lifecycle configuration
-/// @param sliceConfig      Slice repository configuration (types to create at runtime)
-/// @param managementPort   Port for HTTP management API (0 to disable)
-/// @param artifactRepo     DHT configuration for artifact repository (replication factor, 0 = full)
-/// @param cache            DHT configuration for ephemeral cache (single replica by default)
-/// @param tls              TLS configuration for secure connections (empty for plain TCP/HTTP)
-/// @param ttm              TTM (Tiny Time Mixers) predictive scaling configuration
-/// @param rollback         Automatic rollback configuration
-/// @param appHttp          Application HTTP server configuration for slice routes
-/// @param controllerConfig Controller configuration for scaling thresholds and behavior
-/// @param configProvider   Configuration provider for resource provisioning (empty to disable)
-/// @param environment      Environment integration for compute/secrets (empty to disable)
-/// @param autoHeal         Auto-heal retry configuration
-/// @param observability    Observability configuration (depth threshold, sampling target)
-/// @param atomicity        Blueprint deployment atomicity mode (BEST_EFFORT or ALL_OR_NOTHING)
-/// @param activationGated  If true, node waits for CDM activation instead of auto-activating
+/// @param topology            Cluster topology configuration
+/// @param protocol            Consensus protocol configuration
+/// @param sliceAction         Slice lifecycle configuration
+/// @param sliceConfig         Slice repository configuration (types to create at runtime)
+/// @param managementPort      Port for HTTP management API (0 to disable)
+/// @param artifactRepo        DHT configuration for artifact repository (replication factor, 0 = full)
+/// @param cache               DHT configuration for ephemeral cache (single replica by default)
+/// @param tls                 TLS configuration for secure connections (empty for plain TCP/HTTP)
+/// @param ttm                 TTM (Tiny Time Mixers) predictive scaling configuration
+/// @param rollback            Automatic rollback configuration
+/// @param appHttp             Application HTTP server configuration for slice routes
+/// @param controllerConfig    Controller configuration for scaling thresholds and behavior
+/// @param configProvider      Configuration provider for resource provisioning (empty to disable)
+/// @param environment         Environment integration for compute/secrets (empty to disable)
+/// @param autoHeal            Auto-heal retry configuration
+/// @param observability       Observability configuration (depth threshold, sampling target)
+/// @param atomicity           Blueprint deployment atomicity mode (BEST_EFFORT or ALL_OR_NOTHING)
+/// @param activationGated     If true, node waits for CDM activation instead of auto-activating
+/// @param certificateProvider Certificate provider for mTLS and gossip encryption (empty to disable)
 public record AetherNodeConfig(TopologyConfig topology,
                                ProtocolConfig protocol,
                                SliceActionConfig sliceAction,
@@ -63,7 +65,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                AutoHealConfig autoHeal,
                                ObservabilityConfig observability,
                                DeploymentAtomicity atomicity,
-                               boolean activationGated) {
+                               boolean activationGated,
+                               Option<CertificateProvider> certificateProvider) {
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;
     public static final int MANAGEMENT_DISABLED = 0;
 
@@ -139,7 +142,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     AutoHealConfig.DEFAULT,
                                     ObservabilityConfig.DEFAULT,
                                     DeploymentAtomicity.ALL_OR_NOTHING,
-                                    false);
+                                    false,
+                                    Option.empty());
     }
 
     public static AetherNodeConfig testConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
@@ -166,7 +170,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     AutoHealConfig.DEFAULT,
                                     ObservabilityConfig.DEFAULT,
                                     DeploymentAtomicity.ALL_OR_NOTHING,
-                                    false);
+                                    false,
+                                    Option.empty());
     }
 
     /// Create a test configuration for Forge simulation environment.
@@ -194,7 +199,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     AutoHealConfig.DEFAULT,
                                     ObservabilityConfig.DEFAULT,
                                     DeploymentAtomicity.ALL_OR_NOTHING,
-                                    false);
+                                    false,
+                                    Option.empty());
     }
 
     /// Create a new configuration with TLS enabled for all components (HTTP and cluster).
@@ -225,7 +231,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal,
                                     observability,
                                     atomicity,
-                                    activationGated);
+                                    activationGated,
+                                    certificateProvider);
     }
 
     /// Create a new configuration with TTM enabled.
@@ -247,7 +254,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal,
                                     observability,
                                     atomicity,
-                                    activationGated);
+                                    activationGated,
+                                    certificateProvider);
     }
 
     /// Create a new configuration with rollback settings.
@@ -269,7 +277,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal,
                                     observability,
                                     atomicity,
-                                    activationGated);
+                                    activationGated,
+                                    certificateProvider);
     }
 
     /// Create a new configuration with different slice configuration.
@@ -291,7 +300,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal,
                                     observability,
                                     atomicity,
-                                    activationGated);
+                                    activationGated,
+                                    certificateProvider);
     }
 
     /// Create a new configuration with application HTTP server enabled.
@@ -313,7 +323,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal,
                                     observability,
                                     atomicity,
-                                    activationGated);
+                                    activationGated,
+                                    certificateProvider);
     }
 
     /// Create a new configuration with different controller configuration.
@@ -335,7 +346,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal,
                                     observability,
                                     atomicity,
-                                    activationGated);
+                                    activationGated,
+                                    certificateProvider);
     }
 
     /// Create a new configuration with a ConfigurationProvider for resource provisioning.
@@ -357,7 +369,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal,
                                     observability,
                                     atomicity,
-                                    activationGated);
+                                    activationGated,
+                                    certificateProvider);
     }
 
     /// Create a new configuration with an EnvironmentIntegration for compute/secrets.
@@ -379,7 +392,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal,
                                     observability,
                                     atomicity,
-                                    activationGated);
+                                    activationGated,
+                                    certificateProvider);
     }
 
     /// Create a new configuration with custom auto-heal settings.
@@ -401,7 +415,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHealConfig,
                                     observability,
                                     atomicity,
-                                    activationGated);
+                                    activationGated,
+                                    certificateProvider);
     }
 
     /// Create a new configuration with deployment atomicity mode.
@@ -423,7 +438,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal,
                                     observability,
                                     deploymentAtomicity,
-                                    activationGated);
+                                    activationGated,
+                                    certificateProvider);
     }
 
     /// Create a new configuration with activation gating enabled or disabled.
@@ -445,7 +461,31 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal,
                                     observability,
                                     atomicity,
-                                    gated);
+                                    gated,
+                                    certificateProvider);
+    }
+
+    /// Create a new configuration with a certificate provider for mTLS and gossip encryption.
+    public AetherNodeConfig withCertificateProvider(CertificateProvider provider) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    Option.some(provider));
     }
 
     public NodeId self() {

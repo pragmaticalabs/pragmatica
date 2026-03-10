@@ -3,6 +3,7 @@ package org.pragmatica.aether.config;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Number;
 
@@ -143,8 +144,10 @@ public final class ConfigLoader {
                          .or("");
         var caPath = doc.getString("tls", "ca_path")
                         .or("");
-        return TlsConfig.tlsConfig(autoGen, certPath, keyPath, caPath)
-                        .unwrap();
+        var clusterSecret = doc.getString("tls", "cluster_secret")
+                               .orElse(Option.option(System.getenv("AETHER_CLUSTER_SECRET")))
+                               .or("");
+        return new TlsConfig(autoGen, certPath, keyPath, caPath, clusterSecret);
     }
 
     private static void populateDockerConfig(TomlDocument doc, AetherConfig.Builder builder, Environment environment) {
