@@ -6,6 +6,7 @@
 | Status      | Draft                                          |
 | Author      | Sergiy Yevtushenko                             |
 | Created     | 2026-03-10                                     |
+| Updated     | 2026-03-10                                     |
 | Depends on  | Phase 1 (v0.19.3)                              |
 | Sub-phases  | P2a -> P2b -> P2c (strict ordering)            |
 
@@ -51,7 +52,7 @@ Phase 1 (v0.19.3) delivered:
 | DD-01 | Cloud Integration SPI available | Plug in cloud-specific APIs (ASG, spot signals) without core coupling |
 | DD-02 | Scale target: 10K worker nodes | Drives all capacity math and architectural choices |
 | DD-03 | Sub-phase ordering: strict P2a -> P2b -> P2c | Each phase builds on the prior; no parallel implementation |
-| DD-04 | Cross-group routing: always through core | Core nodes are the only consensus participants; cross-group calls route via core to maintain topology isolation |
+| DD-04 | Cross-group routing for slice invocations: always through core | Core nodes are the only consensus participants; cross-group slice invocation calls route via core to maintain topology isolation. Does NOT apply to infrastructure traffic (see DD-16). |
 | DD-05 | Workers run ANY load (scheduled tasks, pub/sub) | Not deferred to a future phase |
 
 ### NEW: Storage architecture
@@ -68,6 +69,13 @@ Phase 1 (v0.19.3) delivered:
 | DD-13 | Workers write their own endpoints directly to DHT | No governor batching. Each worker is a DHT participant and writes directly. Simpler than `WorkerGroupHealthReport`-based approach. |
 | DD-14 | Separate named maps | `dht.createMap("endpoints", policy)`, `dht.createMap("slice-nodes", policy)`, `dht.createMap("http-routes", policy)`. Not a single map with key discrimination. |
 | DD-15 | Generic `ReplicatedMap<K, V>` API | Usable for any future use case, not just endpoints. Infrastructure primitive. |
+
+### NEW: Network and identity
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| DD-16 | Governor-to-governor mesh for DHT traffic | Governors establish connections to all other governors for cross-community DHT operations. DD-04 applies to application-level slice invocations only; DHT is infrastructure traffic with its own routing topology. Eliminates core as relay for DHT operations. |
+| DD-17 | Core nodes form community `core` | Core is just another community in the home-replica algorithm. `HomeReplicaResolver.extractCommunity()` returns `"core"` for core node keys. Ensures at least one replica of core-originated entries lands on a core peer. Unified model: every node belongs to a community. |
 
 ## Architecture
 
@@ -94,12 +102,44 @@ Phase 1 (v0.19.3) delivered:
           |                     |                     |
 +---------v---------+ +---------v---------+ +---------v---------+
 | Core Node         | | Worker Node       | | Worker Node       |
-| - DHT participant | | - DHT participant | | (spot)            |
-| - Consensus voter | | - Direct DHT      | | - DHT reader only |
-| - LRU cache       | |   writes          | | - NOT replica     |
-| - SliceInvoker    | | - LRU cache       | |   target          |
+| community: core   | | community:        | | (spot)            |
+| - DHT participant | |   default:us-e-1a | | - DHT reader only |
+| - Consensus voter | | - DHT participant | | - NOT replica     |
+| - Local index     | | - Direct DHT      | |   target          |
+| - SliceInvoker    | |   writes          | | - Local index     |
++---+---------------+ | - Local index     | +---+---------------+
+    |                  +---+---------------+     |
+    |                      |                     |
+    +----------------------------------------------+
+    |          Governor-to-Governor Mesh            |
+    |  (DHT cross-community traffic, DD-16)        |
+    +----------------------------------------------+
+    |                      |                     |
++---v---------------+ +---v---------------+ +---v---------------+
+| Governor          | | Governor          | | Governor          |
+| Community A       | | Community B       | | Community C       |
+| Connects to all   |<-->                 |<-->                 |
+| other governors   | | Connects to all   | | Connects to all   |
+| for DHT routing   | | other governors   | | other governors   |
 +-------------------+ +-------------------+ +-------------------+
 ```
+
+### DHT Network Topology (DD-16)
+
+DHT traffic uses a dedicated routing topology separate from application-level slice invocation:
+
+| Traffic Type | Path | Hops |
+|---|---|---|
+| Intra-community DHT | Worker A -> Worker B (direct) | 1 |
+| Cross-community DHT | Worker -> Governor -> Target Governor -> Target Worker | 2 max |
+| Core <-> Governor | Existing connections | 1 |
+| Core <-> Core | Direct (community `core`) | 1 |
+
+**Governor discovery:** Governors discover each other via core. Each governor reports its community membership to core; core distributes the full community-governor mapping. When a new community comes online or a governor changes, core pushes updated topology.
+
+**Connection budget:** At 100 communities, each governor maintains ~100 connections to peer governors. This is trivial compared to the intra-community SWIM connections. No special connection pooling needed.
+
+**Distinction from DD-04:** DD-04 states "cross-group routing through core" for slice invocations. This ensures topology isolation for application traffic. DHT is infrastructure traffic -- governors route it directly to avoid making core a bottleneck for high-volume DHT replication and read operations.
 
 ### Data Placement
 
@@ -277,10 +317,14 @@ public record ReplicationPolicy(int replicationFactor,
 /// The home replica is the deterministic placement within the key's
 /// "home community", extracted from the key's NodeId or zone encoding.
 /// Example key encoding: zone-us-east-1-worker-7 -> home community is us-east-1.
+///
+/// Core nodes use community identifier "core" (DD-17). Every node belongs
+/// to a community -- unified model with no special-casing.
 public interface HomeReplicaResolver {
 
     /// Resolve the home community identifier from a key.
     /// Returns the community/zone string embedded in the key.
+    /// For core node keys, returns "core" (DD-17).
     Option<String> extractCommunity(byte[] key);
 
     /// Select the home replica node for the given community.
@@ -364,7 +408,7 @@ New additions to `integrations/dht`:
 
 For any key `K`:
 
-1. **Home replica**: Extracted from the key's embedded NodeId/zone. For `EndpointKey("endpoints/mygroup:myslice:1.0.0/myMethod:0")`, the NodeId in the corresponding `EndpointValue` identifies the originating node. The home community is derived from the node's zone label (e.g., `us-east-1`). The home replica is a deterministic non-spot node in that zone, selected by hashing the key within the zone's node set.
+1. **Home replica**: Extracted from the key's embedded NodeId/zone. For `EndpointKey("endpoints/mygroup:myslice:1.0.0/myMethod:0")`, the NodeId in the corresponding `EndpointValue` identifies the originating node. The home community is derived from the node's zone label (e.g., `us-east-1`). For core nodes, the community is `"core"` (DD-17). The home replica is a deterministic non-spot node in that community, selected by hashing the key within the community's node set.
 
 2. **Ring replicas**: Standard consistent hashing via `ConsistentHashRing.nodesFor(key, 2)`, excluding the home replica node and any spot nodes.
 
@@ -374,7 +418,7 @@ For any key `K`:
 
 ```
 function replicasFor(key, allNodes, spotNodes):
-    community = extractCommunity(key)
+    community = extractCommunity(key)   // returns "core" for core node keys (DD-17)
     communityNodes = allNodes.filter(n -> zone(n) == community && n not in spotNodes)
     homeNode = communityNodes.sorted()[hash(key) % communityNodes.size()]
 
@@ -391,17 +435,110 @@ function replicasFor(key, allNodes, spotNodes):
 
 ### P2a.3 DHT Participation Rules
 
-| Node Type | DHT Ring Member | Replica Target | Can Read | Can Write |
-|-----------|-----------------|----------------|----------|-----------|
-| Core (non-spot) | Yes | Yes | Yes | Yes |
-| Worker (non-spot) | Yes | Yes | Yes | Yes (own endpoints) |
-| Worker (spot) | No | No | Yes (via DHT hop) | Yes (writer-only, RF=1 for own data) |
+| Node Type | Community | DHT Ring Member | Replica Target | Can Read | Can Write |
+|-----------|-----------|-----------------|----------------|----------|-----------|
+| Core (non-spot) | `core` (DD-17) | Yes | Yes | Yes | Yes |
+| Worker (non-spot) | `groupName:zone` | Yes | Yes | Yes | Yes (own endpoints) |
+| Worker (spot) | `groupName:zone` | No | No | Yes (via DHT hop) | Yes (writer-only, RF=1 for own data) |
 
 - Non-spot nodes call `ring.addNode(nodeId)` on join and `ring.removeNode(nodeId)` on leave (via `DHTTopologyListener`).
 - Spot nodes never join the ring. They write their own endpoints with RF=1 (local only) and read via DHT client with remote hops.
 - On spot node preemption, its RF=1 data vanishes. This is acceptable: the endpoints it registered are no longer valid anyway.
 
-### P2a.4 Startup / Replication Cooldown
+### P2a.4 Local Query Index
+
+**Problem:** `SliceInvoker` needs "all endpoints for slice X, method Y" to round-robin among them. DHT is optimized for point lookups, not range queries. The `EndpointKey` format `endpoints/group:artifact:version/method:instance` means finding all endpoints for a slice+method would require scanning all instance keys across all nodes.
+
+**Solution:** Every node maintains a **local query index** rebuilt from DHT subscription events. The DHT is used for **durability and replication**; the local index serves all read patterns at zero network hops.
+
+#### How It Works
+
+1. Each node subscribes to the `endpoints` ReplicatedMap (via `MapSubscription`).
+2. On each `onPut` event, the node inserts the endpoint into its local index.
+3. On each `onRemove` event, the node removes it from the local index.
+4. All read patterns -- find-all, round-robin, exclude, affinity, version-weighted routing -- query the local index directly.
+
+#### Data Structure
+
+The local index is the same structure as the current `EndpointRegistry`:
+
+```java
+/// Map from (artifact, method) to the list of available endpoints with round-robin state.
+Map<EndpointLookupKey, EndpointSelectionState> localIndex;
+
+/// Where:
+record EndpointLookupKey(ArtifactId artifact, String method) {}
+
+/// Holds the endpoint list + round-robin counter + version-tagged subsets
+class EndpointSelectionState {
+    List<EndpointEntry> endpoints;
+    AtomicInteger roundRobinCounter;
+    Map<Version, List<EndpointEntry>> byVersion;  // for rolling update routing
+}
+```
+
+#### EndpointRegistry: Repurposed, Not Replaced
+
+`EndpointRegistry` is **preserved** as the local query index. Its role changes:
+
+| Aspect | Phase 1 (current) | Phase 2 (P2a) |
+|---|---|---|
+| Data source | Consensus `ValuePut`/`ValueRemove` notifications | DHT `MapSubscription` events |
+| Scope | Core node endpoints only | All endpoints (core + worker) |
+| Query API | `findEndpoints()`, `selectEndpoint()`, `selectEndpointByAffinity()` | **Unchanged** -- same API |
+| Consumers | `SliceInvoker` | **Unchanged** -- `SliceInvoker` still queries `EndpointRegistry` |
+
+The migration is a data source swap, not an API change. `SliceInvoker` continues to call `EndpointRegistry.findEndpoints()` and `selectEndpoint()` -- the only change is how `EndpointRegistry` populates its internal map.
+
+#### Startup and Recovery
+
+On node restart:
+1. Subscribe to DHT events for the `endpoints` map.
+2. Request a snapshot from the DHT (full scan of local replicas + remote fetch for non-local data).
+3. Build the local index from the snapshot.
+4. Process incremental events as they arrive.
+5. Anti-entropy fills any gaps from events missed during the snapshot window.
+
+#### Rolling Update Routing (Resolved)
+
+Rolling update routing (`selectEndpointWithFailover()` with version-weighted selection) works **unchanged** against the local index. The routing config stays in consensus (`VersionRoutingValue`); the endpoint data comes from the local index instead of consensus. The algorithm selects from `EndpointSelectionState.byVersion` -- same logic, different data source.
+
+#### Affinity Routing (Resolved)
+
+Affinity routing (`selectEndpointByAffinity(slice, method, nodeId)`) works **unchanged** against the local index. The local index holds all endpoints including node identity, so filtering by target node is a local operation -- identical to current `EndpointRegistry.selectEndpointByAffinity()`.
+
+### P2a.5 Endpoint Lifecycle and Cleanup
+
+When a worker crashes without removing its DHT entries, replicated entries persist on RF=3 nodes. Without cleanup, traffic routes to a dead worker causing failed invocations.
+
+#### Governor SWIM-Triggered Cleanup
+
+The governor handles endpoint cleanup on node failure, following the same pattern as CDM + deployments:
+
+1. **SWIM detects DEAD**: Governor's SWIM membership monitor detects a node as DEAD.
+2. **Governor removes entries**: Governor removes the dead node's entries from all DHT maps:
+   - `endpoints` map: all `EndpointKey` entries owned by the dead node
+   - `slice-nodes` map: all `SliceNodeKey` entries for the dead node
+   - `http-routes` map: all `HttpNodeRouteKey` entries for the dead node
+3. **Propagation**: DHT remove operations propagate to replicas; subscription events propagate to all nodes' local indices.
+4. **Idempotent**: If multiple nodes detect the death simultaneously, duplicate removes are harmless (DHT remove is idempotent).
+
+#### New Governor Reconciliation
+
+When a new governor is elected (previous governor died or left):
+1. New governor queries SWIM for current alive membership.
+2. New governor queries DHT for all entries attributed to nodes in its community.
+3. Entries for nodes NOT in SWIM alive set are removed from DHT.
+4. This handles the case where the old governor died before completing cleanup.
+
+#### Anti-Entropy Safety Net
+
+Periodic anti-entropy (every 30s via `DHTAntiEntropy`) reconciles DHT entries against SWIM-known-alive nodes:
+1. For each endpoint entry in local DHT storage, check if the owning node is ALIVE in any community's SWIM membership.
+2. Orphaned entries (owning node not alive anywhere) are removed.
+3. This catches edge cases: governor failover gaps, network partitions, split-brain recovery.
+
+### P2a.6 Startup / Replication Cooldown
 
 **Sequence**:
 
@@ -424,7 +561,7 @@ cooldown-rate = 10000     # entries/sec
 target-rf = 3
 ```
 
-### P2a.5 Migration from Consensus KV-Store
+### P2a.7 Migration from Consensus KV-Store
 
 Three key types move from consensus to DHT:
 
@@ -441,30 +578,31 @@ Three key types move from consensus to DHT:
 **Migration approach -- clean architectural cut, not a runtime toggle**:
 
 1. **Remove consensus code paths** for the three migrated key types:
-   - `EndpointRegistry.onEndpointPut()` / `onEndpointRemove()` -- replaced by `CachedReplicatedMap` subscription.
+   - `EndpointRegistry` consensus notification handlers (`onEndpointPut()` / `onEndpointRemove()` triggered by `ValuePut`/`ValueRemove`) -- replaced by DHT `MapSubscription` feeding the same `EndpointRegistry` local index.
    - `KVNotificationRouter` handlers for `EndpointKey`, `SliceNodeKey`, `HttpNodeRouteKey` -- removed.
    - `KVCommand.Put`/`Remove` calls for these key types in `NodeDeploymentManager`, `HttpRoutePublisher`, etc. -- replaced by `ReplicatedMap.put()`/`remove()`.
 
-2. **Replace dual registries with single map**:
-   - `EndpointRegistry` (consensus-backed) -> `CachedReplicatedMap<EndpointKey, EndpointValue>`.
-   - `WorkerEndpointRegistry` (non-consensus, governor-fed) -> same `CachedReplicatedMap`. Workers write directly.
-   - `WorkerGroupHealthReport` for endpoint delivery -> eliminated. Workers own their endpoint lifecycle.
+2. **Replace dual registries with unified local index**:
+   - `EndpointRegistry` -- **repurposed** (not replaced). Data source changes from consensus notifications to DHT `MapSubscription` events. Query API unchanged.
+   - `WorkerEndpointRegistry` (non-consensus, governor-fed) -- **eliminated**. Workers write directly to DHT; all endpoints appear in `EndpointRegistry` via DHT subscription.
+   - `WorkerGroupHealthReport` for endpoint delivery -- **eliminated**. Workers own their endpoint lifecycle via direct DHT writes.
 
 3. **Simplify SliceInvoker**:
-   - `selectCoreOrWorkerEndpoint()` (lines 1010-1022 of `SliceInvoker.java`) -> single map lookup via `endpointMap.get(key)`.
-   - `selectCoreOrWorkerEndpointOption()` (lines 673-678) -> single map lookup.
+   - `selectCoreOrWorkerEndpoint()` (lines 1010-1022 of `SliceInvoker.java`) -- replaced by single `EndpointRegistry` lookup (which now contains all endpoints, core and worker).
+   - `selectCoreOrWorkerEndpointOption()` (lines 673-678) -- same simplification.
    - Remove `workerEndpointRegistry` field and all `Option<WorkerEndpointRegistry>` handling.
+   - `SliceInvoker` still uses `EndpointRegistry` for all queries -- the interface does not change.
 
 4. **No flag-gating**: this is a version boundary change (0.19.x -> 0.20.0). Mixed-version clusters are not supported during this transition.
 
-### P2a.6 What This Replaces
+### P2a.8 What This Replaces
 
 | Before (Phase 1) | After (P2a) |
 |---|---|
-| `EndpointRegistry` (consensus-backed, core only) | `CachedReplicatedMap<EndpointKey, EndpointValue>` (DHT, all nodes) |
-| `WorkerEndpointRegistry` (non-consensus, governor-fed) | Same map; workers write directly |
-| `WorkerGroupHealthReport` for endpoint delivery | Eliminated; workers write own endpoints |
-| `selectCoreOrWorkerEndpoint()` dual-registry lookup | Single map lookup |
+| `EndpointRegistry` (consensus-backed, core only) | `EndpointRegistry` **repurposed as local query index**, fed by DHT `MapSubscription` instead of consensus notifications. Same API, broader scope (all nodes). |
+| `WorkerEndpointRegistry` (non-consensus, governor-fed) | **Eliminated**; workers write directly to DHT, endpoints appear in `EndpointRegistry` via subscription |
+| `WorkerGroupHealthReport` for endpoint delivery | **Eliminated**; workers write own endpoints |
+| `selectCoreOrWorkerEndpoint()` dual-registry lookup | Single `EndpointRegistry` lookup (contains all endpoints) |
 | `CoreEndpointReporter` (old P2c concept) | Unnecessary; unified storage |
 | Flag-gated migration (old P2c concept) | Unnecessary; clean version cut |
 
@@ -490,13 +628,16 @@ group-name = "default"
 zone = "us-east-1a"
 ```
 
-The combined `groupName:zone` string forms the **community identifier** used by the home-replica algorithm (DD-08).
+The combined `groupName:zone` string forms the **community identifier** used by the home-replica algorithm (DD-08). Core nodes use the fixed community identifier `"core"` (DD-17).
 
 ### P2b.2 Topology Model
 
 ```
 Cluster
-  +-- Core Nodes (consensus participants, DHT participants)
+  +-- Core Community: core (DD-17)
+  |     +-- Core Node 1 (consensus + DHT participant, home replicas for "core")
+  |     +-- Core Node 2
+  |     +-- Core Node 3
   +-- Worker Community: default:us-east-1a
   |     +-- Worker Node 1 (DHT participant, home replicas for this community)
   |     +-- Worker Node 2
@@ -509,11 +650,13 @@ Cluster
         +-- ...
 ```
 
-Each community elects its own governor independently (same `GovernorElection` algorithm: lowest ALIVE NodeId, sticky incumbent). Governor responsibilities in P2b:
+Each community elects its own governor independently (same `GovernorElection` algorithm: lowest ALIVE NodeId, sticky incumbent). Core nodes do not elect a governor -- they use consensus for coordination. Governor responsibilities in P2b:
 
 - **Decision relay** within community (unchanged from Phase 1).
 - **Mutation forwarding** to core (unchanged from Phase 1).
 - **Health reporting** to core (membership only; endpoint delivery is now via DHT per P2a).
+- **DHT cross-community routing** (DD-16) -- governor routes DHT traffic to/from peer governors.
+- **SWIM-triggered cleanup** -- governor removes dead node entries from DHT (P2a.5).
 
 ### P2b.3 Node Registration
 
@@ -522,9 +665,10 @@ On startup, a worker node:
 1. Receives activation directive from CDM via consensus (`ActivationDirectiveKey`/`Value`).
 2. Joins SWIM group for its community.
 3. Joins DHT ring (if non-spot).
-4. Writes its own endpoints directly to the `endpoints` ReplicatedMap (via DHT).
-5. Writes its `SliceNodeKey`/`Value` to the `slice-nodes` ReplicatedMap.
-6. Governor reports community membership (node IDs, health) to core -- but NOT endpoint data.
+4. Subscribes to DHT events and builds local query index (P2a.4).
+5. Writes its own endpoints directly to the `endpoints` ReplicatedMap (via DHT).
+6. Writes its `SliceNodeKey`/`Value` to the `slice-nodes` ReplicatedMap.
+7. Governor reports community membership (node IDs, health) to core -- but NOT endpoint data.
 
 ### P2b.4 CDM Awareness
 
@@ -536,14 +680,21 @@ The `ClusterDeploymentManager` gains zone-awareness:
 
 ### P2b.5 Cross-Group Routing
 
-All cross-group calls route through core (DD-04). The flow:
+**Slice invocations** across groups route through core (DD-04). The flow:
 
 1. Worker A in community X invokes `SliceInvoker.invoke(artifact, method, request)`.
-2. SliceInvoker queries `endpointMap.get(endpointKey)` -- the `CachedReplicatedMap`.
+2. SliceInvoker queries `EndpointRegistry` (local query index, P2a.4).
 3. If the target endpoint is on a node in community Y, the request goes to core (via governor of community X).
 4. Core forwards to the target node (which may be in community Y).
 
-Within the same community, direct worker-to-worker invocation is possible since both are DHT participants with the same endpoint map.
+**DHT traffic** across communities routes through the governor mesh (DD-16), NOT through core:
+
+1. Worker A writes an endpoint to DHT.
+2. DHT determines replica nodes include a node in community Y.
+3. Replication: Worker A -> Governor of community X -> Governor of community Y -> target replica node.
+4. Core is not involved in DHT replication traffic.
+
+Within the same community, both slice invocations and DHT traffic use direct worker-to-worker communication.
 
 ### P2b.6 Configuration
 
@@ -673,7 +824,7 @@ Assumptions:
 
 > Note: The 60M figure in DD-12 assumes a higher I (instances) count. With I=2, total is ~5.6M. With I=12 (high-density deployment), total reaches ~60M. Both are within DHT capacity.
 
-### Per-Node Storage
+### Per-Node DHT Storage
 
 With RF=3 distributed across 10K nodes:
 
@@ -695,6 +846,30 @@ Per node = (3 / 10,000) x 60,000,000 x ~200B + ~500KB
 
 Both are trivially small for modern servers.
 
+### Per-Node Local Query Index Memory
+
+Every node holds a **complete** local query index of all endpoints (rebuilt from DHT subscription events). This is a full copy, not partitioned.
+
+```
+Local index = TotalEndpoints x AvgEntrySize
+            = 5,000,000 x ~200B = ~1GB (at I=2)
+            = 60,000,000 x ~200B = ~12GB (at I=12)
+```
+
+The 12GB figure at I=12 is significant. Mitigations:
+
+1. **Compact representation**: The local index stores `EndpointEntry` (nodeId + address + port + version), not the full DHT key/value. Realistic per-entry size is ~80B, not 200B:
+   ```
+   5,000,000 x 80B = ~400MB (I=2) -- acceptable
+   60,000,000 x 80B = ~4.8GB (I=12) -- significant but feasible for server-class nodes
+   ```
+
+2. **Selective subscription**: Nodes can subscribe only to artifacts they need (slices they deploy or invoke). A node deploying 10 of 50 slices reduces index size by 80%.
+
+3. **Index-per-community optimization** [FUTURE]: For very large clusters, the local index could be limited to same-community endpoints + cross-community endpoints for slices the node invokes. Not needed at I=2.
+
+[ASSUMPTION] For initial implementation, every node holds the full local index. Selective subscription is a performance optimization added if memory becomes a concern.
+
 ### Write Amplification
 
 - **DHT (P2a)**: 3x constant (RF=3). A single endpoint registration = 3 writes.
@@ -705,14 +880,14 @@ Both are trivially small for modern servers.
 
 | Scenario | Latency |
 |----------|---------|
-| Local cache hit | 0 (in-process) |
-| Home replica hit (same community) | 0 (local storage) |
-| DHT hop (cross-community) | 1 network round-trip |
+| Local query index hit | 0 (in-process HashMap lookup) |
+| Home replica hit (same community, point lookup) | 0 (local storage) |
+| DHT hop (cross-community, point lookup) | 1 network round-trip |
 | Cache miss + DHT hop + cache populate | 1 network round-trip + local write |
 
 For endpoint lookups in `SliceInvoker`:
-- Same-community invocations: always local (home-replica guarantees it).
-- Cross-community invocations: 1 hop, then cached for TTL duration.
+- **All invocations**: local query index hit (0 hops). The local index holds all endpoints.
+- Point lookups via `CachedReplicatedMap` are used for `slice-nodes` and `http-routes` where range queries are not needed.
 
 ### DHT Ring Size
 
@@ -725,6 +900,16 @@ Memory = 1,500,000 x ~40B = ~60MB per node
 
 This is manageable. If memory becomes a concern at extreme scale, virtual node count can be reduced (50 vnodes still provides good distribution with 10K physical nodes).
 
+### Governor Mesh Connection Budget
+
+At 100 communities:
+```
+Connections per governor = 99 (one to each peer governor)
+Total governor mesh connections = 100 x 99 / 2 = 4,950
+```
+
+Each connection is a single TCP connection with DHT message multiplexing. Trivial resource usage.
+
 ## Task Breakdown
 
 ### P2a Tasks (DHT-Backed ReplicatedMap)
@@ -733,35 +918,44 @@ This is manageable. If memory becomes a concern at extreme scale, virtual node c
 |----|------|------------|----------|
 | P2a-01 | Create `aether/aether-dht` module with `ReplicatedMap<K,V>` interface | -- | 2d |
 | P2a-02 | Implement `ReplicatedMapFactory` with namespace-prefixed DHT operations | P2a-01 | 2d |
-| P2a-03 | Implement `ReplicationPolicy` with home-replica resolver | P2a-01 | 3d |
+| P2a-03 | Implement `ReplicationPolicy` with home-replica resolver (including DD-17: core community) | P2a-01 | 3d |
 | P2a-04 | Extend `ConsistentHashRing` with spot-node exclusion filter | P2a-03 | 1d |
 | P2a-05 | Implement `CachedReplicatedMap` with LRU cache + TTL | P2a-02 | 2d |
 | P2a-06 | Implement `MapSubscription` (local + remote event aggregation) | P2a-02 | 2d |
 | P2a-07 | Implement replication cooldown (RF=1 -> RF=3 background process) | P2a-02, P2a-03 | 3d |
-| P2a-08 | Create `endpoints` map: replace `EndpointRegistry` consensus wiring | P2a-05 | 3d |
-| P2a-09 | Create `slice-nodes` map: replace `SliceNodeKey` consensus wiring | P2a-05 | 2d |
-| P2a-10 | Create `http-routes` map: replace `HttpNodeRouteKey` consensus wiring | P2a-05 | 2d |
-| P2a-11 | Simplify `SliceInvoker`: remove dual-registry pattern | P2a-08 | 2d |
-| P2a-12 | Eliminate `WorkerEndpointRegistry` and `WorkerGroupHealthReport` endpoint path | P2a-08, P2a-11 | 1d |
-| P2a-13 | Wire DHT participation into `WorkerNode` (non-spot workers join ring, write endpoints) | P2a-08 | 2d |
-| P2a-14 | Wire DHT participation into `AetherNode` (core nodes join ring) | P2a-08 | 1d |
-| P2a-15 | Add `dht.replication` configuration to `AetherNodeConfig` | P2a-07 | 1d |
-| P2a-16 | Integration tests: ReplicatedMap operations (put/get/remove/subscribe) | P2a-06 | 2d |
-| P2a-17 | Integration tests: replication cooldown and anti-entropy repair | P2a-07 | 2d |
-| P2a-18 | Integration tests: endpoint migration (verify SliceInvoker works with DHT) | P2a-11 | 2d |
+| P2a-08 | Implement local query index: `EndpointRegistry` fed by DHT subscription | P2a-06 | 3d |
+| P2a-09 | Create `endpoints` map: wire `EndpointRegistry` to DHT subscription events | P2a-08, P2a-05 | 3d |
+| P2a-10 | Create `slice-nodes` map: replace `SliceNodeKey` consensus wiring | P2a-05 | 2d |
+| P2a-11 | Create `http-routes` map: replace `HttpNodeRouteKey` consensus wiring | P2a-05 | 2d |
+| P2a-12 | Simplify `SliceInvoker`: remove dual-registry pattern, use unified `EndpointRegistry` | P2a-09 | 2d |
+| P2a-13 | Eliminate `WorkerEndpointRegistry` and `WorkerGroupHealthReport` endpoint path | P2a-09, P2a-12 | 1d |
+| P2a-14 | Implement governor SWIM-triggered cleanup (dead node entry removal from DHT) | P2a-09, P2a-06 | 2d |
+| P2a-15 | Implement governor reconciliation on election (DHT vs. SWIM membership) | P2a-14 | 1d |
+| P2a-16 | Implement anti-entropy safety net (periodic DHT vs. SWIM reconciliation) | P2a-14 | 1d |
+| P2a-17 | Implement governor-to-governor mesh for DHT cross-community traffic (DD-16) | P2a-02 | 3d |
+| P2a-18 | Governor discovery via core (community membership distribution) | P2a-17 | 1d |
+| P2a-19 | Wire DHT participation into `WorkerNode` (non-spot workers join ring, write endpoints) | P2a-09 | 2d |
+| P2a-20 | Wire DHT participation into `AetherNode` (core nodes join ring, community = `core`) | P2a-09, P2a-03 | 1d |
+| P2a-21 | Add `dht.replication` configuration to `AetherNodeConfig` | P2a-07 | 1d |
+| P2a-22 | Integration tests: ReplicatedMap operations (put/get/remove/subscribe) | P2a-06 | 2d |
+| P2a-23 | Integration tests: local query index rebuild from DHT events | P2a-08 | 2d |
+| P2a-24 | Integration tests: governor SWIM-triggered cleanup | P2a-14 | 2d |
+| P2a-25 | Integration tests: governor-to-governor mesh DHT routing | P2a-17 | 2d |
+| P2a-26 | Integration tests: replication cooldown and anti-entropy repair | P2a-07 | 2d |
+| P2a-27 | Integration tests: endpoint migration (verify SliceInvoker works with DHT-fed EndpointRegistry) | P2a-12 | 2d |
 
-**P2a Total: ~33 days**
+**P2a Total: ~49 days**
 
 ### P2b Tasks (Multi-Group + Zone-Aware Grouping)
 
 | ID | Task | Depends On | Estimate |
 |----|------|------------|----------|
-| P2b-01 | Add `groupName` and `zone` to worker configuration | P2a-13 | 1d |
+| P2b-01 | Add `groupName` and `zone` to worker configuration | P2a-19 | 1d |
 | P2b-02 | Multi-community SWIM: separate SWIM groups per community | P2b-01 | 3d |
 | P2b-03 | Multi-community governor election (one per community) | P2b-02 | 2d |
 | P2b-04 | CDM zone-aware placement policy | P2b-01 | 3d |
 | P2b-05 | Worker slice directives with community targeting | P2b-04 | 2d |
-| P2b-06 | Cross-group routing through core | P2b-03 | 2d |
+| P2b-06 | Cross-group routing through core (slice invocations) | P2b-03 | 2d |
 | P2b-07 | Community membership reporting (governor -> core) | P2b-03 | 1d |
 | P2b-08 | CLI commands for multi-group topology inspection | P2b-07 | 2d |
 | P2b-09 | Integration tests: multi-community deployment and routing | P2b-06 | 3d |
@@ -782,7 +976,7 @@ This is manageable. If memory becomes a concern at extreme scale, virtual node c
 
 **P2c Total: ~13 days**
 
-### Grand Total: ~65 days
+### Grand Total: ~81 days
 
 ## Testing Strategy
 
@@ -792,10 +986,12 @@ This is manageable. If memory becomes a concern at extreme scale, virtual node c
 |------|-------|
 | `ReplicatedMap` API | put/get/remove/subscribe with mock DHT |
 | `CachedReplicatedMap` | cache hit/miss/eviction/TTL expiry |
-| `HomeReplicaResolver` | community extraction, node selection, edge cases |
+| `HomeReplicaResolver` | community extraction, node selection, edge cases, `"core"` community for core nodes |
 | `ReplicationPolicy` | spot exclusion, RF degradation, home-replica fallback |
 | Replication cooldown | RF=1 -> RF=3 transition, rate limiting |
-| `SliceInvoker` (simplified) | single-map lookup, no dual-registry |
+| Local query index | Build from events, update on put/remove, round-robin correctness, version-weighted selection |
+| `SliceInvoker` (simplified) | single `EndpointRegistry` lookup, no dual-registry |
+| Governor cleanup | SWIM DEAD triggers DHT entry removal, idempotent removes |
 
 ### Integration Tests
 
@@ -804,6 +1000,13 @@ This is manageable. If memory becomes a concern at extreme scale, virtual node c
 | DHT ReplicatedMap end-to-end | Multi-node put/get/remove with real DHT |
 | Anti-entropy repair | Inject inconsistency, verify repair |
 | Replication cooldown | Boot cluster, verify RF=1 -> RF=3 |
+| Local query index rebuild | Restart node, verify index rebuilds from DHT snapshot + events |
+| Local query index consistency | Kill node, verify index removes dead node endpoints via subscription |
+| Governor SWIM-triggered cleanup | Kill worker, verify governor removes entries from DHT |
+| Governor reconciliation on election | Kill governor, verify new governor cleans up stale entries |
+| Anti-entropy vs. SWIM membership | Inject orphan entries, verify periodic cleanup |
+| Governor-to-governor mesh | Cross-community DHT put, verify replication without core involvement |
+| Governor mesh discovery | Add new community, verify governors discover and connect |
 | Endpoint migration | Deploy slice, verify endpoints in DHT (not consensus) |
 | Multi-community routing | Cross-community invocation via core |
 | Spot lifecycle | Join -> write -> preempt -> verify no rebalance |
@@ -812,10 +1015,12 @@ This is manageable. If memory becomes a concern at extreme scale, virtual node c
 
 | Scenario | Verification |
 |----------|-------------|
-| 3-core + 6-worker cluster | Endpoints in DHT, SliceInvoker routes correctly |
-| Worker join/leave | DHT rebalancing, endpoint availability |
+| 3-core + 6-worker cluster | Endpoints in DHT, SliceInvoker routes correctly via local index |
+| Worker join/leave | DHT rebalancing, endpoint availability, local index updates |
+| Worker crash (no graceful shutdown) | Governor cleanup removes stale entries, local indices updated |
 | Spot preemption | Zero rebalance, endpoint cleanup |
 | Multi-community deployment | Zone-aware placement, cross-group routing |
+| Governor failure | New governor reconciles, DHT cleanup completes |
 
 ## Migration and Rollback
 
@@ -824,8 +1029,9 @@ This is manageable. If memory becomes a concern at extreme scale, virtual node c
 1. **Stop all 0.19.x nodes.** Mixed-version clusters are not supported for this transition.
 2. **Deploy 0.20.0.** Core and worker nodes start with DHT enabled.
 3. **On startup**, nodes write their endpoints to DHT instead of consensus.
-4. **Consensus KV-store** still holds blueprints, targets, etc. -- no migration needed for those.
-5. **Stale endpoint entries** in consensus (from 0.19.x) are harmless: `KVNotificationRouter` no longer has handlers for `EndpointKey`, so they are ignored. They will be cleaned up by the next consensus snapshot.
+4. **Local query index** builds from DHT subscription events -- replaces both `EndpointRegistry` consensus path and `WorkerEndpointRegistry`.
+5. **Consensus KV-store** still holds blueprints, targets, etc. -- no migration needed for those.
+6. **Stale endpoint entries** in consensus (from 0.19.x) are harmless: `KVNotificationRouter` no longer has handlers for `EndpointKey`, so they are ignored. They will be cleaned up by the next consensus snapshot.
 
 ### Rollback (0.20.0 -> 0.19.x)
 
@@ -841,6 +1047,19 @@ This is manageable. If memory becomes a concern at extreme scale, virtual node c
 - Feature flag to switch reads from consensus to DHT.
 - Once all nodes are 0.20.0, disable consensus writes for migrated types.
 
+## Open Issues (Resolved)
+
+The following issues were identified during architectural review and have been resolved with design decisions incorporated into this spec:
+
+| Issue | Resolution | Spec Section |
+|---|---|---|
+| Endpoint selection is a range query, not a point lookup | Local query index fed by DHT subscriptions | P2a.4 |
+| Stale endpoint cleanup on worker crash | Governor SWIM-triggered cleanup + anti-entropy safety net | P2a.5 |
+| Rolling update routing with DHT storage | Works unchanged against local query index | P2a.4 (Rolling Update Routing) |
+| Affinity routing with DHT storage | Works unchanged against local query index | P2a.4 (Affinity Routing) |
+| DHT network transport for workers | Governor-to-governor mesh (DD-16) | DD-16, DHT Network Topology |
+| Core node home replica community | Core nodes form community `"core"` (DD-17) | DD-17, P2a.2, P2a.3 |
+
 ## References
 
 ### Internal References
@@ -848,6 +1067,7 @@ This is manageable. If memory becomes a concern at extreme scale, virtual node c
 | Reference | Path |
 |-----------|------|
 | Phase 1 spec | `aether/docs/specs/passive-worker-pools-spec.md` |
+| Phase 2 open issues (resolved) | `aether/docs/internal/phase2-open-issues.md` |
 | DHT module | `integrations/dht/` |
 | DHTConfig | `integrations/dht/src/main/java/org/pragmatica/dht/DHTConfig.java` |
 | ConsistentHashRing | `integrations/dht/src/main/java/org/pragmatica/dht/ConsistentHashRing.java` |
