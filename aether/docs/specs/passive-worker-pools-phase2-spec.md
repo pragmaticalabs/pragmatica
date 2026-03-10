@@ -1,4 +1,4 @@
-# Passive Worker Pools -- Phase 2: Multi-Group Topology
+# Passive Worker Pools -- Phase 2: DHT-Backed Runtime + Multi-Group Topology
 
 | Field       | Value                                          |
 |-------------|------------------------------------------------|
@@ -11,7 +11,7 @@
 
 ## Summary
 
-Phase 2 extends the flat worker pool architecture delivered in Phase 1 to support multi-group topology with zone-aware grouping, spot instance pools, and flag-gated KV-store migration for endpoint resolution. The architecture must support 10K worker nodes. Workers run any workload including scheduled tasks and pub/sub -- these capabilities are cross-cutting and not deferred.
+Phase 2 introduces a DHT-backed ReplicatedMap as foundational infrastructure for runtime state (P2a), then builds multi-group topology with zone-aware grouping (P2b) and spot instance pools (P2c) on top. The DHT replaces the consensus KV-store for high-cardinality runtime data (endpoints, slice-node mappings, HTTP routes), eliminating the O(N) consensus bottleneck and enabling the architecture to support 10K worker nodes. Workers run any workload including scheduled tasks and pub/sub -- these capabilities are cross-cutting and not deferred.
 
 ## Background: Phase 1 Recap
 
@@ -25,1055 +25,860 @@ Phase 1 (v0.19.3) delivered:
   - `aether/worker/src/main/java/.../worker/governor/DecisionRelay.java`
 - **MutationForwarder** -- workers forward mutations to core via governor.
   - `aether/worker/src/main/java/.../worker/mutation/MutationForwarder.java`
-- **WorkerNetwork** -- TCP network for inter-worker communication (Decision relay, mutation forwarding).
-  - `aether/worker/src/main/java/.../worker/network/WorkerNetwork.java`
-- **WorkerBootstrap** -- KV state snapshot bootstrap for newly joining workers.
-  - `aether/worker/src/main/java/.../worker/bootstrap/WorkerBootstrap.java`
-- **WorkerEndpointRegistry** -- non-consensus registry of worker-hosted slice endpoints, populated by governor health reports.
-  - `aether/aether-invoke/src/main/java/.../endpoint/WorkerEndpointRegistry.java`
-- **WorkerGroupHealthReport** -- health report from governor to core; carries endpoints and members.
+- **WorkerGroupHealthReport** -- governor sends periodic health reports to core with worker endpoint data.
   - `aether/aether-invoke/src/main/java/.../endpoint/WorkerGroupHealthReport.java`
-- **WorkerEndpointEntry** -- endpoint record for a slice method on a worker.
-  - `aether/aether-invoke/src/main/java/.../endpoint/WorkerEndpointEntry.java`
-- **CoreSwimHealthDetector** -- core-to-core SWIM health detection.
-  - `aether/node/src/main/java/.../node/health/CoreSwimHealthDetector.java`
-- **WorkerConfig** -- configuration record for worker nodes (coreNodes, clusterPort, swimPort, swimSettings, sliceConfig).
-  - `aether/aether-config/src/main/java/.../config/WorkerConfig.java`
-- **AllocationPool** -- pool of allocatable nodes combining core and worker nodes.
-  - `aether/aether-deployment/src/main/java/.../deployment/cluster/AllocationPool.java`
-- **PlacementPolicy** -- enum: `CORE_ONLY`, `WORKERS_PREFERRED`, `WORKERS_ONLY`, `ALL`.
-  - `aether/aether-config/src/main/java/.../config/PlacementPolicy.java`
-- **WorkerRoutes** -- management API routes: `/api/workers`, `/api/workers/health`, `/api/workers/endpoints`.
-  - `aether/node/src/main/java/.../api/routes/WorkerRoutes.java`
-- **CDM pool awareness** -- `ClusterDeploymentManager` builds `AllocationPool` from core nodes + `WorkerEndpointRegistry.allWorkerNodeIds()`.
-  - `aether/aether-deployment/src/main/java/.../deployment/cluster/ClusterDeploymentManager.java`
+- **WorkerEndpointRegistry** -- non-consensus registry populated by governor health reports, queried by `SliceInvoker`.
+  - `aether/aether-invoke/src/main/java/.../endpoint/WorkerEndpointRegistry.java`
+- **EndpointRegistry** -- consensus-backed registry for core node endpoints, watches KV-store `ValuePut`/`ValueRemove` notifications.
+  - `aether/aether-invoke/src/main/java/.../endpoint/EndpointRegistry.java`
+- **SliceInvoker** -- dual-registry lookup via `selectCoreOrWorkerEndpoint()` and `selectCoreOrWorkerEndpointOption()`.
+  - `aether/aether-invoke/src/main/java/.../invoke/SliceInvoker.java`
 
-Phase 1 limitations addressed by Phase 2:
-- Single flat group (all workers in one SWIM cluster)
-- No zone awareness
-- No spot instance support
-- Endpoint resolution always goes through consensus KV-store first, falling back to `WorkerEndpointRegistry`
-- Workers do not run scheduled tasks or pub/sub
+### Phase 1 Limitations
+
+1. **Single flat worker group** -- no multi-group, no zone awareness.
+2. **Governor bottleneck** -- all worker mutations and health reports funnel through a single governor per group.
+3. **Dual-registry pattern** -- `EndpointRegistry` (consensus-backed, core only) and `WorkerEndpointRegistry` (non-consensus, governor-fed) create separate code paths for core vs. worker endpoint resolution.
+4. **Consensus KV-store scalability ceiling** -- at 10K nodes, endpoint entries alone (O(N x S x M x I)) would flood the consensus log. The current `KVStore` (`integrations/cluster/src/main/java/.../kvstore/KVStore.java`) replicates every put/remove through Rabia consensus -- O(60M) entries at scale is not viable.
+5. **No spot instance support** -- no preemption handling or eviction-aware scheduling.
 
 ## Design Decisions
 
-These are user-specified and MUST be followed exactly:
+### Unchanged from Phase 1 spec
 
-| # | Decision | Detail |
-|---|----------|--------|
-| 1 | Cloud Integration SPI available | SPI is already implemented (`EnvironmentIntegration`, `ComputeProvider`). Spot pool assumes the SPI is available. Local env SPI also provided. |
-| 2 | Scale target: 10K workers | Architecture must support 10,000 worker nodes. No cloud stress testing now, but all data structures and protocols must scale. |
-| 3 | KV-store migration is flag-gated | Both old (consensus KV) and new (WorkerEndpointRegistry) paths coexist. Defaults to old behavior. |
-| 4 | Sub-phase ordering is strict | P2a -> P2b -> P2c. Each sub-phase is independently shippable. |
-| 5 | Cross-group routing always through core | No governor-to-governor direct communication. |
-| 6 | Workers run ANY load | Scheduled tasks and pub/sub support on workers. NOT deferred to Phase 3. |
+| # | Decision | Rationale |
+|---|----------|-----------|
+| DD-01 | Cloud Integration SPI available | Plug in cloud-specific APIs (ASG, spot signals) without core coupling |
+| DD-02 | Scale target: 10K worker nodes | Drives all capacity math and architectural choices |
+| DD-03 | Sub-phase ordering: strict P2a -> P2b -> P2c | Each phase builds on the prior; no parallel implementation |
+| DD-04 | Cross-group routing: always through core | Core nodes are the only consensus participants; cross-group calls route via core to maintain topology isolation |
+| DD-05 | Workers run ANY load (scheduled tasks, pub/sub) | Not deferred to a future phase |
+
+### NEW: Storage architecture
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| DD-06 | DHT-backed ReplicatedMap replaces consensus KV-store for heavy runtime data | Consensus replication cost is O(N) per entry; DHT replication cost is O(RF) = O(3). At 60M entries, consensus is infeasible. |
+| DD-07 | All non-spot nodes participate in DHT with full protocol support | Spot nodes excluded from replica selection to avoid replica rearrangement churn on preemption. Non-spot workers are full DHT participants. |
+| DD-08 | Replication strategy: RF=3 with home-replica rule | 1 home replica (deterministic community-local placement) + 2 ring replicas (standard consistent hashing). Total write amplification = 3x. Home replica guarantees local reads for a community's own data. |
+| DD-09 | Core nodes are regular DHT participants, NOT super-replicas | No special role. Same local LRU cache + DHT fallback as everyone else. Avoids O(N) storage on core. |
+| DD-10 | Local LRU cache with TTL on every node | `ReplicatedMap` API: `.withLocalCache(Duration)` returns `CachedReplicatedMap<K, V>`. Local cache first, DHT fallback on miss, auto-populate. Unified for core and worker. |
+| DD-11 | Startup optimization: replication cooldown | Boot with RF=1 (writer is sole replica). Serve traffic immediately. Background replication gradually builds to RF=3. Decouples availability from durability. |
+| DD-12 | Three data types move from consensus to DHT | `EndpointKey/Value` (O(N x S x M x I)), `SliceNodeKey/Value` (O(N x S)), `HttpNodeRouteKey/Value` (O(N x R)). Everything else stays in consensus (<1MB). |
+| DD-13 | Workers write their own endpoints directly to DHT | No governor batching. Each worker is a DHT participant and writes directly. Simpler than `WorkerGroupHealthReport`-based approach. |
+| DD-14 | Separate named maps | `dht.createMap("endpoints", policy)`, `dht.createMap("slice-nodes", policy)`, `dht.createMap("http-routes", policy)`. Not a single map with key discrimination. |
+| DD-15 | Generic `ReplicatedMap<K, V>` API | Usable for any future use case, not just endpoints. Infrastructure primitive. |
 
 ## Architecture
 
-### Multi-Group Topology (ASCII Diagram)
+### Component Diagram
 
 ```
-                    +-------------------+
-                    |   Core Cluster    |
-                    | (Rabia Consensus) |
-                    |  N1   N2   N3    |
-                    +--------+----------+
-                             |
-              +--------------+--------------+
-              |              |              |
-     +--------v---+   +-----v------+  +----v-------+
-     | Group A    |   | Group B    |  | Group C    |
-     | zone-us-e1 |   | zone-us-w1 |  | zone-eu-w1 |
-     | (MAIN)     |   | (MAIN)     |  | (SPOT)     |
-     +------------+   +------------+  +------------+
-     | Gov + 49W  |   | Gov + 49W  |  | Gov + 29W  |
-     | SWIM scope |   | SWIM scope |  | SWIM scope |
-     +------------+   +------------+  +------------+
+                    +-----------------------+
+                    |    Consensus Layer    |
+                    | (Rabia, KVStore)      |
+                    | blueprints, targets,  |
+                    | config, routing rules,|
+                    | lifecycle, directives |
+                    +-----------+-----------+
+                                |
+                    +-----------v-----------+
+                    |    DHT Layer          |
+                    | (ReplicatedMap)       |
+                    | endpoints,            |
+                    | slice-nodes,          |
+                    | http-routes           |
+                    +-----------+-----------+
+                                |
+          +---------------------+---------------------+
+          |                     |                     |
++---------v---------+ +---------v---------+ +---------v---------+
+| Core Node         | | Worker Node       | | Worker Node       |
+| - DHT participant | | - DHT participant | | (spot)            |
+| - Consensus voter | | - Direct DHT      | | - DHT reader only |
+| - LRU cache       | |   writes          | | - NOT replica     |
+| - SliceInvoker    | | - LRU cache       | |   target          |
++-------------------+ +-------------------+ +-------------------+
 ```
 
-- Each group runs its own SWIM protocol instance (group-scoped probing)
-- Groups are formed by zone prefix extracted from NodeId
-- Each group has its own governor election
-- Cross-group routing: Worker -> Governor -> Core -> (Core routes to target governor) -> Target worker
-- SWIM message volume per group: O(group_size), not O(total_workers)
-
-### Data Flow: Endpoint Resolution (Phase 2 Final State)
+### Data Placement
 
 ```
-  Client Request
-       |
-       v
-  SliceInvoker.selectEndpoint()
-       |
-       +-- [flag=OFF] --> EndpointRegistry (consensus KV) --> WorkerEndpointRegistry (fallback)
-       |
-       +-- [flag=ON]  --> WorkerEndpointRegistry (primary) --> EndpointRegistry (fallback)
+Consensus KV-Store (< 1MB total, all nodes via Rabia):
+  - AppBlueprintKey/Value        (O(B) ~ tens)
+  - SliceTargetKey/Value         (O(S) ~ hundreds)
+  - VersionRoutingKey/Value      (O(S) ~ hundreds)
+  - RollingUpdateKey/Value       (O(U) ~ ones)
+  - PreviousVersionKey/Value     (O(S) ~ hundreds)
+  - LogLevelKey/Value            (O(L) ~ tens)
+  - ConfigKey/Value              (O(C) ~ tens)
+  - AlertThresholdKey/Value      (O(A) ~ tens)
+  - ObservabilityDepthKey/Value  (O(D) ~ tens)
+  - NodeLifecycleKey/Value       (O(N) ~ hundreds)
+  - WorkerSliceDirectiveKey/Value (O(S) ~ hundreds)
+  - ActivationDirectiveKey/Value (O(N) ~ hundreds)
+  - TopicSubscriptionKey/Value   (O(T) ~ tens)
+  - ScheduledTaskKey/Value       (O(K) ~ tens)
+
+DHT ReplicatedMap (60M+ entries, distributed across N nodes):
+  - "endpoints" map:   EndpointKey -> EndpointValue    O(N x S x M x I)
+  - "slice-nodes" map: SliceNodeKey -> SliceNodeValue   O(N x S)
+  - "http-routes" map: HttpNodeRouteKey -> HttpNodeRouteValue  O(N x R)
 ```
 
-### Data Flow: Worker Group Health Reporting
+## P2a: DHT-Backed ReplicatedMap
+
+### P2a.1 Generic ReplicatedMap API
+
+A new generic `ReplicatedMap<K, V>` abstraction layered on top of the existing `integrations/dht` module. The DHT module provides raw `byte[]`-level operations; `ReplicatedMap` adds typed keys/values, serialization, named maps, local caching, and the home-replica rule.
+
+#### New Module
 
 ```
-  Worker Node (follower)
-       |  SWIM membership
-       v
-  Governor Node (per group)
-       |  WorkerGroupHealthReport (includes zone, pool type, resource averages)
-       v
-  Core Node (any)
-       |  registerWorkerEndpoints()
-       v
-  WorkerEndpointRegistry
-       |  (grouped by groupId)
-       v
-  SliceInvoker (endpoint selection)
+aether/aether-dht/
+  src/main/java/org/pragmatica/aether/dht/
+    ReplicatedMap.java
+    CachedReplicatedMap.java
+    ReplicatedMapFactory.java
+    ReplicationPolicy.java
+    HomeReplicaResolver.java
+    ReplicatedMapConfig.java
+    MapSubscription.java
+    ReplicatedMapError.java
 ```
 
-## P2a: Multi-Group + Zone-Aware Grouping
-
-### P2a-01: WorkerGroupId Value Object
-
-A distinct type from the existing `GroupId` (which is Maven artifact group ID). This represents a worker pool group identity.
-
-**File:** `aether/aether-config/src/main/java/org/pragmatica/aether/config/WorkerGroupId.java`
+#### Java API Signatures
 
 ```java
-package org.pragmatica.aether.config;
+/// aether/aether-dht/src/main/java/.../dht/ReplicatedMap.java
 
-import org.pragmatica.lang.Result;
-import org.pragmatica.serialization.Codec;
+/// Distributed map backed by DHT with typed keys and values.
+/// Thread-safe. All operations return Promise for async execution.
+///
+/// @param <K> key type (must be serializable)
+/// @param <V> value type (must be serializable)
+public interface ReplicatedMap<K, V> {
 
-import java.util.regex.Pattern;
+    /// Store a key-value pair. Replicates to RF nodes per ReplicationPolicy.
+    Promise<Unit> put(K key, V value);
 
-import static org.pragmatica.lang.Verify.Is;
-import static org.pragmatica.lang.Verify.ensure;
+    /// Retrieve a value by key. Reads from local replica or DHT.
+    Promise<Option<V>> get(K key);
 
-/// Identity of a worker group. Format: zone-prefix-based, e.g. "zone-us-east-1-group-0".
-@Codec
-public record WorkerGroupId(String id) implements Comparable<WorkerGroupId> {
-    private static final Pattern WORKER_GROUP_ID_PATTERN =
-        Pattern.compile("^[a-z][a-z0-9-]+-group-\\d+$");
+    /// Remove a key-value pair.
+    Promise<Unit> remove(K key);
 
-    public static Result<WorkerGroupId> workerGroupId(String id) {
-        return ensure(id, Is::matches, WORKER_GROUP_ID_PATTERN)
-                     .map(WorkerGroupId::new);
-    }
+    /// Subscribe to changes matching a key predicate.
+    /// Listener receives put and remove events.
+    MapSubscription<K, V> subscribe(java.util.function.Predicate<K> keyFilter,
+                                    MapListener<K, V> listener);
 
-    @Override
-    public int compareTo(WorkerGroupId other) {
-        return id.compareTo(other.id);
-    }
+    /// Wrap this map with a local LRU cache.
+    /// Reads check local cache first; misses fall through to DHT and auto-populate.
+    /// Entries expire after the given TTL.
+    CachedReplicatedMap<K, V> withLocalCache(java.time.Duration ttl);
 
-    @Override
-    public String toString() {
-        return id;
-    }
+    /// Get the map name (for monitoring/debugging).
+    String name();
+
+    /// Get approximate entry count across all replicas.
+    Promise<Long> approximateSize();
 }
 ```
 
-**Integration:** Used by `WorkerGroupHealthReport`, `WorkerEndpointRegistry`, `DecisionRelay`, `AllocationPool`.
-
-### P2a-02: ZoneExtractor
-
-Extracts zone from NodeId convention. NodeIds follow the format `zone-{region}-worker-{N}`.
-
-**File:** `aether/aether-config/src/main/java/org/pragmatica/aether/config/ZoneExtractor.java`
-
 ```java
-package org.pragmatica.aether.config;
+/// aether/aether-dht/src/main/java/.../dht/CachedReplicatedMap.java
 
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Option;
+/// ReplicatedMap wrapper with local LRU cache.
+/// All reads go to local cache first; misses go to DHT and auto-populate.
+/// Writes go to DHT and update local cache atomically.
+public interface CachedReplicatedMap<K, V> extends ReplicatedMap<K, V> {
 
-/// Extracts zone prefix from a NodeId following the convention:
-///   zone-us-east-1-worker-7  ->  zone-us-east-1
-///   zone-eu-west-1-worker-3  ->  zone-eu-west-1
-///
-/// Falls back to "default" zone when NodeId does not match the convention
-/// (backward-compatible with Phase 1 random NodeIds).
-public sealed interface ZoneExtractor {
-    record unused() implements ZoneExtractor {}
+    /// Get from local cache only (no DHT fallback).
+    /// Useful for best-effort reads where staleness is acceptable.
+    Option<V> getLocal(K key);
 
-    /// Default zone used when NodeId does not follow the zone convention.
-    String DEFAULT_ZONE = "default";
+    /// Invalidate a specific key in the local cache.
+    /// Does NOT remove from DHT.
+    Unit invalidateLocal(K key);
 
-    /// Extract zone prefix from a NodeId.
-    static String extractZone(NodeId nodeId) {
-        return parseZone(nodeId.id()).or(DEFAULT_ZONE);
-    }
+    /// Invalidate all entries in the local cache.
+    Unit invalidateAll();
 
-    private static Option<String> parseZone(String id) {
-        var workerIdx = id.lastIndexOf("-worker-");
-        if (workerIdx <= 0) {
-            return Option.empty();
+    /// Get cache statistics (hits, misses, evictions).
+    CacheStats stats();
+
+    /// Cache statistics record.
+    record CacheStats(long hits, long misses, long evictions, long size) {
+        public static CacheStats cacheStats(long hits, long misses, long evictions, long size) {
+            return new CacheStats(hits, misses, evictions, size);
         }
-        var zone = id.substring(0, workerIdx);
-        return zone.startsWith("zone-")
-               ? Option.some(zone)
-               : Option.empty();
     }
 }
 ```
 
-### P2a-03: GroupAssignment (Consistent Hashing)
-
-Assigns workers to groups based on zone prefix. Uses consistent hashing to distribute workers within a zone into multiple groups when `maxGroupSize` is exceeded.
-
-**File:** `aether/worker/src/main/java/org/pragmatica/aether/worker/group/GroupAssignment.java`
-
 ```java
-package org.pragmatica.aether.worker.group;
+/// aether/aether-dht/src/main/java/.../dht/ReplicatedMapFactory.java
 
-import org.pragmatica.aether.config.WorkerGroupId;
-import org.pragmatica.aether.config.ZoneExtractor;
-import org.pragmatica.consensus.NodeId;
+/// Factory for creating named ReplicatedMap instances.
+/// Each named map has its own key namespace in the DHT.
+public interface ReplicatedMapFactory {
 
-/// Determines which group a worker node belongs to, using consistent hashing
-/// within its zone. When a zone has more workers than maxGroupSize, they are
-/// split into numbered sub-groups.
-///
-/// Assignment is deterministic: every node computes the same result for a given
-/// NodeId and the same set of zone members.
-public sealed interface GroupAssignment {
-    record unused() implements GroupAssignment {}
-
-    /// Compute the group ID for a worker node.
+    /// Create a named replicated map with the given replication policy.
     ///
-    /// @param nodeId the worker's NodeId (zone-prefixed)
-    /// @param zoneMemberCount total workers known in this zone
-    /// @param maxGroupSize maximum workers per group
-    /// @return the assigned WorkerGroupId
-    static WorkerGroupId assignGroup(NodeId nodeId, int zoneMemberCount, int maxGroupSize) {
-        var zone = ZoneExtractor.extractZone(nodeId);
-        if (zoneMemberCount <= maxGroupSize) {
-            return WorkerGroupId.workerGroupId(zone + "-group-0").unwrap();
-        }
-        var groupIndex = consistentHash(nodeId, groupCount(zoneMemberCount, maxGroupSize));
-        return WorkerGroupId.workerGroupId(zone + "-group-" + groupIndex).unwrap();
-    }
+    /// @param name   map name (used as key prefix for DHT namespace isolation)
+    /// @param policy replication policy (RF, home-replica rule, etc.)
+    /// @param keyCodec    codec for serializing/deserializing keys
+    /// @param valueCodec  codec for serializing/deserializing values
+    /// @return a new ReplicatedMap instance
+    <K, V> ReplicatedMap<K, V> createMap(String name,
+                                          ReplicationPolicy policy,
+                                          MapCodec<K> keyCodec,
+                                          MapCodec<V> valueCodec);
 
-    /// Number of groups needed for a zone.
-    static int groupCount(int memberCount, int maxGroupSize) {
-        return (memberCount + maxGroupSize - 1) / maxGroupSize;
-    }
-
-    /// Jump consistent hash: deterministic, uniform distribution, minimal reshuffling.
-    private static int consistentHash(NodeId nodeId, int buckets) {
-        var key = nodeId.id().hashCode() & 0xFFFFFFFFL;
-        int b = -1;
-        int j = 0;
-        while (j < buckets) {
-            b = j;
-            key = key * 2862933555777941757L + 1;
-            j = (int) ((b + 1) * (1L << 31) / ((key >>> 33) + 1));
-        }
-        return b;
+    /// Codec interface for map key/value serialization.
+    interface MapCodec<T> {
+        byte[] encode(T value);
+        T decode(byte[] bytes);
     }
 }
 ```
 
-**Scale consideration (10K workers):** Jump consistent hash provides O(1) computation per node, minimal reshuffling on group split/merge, and uniform distribution. With `maxGroupSize=50` and 10K workers across 10 zones, this produces ~200 groups -- each with its own bounded SWIM protocol scope.
-
-### P2a-04: WorkerConfig Extension
-
-Add `zone` and `maxGroupSize` fields to `WorkerConfig`.
-
-**File:** `aether/aether-config/src/main/java/org/pragmatica/aether/config/WorkerConfig.java` (modification)
-
 ```java
-/// @param zone          Zone identifier for this worker (e.g., "zone-us-east-1")
-/// @param maxGroupSize  Maximum workers per SWIM group (default 50)
-public record WorkerConfig(List<String> coreNodes,
-                           int clusterPort,
-                           int swimPort,
-                           SwimSettings swimSettings,
-                           SliceConfig sliceConfig,
-                           String zone,
-                           int maxGroupSize) {
-    public static final int DEFAULT_CLUSTER_PORT = 7100;
-    public static final int DEFAULT_SWIM_PORT = 7200;
-    public static final String DEFAULT_ZONE = "default";
-    public static final int DEFAULT_MAX_GROUP_SIZE = 50;
+/// aether/aether-dht/src/main/java/.../dht/ReplicationPolicy.java
 
-    // Factory methods updated to include zone and maxGroupSize
-    // with backward-compatible overloads defaulting to DEFAULT_ZONE / 50
-}
-```
-
-**Integration:**
-- `WorkerConfigLoader` updated to parse `zone` and `maxGroupSize` from TOML config
-- `WorkerNode.workerNode()` uses `config.zone()` to build zone-prefixed NodeId instead of `NodeId.randomNodeId()`
-
-### P2a-05: Zone-Prefixed NodeId for Workers
-
-**File:** `aether/worker/src/main/java/org/pragmatica/aether/worker/WorkerNode.java` (modification)
-
-Change the factory from `NodeId.randomNodeId()` to a zone-prefixed NodeId:
-
-```java
-static Result<WorkerNode> workerNode(WorkerConfig config) {
-    var nodeId = NodeId.nodeId(config.zone() + "-worker-" + IdGenerator.generate("w"))
-                       .unwrap();
-    // ... rest unchanged
-}
-```
-
-This ensures every worker's NodeId encodes its zone, making `ZoneExtractor` work without any lookup table.
-
-### P2a-06: Group-Scoped SWIM
-
-Workers must only probe within their assigned group. This is the critical scaling enabler -- without it, 10K workers would generate O(10K^2) probe traffic.
-
-**Approach:** Each group runs an independent SWIM protocol instance. Workers discover same-group peers via the governor's health report (which lists group members). On join, a worker contacts the core to learn its group assignment and the addresses of seed members.
-
-**File:** `aether/worker/src/main/java/org/pragmatica/aether/worker/WorkerNode.java` (modification)
-
-In `AssembledWorkerNode.startSwim()`, seed members are filtered to same-group peers. The `GroupAssignment` result determines which seed addresses to use.
-
-**Impact on existing code:**
-- `SwimProtocol` itself is unchanged -- it is already group-agnostic (probes whatever members are added)
-- `AssembledWorkerNode.onMemberJoined/onMemberFaulty/onMemberLeft` -- unchanged (already operate on the local SWIM view)
-- `GovernorElection` -- unchanged (already uses the local membership snapshot)
-
-### P2a-07: Auto-Splitting on Group Overflow
-
-When a group's live member count exceeds `maxGroupSize`, the governor triggers a group split. The split is coordinated through the core cluster:
-
-1. Governor detects `membershipSnapshot.size() > maxGroupSize` in `reEvaluateGovernor()`
-2. Governor sends a `GroupSplitRequest` to core
-3. CDM creates new group assignments using `GroupAssignment.assignGroup()`
-4. CDM distributes new group assignments via health report response
-5. Workers re-evaluate their group and re-join SWIM with new group peers
-
-**File:** `aether/worker/src/main/java/org/pragmatica/aether/worker/group/GroupSplitRequest.java`
-
-```java
-package org.pragmatica.aether.worker.group;
-
-import org.pragmatica.aether.config.WorkerGroupId;
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.serialization.Codec;
-
-import java.util.List;
-
-/// Request from a governor to the core cluster to split an overflowed group.
-@Codec
-public record GroupSplitRequest(WorkerGroupId currentGroup,
-                                NodeId governorId,
-                                List<NodeId> members,
-                                int currentSize) {
-    public static GroupSplitRequest groupSplitRequest(WorkerGroupId currentGroup,
-                                                       NodeId governorId,
-                                                       List<NodeId> members,
-                                                       int currentSize) {
-        return new GroupSplitRequest(currentGroup, governorId, List.copyOf(members), currentSize);
-    }
-}
-```
-
-### P2a-08: WorkerGroupHealthReport Extension
-
-Add zone, resource averages, and group count to the health report.
-
-**File:** `aether/aether-invoke/src/main/java/org/pragmatica/aether/endpoint/WorkerGroupHealthReport.java` (modification)
-
-```java
-/// @param governorId   the NodeId of the governor sending this report
-/// @param groupId      the worker group identifier
-/// @param zone         the zone this group belongs to
-/// @param poolType     MAIN or SPOT
-/// @param endpoints    list of active worker endpoint entries
-/// @param members      list of worker NodeIds in the group
-/// @param memberCount  total members in this group (for scaling decisions)
-/// @param cpuAverage   average CPU usage across group members (0.0-1.0)
-/// @param memoryAverage average memory usage across group members (0.0-1.0)
-/// @param timestamp    when this report was generated
-public record WorkerGroupHealthReport(NodeId governorId,
-                                      String groupId,
-                                      String zone,
-                                      String poolType,
-                                      List<WorkerEndpointEntry> endpoints,
-                                      List<NodeId> members,
-                                      int memberCount,
-                                      double cpuAverage,
-                                      double memoryAverage,
-                                      long timestamp) {
-    // Factory methods with backward-compatible overloads
-}
-```
-
-### P2a-09: DecisionRelay -- Group-Scoped Filtering
-
-The governor only relays Decisions that are relevant to slices deployed in its group. This reduces bandwidth per group.
-
-**File:** `aether/worker/src/main/java/org/pragmatica/aether/worker/governor/DecisionRelay.java` (modification)
-
-```java
-/// Called when a Decision is received from the core cluster (governor path).
-/// Filters decisions to only relay those affecting slices in this group,
-/// then broadcasts to followers.
-public void onDecisionFromCore(Decision<?> decision,
-                               List<NodeId> followers,
-                               Set<AetherKey> groupRelevantKeys) {
-    bufferDecision(decision);
-    if (isRelevantToGroup(decision, groupRelevantKeys)) {
-        followers.forEach(followerId -> network.send(followerId, decision));
-    }
-}
-```
-
-The governor maintains a `Set<AetherKey>` of keys relevant to slices assigned to this group (derived from CDM placement). Decisions touching keys outside this set are buffered (for KV consistency) but not relayed.
-
-### P2a-10: Worker Management API Extension
-
-**File:** `aether/node/src/main/java/org/pragmatica/aether/api/routes/WorkerRoutes.java` (modification)
-
-Add `/api/workers/groups` endpoint:
-
-```java
-record GroupEntry(String groupId, String zone, String poolType,
-                  int memberCount, String governorId) {}
-
-// In routes():
-Route.<List<GroupEntry>> get("/api/workers/groups")
-     .toJson(this::listGroups)
-```
-
-**CLI:** `aether/cli/AetherCli.java` updated with `workers groups` subcommand.
-
-**Docs:** `aether/docs/reference/management-api.md` and `aether/docs/reference/cli.md` updated.
-
-## P2b: Spot Pool
-
-### P2b-01: WorkerPoolType Enum
-
-**File:** `aether/aether-config/src/main/java/org/pragmatica/aether/config/WorkerPoolType.java`
-
-```java
-package org.pragmatica.aether.config;
-
-/// The type of worker pool a worker belongs to.
-public enum WorkerPoolType {
-    /// Always-on workers -- guaranteed availability.
-    MAIN,
-    /// Spot/preemptible workers -- may be reclaimed at any time.
-    SPOT
-}
-```
-
-### P2b-02: WorkerMemberInfo (SWIM Metadata Extension)
-
-The current `SwimMember` record has no metadata field. Rather than modifying the SWIM library, pool type is encoded in the NodeId convention:
-
-```
-zone-us-east-1-spot-worker-7    (SPOT)
-zone-us-east-1-worker-7         (MAIN)
-```
-
-**File:** `aether/worker/src/main/java/org/pragmatica/aether/worker/group/WorkerMemberInfo.java`
-
-```java
-package org.pragmatica.aether.worker.group;
-
-import org.pragmatica.aether.config.WorkerPoolType;
-import org.pragmatica.consensus.NodeId;
-
-/// Extracts pool type and zone from a worker's NodeId convention.
-public sealed interface WorkerMemberInfo {
-    record unused() implements WorkerMemberInfo {}
-
-    static WorkerPoolType poolType(NodeId nodeId) {
-        return nodeId.id().contains("-spot-")
-               ? WorkerPoolType.SPOT
-               : WorkerPoolType.MAIN;
-    }
-
-    static boolean isSpot(NodeId nodeId) {
-        return poolType(nodeId) == WorkerPoolType.SPOT;
-    }
-}
-```
-
-### P2b-03: AllocationPool Extension
-
-Add `spotWorkers` list.
-
-**File:** `aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/AllocationPool.java` (modification)
-
-```java
-/// @param coreNodes     consensus participants
-/// @param mainWorkers   always-on worker pool members
-/// @param spotWorkers   spot/preemptible worker pool members
-public record AllocationPool(List<NodeId> coreNodes,
-                             List<NodeId> mainWorkers,
-                             List<NodeId> spotWorkers) {
-    // Backward-compatible factory: coreOnly, with mainWorkers only, etc.
-
-    public List<NodeId> nodesForPolicy(PlacementPolicy policy) {
-        return switch (policy) {
-            case CORE_ONLY -> coreNodes;
-            case WORKERS_PREFERRED -> mainWorkers.isEmpty()
-                                      ? coreNodes
-                                      : mainWorkers;
-            case WORKERS_ONLY -> mainWorkers;
-            case SPOT_ELIGIBLE -> spotEligibleNodes();
-            case ALL -> allNodes();
-        };
-    }
-
-    /// Spot-eligible: spot workers first, then main workers as fallback.
-    private List<NodeId> spotEligibleNodes() {
-        if (!spotWorkers.isEmpty()) {
-            return spotWorkers;
-        }
-        return mainWorkers.isEmpty() ? coreNodes : mainWorkers;
-    }
-}
-```
-
-### P2b-04: PlacementPolicy Extension
-
-**File:** `aether/aether-config/src/main/java/org/pragmatica/aether/config/PlacementPolicy.java` (modification)
-
-```java
-public enum PlacementPolicy {
-    CORE_ONLY,
-    WORKERS_PREFERRED,
-    WORKERS_ONLY,
-    /// Slices are eligible for spot workers; non-critical workloads.
-    SPOT_ELIGIBLE,
-    ALL
-}
-```
-
-### P2b-05: SWIM Voluntary Leave on Preemption
-
-When a spot worker detects a preemption signal, it sends a SWIM voluntary leave before draining.
-
-**File:** `aether/worker/src/main/java/org/pragmatica/aether/worker/preemption/PreemptionDetector.java`
-
-```java
-package org.pragmatica.aether.worker.preemption;
-
-import org.pragmatica.lang.Promise;
-
-/// SPI for detecting preemption signals. Implementations poll cloud metadata
-/// endpoints or listen for OS signals.
-public interface PreemptionDetector {
-    /// Returns a Promise that resolves when a preemption signal is detected.
-    /// The promise never fails -- it only completes when preemption is imminent.
-    Promise<PreemptionSignal> awaitPreemption();
-}
-```
-
-**File:** `aether/worker/src/main/java/org/pragmatica/aether/worker/preemption/PreemptionSignal.java`
-
-```java
-package org.pragmatica.aether.worker.preemption;
-
-/// Details of a preemption notification.
-/// @param gracePeriodMs time remaining before forced termination (cloud-specific)
-/// @param source where the signal originated (e.g., "gcp-metadata", "aws-spot", "local-signal")
-public record PreemptionSignal(long gracePeriodMs, String source) {
-    public static PreemptionSignal preemptionSignal(long gracePeriodMs, String source) {
-        return new PreemptionSignal(gracePeriodMs, source);
-    }
-}
-```
-
-**File:** `aether/worker/src/main/java/org/pragmatica/aether/worker/preemption/LocalPreemptionDetector.java`
-
-```java
-package org.pragmatica.aether.worker.preemption;
-
-import org.pragmatica.lang.Promise;
-
-/// Local environment preemption detector. Listens for SIGTERM/SIGINT.
-/// Used in Forge tests and local development.
-public final class LocalPreemptionDetector implements PreemptionDetector {
-    private final Promise<PreemptionSignal> promise = Promise.promise();
-
-    private LocalPreemptionDetector() {
-        Runtime.getRuntime().addShutdownHook(new Thread(() ->
-            promise.succeed(PreemptionSignal.preemptionSignal(5000, "local-signal"))
-        ));
-    }
-
-    public static LocalPreemptionDetector localPreemptionDetector() {
-        return new LocalPreemptionDetector();
-    }
-
-    @Override
-    public Promise<PreemptionSignal> awaitPreemption() {
-        return promise;
-    }
-}
-```
-
-### P2b-06: Preemption Shutdown Hook
-
-Wired into `AssembledWorkerNode`, the preemption handler:
-
-1. Sends SWIM voluntary leave
-2. Drains active slices (completes in-flight requests, stops accepting new ones)
-3. Notifies governor of departure
-4. Exits
-
-**File:** `aether/worker/src/main/java/org/pragmatica/aether/worker/preemption/PreemptionHandler.java`
-
-```java
-package org.pragmatica.aether.worker.preemption;
-
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.swim.SwimProtocol;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-/// Orchestrates graceful shutdown on preemption.
+/// Replication strategy for a ReplicatedMap.
 ///
-/// Sequence: SWIM leave -> drain slices -> notify governor -> exit.
-public final class PreemptionHandler {
-    private static final Logger LOG = LoggerFactory.getLogger(PreemptionHandler.class);
+/// @param replicationFactor total number of replicas per key (including home)
+/// @param homeReplicaEnabled whether home-replica placement is active
+/// @param excludeSpotNodes whether spot nodes are excluded from replica selection
+public record ReplicationPolicy(int replicationFactor,
+                                boolean homeReplicaEnabled,
+                                boolean excludeSpotNodes) {
 
-    private final NodeId selfId;
-    private final PreemptionDetector detector;
+    /// Standard policy for runtime data: RF=3, home-replica, exclude spot.
+    public static final ReplicationPolicy RUNTIME_DATA =
+        new ReplicationPolicy(3, true, true);
 
-    private PreemptionHandler(NodeId selfId, PreemptionDetector detector) {
-        this.selfId = selfId;
-        this.detector = detector;
-    }
-
-    public static PreemptionHandler preemptionHandler(NodeId selfId,
-                                                       PreemptionDetector detector) {
-        return new PreemptionHandler(selfId, detector);
-    }
-
-    /// Start listening for preemption. Returns immediately.
-    /// When preemption is detected, invokes the shutdown callback.
-    public void start(Runnable onPreemption) {
-        detector.awaitPreemption()
-                .onSuccess(signal -> {
-                    LOG.warn("Preemption detected for {}: gracePeriod={}ms, source={}",
-                             selfId.id(), signal.gracePeriodMs(), signal.source());
-                    onPreemption.run();
-                });
+    /// Create a custom policy.
+    public static ReplicationPolicy replicationPolicy(int rf,
+                                                       boolean homeReplica,
+                                                       boolean excludeSpot) {
+        return new ReplicationPolicy(rf, homeReplica, excludeSpot);
     }
 }
 ```
 
-### P2b-07: CDM Spot-Aware Allocation
-
-**File:** `aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/ClusterDeploymentManager.java` (modification)
-
-The CDM allocation logic in `allocateSliceInstance()` must respect placement policy:
-
-- `SPOT_ELIGIBLE` slices: prefer spot workers, fallback to main workers
-- Critical slices (with `PlacementPolicy.CORE_ONLY` or `WORKERS_PREFERRED`): NEVER placed on spot workers
-- When a spot worker is preempted, CDM detects the removal via `WorkerEndpointRegistry` group removal and triggers re-allocation to remaining nodes
-
-The `buildAllocationPool()` method is updated to partition worker nodes into main and spot:
-
 ```java
-AllocationPool buildAllocationPool() {
-    var allWorkers = workerEndpointRegistry.map(WorkerEndpointRegistry::allWorkerNodeIds)
-                                            .or(List.of());
-    var main = allWorkers.stream()
-                         .filter(id -> !WorkerMemberInfo.isSpot(id))
-                         .toList();
-    var spot = allWorkers.stream()
-                         .filter(WorkerMemberInfo::isSpot)
-                         .toList();
-    return AllocationPool.allocationPool(allocatableNodes(), main, spot);
-}
-```
+/// aether/aether-dht/src/main/java/.../dht/HomeReplicaResolver.java
 
-## P2c: KV-Store Migration (Flag-Gated)
-
-### P2c-01: CoreEndpointReporter
-
-Pushes core endpoint state into the `WorkerEndpointRegistry` format, enabling a unified lookup path.
-
-**File:** `aether/aether-invoke/src/main/java/org/pragmatica/aether/endpoint/CoreEndpointReporter.java`
-
-```java
-package org.pragmatica.aether.endpoint;
-
-import org.pragmatica.aether.endpoint.EndpointRegistry.Endpoint;
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Option;
-
-import java.util.List;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-/// Bridges core consensus-driven endpoints into the WorkerEndpointRegistry format.
+/// Determines the home replica node for a key based on community/zone encoding.
 ///
-/// When the migration flag is enabled, core endpoints are registered in the
-/// WorkerEndpointRegistry so that SliceInvoker can query a single registry.
-/// The "group" for core endpoints is always "core".
-public final class CoreEndpointReporter {
-    private static final Logger log = LoggerFactory.getLogger(CoreEndpointReporter.class);
-    private static final String CORE_GROUP_ID = "core";
+/// The home replica is the deterministic placement within the key's
+/// "home community", extracted from the key's NodeId or zone encoding.
+/// Example key encoding: zone-us-east-1-worker-7 -> home community is us-east-1.
+public interface HomeReplicaResolver {
 
-    private final EndpointRegistry endpointRegistry;
-    private final WorkerEndpointRegistry workerEndpointRegistry;
+    /// Resolve the home community identifier from a key.
+    /// Returns the community/zone string embedded in the key.
+    Option<String> extractCommunity(byte[] key);
 
-    private CoreEndpointReporter(EndpointRegistry endpointRegistry,
-                                  WorkerEndpointRegistry workerEndpointRegistry) {
-        this.endpointRegistry = endpointRegistry;
-        this.workerEndpointRegistry = workerEndpointRegistry;
+    /// Select the home replica node for the given community.
+    /// Picks a deterministic non-spot node within the community.
+    /// Returns empty if no eligible node exists in the community.
+    Option<NodeId> selectHomeNode(String community, java.util.Set<NodeId> eligibleNodes);
+}
+```
+
+```java
+/// aether/aether-dht/src/main/java/.../dht/MapListener.java
+
+/// Listener for ReplicatedMap change events.
+public interface MapListener<K, V> {
+    @SuppressWarnings("JBCT-RET-01") // Callback — void required by listener pattern
+    void onPut(K key, V value);
+
+    @SuppressWarnings("JBCT-RET-01") // Callback — void required by listener pattern
+    void onRemove(K key);
+}
+```
+
+```java
+/// aether/aether-dht/src/main/java/.../dht/MapSubscription.java
+
+/// Handle for a ReplicatedMap subscription. Used to unsubscribe.
+public interface MapSubscription<K, V> {
+    /// Unsubscribe from further events.
+    Unit unsubscribe();
+}
+```
+
+```java
+/// aether/aether-dht/src/main/java/.../dht/ReplicatedMapError.java
+
+/// Error causes for ReplicatedMap operations.
+public sealed interface ReplicatedMapError extends Cause {
+    ReplicatedMapError MAP_NOT_FOUND = new MapNotFound();
+    ReplicatedMapError SERIALIZATION_FAILED = new SerializationFailed();
+    ReplicatedMapError REPLICATION_TIMEOUT = new ReplicationTimeout();
+
+    record MapNotFound() implements ReplicatedMapError {
+        @Override public String message() { return "Named map not found"; }
     }
 
-    public static CoreEndpointReporter coreEndpointReporter(EndpointRegistry endpointRegistry,
-                                                             WorkerEndpointRegistry workerEndpointRegistry) {
-        return new CoreEndpointReporter(endpointRegistry, workerEndpointRegistry);
+    record SerializationFailed() implements ReplicatedMapError {
+        @Override public String message() { return "Key/value serialization failed"; }
     }
 
-    /// Sync current core endpoints into the worker registry.
-    /// Called periodically or on endpoint change events when the migration flag is enabled.
-    @SuppressWarnings("JBCT-RET-01")
-    public void syncCoreEndpoints(List<NodeId> coreNodes) {
-        var coreEntries = endpointRegistry.allEndpoints()
-                                           .stream()
-                                           .map(CoreEndpointReporter::toWorkerEntry)
-                                           .toList();
-        var report = WorkerGroupHealthReport.workerGroupHealthReport(
-            coreNodes.getFirst(),
-            CORE_GROUP_ID,
-            coreEntries,
-            coreNodes);
-        workerEndpointRegistry.registerWorkerEndpoints(report);
-        log.debug("Synced {} core endpoints to worker registry", coreEntries.size());
-    }
-
-    private static WorkerEndpointEntry toWorkerEntry(Endpoint endpoint) {
-        return WorkerEndpointEntry.workerEndpointEntry(
-            endpoint.artifact(), endpoint.methodName(),
-            endpoint.nodeId(), endpoint.instanceNumber());
+    record ReplicationTimeout() implements ReplicatedMapError {
+        @Override public String message() { return "Replication did not reach target RF within timeout"; }
     }
 }
 ```
 
-### P2c-02: SliceInvoker Query Order Branch
+#### Integration with Existing DHT Module
 
-**File:** `aether/aether-invoke/src/main/java/org/pragmatica/aether/invoke/SliceInvoker.java` (modification)
+The `ReplicatedMap` implementation delegates to the existing DHT infrastructure:
 
-The `selectCoreOrWorkerEndpoint()` method branches on the migration flag:
+| Existing Class | Role in ReplicatedMap |
+|---|---|
+| `ConsistentHashRing<NodeId>` (`integrations/dht`) | Ring placement for the 2 ring replicas |
+| `DHTNode` (`integrations/dht`) | Local storage operations |
+| `DistributedDHTClient` (`integrations/dht`) | Remote put/get/remove with quorum |
+| `DHTRebalancer` (`integrations/dht`) | Re-replication on node departure |
+| `DHTAntiEntropy` (`integrations/dht`) | Periodic consistency repair |
+| `DHTTopologyListener` (`integrations/dht`) | Ring membership updates on topology changes |
+| `StorageEngine` (`integrations/dht/storage`) | Pluggable storage backend |
+| `MemoryStorageEngine` (`integrations/dht/storage`) | Default in-memory backend |
+| `DHTConfig` (`integrations/dht`) | Per-map quorum/RF configuration |
+| `DHTMessage` (`integrations/dht`) | Inter-node protocol messages |
+| `DHTError` (`integrations/dht`) | Error cause types |
+
+New additions to `integrations/dht`:
+
+- **Home-replica extension to `ConsistentHashRing`**: method to select N ring replicas + 1 deterministic home replica, with spot-node exclusion filter.
+- **Namespace-prefixed storage**: `DHTNode` operations prefixed with map name to isolate named maps in the same storage engine.
+- **Subscription support**: local storage engine fires change events on put/remove; `ReplicatedMap` aggregates local + remote events for subscribers.
+
+### P2a.2 Replication Policy: Home-Replica Rule
+
+For any key `K`:
+
+1. **Home replica**: Extracted from the key's embedded NodeId/zone. For `EndpointKey("endpoints/mygroup:myslice:1.0.0/myMethod:0")`, the NodeId in the corresponding `EndpointValue` identifies the originating node. The home community is derived from the node's zone label (e.g., `us-east-1`). The home replica is a deterministic non-spot node in that zone, selected by hashing the key within the zone's node set.
+
+2. **Ring replicas**: Standard consistent hashing via `ConsistentHashRing.nodesFor(key, 2)`, excluding the home replica node and any spot nodes.
+
+3. **Total replicas**: 1 (home) + 2 (ring) = 3. Write amplification is constant 3x regardless of cluster size.
+
+**Algorithm**:
+
+```
+function replicasFor(key, allNodes, spotNodes):
+    community = extractCommunity(key)
+    communityNodes = allNodes.filter(n -> zone(n) == community && n not in spotNodes)
+    homeNode = communityNodes.sorted()[hash(key) % communityNodes.size()]
+
+    ringCandidates = allNodes.filter(n -> n != homeNode && n not in spotNodes)
+    ringNodes = consistentHashRing(ringCandidates).nodesFor(key, 2)
+
+    return [homeNode] + ringNodes
+```
+
+**Edge cases**:
+- Community has zero non-spot nodes: home replica falls back to ring replica #1 (any zone).
+- Fewer than 3 non-spot nodes in entire cluster: RF degrades gracefully (same as existing `DHTConfig.effectiveReplicationFactor()`).
+- Key has no community encoding (e.g., `SliceNodeKey`): all 3 replicas are ring replicas (home-replica rule disabled for that map).
+
+### P2a.3 DHT Participation Rules
+
+| Node Type | DHT Ring Member | Replica Target | Can Read | Can Write |
+|-----------|-----------------|----------------|----------|-----------|
+| Core (non-spot) | Yes | Yes | Yes | Yes |
+| Worker (non-spot) | Yes | Yes | Yes | Yes (own endpoints) |
+| Worker (spot) | No | No | Yes (via DHT hop) | Yes (writer-only, RF=1 for own data) |
+
+- Non-spot nodes call `ring.addNode(nodeId)` on join and `ring.removeNode(nodeId)` on leave (via `DHTTopologyListener`).
+- Spot nodes never join the ring. They write their own endpoints with RF=1 (local only) and read via DHT client with remote hops.
+- On spot node preemption, its RF=1 data vanishes. This is acceptable: the endpoints it registered are no longer valid anyway.
+
+### P2a.4 Startup / Replication Cooldown
+
+**Sequence**:
+
+1. **Node boots**: joins DHT ring, creates local `StorageEngine`.
+2. **RF=1 phase**: node writes its own endpoints to local storage only. `DHTConfig` is `SINGLE_NODE` (RF=1, WQ=1, RQ=1).
+3. **Serving immediately**: other nodes can read this node's data via DHT hop to this node. Local cache misses trigger DHT reads.
+4. **Background replication starts** (after configurable delay, default 10s):
+   - Iterate local entries in batches.
+   - For each entry, compute target replicas under `RUNTIME_DATA` policy (RF=3).
+   - Push to replica nodes, rate-limited to `replication.cooldown.rate` entries/sec (default: 10,000/s).
+5. **RF=3 reached**: switch `DHTConfig` to `DEFAULT` (RF=3, WQ=2, RQ=2). All subsequent writes replicate to 3 nodes.
+6. **Anti-entropy** (`DHTAntiEntropy`) runs every 30s to repair any missed replications.
+
+**Configuration** (in `aether.toml`):
+
+```toml
+[dht.replication]
+cooldown-delay = "10s"
+cooldown-rate = 10000     # entries/sec
+target-rf = 3
+```
+
+### P2a.5 Migration from Consensus KV-Store
+
+Three key types move from consensus to DHT:
+
+| Key Type | Current Location | New Location |
+|----------|-----------------|--------------|
+| `EndpointKey` / `EndpointValue` | `KVStore` via `KVCommand.Put` | `endpoints` ReplicatedMap |
+| `SliceNodeKey` / `SliceNodeValue` | `KVStore` via `KVCommand.Put` | `slice-nodes` ReplicatedMap |
+| `HttpNodeRouteKey` / `HttpNodeRouteValue` | `KVStore` via `KVCommand.Put` | `http-routes` ReplicatedMap |
+
+**What stays in consensus** (all < 1MB total):
+
+- `AppBlueprintKey/Value`, `SliceTargetKey/Value`, `VersionRoutingKey/Value`, `RollingUpdateKey/Value`, `PreviousVersionKey/Value`, `LogLevelKey/Value`, `ConfigKey/Value`, `AlertThresholdKey/Value`, `ObservabilityDepthKey/Value`, `NodeLifecycleKey/Value`, `WorkerSliceDirectiveKey/Value`, `ActivationDirectiveKey/Value`, `TopicSubscriptionKey/Value`, `ScheduledTaskKey/Value`.
+
+**Migration approach -- clean architectural cut, not a runtime toggle**:
+
+1. **Remove consensus code paths** for the three migrated key types:
+   - `EndpointRegistry.onEndpointPut()` / `onEndpointRemove()` -- replaced by `CachedReplicatedMap` subscription.
+   - `KVNotificationRouter` handlers for `EndpointKey`, `SliceNodeKey`, `HttpNodeRouteKey` -- removed.
+   - `KVCommand.Put`/`Remove` calls for these key types in `NodeDeploymentManager`, `HttpRoutePublisher`, etc. -- replaced by `ReplicatedMap.put()`/`remove()`.
+
+2. **Replace dual registries with single map**:
+   - `EndpointRegistry` (consensus-backed) -> `CachedReplicatedMap<EndpointKey, EndpointValue>`.
+   - `WorkerEndpointRegistry` (non-consensus, governor-fed) -> same `CachedReplicatedMap`. Workers write directly.
+   - `WorkerGroupHealthReport` for endpoint delivery -> eliminated. Workers own their endpoint lifecycle.
+
+3. **Simplify SliceInvoker**:
+   - `selectCoreOrWorkerEndpoint()` (lines 1010-1022 of `SliceInvoker.java`) -> single map lookup via `endpointMap.get(key)`.
+   - `selectCoreOrWorkerEndpointOption()` (lines 673-678) -> single map lookup.
+   - Remove `workerEndpointRegistry` field and all `Option<WorkerEndpointRegistry>` handling.
+
+4. **No flag-gating**: this is a version boundary change (0.19.x -> 0.20.0). Mixed-version clusters are not supported during this transition.
+
+### P2a.6 What This Replaces
+
+| Before (Phase 1) | After (P2a) |
+|---|---|
+| `EndpointRegistry` (consensus-backed, core only) | `CachedReplicatedMap<EndpointKey, EndpointValue>` (DHT, all nodes) |
+| `WorkerEndpointRegistry` (non-consensus, governor-fed) | Same map; workers write directly |
+| `WorkerGroupHealthReport` for endpoint delivery | Eliminated; workers write own endpoints |
+| `selectCoreOrWorkerEndpoint()` dual-registry lookup | Single map lookup |
+| `CoreEndpointReporter` (old P2c concept) | Unnecessary; unified storage |
+| Flag-gated migration (old P2c concept) | Unnecessary; clean version cut |
+
+## P2b: Multi-Group + Zone-Aware Grouping
+
+> Renumbered from original P2a. Content preserved with updates for DHT infrastructure.
+
+### P2b.1 Group Identity
+
+A **worker group** is identified by `(groupName, zone)` -- a human-readable name combined with an availability zone or region label. Examples:
+
+| groupName | zone | Description |
+|-----------|------|-------------|
+| `default` | `us-east-1a` | Default worker group in AZ us-east-1a |
+| `gpu-pool` | `eu-west-1b` | GPU-capable workers in AZ eu-west-1b |
+| `batch` | `us-east-1c` | Batch processing workers in AZ us-east-1c |
+
+Group identity is configured at node startup via `aether.toml`:
+
+```toml
+[worker]
+group-name = "default"
+zone = "us-east-1a"
+```
+
+The combined `groupName:zone` string forms the **community identifier** used by the home-replica algorithm (DD-08).
+
+### P2b.2 Topology Model
+
+```
+Cluster
+  +-- Core Nodes (consensus participants, DHT participants)
+  +-- Worker Community: default:us-east-1a
+  |     +-- Worker Node 1 (DHT participant, home replicas for this community)
+  |     +-- Worker Node 2
+  |     +-- ...
+  +-- Worker Community: default:us-east-1b
+  |     +-- Worker Node 50
+  |     +-- ...
+  +-- Worker Community: gpu-pool:eu-west-1b
+        +-- Worker Node 100
+        +-- ...
+```
+
+Each community elects its own governor independently (same `GovernorElection` algorithm: lowest ALIVE NodeId, sticky incumbent). Governor responsibilities in P2b:
+
+- **Decision relay** within community (unchanged from Phase 1).
+- **Mutation forwarding** to core (unchanged from Phase 1).
+- **Health reporting** to core (membership only; endpoint delivery is now via DHT per P2a).
+
+### P2b.3 Node Registration
+
+On startup, a worker node:
+
+1. Receives activation directive from CDM via consensus (`ActivationDirectiveKey`/`Value`).
+2. Joins SWIM group for its community.
+3. Joins DHT ring (if non-spot).
+4. Writes its own endpoints directly to the `endpoints` ReplicatedMap (via DHT).
+5. Writes its `SliceNodeKey`/`Value` to the `slice-nodes` ReplicatedMap.
+6. Governor reports community membership (node IDs, health) to core -- but NOT endpoint data.
+
+### P2b.4 CDM Awareness
+
+The `ClusterDeploymentManager` gains zone-awareness:
+
+- **Placement policy**: blueprints can specify `placement: "zone:us-east-1a"` or `placement: "group:gpu-pool"` to constrain slice deployment.
+- **Worker slice directives** (`WorkerSliceDirectiveKey`/`Value`) include the target community.
+- **Instance distribution**: CDM distributes target instance count across communities proportionally to community size.
+
+### P2b.5 Cross-Group Routing
+
+All cross-group calls route through core (DD-04). The flow:
+
+1. Worker A in community X invokes `SliceInvoker.invoke(artifact, method, request)`.
+2. SliceInvoker queries `endpointMap.get(endpointKey)` -- the `CachedReplicatedMap`.
+3. If the target endpoint is on a node in community Y, the request goes to core (via governor of community X).
+4. Core forwards to the target node (which may be in community Y).
+
+Within the same community, direct worker-to-worker invocation is possible since both are DHT participants with the same endpoint map.
+
+### P2b.6 Configuration
+
+```toml
+[worker]
+group-name = "default"
+zone = "us-east-1a"
+
+[worker.community]
+# SWIM configuration for intra-community failure detection
+swim-interval = "1s"
+swim-suspect-timeout = "5s"
+
+[blueprint.placement]
+# Example placement constraints
+"myapp:users" = "zone:us-east-1a"
+"myapp:analytics" = "group:gpu-pool"
+```
+
+## P2c: Spot Pool
+
+> Renumbered from original P2b. Content preserved with spot-DHT exclusion rule.
+
+### P2c.1 Spot Node Characteristics
+
+Spot/preemptible instances differ from on-demand:
+
+| Property | On-Demand | Spot |
+|----------|-----------|------|
+| Availability | Guaranteed | Can be reclaimed at any time |
+| Cost | Full price | 60-90% discount |
+| Startup | Normal | Normal |
+| Shutdown | Graceful | 2-minute warning (cloud-specific) |
+| DHT ring membership | Full participant | **NOT a ring member** |
+| DHT replica target | Yes | **No -- excluded from replica selection** |
+| DHT reads | Local or DHT hop | DHT hop only (no local ring replicas) |
+| DHT writes | RF=3 | RF=1 (writer-only, local) |
+
+### P2c.2 Spot Node Identification
+
+Configured at startup:
+
+```toml
+[worker]
+group-name = "default"
+zone = "us-east-1a"
+spot = true
+```
+
+The `spot` flag propagates to:
+- `ActivationDirectiveValue` (CDM marks the node as spot).
+- DHT ring exclusion (node never calls `ring.addNode()`).
+- `ReplicationPolicy.excludeSpotNodes = true` filters spots from `replicasFor()`.
+
+### P2c.3 Preemption Handling
+
+1. **Cloud SPI** delivers preemption signal (2-minute warning on AWS, 30s on GCP).
+2. Node enters `DRAINING` state via `NodeLifecycleKey`/`Value` in consensus.
+3. Node removes its endpoints from the `endpoints` ReplicatedMap.
+4. Node removes its `SliceNodeKey`/`Value` from the `slice-nodes` ReplicatedMap.
+5. Governor detects departure via SWIM and updates community membership report.
+6. No DHT rebalancing needed -- spot node was never a ring member or replica target.
+
+Step 6 is the key benefit of DD-07: preemption of spot nodes causes zero replica rearrangement in the DHT ring.
+
+### P2c.4 Scheduling on Spot Nodes
+
+- **Stateless workloads preferred**: slices that can tolerate sudden termination.
+- **Scheduled tasks**: spot-hosted scheduled tasks should be `leaderOnly = false` to ensure another node picks up if spot is reclaimed.
+- **Pub/sub subscribers**: spot-hosted subscribers get unsubscribed on preemption; other subscribers continue.
+
+### P2c.5 Cloud Integration SPI
 
 ```java
-private Promise<Endpoint> selectCoreOrWorkerEndpoint(Artifact slice, MethodName method) {
-    if (useRegistryFirst.get()) {
-        // New path: WorkerEndpointRegistry is primary (contains both core + worker endpoints)
-        return workerEndpointRegistry
-            .flatMap(registry -> registry.selectWorkerEndpointAsCore(slice, method))
-            .or(() -> endpointRegistry.selectEndpoint(slice, method))
-            .async(NO_ENDPOINT_FOUND);
-    }
-    // Legacy path: consensus EndpointRegistry first, worker fallback
-    var coreEndpoint = endpointRegistry.selectEndpoint(slice, method);
-    if (coreEndpoint.isPresent()) {
-        return coreEndpoint.async(NO_ENDPOINT_FOUND);
-    }
-    return workerEndpointRegistry
-        .flatMap(registry -> registry.selectWorkerEndpointAsCore(slice, method))
-        .async(NO_ENDPOINT_FOUND);
+/// Cloud-specific spot instance integration.
+public interface SpotIntegrationProvider {
+    /// Register a listener for preemption signals.
+    /// The listener receives the estimated time until termination.
+    Unit onPreemption(java.util.function.Consumer<java.time.Duration> listener);
+
+    /// Check if the current node is a spot instance.
+    boolean isSpot();
+
+    /// Get the current spot price (for cost-aware scheduling).
+    Promise<Option<Double>> currentSpotPrice();
 }
 ```
 
-The `useRegistryFirst` flag is an `AtomicBoolean` initialized from configuration and toggleable at runtime via the management API.
-
-### P2c-03: Management API Toggle
-
-**File:** `aether/node/src/main/java/org/pragmatica/aether/api/routes/WorkerRoutes.java` (modification)
-
-```java
-Route.<MigrationStatus> get("/api/workers/migration")
-     .toJson(this::getMigrationStatus),
-Route.<MigrationStatus> post("/api/workers/migration/enable")
-     .toJson(this::enableMigration),
-Route.<MigrationStatus> post("/api/workers/migration/disable")
-     .toJson(this::disableMigration)
-```
-
-**CLI:** `aether workers migration [status|enable|disable]`
-
-### P2c-04: Flag-Gated Behavior
-
-| Flag State | EndpointRegistry (KV) | WorkerEndpointRegistry | Primary |
-|------------|----------------------|------------------------|---------|
-| OFF (default) | Active | Active (workers only) | KV-store |
-| ON | Active (fallback) | Active (core + workers) | Registry |
-
-**Rollback:** Set flag to OFF. `CoreEndpointReporter` stops syncing. Old path resumes immediately. No data loss -- both registries remain populated.
+Implementations: `AwsSpotProvider`, `GcpSpotProvider`, `NoOpSpotProvider` (for non-cloud).
 
 ## Worker Capabilities (Cross-Cutting)
 
 ### Scheduled Tasks on Workers
 
-Currently, `ScheduledTaskManager` (`aether/aether-invoke/src/main/java/.../invoke/ScheduledTaskManager.java`) runs only on core nodes and respects leader-only semantics.
+Workers run scheduled tasks via the same `ScheduledTaskRegistry` and `ScheduledTaskManager` used by core nodes:
 
-For workers, scheduled tasks must:
-1. Be deployable to worker nodes via CDM placement
-2. Respect group-level leader semantics: only the governor runs leader-only scheduled tasks within its group
-3. Non-leader-only tasks can run on any worker in the group
+- `aether/aether-invoke/src/main/java/.../invoke/ScheduledTaskRegistry.java`
+- `aether/aether-invoke/src/main/java/.../invoke/ScheduledTaskManager.java`
 
-**Implementation approach:**
-
-- `ScheduledTaskManager` gains an alternate constructor that accepts a `Supplier<Boolean>` for "is leader" instead of receiving `LeaderChange` messages. On workers, this supplier returns `isGovernor()`.
-- `QuorumStateNotification` is replaced by a simple "group healthy" check (governor is elected and SWIM group has quorum).
-- The existing `ScheduledTaskRegistry` and `IntervalParser` are reused as-is.
-
-**File changes:**
-- `aether/aether-invoke/src/main/java/.../invoke/ScheduledTaskManager.java` -- add factory overload for worker context
-- `aether/worker/src/main/java/.../worker/WorkerNode.java` -- wire `ScheduledTaskManager` in `assembleNode()`
+Workers watch for `ScheduledTaskKey`/`Value` in consensus. When a task's target artifact is deployed on a worker, the worker's `ScheduledTaskManager` starts the timer. `leaderOnly` tasks run only on the community governor (workers elect a governor per community).
 
 ### Pub/Sub on Workers
 
-Currently, `TopicPublisher` (`aether/aether-invoke/src/main/java/.../invoke/TopicPublisher.java`) uses `SliceInvoker` to deliver messages to subscribers. `TopicSubscriptionRegistry` (`aether/aether-invoke/src/main/java/.../endpoint/TopicSubscriptionRegistry.java`) watches KV-store events for subscription changes.
+Workers participate in pub/sub via `TopicSubscriptionRegistry`:
 
-For workers:
-1. Workers already receive Decisions (including KV mutations) via `DecisionRelay` -> `PassiveNode`
-2. Workers can maintain a local `TopicSubscriptionRegistry` watching the same KV events
-3. Workers can run a local `TopicPublisher` using the worker-local `SliceInvoker` proxy
+- `aether/aether-invoke/src/main/java/.../endpoint/TopicSubscriptionRegistry.java`
 
-**Key consideration:** When a worker publishes a message, it uses the local `SliceInvoker` which routes through the core cluster. This means pub/sub delivery from workers goes:
+Workers register their topic subscriptions in consensus (`TopicSubscriptionKey`/`Value`). When a message is published, the publisher queries the subscription registry and routes to all subscribers (core or worker) via `ClusterNetwork`.
+
+## Scale Considerations
+
+### Entry Counts at 10K Nodes
+
+Assumptions:
+- N = 10,000 nodes
+- S = 50 slices
+- M = 5 methods per slice
+- I = 2 instances per method per node
+- R = 10 HTTP routes per node
+
+| Map | Formula | Entries |
+|-----|---------|---------|
+| `endpoints` | N x S x M x I | 10,000 x 50 x 5 x 2 = **5,000,000** |
+| `slice-nodes` | N x S | 10,000 x 50 = **500,000** |
+| `http-routes` | N x R | 10,000 x 10 = **100,000** |
+| **Total** | | **5,600,000** |
+
+> Note: The 60M figure in DD-12 assumes a higher I (instances) count. With I=2, total is ~5.6M. With I=12 (high-density deployment), total reaches ~60M. Both are within DHT capacity.
+
+### Per-Node Storage
+
+With RF=3 distributed across 10K nodes:
 
 ```
-Worker (publisher) -> Core (SliceInvoker routing) -> Target node (subscriber)
+Per node = (RF / N) x TotalEntries x AvgEntrySize + HomeReplicas
+         = (3 / 10,000) x 5,600,000 x ~200B + CommunityLocalReplicas
+         = 1,680 x 200B + ~50KB
+         = ~386KB + ~50KB
+         = ~436KB
 ```
 
-This is consistent with Design Decision #5 (cross-group routing always through core).
+With 60M entries:
+```
+Per node = (3 / 10,000) x 60,000,000 x ~200B + ~500KB
+         = 18,000 x 200B + ~500KB
+         = ~3.6MB + ~500KB
+         = ~4.1MB
+```
 
-**File changes:**
-- `aether/worker/src/main/java/.../worker/WorkerNode.java` -- wire `TopicSubscriptionRegistry` and `PublisherFactory`
-- `aether/aether-invoke/src/main/java/.../invoke/PublisherFactory.java` -- no changes needed (already uses `SliceInvoker` abstraction)
+Both are trivially small for modern servers.
 
-## Scale Considerations: 10K Workers
+### Write Amplification
 
-### SWIM Protocol Scaling
+- **DHT (P2a)**: 3x constant (RF=3). A single endpoint registration = 3 writes.
+- **Consensus (Phase 1)**: O(N) -- every node processes every write through Rabia.
+- **Improvement at 10K nodes**: 3 vs. 10,000 = **3,333x reduction** in write amplification.
 
-| Metric | Phase 1 (flat) | Phase 2 (grouped) |
-|--------|-----------------|-------------------|
-| Workers | 1-100 | 10,000 |
-| SWIM probes/sec/worker | O(N) | O(group_size) |
-| Total SWIM messages/sec | O(N^2) | O(N * group_size) |
-| Group size | N | 50 (configurable) |
-| Groups (10 zones, 10K workers) | 1 | ~200 |
-| Governor count | 1 | ~200 |
+### Read Latency
 
-With `maxGroupSize=50`, each worker sends ~50 probes/second. Total cluster-wide: 10K * 50 = 500K probes/sec, distributed across 200 independent UDP channels. This is well within network capacity.
+| Scenario | Latency |
+|----------|---------|
+| Local cache hit | 0 (in-process) |
+| Home replica hit (same community) | 0 (local storage) |
+| DHT hop (cross-community) | 1 network round-trip |
+| Cache miss + DHT hop + cache populate | 1 network round-trip + local write |
 
-### Consistent Hashing Properties
+For endpoint lookups in `SliceInvoker`:
+- Same-community invocations: always local (home-replica guarantees it).
+- Cross-community invocations: 1 hop, then cached for TTL duration.
 
-- **Minimal reshuffling:** When a group splits, only ~1/N of workers move to the new group
-- **Deterministic:** All workers compute the same assignment without coordination
-- **O(1) per node:** Jump consistent hash is constant-time
+### DHT Ring Size
 
-### Health Report Aggregation
+With 150 virtual nodes per physical node (current `ConsistentHashRing.VIRTUAL_NODES_PER_PHYSICAL`):
 
-With ~200 governors reporting to core, the core cluster receives ~200 health reports per reporting interval. Each report contains group membership (~50 NodeIds) and endpoints. At 1 report/second per governor:
+```
+Ring entries = 10,000 nodes x 150 vnodes = 1,500,000 entries in TreeMap
+Memory = 1,500,000 x ~40B = ~60MB per node
+```
 
-- 200 reports/sec * ~10KB/report = ~2MB/sec inbound to core
-- Acceptable for a 3-5 node core cluster
-
-### WorkerEndpointRegistry Scaling
-
-The registry uses `ConcurrentHashMap` keyed by `groupId`. With 200 groups and ~50 entries per group:
-- 10,000 entries total
-- Lookup: O(1) by group, O(group_size) scan within group
-- Memory: ~10K * 200 bytes = ~2MB
-
-[ASSUMPTION] The round-robin counters in `WorkerEndpointRegistry` use `AtomicInteger` which wraps correctly at `Integer.MAX_VALUE` with the `& 0x7FFFFFFF` mask. No scaling concern.
+This is manageable. If memory becomes a concern at extreme scale, virtual node count can be reduced (50 vnodes still provides good distribution with 10K physical nodes).
 
 ## Task Breakdown
 
-### P2a: Multi-Group + Zone-Aware Grouping
+### P2a Tasks (DHT-Backed ReplicatedMap)
 
-| Task | Description | Dependencies | Complexity |
-|------|------------|--------------|------------|
-| P2a-01 | `WorkerGroupId` value object | None | S |
-| P2a-02 | `ZoneExtractor` utility | None | S |
-| P2a-03 | `GroupAssignment` (consistent hashing) | P2a-01, P2a-02 | M |
-| P2a-04 | `WorkerConfig` extension (zone, maxGroupSize) | None | S |
-| P2a-05 | Zone-prefixed NodeId in `WorkerNode` factory | P2a-02, P2a-04 | S |
-| P2a-06 | Group-scoped SWIM (seed filtering) | P2a-03, P2a-05 | M |
-| P2a-07 | Auto-splitting (`GroupSplitRequest`, CDM handling) | P2a-03, P2a-06 | L |
-| P2a-08 | `WorkerGroupHealthReport` extension | P2a-01 | S |
-| P2a-09 | `DecisionRelay` group-scoped filtering | P2a-01, P2a-08 | M |
-| P2a-10 | Management API `/api/workers/groups` + CLI + docs | P2a-08 | M |
-| P2a-11 | `WorkerConfigLoader` TOML parsing for new fields | P2a-04 | S |
+| ID | Task | Depends On | Estimate |
+|----|------|------------|----------|
+| P2a-01 | Create `aether/aether-dht` module with `ReplicatedMap<K,V>` interface | -- | 2d |
+| P2a-02 | Implement `ReplicatedMapFactory` with namespace-prefixed DHT operations | P2a-01 | 2d |
+| P2a-03 | Implement `ReplicationPolicy` with home-replica resolver | P2a-01 | 3d |
+| P2a-04 | Extend `ConsistentHashRing` with spot-node exclusion filter | P2a-03 | 1d |
+| P2a-05 | Implement `CachedReplicatedMap` with LRU cache + TTL | P2a-02 | 2d |
+| P2a-06 | Implement `MapSubscription` (local + remote event aggregation) | P2a-02 | 2d |
+| P2a-07 | Implement replication cooldown (RF=1 -> RF=3 background process) | P2a-02, P2a-03 | 3d |
+| P2a-08 | Create `endpoints` map: replace `EndpointRegistry` consensus wiring | P2a-05 | 3d |
+| P2a-09 | Create `slice-nodes` map: replace `SliceNodeKey` consensus wiring | P2a-05 | 2d |
+| P2a-10 | Create `http-routes` map: replace `HttpNodeRouteKey` consensus wiring | P2a-05 | 2d |
+| P2a-11 | Simplify `SliceInvoker`: remove dual-registry pattern | P2a-08 | 2d |
+| P2a-12 | Eliminate `WorkerEndpointRegistry` and `WorkerGroupHealthReport` endpoint path | P2a-08, P2a-11 | 1d |
+| P2a-13 | Wire DHT participation into `WorkerNode` (non-spot workers join ring, write endpoints) | P2a-08 | 2d |
+| P2a-14 | Wire DHT participation into `AetherNode` (core nodes join ring) | P2a-08 | 1d |
+| P2a-15 | Add `dht.replication` configuration to `AetherNodeConfig` | P2a-07 | 1d |
+| P2a-16 | Integration tests: ReplicatedMap operations (put/get/remove/subscribe) | P2a-06 | 2d |
+| P2a-17 | Integration tests: replication cooldown and anti-entropy repair | P2a-07 | 2d |
+| P2a-18 | Integration tests: endpoint migration (verify SliceInvoker works with DHT) | P2a-11 | 2d |
 
-**Estimated total P2a:** 3-5 days
+**P2a Total: ~33 days**
 
-### P2b: Spot Pool
+### P2b Tasks (Multi-Group + Zone-Aware Grouping)
 
-| Task | Description | Dependencies | Complexity |
-|------|------------|--------------|------------|
-| P2b-01 | `WorkerPoolType` enum | None | S |
-| P2b-02 | `WorkerMemberInfo` (pool type from NodeId) | P2b-01 | S |
-| P2b-03 | `AllocationPool` extension (spotWorkers) | P2b-01, P2b-02 | M |
-| P2b-04 | `PlacementPolicy.SPOT_ELIGIBLE` | P2b-01 | S |
-| P2b-05 | `PreemptionDetector` SPI + `LocalPreemptionDetector` | None | M |
-| P2b-06 | `PreemptionHandler` (SWIM leave, drain, exit) | P2b-05, P2a-06 | M |
-| P2b-07 | CDM spot-aware allocation | P2b-02, P2b-03, P2b-04 | L |
-| P2b-08 | Spot-prefixed NodeId convention | P2b-02, P2a-05 | S |
-| P2b-09 | Management API spot pool status | P2b-03 | S |
+| ID | Task | Depends On | Estimate |
+|----|------|------------|----------|
+| P2b-01 | Add `groupName` and `zone` to worker configuration | P2a-13 | 1d |
+| P2b-02 | Multi-community SWIM: separate SWIM groups per community | P2b-01 | 3d |
+| P2b-03 | Multi-community governor election (one per community) | P2b-02 | 2d |
+| P2b-04 | CDM zone-aware placement policy | P2b-01 | 3d |
+| P2b-05 | Worker slice directives with community targeting | P2b-04 | 2d |
+| P2b-06 | Cross-group routing through core | P2b-03 | 2d |
+| P2b-07 | Community membership reporting (governor -> core) | P2b-03 | 1d |
+| P2b-08 | CLI commands for multi-group topology inspection | P2b-07 | 2d |
+| P2b-09 | Integration tests: multi-community deployment and routing | P2b-06 | 3d |
 
-**Estimated total P2b:** 3-4 days
+**P2b Total: ~19 days**
 
-### P2c: KV-Store Migration (Flag-Gated)
+### P2c Tasks (Spot Pool)
 
-| Task | Description | Dependencies | Complexity |
-|------|------------|--------------|------------|
-| P2c-01 | `CoreEndpointReporter` | P2a-08 | M |
-| P2c-02 | `SliceInvoker` query order branch (flag-gated) | P2c-01 | M |
-| P2c-03 | Management API migration toggle + CLI + docs | P2c-02 | S |
-| P2c-04 | Integration tests for both flag states | P2c-02, P2c-03 | M |
+| ID | Task | Depends On | Estimate |
+|----|------|------------|----------|
+| P2c-01 | Add `spot` flag to worker configuration and activation directive | P2b-01 | 1d |
+| P2c-02 | Spot-node DHT exclusion (skip `ring.addNode()`, RF=1 writes) | P2c-01, P2a-04 | 2d |
+| P2c-03 | `SpotIntegrationProvider` SPI with AWS and GCP implementations | P2c-01 | 3d |
+| P2c-04 | Preemption handler: drain + endpoint removal | P2c-03 | 2d |
+| P2c-05 | CDM spot-aware scheduling (prefer on-demand, overflow to spot) | P2c-01 | 2d |
+| P2c-06 | Integration tests: spot node lifecycle (join, write, preempt) | P2c-04 | 2d |
+| P2c-07 | Integration tests: verify zero DHT rebalance on spot preemption | P2c-02, P2c-04 | 1d |
 
-**Estimated total P2c:** 2-3 days
+**P2c Total: ~13 days**
 
-### Worker Capabilities (Cross-Cutting)
-
-| Task | Description | Dependencies | Complexity |
-|------|------------|--------------|------------|
-| WC-01 | `ScheduledTaskManager` worker-mode factory | P2a-06 | M |
-| WC-02 | Wire scheduled tasks in `WorkerNode` | WC-01 | S |
-| WC-03 | Wire `TopicSubscriptionRegistry` + `PublisherFactory` in worker | P2a-06 | M |
-| WC-04 | Forge tests for worker scheduled tasks | WC-02 | M |
-| WC-05 | Forge tests for worker pub/sub | WC-03 | M |
-
-**Estimated total WC:** 2-3 days
-
-### Grand Total: 10-15 days
+### Grand Total: ~65 days
 
 ## Testing Strategy
 
-### Forge Tests (Unit/Integration)
+### Unit Tests
 
-| Test | Validates | File Location |
-|------|-----------|---------------|
-| `WorkerGroupIdTest` | Validation, pattern matching | `aether/aether-config/src/test/java/.../config/WorkerGroupIdTest.java` |
-| `ZoneExtractorTest` | Zone parsing from NodeId | `aether/aether-config/src/test/java/.../config/ZoneExtractorTest.java` |
-| `GroupAssignmentTest` | Consistent hashing, splitting, distribution uniformity | `aether/worker/src/test/java/.../worker/group/GroupAssignmentTest.java` |
-| `GroupAssignmentScaleTest` | 10K nodes, group count, reshuffling on split | `aether/worker/src/test/java/.../worker/group/GroupAssignmentScaleTest.java` |
-| `DecisionRelayFilterTest` | Group-scoped decision filtering | `aether/worker/src/test/java/.../worker/governor/DecisionRelayFilterTest.java` |
-| `AllocationPoolSpotTest` | Spot-aware node selection by policy | `aether/aether-deployment/src/test/java/.../deployment/cluster/AllocationPoolSpotTest.java` |
-| `PreemptionHandlerTest` | Shutdown sequence on preemption signal | `aether/worker/src/test/java/.../worker/preemption/PreemptionHandlerTest.java` |
-| `CoreEndpointReporterTest` | Core-to-registry sync | `aether/aether-invoke/src/test/java/.../endpoint/CoreEndpointReporterTest.java` |
-| `SliceInvokerMigrationTest` | Flag-gated query order | `aether/aether-invoke/src/test/java/.../invoke/SliceInvokerMigrationTest.java` |
-| `WorkerScheduledTaskTest` | Governor-as-leader scheduled task execution | `aether/aether-invoke/src/test/java/.../invoke/WorkerScheduledTaskTest.java` |
-| `WorkerPubSubTest` | Pub/sub routing through workers | Forge: `aether/forge/forge-tests/src/test/java/.../forge/WorkerPubSubTest.java` |
+| Area | Tests |
+|------|-------|
+| `ReplicatedMap` API | put/get/remove/subscribe with mock DHT |
+| `CachedReplicatedMap` | cache hit/miss/eviction/TTL expiry |
+| `HomeReplicaResolver` | community extraction, node selection, edge cases |
+| `ReplicationPolicy` | spot exclusion, RF degradation, home-replica fallback |
+| Replication cooldown | RF=1 -> RF=3 transition, rate limiting |
+| `SliceInvoker` (simplified) | single-map lookup, no dual-registry |
+
+### Integration Tests
+
+| Area | Tests |
+|------|-------|
+| DHT ReplicatedMap end-to-end | Multi-node put/get/remove with real DHT |
+| Anti-entropy repair | Inject inconsistency, verify repair |
+| Replication cooldown | Boot cluster, verify RF=1 -> RF=3 |
+| Endpoint migration | Deploy slice, verify endpoints in DHT (not consensus) |
+| Multi-community routing | Cross-community invocation via core |
+| Spot lifecycle | Join -> write -> preempt -> verify no rebalance |
 
 ### E2E Tests (Testcontainers)
 
-| Test | Scenario | File Location |
-|------|----------|---------------|
-| `WorkerGroupFormationE2ETest` | 3 core + 6 workers (2 zones) -> verifies 2 groups formed | `aether/e2e-tests/src/test/java/.../e2e/WorkerGroupFormationE2ETest.java` |
-| `WorkerGroupSplitE2ETest` | Start with 3 workers, scale to 60 -> verify group split | `aether/e2e-tests/src/test/java/.../e2e/WorkerGroupSplitE2ETest.java` |
-| `SpotWorkerPreemptionE2ETest` | Deploy to spot workers, kill one -> verify re-allocation | `aether/e2e-tests/src/test/java/.../e2e/SpotWorkerPreemptionE2ETest.java` |
-| `KVStoreMigrationE2ETest` | Toggle flag, verify endpoint resolution works in both modes | `aether/e2e-tests/src/test/java/.../e2e/KVStoreMigrationE2ETest.java` |
-| `WorkerScheduledTaskE2ETest` | Deploy scheduled task to workers, verify execution | `aether/e2e-tests/src/test/java/.../e2e/WorkerScheduledTaskE2ETest.java` |
-
-### Test Naming Convention
-
-All tests follow the project convention: `methodName_scenario_expectation()`
-
-Examples:
-```java
-void assignGroup_singleZoneBelowMax_returnsSingleGroup()
-void assignGroup_tenThousandNodes_distributesUniformly()
-void extractZone_validZonePrefix_returnsZone()
-void extractZone_randomNodeId_returnsDefault()
-void nodesForPolicy_spotEligible_returnsSpotWorkersFirst()
-void selectCoreOrWorkerEndpoint_flagEnabled_queriesRegistryFirst()
-```
+| Scenario | Verification |
+|----------|-------------|
+| 3-core + 6-worker cluster | Endpoints in DHT, SliceInvoker routes correctly |
+| Worker join/leave | DHT rebalancing, endpoint availability |
+| Spot preemption | Zero rebalance, endpoint cleanup |
+| Multi-community deployment | Zone-aware placement, cross-group routing |
 
 ## Migration and Rollback
 
-### P2a Migration
+### Forward Migration (0.19.x -> 0.20.0)
 
-**Forward:** Workers with new config (`zone`, `maxGroupSize`) join zone-prefixed groups. Workers with old config (no zone) join the `default` zone and continue to work as in Phase 1.
+1. **Stop all 0.19.x nodes.** Mixed-version clusters are not supported for this transition.
+2. **Deploy 0.20.0.** Core and worker nodes start with DHT enabled.
+3. **On startup**, nodes write their endpoints to DHT instead of consensus.
+4. **Consensus KV-store** still holds blueprints, targets, etc. -- no migration needed for those.
+5. **Stale endpoint entries** in consensus (from 0.19.x) are harmless: `KVNotificationRouter` no longer has handlers for `EndpointKey`, so they are ignored. They will be cleaned up by the next consensus snapshot.
 
-**Rollback:** Remove zone/maxGroupSize from config. Workers revert to `default` zone. Single flat group resumes.
+### Rollback (0.20.0 -> 0.19.x)
 
-### P2b Migration
+1. **Stop all 0.20.0 nodes.**
+2. **Deploy 0.19.x.** Nodes resume writing endpoints to consensus.
+3. **DHT data is ephemeral** -- in-memory storage vanishes on shutdown. No cleanup needed.
+4. **Consensus state is intact** -- blueprints, targets, etc. were never migrated.
 
-**Forward:** Spot workers are provisioned via `ComputeProvider` with `InstanceType.SPOT`. They join with spot-prefixed NodeIds. CDM recognizes them and applies spot-aware allocation.
+### Zero-Downtime Migration (Future Enhancement)
 
-**Rollback:** Stop provisioning spot instances. Existing spot workers drain naturally or are terminated. CDM falls back to main workers only.
-
-### P2c Migration (Flag-Gated)
-
-| Step | Action |
-|------|--------|
-| 1 | Deploy code with flag defaulting to OFF |
-| 2 | `CoreEndpointReporter` starts syncing (always runs, populates registry) |
-| 3 | Enable flag via management API: `POST /api/workers/migration/enable` |
-| 4 | Monitor: verify endpoint resolution latency is stable |
-| 5 | If issues: `POST /api/workers/migration/disable` (instant rollback) |
-| 6 | After validation: make flag default to ON in config |
-| 7 | Future phase: remove old path entirely |
-
-**Data safety:** Both registries remain populated at all times. The flag only controls query order. No data is lost or corrupted by toggling.
-
-## Open Questions
-
-| # | Question | Status |
-|---|----------|--------|
-| 1 | Should group split be automatic or operator-triggered? | [ASSUMPTION] Automatic, triggered by governor when membership exceeds `maxGroupSize`. |
-| 2 | Health report interval for 200 governors? | [ASSUMPTION] 1 second, same as Phase 1. Core can handle 200 reports/sec. |
-| 3 | Worker-to-worker direct invocation within a group? | Design Decision #5 says always through core. Deferred optimization. |
+[ASSUMPTION] Zero-downtime migration between 0.19.x and 0.20.0 is NOT required for initial release. If needed later, it can be achieved by:
+- Running DHT in parallel with consensus for the three migrated key types.
+- Feature flag to switch reads from consensus to DHT.
+- Once all nodes are 0.20.0, disable consensus writes for migrated types.
 
 ## References
 
-### Internal References (Phase 1 Implementation)
+### Internal References
 
-- `aether/worker/src/main/java/org/pragmatica/aether/worker/WorkerNode.java` -- Worker node lifecycle and SWIM integration
-- `aether/worker/src/main/java/org/pragmatica/aether/worker/governor/GovernorElection.java` -- Deterministic governor election
-- `aether/worker/src/main/java/org/pragmatica/aether/worker/governor/DecisionRelay.java` -- Decision relay from core to workers
-- `aether/worker/src/main/java/org/pragmatica/aether/worker/mutation/MutationForwarder.java` -- Mutation forwarding to core
-- `aether/worker/src/main/java/org/pragmatica/aether/worker/network/WorkerNetwork.java` -- TCP inter-worker communication
-- `aether/worker/src/main/java/org/pragmatica/aether/worker/bootstrap/WorkerBootstrap.java` -- KV state bootstrap
-- `aether/aether-invoke/src/main/java/org/pragmatica/aether/endpoint/WorkerEndpointRegistry.java` -- Worker endpoint registry
-- `aether/aether-invoke/src/main/java/org/pragmatica/aether/endpoint/WorkerGroupHealthReport.java` -- Health report record
-- `aether/aether-invoke/src/main/java/org/pragmatica/aether/endpoint/WorkerEndpointEntry.java` -- Endpoint entry record
-- `aether/aether-invoke/src/main/java/org/pragmatica/aether/invoke/SliceInvoker.java` -- Endpoint resolution and invocation
-- `aether/aether-invoke/src/main/java/org/pragmatica/aether/endpoint/EndpointRegistry.java` -- Consensus-driven endpoint registry
-- `aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/ClusterDeploymentManager.java` -- CDM orchestration
-- `aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/AllocationPool.java` -- Allocation pool
-- `aether/aether-config/src/main/java/org/pragmatica/aether/config/PlacementPolicy.java` -- Placement policy enum
-- `aether/aether-config/src/main/java/org/pragmatica/aether/config/WorkerConfig.java` -- Worker configuration
-- `aether/node/src/main/java/org/pragmatica/aether/node/health/CoreSwimHealthDetector.java` -- Core SWIM health detection
-- `aether/node/src/main/java/org/pragmatica/aether/api/routes/WorkerRoutes.java` -- Worker management API routes
-- `aether/slice/src/main/java/org/pragmatica/aether/artifact/GroupId.java` -- Maven artifact GroupId (distinct from WorkerGroupId)
-- `integrations/consensus/src/main/java/org/pragmatica/consensus/NodeId.java` -- Node identity
-- `integrations/swim/src/main/java/org/pragmatica/swim/SwimMember.java` -- SWIM member record
-- `integrations/swim/src/main/java/org/pragmatica/swim/SwimProtocol.java` -- SWIM protocol implementation
+| Reference | Path |
+|-----------|------|
+| Phase 1 spec | `aether/docs/specs/passive-worker-pools-spec.md` |
+| DHT module | `integrations/dht/` |
+| DHTConfig | `integrations/dht/src/main/java/org/pragmatica/dht/DHTConfig.java` |
+| ConsistentHashRing | `integrations/dht/src/main/java/org/pragmatica/dht/ConsistentHashRing.java` |
+| DHTNode | `integrations/dht/src/main/java/org/pragmatica/dht/DHTNode.java` |
+| DHTClient | `integrations/dht/src/main/java/org/pragmatica/dht/DHTClient.java` |
+| DistributedDHTClient | `integrations/dht/src/main/java/org/pragmatica/dht/DistributedDHTClient.java` |
+| DHTRebalancer | `integrations/dht/src/main/java/org/pragmatica/dht/DHTRebalancer.java` |
+| DHTAntiEntropy | `integrations/dht/src/main/java/org/pragmatica/dht/DHTAntiEntropy.java` |
+| DHTTopologyListener | `integrations/dht/src/main/java/org/pragmatica/dht/DHTTopologyListener.java` |
+| StorageEngine | `integrations/dht/src/main/java/org/pragmatica/dht/storage/StorageEngine.java` |
+| MemoryStorageEngine | `integrations/dht/src/main/java/org/pragmatica/dht/storage/MemoryStorageEngine.java` |
+| DHTMessage | `integrations/dht/src/main/java/org/pragmatica/dht/DHTMessage.java` |
+| DHTError | `integrations/dht/src/main/java/org/pragmatica/dht/DHTError.java` |
+| KVStore | `integrations/cluster/src/main/java/org/pragmatica/cluster/state/kvstore/KVStore.java` |
+| KVCommand | `integrations/cluster/src/main/java/org/pragmatica/cluster/state/kvstore/KVCommand.java` |
+| KVNotificationRouter | `integrations/cluster/src/main/java/org/pragmatica/cluster/state/kvstore/KVNotificationRouter.java` |
+| AetherKey | `aether/slice/src/main/java/org/pragmatica/aether/slice/kvstore/AetherKey.java` |
+| AetherValue | `aether/slice/src/main/java/org/pragmatica/aether/slice/kvstore/AetherValue.java` |
+| EndpointRegistry | `aether/aether-invoke/src/main/java/org/pragmatica/aether/endpoint/EndpointRegistry.java` |
+| WorkerEndpointRegistry | `aether/aether-invoke/src/main/java/org/pragmatica/aether/endpoint/WorkerEndpointRegistry.java` |
+| WorkerGroupHealthReport | `aether/aether-invoke/src/main/java/org/pragmatica/aether/endpoint/WorkerGroupHealthReport.java` |
+| WorkerEndpointEntry | `aether/aether-invoke/src/main/java/org/pragmatica/aether/endpoint/WorkerEndpointEntry.java` |
+| SliceInvoker | `aether/aether-invoke/src/main/java/org/pragmatica/aether/invoke/SliceInvoker.java` |
+| Feature catalog | `aether/docs/reference/feature-catalog.md` |
+| Development priorities | `aether/docs/internal/progress/development-priorities.md` |
 
-### Cloud Integration SPI
+### Technical Documentation
 
-- `aether/environment-integration/src/main/java/org/pragmatica/aether/environment/EnvironmentIntegration.java` -- Faceted SPI entry point
-- `aether/environment-integration/src/main/java/org/pragmatica/aether/environment/ComputeProvider.java` -- Compute instance lifecycle
-- `aether/environment-integration/src/main/java/org/pragmatica/aether/environment/InstanceType.java` -- OnDemand/Spot instance types
-- `aether/environment-integration/src/main/java/org/pragmatica/aether/environment/InstanceInfo.java` -- Instance info record
-
-### Scheduled Tasks and Pub/Sub
-
-- `aether/aether-invoke/src/main/java/org/pragmatica/aether/invoke/ScheduledTaskManager.java` -- Timer lifecycle manager
-- `aether/aether-invoke/src/main/java/org/pragmatica/aether/invoke/ScheduledTaskRegistry.java` -- Task registry
-- `aether/aether-invoke/src/main/java/org/pragmatica/aether/invoke/TopicPublisher.java` -- Pub/sub publisher
-- `aether/aether-invoke/src/main/java/org/pragmatica/aether/endpoint/TopicSubscriptionRegistry.java` -- Topic subscription watcher
-
-### Testing Infrastructure
-
-- `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/ForgeTestBase.java` -- Forge test base class
-- `aether/e2e-tests/src/test/java/org/pragmatica/aether/e2e/AbstractE2ETest.java` -- E2E test base class
-- `aether/e2e-tests/src/test/java/org/pragmatica/aether/e2e/SwimDetectionE2ETest.java` -- Existing SWIM E2E test
-
-### Technical References
-
-- [Jump Consistent Hash](https://arxiv.org/abs/1406.2294) -- Lamping & Veach, Google. Used for group assignment.
-- [SWIM Protocol](https://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/SWIM.pdf) -- Scalable Weakly-consistent Infection-style Process Group Membership Protocol.
+| Reference | Description |
+|-----------|-------------|
+| [Consistent Hashing](https://en.wikipedia.org/wiki/Consistent_hashing) | Foundation for DHT ring placement |
+| [Amazon DynamoDB Paper](https://www.allthingsdistributed.com/2007/10/amazons_dynamo.html) | DHT design inspiration (quorum, virtual nodes, anti-entropy) |
+| [AWS Spot Instance Interruptions](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-interruptions.html) | Spot preemption signal handling |
+| [GCP Preemptible VMs](https://cloud.google.com/compute/docs/instances/preemptible) | GCP spot equivalent |
