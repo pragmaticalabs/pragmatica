@@ -236,7 +236,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Spot instance support | Cloud Integration |
 | Cluster expense tracking | Cloud Integration |
 | Dead letter handling | Pub-sub + scheduler complete |
-| KV-Store state backup | — |
+| ~~KV-Store state backup~~ | ~~Complete in 0.19.3~~ |
 | Aether runtime rolling upgrade | Official container or binaries |
 | Email messaging resource | — |
 

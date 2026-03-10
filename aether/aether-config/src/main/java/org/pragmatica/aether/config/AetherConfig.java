@@ -43,6 +43,7 @@ import static org.pragmatica.lang.Result.success;
 /// @param ttm        TTM (Tiny Time Mixers) predictive scaling configuration
 /// @param slice      Slice loading and repository configuration
 /// @param appHttp    Application HTTP server configuration
+/// @param backup     Backup configuration
 public record AetherConfig(ClusterConfig cluster,
                            NodeConfig node,
                            Option<TlsConfig> tls,
@@ -50,7 +51,8 @@ public record AetherConfig(ClusterConfig cluster,
                            Option<KubernetesConfig> kubernetes,
                            TtmConfig ttm,
                            SliceConfig slice,
-                           AppHttpConfig appHttp) {
+                           AppHttpConfig appHttp,
+                           BackupConfig backup) {
     /// Factory method following JBCT naming convention.
     public static Result<AetherConfig> aetherConfig(ClusterConfig cluster,
                                                     NodeConfig node,
@@ -59,8 +61,9 @@ public record AetherConfig(ClusterConfig cluster,
                                                     Option<KubernetesConfig> kubernetes,
                                                     TtmConfig ttm,
                                                     SliceConfig slice,
-                                                    AppHttpConfig appHttp) {
-        return success(new AetherConfig(cluster, node, tls, docker, kubernetes, ttm, slice, appHttp));
+                                                    AppHttpConfig appHttp,
+                                                    BackupConfig backup) {
+        return success(new AetherConfig(cluster, node, tls, docker, kubernetes, ttm, slice, appHttp, backup));
     }
 
     /// Create configuration with defaults for specified environment.
@@ -73,7 +76,8 @@ public record AetherConfig(ClusterConfig cluster,
                             kubernetesForEnvironment(env),
                             TtmConfig.ttmConfig(),
                             SliceConfig.sliceConfig(),
-                            AppHttpConfig.appHttpConfig()).unwrap();
+                            AppHttpConfig.appHttpConfig(),
+                            BackupConfig.backupConfig(env)).unwrap();
     }
 
     /// Create default configuration (Docker environment).
@@ -127,6 +131,7 @@ public record AetherConfig(ClusterConfig cluster,
         private TtmConfig ttmConfig;
         private SliceConfig sliceConfig;
         private AppHttpConfig appHttpConfig;
+        private BackupConfig backupConfig;
 
         @SuppressWarnings("JBCT-NAM-01")
         public Builder withEnvironment(Environment environment) {
@@ -189,6 +194,11 @@ public record AetherConfig(ClusterConfig cluster,
             return this;
         }
 
+        public Builder backup(BackupConfig backupConfig) {
+            this.backupConfig = backupConfig;
+            return this;
+        }
+
         public AetherConfig build() {
             var base = AetherConfig.aetherConfig(environment);
             var clusterConfig = applyClusterOverrides(base.cluster());
@@ -199,6 +209,7 @@ public record AetherConfig(ClusterConfig cluster,
             var finalTtm = ttmFor();
             var finalSlice = sliceFor();
             var finalAppHttp = appHttpFor();
+            var finalBackup = backupFor();
             return AetherConfig.aetherConfig(clusterConfig,
                                              nodeConfig,
                                              finalTls,
@@ -206,7 +217,8 @@ public record AetherConfig(ClusterConfig cluster,
                                              finalK8s,
                                              finalTtm,
                                              finalSlice,
-                                             finalAppHttp)
+                                             finalAppHttp,
+                                             finalBackup)
                                .unwrap();
         }
 
@@ -254,6 +266,10 @@ public record AetherConfig(ClusterConfig cluster,
 
         private AppHttpConfig appHttpFor() {
             return option(appHttpConfig).or(AppHttpConfig.appHttpConfig());
+        }
+
+        private BackupConfig backupFor() {
+            return option(backupConfig).or(BackupConfig.backupConfig(environment));
         }
     }
 }

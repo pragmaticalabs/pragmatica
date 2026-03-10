@@ -22,6 +22,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - **Worker management API** — `GET /api/workers`, `GET /api/workers/health`, `GET /api/workers/endpoints`
   - **CLI commands** — `aether workers list`, `aether workers health`
 
+- **KV-Store durable backup** — serializes cluster metadata (slice targets, node lifecycle, config) to a single TOML file managed in a local git repo. Git provides versioning, history, diffs, and optional remote push for offsite backup
+  - **TOML Writer** (`integrations/config/toml`) — serialization support added to the custom TOML library, including inline table parsing
+  - **KV-Store serializer** (`aether/slice`) — converts all 18 AetherKey/AetherValue types to/from TOML with pipe-delimited values grouped by key-type sections
+  - **Git-backed persistence** (`integrations/consensus`) — `GitBackedPersistence` implements `RabiaPersistence` using git CLI via ProcessBuilder for atomic snapshots
+  - **Backup configuration** — `[backup]` TOML section with enabled, interval, path, remote fields and environment-aware defaults
+  - **Management API** — `POST /api/backup`, `GET /api/backups`, `POST /api/backup/restore`
+  - **CLI commands** — `aether backup trigger`, `aether backup list`, `aether backup restore <commit>`
+
 - **SWIM core-to-core health detection** (P1.13) — replaces TCP disconnect as health signal for core nodes. `CoreSwimHealthDetector` bridges SWIM membership events to `TopologyChangeNotification`. 1-2s failure detection vs 15s-2min with TCP. TCP disconnect no longer triggers topology removal — only SWIM `FAULTY`/`LEFT` does
 - **Automatic topology growth** (P1.14) — CDM dynamically assigns core vs worker role to joining nodes. `RabiaEngine` activation gating: seed nodes auto-activate, non-seed nodes wait for CDM authorization. `TopologyConfig` extended with `coreMax`/`coreMin`. New `TopologyGrowthMessage` sealed interface (`ActivateConsensus`, `AssignWorkerRole`). Management API: `GET /api/cluster/topology`. CLI: `aether topology status`
 - **E2E test rework: container networking** — replaced dual-mode networking (Linux host / macOS bridge with PID-based port allocation) with standard bridge networking for all platforms. All containers use identical internal ports (8080/8090) and communicate via DNS. Eliminates port conflicts and enables realistic test scenarios

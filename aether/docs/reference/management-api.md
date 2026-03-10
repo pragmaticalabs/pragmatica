@@ -1814,6 +1814,56 @@ Get scheduled tasks filtered by config section.
 
 ---
 
+## Backup Management
+
+### POST /api/backup
+
+Trigger a manual backup of the KV-Store state.
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Backup completed"
+}
+```
+
+### GET /api/backups
+
+List available backups.
+
+**Response:**
+```json
+[
+  {
+    "commitId": "abc123",
+    "message": "Backup phase 42 at 2026-03-10T12:00:00Z",
+    "timestamp": "2026-03-10T12:00:00Z"
+  }
+]
+```
+
+### POST /api/backup/restore
+
+Restore from a specific backup.
+
+**Request body:**
+```json
+{
+  "commit": "abc123"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Restore completed"
+}
+```
+
+---
+
 ## Error Responses
 
 All errors return JSON with an `error` field:

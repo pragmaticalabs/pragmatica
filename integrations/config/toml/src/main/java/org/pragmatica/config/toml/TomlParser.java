@@ -49,11 +49,11 @@ import static org.pragmatica.lang.Option.some;
 ///   - Integers: `123`, `-456`, `1_000_000`, `0xDEAD`, `0o755`, `0b1101`
 ///   - Floating point numbers: `3.14`, `-0.5e10`, `inf`, `-inf`, `nan`
 ///   - Arrays: `["a", "b", "c"]`
+///   - Inline tables: `{key = value, key2 = value2}`
 ///   - Comments: `# comment`
 ///
 /// Not yet supported:
 ///
-///   - Inline tables: `{key = value}`
 ///   - Dates and times
 ///
 /// Example usage:
@@ -767,6 +767,7 @@ public final class TomlParser {
         boolean inDoubleQuotes = false;
         boolean inSingleQuotes = false;
         int bracketDepth = 0;
+        int braceDepth = 0;
         for (int i = 0; i < value.length(); i++) {
             char c = value.charAt(i);
             // Handle escape sequences only in double-quoted strings
@@ -783,7 +784,11 @@ public final class TomlParser {
                     bracketDepth++;
                 } else if (c == ']') {
                     bracketDepth--;
-                } else if (c == '#' && bracketDepth == 0) {
+                } else if (c == '{') {
+                    braceDepth++;
+                } else if (c == '}') {
+                    braceDepth--;
+                } else if (c == '#' && bracketDepth == 0 && braceDepth == 0) {
                     return value.substring(0, i)
                                 .trim();
                 }
@@ -822,11 +827,13 @@ public final class TomlParser {
             }
             return Result.success(value.substring(1, value.length() - 1));
         }
-        // Inline table detection
-        if (INLINE_TABLE_PATTERN.matcher(value)
-                                .matches()) {
-            return TomlError.unsupportedFeature(lineNumber, "inline tables")
-                            .result();
+        // Inline table
+        if (value.startsWith("{")) {
+            if (!value.endsWith("}")) {
+                return TomlError.syntaxError(lineNumber, "unterminated inline table")
+                                .result();
+            }
+            return parseInlineTable(value.substring(1, value.length() - 1), lineNumber);
         }
         // Date/time detection
         if (DATE_PATTERN.matcher(value)
@@ -952,6 +959,7 @@ public final class TomlParser {
         boolean inDoubleQuotes = false;
         boolean inSingleQuotes = false;
         int bracketDepth = 0;
+        int braceDepth = 0;
         for (int i = 0; i < content.length(); i++) {
             char c = content.charAt(i);
             // Handle escapes only in double-quoted strings
@@ -973,7 +981,13 @@ public final class TomlParser {
             } else if (c == ']' && !inDoubleQuotes && !inSingleQuotes) {
                 bracketDepth--;
                 current.append(c);
-            } else if (c == ',' && !inDoubleQuotes && !inSingleQuotes && bracketDepth == 0) {
+            } else if (c == '{' && !inDoubleQuotes && !inSingleQuotes) {
+                braceDepth++;
+                current.append(c);
+            } else if (c == '}' && !inDoubleQuotes && !inSingleQuotes) {
+                braceDepth--;
+                current.append(c);
+            } else if (c == ',' && !inDoubleQuotes && !inSingleQuotes && bracketDepth == 0 && braceDepth == 0) {
                 var itemResult = parseValue(current.toString()
                                                    .trim(),
                                             lineNumber);
@@ -997,6 +1011,118 @@ public final class TomlParser {
             itemResult.onSuccess(items::add);
         }
         return Result.success(items);
+    }
+
+    /// Parse a TOML inline table content (between braces) into a Map.
+    private static Result<Object> parseInlineTable(String content, int lineNumber) {
+        Map<String, Object> table = new LinkedHashMap<>();
+        var trimmed = content.trim();
+        if (trimmed.isEmpty()) {
+            return Result.success(table);
+        }
+        var entries = splitInlineTableEntries(trimmed);
+        for (var entry : entries) {
+            var result = parseInlineTableEntry(entry.trim(), lineNumber, table);
+            if (result.isFailure()) {
+                return result.map(_ -> null);
+            }
+        }
+        return Result.success(table);
+    }
+
+    /// Split inline table content into individual key=value entries, respecting nesting.
+    private static List<String> splitInlineTableEntries(String content) {
+        List<String> entries = new ArrayList<>();
+        var current = new StringBuilder();
+        boolean inDoubleQuotes = false;
+        boolean inSingleQuotes = false;
+        int braceDepth = 0;
+        int bracketDepth = 0;
+        for (int i = 0; i < content.length(); i++) {
+            char c = content.charAt(i);
+            if (c == '\\' && i + 1 < content.length() && inDoubleQuotes) {
+                current.append(c);
+                current.append(content.charAt(i + 1));
+                i++;
+                continue;
+            }
+            if (c == '"' && !inSingleQuotes) {
+                inDoubleQuotes = !inDoubleQuotes;
+                current.append(c);
+            } else if (c == '\'' && !inDoubleQuotes) {
+                inSingleQuotes = !inSingleQuotes;
+                current.append(c);
+            } else if (!inDoubleQuotes && !inSingleQuotes && c == '{') {
+                braceDepth++;
+                current.append(c);
+            } else if (!inDoubleQuotes && !inSingleQuotes && c == '}') {
+                braceDepth--;
+                current.append(c);
+            } else if (!inDoubleQuotes && !inSingleQuotes && c == '[') {
+                bracketDepth++;
+                current.append(c);
+            } else if (!inDoubleQuotes && !inSingleQuotes && c == ']') {
+                bracketDepth--;
+                current.append(c);
+            } else if (c == ',' && !inDoubleQuotes && !inSingleQuotes && braceDepth == 0 && bracketDepth == 0) {
+                entries.add(current.toString());
+                current = new StringBuilder();
+            } else {
+                current.append(c);
+            }
+        }
+        var last = current.toString().trim();
+        if (!last.isEmpty()) {
+            entries.add(current.toString());
+        }
+        return entries;
+    }
+
+    /// Parse a single key=value entry from an inline table.
+    private static Result<Unit> parseInlineTableEntry(String entry, int lineNumber,
+                                                      Map<String, Object> table) {
+        int eqIndex = findEqualsInEntry(entry);
+        if (eqIndex < 0) {
+            return TomlError.syntaxError(lineNumber, "invalid inline table entry: " + entry)
+                            .result();
+        }
+        var key = unquoteKey(entry.substring(0, eqIndex).trim());
+        var rawValue = entry.substring(eqIndex + 1).trim();
+        return parseValue(rawValue, lineNumber)
+            .onSuccess(value -> table.put(key, value))
+            .mapToUnit();
+    }
+
+    /// Find the index of '=' in an inline table entry, skipping quoted regions.
+    private static int findEqualsInEntry(String entry) {
+        boolean inDoubleQuotes = false;
+        boolean inSingleQuotes = false;
+        for (int i = 0; i < entry.length(); i++) {
+            char c = entry.charAt(i);
+            if (c == '\\' && i + 1 < entry.length() && inDoubleQuotes) {
+                i++;
+                continue;
+            }
+            if (c == '"' && !inSingleQuotes) {
+                inDoubleQuotes = !inDoubleQuotes;
+            } else if (c == '\'' && !inDoubleQuotes) {
+                inSingleQuotes = !inSingleQuotes;
+            } else if (c == '=' && !inDoubleQuotes && !inSingleQuotes) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /// Remove quotes from a key if it is quoted.
+    private static String unquoteKey(String key) {
+        if (key.startsWith("\"") && key.endsWith("\"") && key.length() >= 2) {
+            return key.substring(1, key.length() - 1);
+        }
+        if (key.startsWith("'") && key.endsWith("'") && key.length() >= 2) {
+            return key.substring(1, key.length() - 1);
+        }
+        return key;
     }
 
     /// Result of processing an escape sequence.

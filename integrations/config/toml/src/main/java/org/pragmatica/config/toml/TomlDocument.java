@@ -202,6 +202,18 @@ public record TomlDocument(Map<String, Map<String, Object>> sections,
         return tableArrays.keySet();
     }
 
+    /// Get an inline table value as a map.
+    ///
+    /// @param section the section name (empty string for root)
+    /// @param key     the property key
+    /// @return Option containing the map, or empty if not found or not a map
+    @SuppressWarnings("unchecked")
+    public Option<Map<String, Object>> getInlineTable(String section, String key) {
+        return getValue(section, key).flatMap(v -> v instanceof Map<?, ?> m
+                                                   ? Option.some((Map<String, Object>) m)
+                                                   : Option.none());
+    }
+
     private Option<Object> getValue(String section, String key) {
         return Option.option(sections.get(section))
                      .flatMap(m -> Option.option(m.get(key)));

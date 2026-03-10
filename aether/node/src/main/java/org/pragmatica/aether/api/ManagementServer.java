@@ -1,6 +1,7 @@
 package org.pragmatica.aether.api;
 
 import org.pragmatica.aether.api.routes.AlertRoutes;
+import org.pragmatica.aether.api.routes.BackupRoutes;
 import org.pragmatica.aether.api.routes.ClusterTopologyRoutes;
 import org.pragmatica.aether.api.routes.ConfigRoutes;
 import org.pragmatica.aether.api.routes.ControllerRoutes;
@@ -190,6 +191,8 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(RepositoryRoutes.repositoryRoutes(nodeSupplier));
         routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry, scheduledTaskManager));
         routeSources.add(ClusterTopologyRoutes.clusterTopologyRoutes(nodeSupplier));
+        routeSources.add(BackupRoutes.backupRoutes(() -> nodeSupplier.get()
+                                                                     .backupService()));
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm)));
         this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
         // Legacy routes using RouteHandler for dynamic content types

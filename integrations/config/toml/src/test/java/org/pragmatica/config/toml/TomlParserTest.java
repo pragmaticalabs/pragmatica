@@ -1792,16 +1792,18 @@ class TomlParserTest {
     class UnsupportedFeatureErrors {
 
         @Test
-        void rejectsInlineTable() {
+        void parsesInlineTable() {
             var content = """
                 config = {key = "value"}
                 """;
 
             TomlParser.parse(content)
-                .onSuccess(_ -> fail("Should fail for inline table"))
-                .onFailure(error -> {
-                    assertInstanceOf(TomlError.UnsupportedFeature.class, error);
-                    assertTrue(error.message().contains("inline tables"));
+                .onFailure(_ -> fail("Should not fail for inline table"))
+                .onSuccess(doc -> {
+                    assertTrue(doc.hasKey("", "config"));
+                    var value = doc.getInlineTable("", "config");
+                    assertTrue(value.isPresent());
+                    assertEquals("value", value.unwrap().get("key"));
                 });
         }
 

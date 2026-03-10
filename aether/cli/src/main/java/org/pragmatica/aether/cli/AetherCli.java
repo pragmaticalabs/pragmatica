@@ -76,7 +76,8 @@ AetherCli.ScheduledTasksCommand.class,
 AetherCli.EventsCommand.class,
 AetherCli.NodeCommand.class,
 AetherCli.TopologyStatusCommand.class,
-AetherCli.WorkersCommand.class})
+AetherCli.WorkersCommand.class,
+AetherCli.BackupCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -2304,6 +2305,63 @@ public class AetherCli implements Runnable {
             var response = parent.fetchFromNode("/api/cluster/topology");
             System.out.println(formatJson(response));
             return 0;
+        }
+    }
+
+    // ===== Backup Commands =====
+    @Command(name = "backup", description = "Manage cluster backups",
+    subcommands = {BackupCommand.TriggerCommand.class,
+    BackupCommand.ListCommand.class,
+    BackupCommand.RestoreCommand.class})
+    static class BackupCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        @Command(name = "trigger", description = "Trigger a manual backup")
+        static class TriggerCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BackupCommand backupParent;
+
+            @Override
+            public Integer call() {
+                var response = backupParent.parent.postToNode("/api/backup", "{}");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "list", description = "List available backups")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BackupCommand backupParent;
+
+            @Override
+            public Integer call() {
+                var response = backupParent.parent.fetchFromNode("/api/backups");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "restore", description = "Restore from a backup")
+        static class RestoreCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BackupCommand backupParent;
+
+            @Parameters(index = "0", description = "Git commit ID to restore from")
+            private String commitId;
+
+            @Override
+            public Integer call() {
+                var response = backupParent.parent.postToNode("/api/backup/restore", "{\"commit\":\"" + commitId + "\"}");
+                System.out.println(formatJson(response));
+                return 0;
+            }
         }
     }
 

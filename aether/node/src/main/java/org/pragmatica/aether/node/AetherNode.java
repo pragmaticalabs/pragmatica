@@ -6,6 +6,7 @@ import org.pragmatica.aether.api.ClusterEventAggregatorConfig;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.DynamicConfigManager;
+import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.DynamicConfigurationProvider;
@@ -66,6 +67,7 @@ import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.MetricsMessage;
 import org.pragmatica.cluster.node.rabia.NodeConfig;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
+import org.pragmatica.consensus.rabia.RabiaPersistence;
 import org.pragmatica.cluster.state.kvstore.*;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
@@ -194,6 +196,9 @@ public interface AetherNode {
     /// Get the cluster event aggregator for structured event collection.
     ClusterEventAggregator eventAggregator();
 
+    /// Get the backup service for this node.
+    BackupService backupService();
+
     /// Get the number of currently connected peer nodes in the cluster.
     /// This is a network-level count, not based on metrics exchange.
     int connectedNodeCount();
@@ -274,7 +279,8 @@ public interface AetherNode {
                                    deserializer,
                                    rabiaMetricsCollector,
                                    List.of(networkMetricsHandler),
-                                   true)
+                                   true,
+                                   RabiaPersistence.inMemory())
                         .flatMap(clusterNode -> assembleNode(config,
                                                              delegateRouter,
                                                              kvStore,
@@ -360,6 +366,7 @@ public interface AetherNode {
                           ArtifactMetricsCollector artifactMetricsCollector,
                           DeploymentMap deploymentMap,
                           ClusterEventAggregator eventAggregator,
+                          BackupService backupService,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
                           Option<ManagementServer> managementServer,
@@ -872,6 +879,7 @@ public interface AetherNode {
                                   artifactMetricsCollector,
                                   deploymentMap,
                                   eventAggregator,
+                                  BackupService.disabled(),
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
                                   Option.empty(),
@@ -937,6 +945,7 @@ public interface AetherNode {
                                                            artifactMetricsCollector,
                                                            deploymentMap,
                                                            eventAggregator,
+                                                           BackupService.disabled(),
                                                            eventLoopMetricsCollector,
                                                            swimHealthDetector,
                                                            Option.some(managementServer),

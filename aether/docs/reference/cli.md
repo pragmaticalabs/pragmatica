@@ -812,6 +812,29 @@ aether scheduled-tasks get scheduling.cleanup
 
 ---
 
+### backup
+
+Manage cluster backups.
+
+```bash
+# Trigger a manual backup
+aether backup trigger
+
+# List available backups
+aether backup list
+
+# Restore from a specific backup commit
+aether backup restore <commit-id>
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `trigger` | Trigger a manual backup |
+| `list` | List available backups |
+| `restore <commit>` | Restore from backup |
+
+---
+
 ## Exit Codes
 
 | Code | Meaning |

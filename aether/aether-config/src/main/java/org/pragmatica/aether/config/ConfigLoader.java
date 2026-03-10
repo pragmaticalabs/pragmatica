@@ -93,6 +93,7 @@ public final class ConfigLoader {
         populateTtmConfig(doc, builder);
         populateSliceConfig(doc, builder);
         populateAppHttpConfig(doc, builder);
+        populateBackupConfig(doc, builder);
         return builder;
     }
 
@@ -229,6 +230,21 @@ public final class ConfigLoader {
         if (enabled || !apiKeys.isEmpty()) {
             builder.appHttp(AppHttpConfig.appHttpConfig(enabled, port, apiKeys, forwardTimeoutMs)
                                          .unwrap());
+        }
+    }
+
+    private static void populateBackupConfig(TomlDocument doc, AetherConfig.Builder builder) {
+        var enabled = doc.getString("backup", "enabled")
+                         .map(ConfigLoader::toBooleanValue)
+                         .or(false);
+        if (enabled) {
+            var interval = doc.getString("backup", "interval")
+                              .or("5m");
+            var path = doc.getString("backup", "path")
+                          .or("");
+            var remote = doc.getString("backup", "remote")
+                            .or("");
+            builder.backup(BackupConfig.backupConfig(true, interval, path, remote));
         }
     }
 

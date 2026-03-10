@@ -30,6 +30,7 @@ import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.consensus.net.netty.NettyClusterNetwork;
 import org.pragmatica.consensus.rabia.ConsensusMetrics;
 import org.pragmatica.consensus.rabia.RabiaEngine;
+import org.pragmatica.consensus.rabia.RabiaPersistence;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.NewBatch;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
@@ -186,6 +187,32 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               ConsensusMetrics metrics,
                                                               List<ChannelHandler> additionalHandlers,
                                                               boolean useConsensusLeaderElection) {
+        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer,
+                         metrics, additionalHandlers, useConsensusLeaderElection, RabiaPersistence.inMemory());
+    }
+
+    /// Creates a RabiaNode with metrics, custom network handlers, consensus-based leader election,
+    /// and explicit persistence implementation.
+    ///
+    /// @param config                     Node configuration
+    /// @param delegateRouter             DelegateRouter for message routing
+    /// @param stateMachine               State machine for consensus
+    /// @param serializer                 Message serializer
+    /// @param deserializer               Message deserializer
+    /// @param metrics                    Consensus metrics collector
+    /// @param additionalHandlers         Additional Netty handlers
+    /// @param useConsensusLeaderElection Whether to use consensus-based leader election
+    /// @param persistence                Persistence implementation for consensus state
+    /// @return Result containing RabiaNode instance, or failure if topology manager creation fails
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                              DelegateRouter delegateRouter,
+                                                              StateMachine<C> stateMachine,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              ConsensusMetrics metrics,
+                                                              List<ChannelHandler> additionalHandlers,
+                                                              boolean useConsensusLeaderElection,
+                                                              RabiaPersistence<C> persistence) {
         // Create components with delegate router (routes configured after construction)
         return TcpTopologyManager.tcpTopologyManager(config.topology(),
                                                      delegateRouter)
@@ -197,7 +224,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                       metrics,
                                                                       additionalHandlers,
                                                                       topologyManager,
-                                                                      useConsensusLeaderElection));
+                                                                      useConsensusLeaderElection,
+                                                                      persistence));
     }
 
     @SuppressWarnings("unchecked")
@@ -209,14 +237,15 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                  ConsensusMetrics metrics,
                                                                  List<ChannelHandler> additionalHandlers,
                                                                  TcpTopologyManager topologyManager,
-                                                                 boolean useConsensusLeaderElection) {
+                                                                 boolean useConsensusLeaderElection,
+                                                                 RabiaPersistence<C> persistence) {
         var network = new NettyClusterNetwork(topologyManager,
                                               serializer,
                                               deserializer,
                                               delegateRouter,
                                               additionalHandlers);
         var activationGated = config.activationGated();
-        var consensus = new RabiaEngine<>(topologyManager, network, stateMachine, config.protocol(), metrics, activationGated);
+        var consensus = new RabiaEngine<>(topologyManager, network, stateMachine, config.protocol(), metrics, activationGated, persistence);
         // Create leader manager - for consensus mode, we wire the proposal handler
         // Extract expected cluster members for deterministic leader selection
         var expectedCluster = config.topology()

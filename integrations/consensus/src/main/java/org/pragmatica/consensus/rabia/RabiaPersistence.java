@@ -23,11 +23,13 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Codec;
 
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 /// Persistence interface for Rabia consensus state.
 public interface RabiaPersistence<C extends Command> {
@@ -36,6 +38,14 @@ public interface RabiaPersistence<C extends Command> {
 
     /// Load the persisted state.
     Option<SavedState<C>> load();
+
+    /// Create a git-backed persistence implementation.
+    static <C extends Command> RabiaPersistence<C> gitBacked(Path backupDir,
+                                                              Option<String> remote,
+                                                              Function<byte[], Result<String>> snapshotToToml,
+                                                              Function<String, Result<byte[]>> tomlToSnapshot) {
+        return new GitBackedPersistence<>(backupDir, remote, snapshotToToml, tomlToSnapshot);
+    }
 
     /// Create an in-memory persistence implementation (for testing or single-session use).
     static <C extends Command> RabiaPersistence<C> inMemory() {

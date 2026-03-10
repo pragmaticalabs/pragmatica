@@ -295,6 +295,28 @@ var config = AetherNodeConfig.aetherNodeConfig(
 var config = AetherNodeConfig.testConfig(nodeId, port, peers);
 ```
 
+## Backup Configuration
+
+```toml
+[backup]
+enabled = true
+interval = "5m"
+path = "/data/backups"
+remote = ""
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `false` | Enable durable backup |
+| `interval` | string | `"5m"` | Backup frequency |
+| `path` | string | env-dependent | Git repo directory for backups |
+| `remote` | string | `""` | Optional git remote URL |
+
+Default `path` by environment:
+- LOCAL: `./aether-backups`
+- DOCKER: `/data/backups`
+- KUBERNETES: `/var/aether/backups`
+
 ## Configuration Best Practices
 
 ### Production

@@ -92,7 +92,7 @@ public class RabiaEngine<C extends Command> {
                                                                     new ThreadPoolExecutor.DiscardPolicy());
     private final ConcurrentNavigableMap<BatchId, Batch<C>> pendingBatches = new ConcurrentSkipListMap<>();
     private final Map<NodeId, SavedState<C>> syncResponses = new ConcurrentHashMap<>();
-    private final RabiaPersistence<C> persistence = RabiaPersistence.inMemory();
+    private final RabiaPersistence<C> persistence;
     @SuppressWarnings("rawtypes")
     private final Map<CorrelationId, Promise> correlationMap = new ConcurrentHashMap<>();
 
@@ -118,7 +118,7 @@ public class RabiaEngine<C extends Command> {
                        ClusterNetwork network,
                        StateMachine<C> stateMachine,
                        ProtocolConfig config) {
-        this(topologyManager, network, stateMachine, config, ConsensusMetrics.noop(), false);
+        this(topologyManager, network, stateMachine, config, ConsensusMetrics.noop());
     }
 
     /// Creates a new Rabia consensus engine with metrics but without activation gating.
@@ -136,7 +136,7 @@ public class RabiaEngine<C extends Command> {
         this(topologyManager, network, stateMachine, config, metrics, false);
     }
 
-    /// Creates a new Rabia consensus engine with metrics and activation gating.
+    /// Creates a new Rabia consensus engine with metrics and activation gating but in-memory persistence.
     ///
     /// When `activationGated` is true, the engine will not start consensus on quorum ESTABLISHED
     /// until `authorizeActivation()` is called. This allows the CDM to decide whether a joining
@@ -154,6 +154,25 @@ public class RabiaEngine<C extends Command> {
                        ProtocolConfig config,
                        ConsensusMetrics metrics,
                        boolean activationGated) {
+        this(topologyManager, network, stateMachine, config, metrics, activationGated, RabiaPersistence.inMemory());
+    }
+
+    /// Creates a new Rabia consensus engine with all parameters including persistence.
+    ///
+    /// @param topologyManager The topology manager for node communication
+    /// @param network         The network implementation
+    /// @param stateMachine    The state machine to apply commands to
+    /// @param config          Configuration for the consensus engine
+    /// @param metrics         Metrics collector for observability
+    /// @param activationGated Whether consensus activation requires explicit authorization
+    /// @param persistence     The persistence implementation for state backup
+    public RabiaEngine(TopologyManager topologyManager,
+                       ClusterNetwork network,
+                       StateMachine<C> stateMachine,
+                       ProtocolConfig config,
+                       ConsensusMetrics metrics,
+                       boolean activationGated,
+                       RabiaPersistence<C> persistence) {
         this.self = topologyManager.self()
                                    .id();
         this.topologyManager = topologyManager;
@@ -164,6 +183,7 @@ public class RabiaEngine<C extends Command> {
                              .or(ConsensusMetrics.noop());
         this.activationGated = activationGated;
         this.activationAuthorized = !activationGated;
+        this.persistence = persistence;
         this.cleanupTask = Option.some(SharedScheduler.scheduleAtFixedRate(this::cleanupOldPhases,
                                                                            config.cleanupInterval()));
     }

@@ -1,0 +1,595 @@
+package org.pragmatica.aether.slice.kvstore;
+
+import org.pragmatica.aether.slice.kvstore.AetherKey.*;
+import org.pragmatica.aether.slice.kvstore.AetherValue.*;
+import org.pragmatica.consensus.rabia.Phase;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+import static org.pragmatica.lang.Result.success;
+
+/// Serializes and deserializes KV-Store snapshots to/from TOML text format.
+///
+/// Format: pipe-delimited values grouped by key-type sections.
+/// AppBlueprintKey/Value entries are skipped (ephemeral, re-deployable).
+@SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
+public final class KVStoreSerializer {
+    private KVStoreSerializer() {}
+
+    private static final String PIPE = "|";
+    private static final String META_SECTION = "[meta]";
+
+    /// Serialize KV-Store snapshot to TOML text.
+    public static Result<String> toToml(Map<AetherKey, AetherValue> entries, Phase phase, Instant timestamp) {
+        var sb = new StringBuilder();
+        appendHeader(sb, phase, timestamp);
+        var grouped = groupBySection(entries);
+        grouped.forEach((section, kvPairs) -> appendSection(sb, section, kvPairs));
+        return success(sb.toString());
+    }
+
+    /// Deserialize TOML text back to KV-Store entries.
+    public static Result<Map<AetherKey, AetherValue>> fromToml(String toml) {
+        var lines = toml.split("\n");
+        var results = new ArrayList<Result<Map.Entry<AetherKey, AetherValue>>>();
+        var currentSection = "";
+        for (var line : lines) {
+            var trimmed = line.trim();
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                continue;
+            }
+            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                currentSection = trimmed.substring(1, trimmed.length() - 1);
+                continue;
+            }
+            if ("meta".equals(currentSection)) {
+                continue;
+            }
+            results.add(parseEntry(currentSection, trimmed));
+        }
+        return Result.allOf(results)
+                     .map(KVStoreSerializer::entriesToMap);
+    }
+
+    /// Serialization errors.
+    public sealed interface SerializationError extends Cause {
+        record InvalidFormat(String detail) implements SerializationError {
+            @Override
+            public String message() {
+                return "Invalid TOML format: " + detail;
+            }
+        }
+
+        record UnknownKeyType(String keyType) implements SerializationError {
+            @Override
+            public String message() {
+                return "Unknown key type: " + keyType;
+            }
+        }
+
+        record ParseFailure(String detail) implements SerializationError {
+            @Override
+            public String message() {
+                return "Parse failure: " + detail;
+            }
+        }
+    }
+
+    // --- Serialization helpers ---
+    private static void appendHeader(StringBuilder sb, Phase phase, Instant timestamp) {
+        sb.append("# Aether KV-Store Snapshot\n\n");
+        sb.append(META_SECTION)
+          .append('\n');
+        sb.append("phase = ")
+          .append(phase.value())
+          .append('\n');
+        sb.append("timestamp = \"")
+          .append(timestamp)
+          .append("\"\n");
+    }
+
+    private static Map<String, List<Map.Entry<AetherKey, AetherValue>>> groupBySection(Map<AetherKey, AetherValue> entries) {
+        return entries.entrySet()
+                      .stream()
+                      .filter(e -> !(e.getKey() instanceof AppBlueprintKey))
+                      .collect(Collectors.groupingBy(e -> sectionForKey(e.getKey()),
+                                                     LinkedHashMap::new,
+                                                     Collectors.toList()));
+    }
+
+    private static void appendSection(StringBuilder sb,
+                                      String section,
+                                      List<Map.Entry<AetherKey, AetherValue>> pairs) {
+        sb.append('\n')
+          .append('[')
+          .append(section)
+          .append("]\n");
+        pairs.forEach(e -> appendEntry(sb, section, e.getKey(), e.getValue()));
+    }
+
+    private static void appendEntry(StringBuilder sb, String section, AetherKey key, AetherValue value) {
+        var identity = extractIdentity(section, key);
+        sb.append('"')
+          .append(escapeTomlString(identity))
+          .append("\" = \"")
+          .append(escapeTomlString(serializeValue(value)))
+          .append("\"\n");
+    }
+
+    private static String sectionForKey(AetherKey key) {
+        return switch (key) {
+            case SliceTargetKey _ -> "slice-target";
+            case AppBlueprintKey _ -> "app-blueprint";
+            case SliceNodeKey _ -> "slices";
+            case EndpointKey _ -> "endpoints";
+            case VersionRoutingKey _ -> "version-routing";
+            case RollingUpdateKey _ -> "rolling-update";
+            case PreviousVersionKey _ -> "previous-version";
+            case HttpNodeRouteKey _ -> "http-node-routes";
+            case LogLevelKey _ -> "log-level";
+            case ObservabilityDepthKey _ -> "obs-depth";
+            case AlertThresholdKey _ -> "alert-threshold";
+            case TopicSubscriptionKey _ -> "topic-sub";
+            case ScheduledTaskKey _ -> "scheduled-task";
+            case NodeLifecycleKey _ -> "node-lifecycle";
+            case ConfigKey _ -> "config";
+            case WorkerSliceDirectiveKey _ -> "worker-directive";
+            case ActivationDirectiveKey _ -> "activation";
+            case GossipKeyRotationKey _ -> "gossip-key-rotation";
+        };
+    }
+
+    private static String extractIdentity(String section, AetherKey key) {
+        var full = key.asString();
+        var prefix = sectionPrefix(section);
+        return full.startsWith(prefix)
+               ? full.substring(prefix.length())
+               : full;
+    }
+
+    private static String sectionPrefix(String section) {
+        return switch (section) {
+            case "slices" -> "slices/";
+            case "endpoints" -> "endpoints/";
+            case "gossip-key-rotation" -> "gossip-key-rotation";
+            default -> section + "/";
+        };
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private static String serializeValue(AetherValue value) {
+        return switch (value) {
+            case SliceTargetValue v -> serializeSliceTarget(v);
+            case SliceNodeValue v -> serializeSliceNode(v);
+            case EndpointValue v -> v.nodeId()
+                                     .id();
+            case TopicSubscriptionValue v -> v.nodeId()
+                                              .id();
+            case ScheduledTaskValue v -> serializeScheduledTask(v);
+            case VersionRoutingValue v -> serializeVersionRouting(v);
+            case RollingUpdateValue v -> serializeRollingUpdate(v);
+            case PreviousVersionValue v -> serializePreviousVersion(v);
+            case HttpNodeRouteValue v -> serializeHttpNodeRoute(v);
+            case AlertThresholdValue v -> serializeAlertThreshold(v);
+            case LogLevelValue v -> serializeLogLevel(v);
+            case ObservabilityDepthValue v -> serializeObservabilityDepth(v);
+            case ConfigValue v -> serializeConfig(v);
+            case WorkerSliceDirectiveValue v -> serializeWorkerDirective(v);
+            case ActivationDirectiveValue v -> v.role();
+            case GossipKeyRotationValue v -> serializeGossipKeyRotation(v);
+            case NodeLifecycleValue v -> serializeNodeLifecycle(v);
+            case AppBlueprintValue _ -> "";
+        };
+    }
+
+    private static String serializeSliceTarget(SliceTargetValue v) {
+        return v.currentVersion()
+                .withQualifier() + PIPE + v.targetInstances() + PIPE + v.minInstances() + PIPE + v.owningBlueprint()
+                                                                                                  .fold(() -> "",
+                                                                                                        bp -> bp.asString()) + PIPE + v.updatedAt();
+    }
+
+    private static String serializeSliceNode(SliceNodeValue v) {
+        return v.state()
+                .name() + PIPE + v.failureReason()
+                                 .or("") + PIPE + v.fatal();
+    }
+
+    private static String serializeScheduledTask(ScheduledTaskValue v) {
+        return v.registeredBy()
+                .id() + PIPE + v.interval() + PIPE + v.cron() + PIPE + v.leaderOnly();
+    }
+
+    private static String serializeVersionRouting(VersionRoutingValue v) {
+        return v.oldVersion()
+                .withQualifier() + PIPE + v.newVersion()
+                                          .withQualifier() + PIPE + v.newWeight() + PIPE + v.oldWeight() + PIPE + v.updatedAt();
+    }
+
+    private static String serializeRollingUpdate(RollingUpdateValue v) {
+        return v.updateId() + PIPE + v.artifactBase()
+                                     .asString() + PIPE + v.oldVersion()
+                                                          .withQualifier() + PIPE + v.newVersion()
+                                                                                    .withQualifier() + PIPE + v.state() + PIPE + v.newWeight() + PIPE + v.oldWeight() + PIPE + v.newInstances() + PIPE + v.maxErrorRate() + PIPE + v.maxLatencyMs() + PIPE + v.requireManualApproval() + PIPE + v.cleanupPolicy() + PIPE + v.createdAt() + PIPE + v.updatedAt();
+    }
+
+    private static String serializePreviousVersion(PreviousVersionValue v) {
+        return v.artifactBase()
+                .asString() + PIPE + v.previousVersion()
+                                     .withQualifier() + PIPE + v.currentVersion()
+                                                               .withQualifier() + PIPE + v.updatedAt();
+    }
+
+    private static String serializeHttpNodeRoute(HttpNodeRouteValue v) {
+        return v.artifactCoord() + PIPE + v.sliceMethod() + PIPE + v.state() + PIPE + v.weight() + PIPE + v.registeredAt();
+    }
+
+    private static String serializeAlertThreshold(AlertThresholdValue v) {
+        return v.metricName() + PIPE + v.warningThreshold() + PIPE + v.criticalThreshold() + PIPE + v.updatedAt();
+    }
+
+    private static String serializeLogLevel(LogLevelValue v) {
+        return v.loggerName() + PIPE + v.level() + PIPE + v.updatedAt();
+    }
+
+    private static String serializeObservabilityDepth(ObservabilityDepthValue v) {
+        return v.artifactBase() + PIPE + v.methodName() + PIPE + v.depthThreshold() + PIPE + v.updatedAt();
+    }
+
+    private static String serializeConfig(ConfigValue v) {
+        return v.key() + PIPE + v.value() + PIPE + v.updatedAt();
+    }
+
+    private static String serializeWorkerDirective(WorkerSliceDirectiveValue v) {
+        return v.artifact()
+                .asString() + PIPE + v.targetInstances() + PIPE + v.placement() + PIPE + v.updatedAt();
+    }
+
+    private static String serializeGossipKeyRotation(GossipKeyRotationValue v) {
+        return v.currentKeyId() + PIPE + v.currentKey() + PIPE + v.previousKeyId() + PIPE + v.previousKey() + PIPE + v.rotatedAt();
+    }
+
+    private static String serializeNodeLifecycle(NodeLifecycleValue v) {
+        return v.state()
+                .name() + PIPE + v.updatedAt();
+    }
+
+    // --- Deserialization helpers ---
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseEntry(String section, String line) {
+        var eqIndex = line.indexOf(" = ");
+        if (eqIndex == - 1) {
+            return new SerializationError.InvalidFormat("Missing ' = ' in line: " + line).result();
+        }
+        var rawKey = unquote(line.substring(0, eqIndex)
+                                 .trim());
+        var rawValue = unquote(line.substring(eqIndex + 3)
+                                   .trim());
+        return parseKeyValue(section, rawKey, rawValue);
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseKeyValue(String section,
+                                                                           String identity,
+                                                                           String rawValue) {
+        return switch (section) {
+            case "slice-target" -> parseSliceTargetEntry(identity, rawValue);
+            case "slices" -> parseSliceNodeEntry(identity, rawValue);
+            case "endpoints" -> parseEndpointEntry(identity, rawValue);
+            case "version-routing" -> parseVersionRoutingEntry(identity, rawValue);
+            case "rolling-update" -> parseRollingUpdateEntry(identity, rawValue);
+            case "previous-version" -> parsePreviousVersionEntry(identity, rawValue);
+            case "http-node-routes" -> parseHttpNodeRouteEntry(identity, rawValue);
+            case "log-level" -> parseLogLevelEntry(identity, rawValue);
+            case "obs-depth" -> parseObsDepthEntry(identity, rawValue);
+            case "alert-threshold" -> parseAlertThresholdEntry(identity, rawValue);
+            case "topic-sub" -> parseTopicSubEntry(identity, rawValue);
+            case "scheduled-task" -> parseScheduledTaskEntry(identity, rawValue);
+            case "node-lifecycle" -> parseNodeLifecycleEntry(identity, rawValue);
+            case "config" -> parseConfigEntry(identity, rawValue);
+            case "worker-directive" -> parseWorkerDirectiveEntry(identity, rawValue);
+            case "activation" -> parseActivationEntry(identity, rawValue);
+            case "gossip-key-rotation" -> parseGossipKeyRotationEntry(identity, rawValue);
+            default -> new SerializationError.UnknownKeyType(section).result();
+        };
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseSliceTargetEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 5) {
+            return parseFailure("slice-target value requires 5 fields, got " + parts.length);
+        }
+        return SliceTargetKey.sliceTargetKey("slice-target/" + identity)
+                             .flatMap(key -> buildSliceTargetValue(parts).map(val -> entry(key, val)));
+    }
+
+    private static Result<AetherValue> buildSliceTargetValue(String[] parts) {
+        return org.pragmatica.aether.artifact.Version.version(parts[0])
+                  .flatMap(ver -> parseOptionalBlueprintId(parts[3])
+        .map(bp -> new SliceTargetValue(ver,
+                                        Integer.parseInt(parts[1]),
+                                        Integer.parseInt(parts[2]),
+                                        bp,
+                                        Long.parseLong(parts[4]))));
+    }
+
+    private static Result<Option<org.pragmatica.aether.slice.blueprint.BlueprintId>> parseOptionalBlueprintId(String raw) {
+        if (raw.isEmpty()) {
+            return success(Option.none());
+        }
+        return org.pragmatica.aether.slice.blueprint.BlueprintId.blueprintId(raw)
+                  .map(Option::some);
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseSliceNodeEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 3) {
+            return parseFailure("slices value requires 3 fields, got " + parts.length);
+        }
+        return SliceNodeKey.sliceNodeKey("slices/" + identity)
+                           .flatMap(key -> org.pragmatica.aether.slice.SliceState.sliceState(parts[0])
+                                              .map(state -> buildSliceNodeValue(state, parts))
+                                              .map(val -> entry(key, val)));
+    }
+
+    private static AetherValue buildSliceNodeValue(org.pragmatica.aether.slice.SliceState state, String[] parts) {
+        var reason = parts[1].isEmpty()
+                     ? Option.<String>none()
+                     : Option.some(parts[1]);
+        return new SliceNodeValue(state, reason, Boolean.parseBoolean(parts[2]));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseEndpointEntry(String identity, String raw) {
+        return EndpointKey.endpointKey("endpoints/" + identity)
+                          .flatMap(key -> org.pragmatica.consensus.NodeId.nodeId(raw)
+                                             .map(EndpointValue::new)
+                                             .map(val -> entry(key, val)));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseVersionRoutingEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 5) {
+            return parseFailure("version-routing value requires 5 fields, got " + parts.length);
+        }
+        return VersionRoutingKey.versionRoutingKey("version-routing/" + identity)
+                                .flatMap(key -> buildVersionRoutingValue(parts).map(val -> entry(key, val)));
+    }
+
+    private static Result<AetherValue> buildVersionRoutingValue(String[] parts) {
+        return Result.all(org.pragmatica.aether.artifact.Version.version(parts[0]),
+                          org.pragmatica.aether.artifact.Version.version(parts[1]))
+                     .map((oldV, newV) -> new VersionRoutingValue(oldV,
+                                                                  newV,
+                                                                  Integer.parseInt(parts[2]),
+                                                                  Integer.parseInt(parts[3]),
+                                                                  Long.parseLong(parts[4])));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseRollingUpdateEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 14) {
+            return parseFailure("rolling-update value requires 14 fields, got " + parts.length);
+        }
+        return RollingUpdateKey.rollingUpdateKey("rolling-update/" + identity)
+                               .flatMap(key -> buildRollingUpdateValue(parts).map(val -> entry(key, val)));
+    }
+
+    private static Result<AetherValue> buildRollingUpdateValue(String[] parts) {
+        return Result.all(org.pragmatica.aether.artifact.ArtifactBase.artifactBase(parts[1]),
+                          org.pragmatica.aether.artifact.Version.version(parts[2]),
+                          org.pragmatica.aether.artifact.Version.version(parts[3]))
+                     .map((ab, oldV, newV) -> new RollingUpdateValue(parts[0],
+                                                                     ab,
+                                                                     oldV,
+                                                                     newV,
+                                                                     parts[4],
+                                                                     Integer.parseInt(parts[5]),
+                                                                     Integer.parseInt(parts[6]),
+                                                                     Integer.parseInt(parts[7]),
+                                                                     Double.parseDouble(parts[8]),
+                                                                     Long.parseLong(parts[9]),
+                                                                     Boolean.parseBoolean(parts[10]),
+                                                                     parts[11],
+                                                                     Long.parseLong(parts[12]),
+                                                                     Long.parseLong(parts[13])));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parsePreviousVersionEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 4) {
+            return parseFailure("previous-version value requires 4 fields, got " + parts.length);
+        }
+        return PreviousVersionKey.previousVersionKey("previous-version/" + identity)
+                                 .flatMap(key -> buildPreviousVersionValue(parts).map(val -> entry(key, val)));
+    }
+
+    private static Result<AetherValue> buildPreviousVersionValue(String[] parts) {
+        return Result.all(org.pragmatica.aether.artifact.ArtifactBase.artifactBase(parts[0]),
+                          org.pragmatica.aether.artifact.Version.version(parts[1]),
+                          org.pragmatica.aether.artifact.Version.version(parts[2]))
+                     .map((ab, prev, curr) -> new PreviousVersionValue(ab,
+                                                                       prev,
+                                                                       curr,
+                                                                       Long.parseLong(parts[3])));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseHttpNodeRouteEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 5) {
+            return parseFailure("http-node-routes value requires 5 fields, got " + parts.length);
+        }
+        return HttpNodeRouteKey.httpNodeRouteKey("http-node-routes/" + identity)
+                               .map(key -> entry(key,
+                                                 new HttpNodeRouteValue(parts[0],
+                                                                        parts[1],
+                                                                        parts[2],
+                                                                        Integer.parseInt(parts[3]),
+                                                                        Long.parseLong(parts[4]))));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseLogLevelEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 3) {
+            return parseFailure("log-level value requires 3 fields, got " + parts.length);
+        }
+        return LogLevelKey.logLevelKey("log-level/" + identity)
+                          .map(key -> entry(key,
+                                            new LogLevelValue(parts[0],
+                                                              parts[1],
+                                                              Long.parseLong(parts[2]))));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseObsDepthEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 4) {
+            return parseFailure("obs-depth value requires 4 fields, got " + parts.length);
+        }
+        return ObservabilityDepthKey.observabilityDepthKey("obs-depth/" + identity)
+                                    .map(key -> entry(key,
+                                                      new ObservabilityDepthValue(parts[0],
+                                                                                  parts[1],
+                                                                                  Integer.parseInt(parts[2]),
+                                                                                  Long.parseLong(parts[3]))));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseAlertThresholdEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 4) {
+            return parseFailure("alert-threshold value requires 4 fields, got " + parts.length);
+        }
+        return AlertThresholdKey.alertThresholdKey("alert-threshold/" + identity)
+                                .map(key -> entry(key,
+                                                  new AlertThresholdValue(parts[0],
+                                                                          Double.parseDouble(parts[1]),
+                                                                          Double.parseDouble(parts[2]),
+                                                                          Long.parseLong(parts[3]))));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseTopicSubEntry(String identity, String raw) {
+        return TopicSubscriptionKey.topicSubscriptionKey("topic-sub/" + identity)
+                                   .flatMap(key -> org.pragmatica.consensus.NodeId.nodeId(raw)
+                                                      .map(TopicSubscriptionValue::new)
+                                                      .map(val -> entry(key, val)));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseScheduledTaskEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 4) {
+            return parseFailure("scheduled-task value requires 4 fields, got " + parts.length);
+        }
+        return ScheduledTaskKey.scheduledTaskKey("scheduled-task/" + identity)
+                               .flatMap(key -> org.pragmatica.consensus.NodeId.nodeId(parts[0])
+                                                  .map(nodeId -> new ScheduledTaskValue(nodeId,
+                                                                                        parts[1],
+                                                                                        parts[2],
+                                                                                        Boolean.parseBoolean(parts[3])))
+                                                  .map(val -> entry(key, val)));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseNodeLifecycleEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 2) {
+            return parseFailure("node-lifecycle value requires 2 fields, got " + parts.length);
+        }
+        return NodeLifecycleKey.nodeLifecycleKey("node-lifecycle/" + identity)
+                               .flatMap(key -> parseNodeLifecycleState(parts[0]).map(state -> new NodeLifecycleValue(state,
+                                                                                                                     Long.parseLong(parts[1])))
+                                                                      .map(val -> entry(key, val)));
+    }
+
+    private static Result<NodeLifecycleState> parseNodeLifecycleState(String raw) {
+        return Result.lift(() -> NodeLifecycleState.valueOf(raw))
+                     .mapError(_ -> Causes.cause("Unknown lifecycle state: " + raw));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseConfigEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 3) {
+            return parseFailure("config value requires 3 fields, got " + parts.length);
+        }
+        return ConfigKey.configKey("config/" + identity)
+                        .map(key -> entry(key,
+                                          new ConfigValue(parts[0],
+                                                          parts[1],
+                                                          Long.parseLong(parts[2]))));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseWorkerDirectiveEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 4) {
+            return parseFailure("worker-directive value requires 4 fields, got " + parts.length);
+        }
+        return WorkerSliceDirectiveKey.workerSliceDirectiveKey("worker-directive/" + identity)
+                                      .flatMap(key -> org.pragmatica.aether.artifact.Artifact.artifact(parts[0])
+                                                         .map(art -> new WorkerSliceDirectiveValue(art,
+                                                                                                   Integer.parseInt(parts[1]),
+                                                                                                   parts[2],
+                                                                                                   Long.parseLong(parts[3])))
+                                                         .map(val -> entry(key, val)));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseActivationEntry(String identity, String raw) {
+        return ActivationDirectiveKey.activationDirectiveKey("activation/" + identity)
+                                     .map(key -> entry(key,
+                                                       new ActivationDirectiveValue(raw)));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseGossipKeyRotationEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 5) {
+            return parseFailure("gossip-key-rotation value requires 5 fields, got " + parts.length);
+        }
+        return GossipKeyRotationKey.gossipKeyRotationKey("gossip-key-rotation")
+                                   .map(key -> entry(key,
+                                                     new GossipKeyRotationValue(Integer.parseInt(parts[0]),
+                                                                                parts[1],
+                                                                                Integer.parseInt(parts[2]),
+                                                                                parts[3],
+                                                                                Long.parseLong(parts[4]))));
+    }
+
+    // --- Utility helpers ---
+    private static String unquote(String s) {
+        if (s.length() >= 2 && s.charAt(0) == '"' && s.charAt(s.length() - 1) == '"') {
+            return unescapeTomlString(s.substring(1, s.length() - 1));
+        }
+        return s;
+    }
+
+    private static String escapeTomlString(String s) {
+        return s.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
+    }
+
+    private static String unescapeTomlString(String s) {
+        return s.replace("\\t", "\t")
+                .replace("\\r", "\r")
+                .replace("\\n", "\n")
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\");
+    }
+
+    private static <K, V> Map.Entry<K, V> entry(K key, V value) {
+        return Map.entry(key, value);
+    }
+
+    private static Map<AetherKey, AetherValue> entriesToMap(List<Map.Entry<AetherKey, AetherValue>> entries) {
+        var map = new LinkedHashMap<AetherKey, AetherValue>();
+        entries.forEach(e -> map.put(e.getKey(), e.getValue()));
+        return map;
+    }
+
+    private static <T> Result<T> parseFailure(String detail) {
+        return new SerializationError.ParseFailure(detail).result();
+    }
+}
