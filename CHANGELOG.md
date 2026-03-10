@@ -36,12 +36,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `LeaderIsolationE2ETest` — leader disconnect recovery without split-brain
 
 ### Security
-- Add inter-node mTLS with CertificateProvider SPI and deterministic self-signed CA
-- Add AES-256-GCM encryption for SWIM gossip protocol messages
-- Add certificate renewal scheduler with automatic 50% validity renewal
-- Add gossip key rotation support via consensus KV store
-- Enable TLS by default for DOCKER environment (matching KUBERNETES)
-- Add `clusterSecret` configuration for deterministic CA key derivation (TOML + env var)
+- **Inter-node mTLS** — CertificateProvider SPI with SelfSignedCertificateProvider (BouncyCastle EC P-256, HKDF deterministic CA from shared `clusterSecret`). All TCP transports (consensus, DHT, management, app HTTP) secured with mutual TLS
+- **SWIM gossip encryption** — AES-256-GCM symmetric encryption for all SWIM protocol messages. Wire format: `[keyId][nonce][ciphertext+GCM tag]`. Dual-key support for seamless rotation
+- **Certificate renewal scheduler** — automatic renewal at 50% of validity (3.5 days for 7-day certs), 1-hour retry on failure
+- **Gossip key rotation** — `GossipKeyRotationKey`/`GossipKeyRotationValue` in consensus KV store for coordinated key rotation
+- **TLS by default** — DOCKER and KUBERNETES environments enable TLS automatically. `clusterSecret` configurable via TOML `[tls]` section or `AETHER_CLUSTER_SECRET` env var (dev default: `aether-dev-cluster-secret`)
+- **Unit tests** — SelfSignedCertificateProviderTest (8 tests: deterministic CA, cert issuance, gossip key), AesGcmGossipEncryptorTest (10 tests: round-trip, dual-key, error cases), TlsConfig fromProvider bridge tests (4 tests)
 
 ### Changed
 - Dockerfile version labels now use build-arg `VERSION` instead of hardcoded values

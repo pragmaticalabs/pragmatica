@@ -178,7 +178,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Area | Limitation | Planned Fix |
 |------|-----------|-------------|
 | Security | No per-endpoint role authorization (all API keys get same access) | RBAC Tier 2 (#63) |
-| Security | No per-slice TLS certificate provisioning | TLS per-slice certificates (#66) |
+| Security | Node certificates are self-signed (no external CA integration) | External CA provider SPI implementation |
 | Data durability | No KV-Store backup/restore; quorum loss = data loss | KV-Store State Backup (#72) |
 | Networking | Single-region only; no multi-region deployment | Not yet planned |
 | Storage | KV-Store in-memory only (recovered from peers via consensus) | KV-Store State Backup (#72) |
@@ -231,7 +231,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Per-data-source DB schema management | Design spec ready |
 | Canary & blue-green deployment | — |
 | RBAC Tier 2 — per-endpoint authorization | RBAC Tier 1 complete |
-| ~~TLS certificate management~~ | Complete in 0.19.3 |
+| ~~TLS certificate management~~ | ~~Complete in 0.19.3~~ |
 | Per-route rate limiting | — |
 | Spot instance support | Cloud Integration |
 | Cluster expense tracking | Cloud Integration |
@@ -242,4 +242,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-03-08 (v0.19.3)*
+*Last updated: 2026-03-10 (v0.19.3)*
