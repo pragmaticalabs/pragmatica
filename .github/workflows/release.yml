@@ -87,12 +87,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Set up Java 25
         uses: actions/setup-java@v4
         with:
@@ -116,8 +110,6 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/aether-node:${{ steps.version.outputs.VERSION }}
             ghcr.io/${{ github.repository_owner }}/aether-node:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/aether-node:${{ steps.version.outputs.VERSION }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/aether-node:latest
 
       - name: Build and push aether-forge
         uses: docker/build-push-action@v6
@@ -130,8 +122,6 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/aether-forge:${{ steps.version.outputs.VERSION }}
             ghcr.io/${{ github.repository_owner }}/aether-forge:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/aether-forge:${{ steps.version.outputs.VERSION }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/aether-forge:latest
 
   e2e-tests:
     runs-on: ubuntu-latest
