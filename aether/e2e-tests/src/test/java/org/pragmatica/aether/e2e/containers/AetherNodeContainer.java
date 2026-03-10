@@ -2,6 +2,7 @@ package org.pragmatica.aether.e2e.containers;
 
 import com.github.dockerjava.api.model.HealthCheck;
 import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.Network;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.ImageFromDockerfile;
 import org.testcontainers.utility.DockerImageName;
@@ -20,29 +21,12 @@ import java.util.concurrent.Future;
 /// Testcontainer wrapper for Aether Node.
 ///
 ///
-/// Provides programmatic control over Aether node instances for E2E testing.
-/// Each container runs with unique port assignments to avoid conflicts between
-/// parallel test runs.
-///
-///
-///
-/// Networking strategy:
-/// <ul>
-///   - **Linux**: Host networking for fast failure detection and zero NAT overhead
-///   - **macOS**: Bridge networking with fixed port bindings and network aliases
-///     (host networking is not supported on macOS with podman/Docker Desktop)
-/// </ul>
-///
-///
-///
-/// Image selection strategy:
-/// <ol>
-///   - If AETHER_E2E_IMAGE env var is set, use that image (for CI with pre-built images)
-///   - Otherwise, build from Dockerfile (cached for all test containers)
-/// </ol>
+/// All containers run on a shared bridge network with standard internal ports.
+/// Tests access management API via Testcontainers' random mapped ports.
+/// Inter-container communication uses DNS (container aliases as hostnames).
 public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
-    private static final int MANAGEMENT_PORT = 8080;
-    private static final int CLUSTER_PORT = 8090;
+    static final int MANAGEMENT_PORT = 8080;
+    static final int CLUSTER_PORT = 8090;
     private static final Duration STARTUP_TIMEOUT = Duration.ofSeconds(120);
     private static final String IMAGE_NAME = "aether-node-e2e";
     private static final String E2E_IMAGE_ENV = "AETHER_E2E_IMAGE";
@@ -50,35 +34,23 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     /// Blueprint ID used by the deploy() convenience method for E2E tests.
     public static final String E2E_BLUEPRINT_ID = "e2e.test:deploy:1.0.0";
 
-    /// Host networking is only supported on Linux. On macOS, podman/Docker Desktop
-    /// runs containers in a VM, so `withNetworkMode("host")` shares the VM's network,
-    /// not the macOS host. We fall back to bridge networking with fixed port bindings.
-    private static final boolean HOST_NETWORKING_SUPPORTED =
-        !System.getProperty("os.name", "").toLowerCase().contains("mac");
-
     // Cached image - built once, reused across all containers
     private static volatile Future<String> cachedImage;
     private static volatile Path cachedProjectRoot;
     private final String nodeId;
-    private final int managementPortValue;
-    private final int clusterPortValue;
     private final HttpClient httpClient;
 
-    private AetherNodeContainer(Future<String> image, String nodeId, int managementPort, int clusterPort) {
+    private AetherNodeContainer(Future<String> image, String nodeId) {
         super(image);
         this.nodeId = nodeId;
-        this.managementPortValue = managementPort;
-        this.clusterPortValue = clusterPort;
         this.httpClient = HttpClient.newBuilder()
                                     .connectTimeout(Duration.ofSeconds(5))
                                     .build();
     }
 
-    private AetherNodeContainer(DockerImageName imageName, String nodeId, int managementPort, int clusterPort) {
+    private AetherNodeContainer(DockerImageName imageName, String nodeId) {
         super(imageName);
         this.nodeId = nodeId;
-        this.managementPortValue = managementPort;
-        this.clusterPortValue = clusterPort;
         this.httpClient = HttpClient.newBuilder()
                                     .connectTimeout(Duration.ofSeconds(5))
                                     .build();
@@ -88,91 +60,37 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     private static final Path M2_REPO_PATH = Path.of(System.getProperty("user.home"), ".m2", "repository");
     private static final String CONTAINER_M2_PATH = "/home/aether/.m2/repository";
 
-    /// Creates a new Aether node container with default ports and bridge networking.
+    /// Creates a node container configured for cluster testing on a shared bridge network.
     ///
     ///
-    /// This factory is for basic single-node usage. For cluster testing,
-    /// use [#aetherNode(String, Path, String, int, int)] which uses host networking.
+    /// All containers use identical internal ports (8080 management, 8090 cluster).
+    /// The management port is exposed with random mapping for test access.
+    /// Inter-container communication uses DNS via network aliases.
     ///
     ///
-    /// @param nodeId unique identifier for this node
-    /// @param projectRoot path to the project root (for Dockerfile context, ignored if using pre-built)
+    /// @param nodeId unique identifier for this node (also used as DNS hostname)
+    /// @param projectRoot path to the project root (for Dockerfile context)
+    /// @param peers comma-separated peer addresses (format: nodeId:nodeId:8090,...)
+    /// @param network shared bridge network for the cluster
     /// @return configured container (not yet started)
-    public static AetherNodeContainer aetherNode(String nodeId, Path projectRoot) {
-        var container = createContainer(nodeId, projectRoot, MANAGEMENT_PORT, CLUSTER_PORT);
+    public static AetherNodeContainer aetherNode(String nodeId, Path projectRoot,
+                                                  String peers, Network network) {
+        var container = createContainer(nodeId, projectRoot);
         disableDockerHealthcheck(container);
-        container.withExposedPorts(MANAGEMENT_PORT, CLUSTER_PORT)
+        container.withExposedPorts(MANAGEMENT_PORT)
                  .withEnv("NODE_ID", nodeId)
                  .withEnv("CLUSTER_PORT", String.valueOf(CLUSTER_PORT))
                  .withEnv("MANAGEMENT_PORT", String.valueOf(MANAGEMENT_PORT))
+                 .withEnv("CLUSTER_PEERS", peers)
                  .withEnv("JAVA_OPTS", "-Xmx256m -XX:+UseZGC")
+                 .withNetwork(network)
+                 .withNetworkAliases(nodeId)
                  .waitingFor(Wait.forHttp("/api/health")
                                  .forPort(MANAGEMENT_PORT)
                                  .forStatusCode(200)
-                                 .withStartupTimeout(STARTUP_TIMEOUT))
-                 .withNetworkAliases(nodeId);
-
-        mountLocalMavenRepo(container);
-
-        return container;
-    }
-
-    /// Creates a node container configured with unique ports for cluster testing.
-    ///
-    ///
-    /// On Linux, uses host networking for reliable failure detection.
-    /// On macOS, uses bridge networking with fixed port bindings and network aliases,
-    /// since host networking shares the podman VM's network rather than macOS host.
-    ///
-    ///
-    /// @param nodeId unique identifier for this node
-    /// @param projectRoot path to the project root
-    /// @param peers comma-separated peer addresses (format: nodeId:host:port,...)
-    /// @param managementPort unique management port for this node
-    /// @param clusterPort unique cluster port for this node
-    /// @return configured container (not yet started)
-    public static AetherNodeContainer aetherNode(String nodeId, Path projectRoot, String peers,
-                                                 int managementPort, int clusterPort) {
-        var container = createContainer(nodeId, projectRoot, managementPort, clusterPort);
-        container.withEnv("NODE_ID", nodeId)
-                 .withEnv("CLUSTER_PORT", String.valueOf(clusterPort))
-                 .withEnv("MANAGEMENT_PORT", String.valueOf(managementPort))
-                 .withEnv("CLUSTER_PEERS", peers)
-                 .withEnv("JAVA_OPTS", "-Xmx256m -XX:+UseZGC");
-
-        if (HOST_NETWORKING_SUPPORTED) {
-            // Host networking: ports are directly on host, no Docker port mapping needed.
-            // Do NOT add exposed ports here — Testcontainers' tryStart() checks that all
-            // containerDef exposed ports have actual network bindings, which are empty in
-            // host mode (no NAT). HttpWaitStrategy.forPort() calls getMappedPort() which
-            // is overridden to return the port directly, bypassing the exposed ports list.
-            container.withNetworkMode("host");
-        } else {
-            // addExposedPort registers ports in the exposedPorts list so that
-            // getMappedPort() (used by HttpWaitStrategy) can find them.
-            // addFixedExposedPort only adds to portBindings, not exposedPorts.
-            container.addExposedPort(managementPort);
-            container.addExposedPort(clusterPort);
-            container.addFixedExposedPort(managementPort, managementPort);
-            container.addFixedExposedPort(clusterPort, clusterPort);
-            container.withNetworkAliases(nodeId);
-        }
-
-        disableDockerHealthcheck(container);
-        container.waitingFor(Wait.forHttp("/api/health")
-                                 .forPort(managementPort)
-                                 .forStatusCode(200)
                                  .withStartupTimeout(STARTUP_TIMEOUT));
-
         mountLocalMavenRepo(container);
-
         return container;
-    }
-
-    /// Returns whether host networking is supported on the current platform.
-    /// Used by [AetherCluster] to determine peer list format and network configuration.
-    public static boolean hostNetworkingSupported() {
-        return HOST_NETWORKING_SUPPORTED;
     }
 
     /// Mounts the local Maven repository into the container for artifact resolution.
@@ -191,15 +109,12 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
             cmd.withHealthcheck(new HealthCheck().withTest(List.of("NONE"))));
     }
 
-    private static AetherNodeContainer createContainer(String nodeId, Path projectRoot,
-                                                       int managementPort, int clusterPort) {
+    private static AetherNodeContainer createContainer(String nodeId, Path projectRoot) {
         var prebuiltImageName = System.getenv(E2E_IMAGE_ENV);
         if (prebuiltImageName != null && !prebuiltImageName.isBlank()) {
-            return new AetherNodeContainer(DockerImageName.parse(prebuiltImageName), nodeId,
-                                           managementPort, clusterPort);
+            return new AetherNodeContainer(DockerImageName.parse(prebuiltImageName), nodeId);
         }
-        return new AetherNodeContainer(getOrBuildImage(projectRoot), nodeId,
-                                       managementPort, clusterPort);
+        return new AetherNodeContainer(getOrBuildImage(projectRoot), nodeId);
     }
 
     /// Gets the cached image or builds it if not yet available.
@@ -210,21 +125,17 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
             return cachedImage;
         }
 
-        // Build and cache the image
-        // Try multiple paths based on where projectRoot points:
-        // - CI: repo root -> aether/node/target/
-        // - Local from e2e-tests: ../node/target/ (go up to aether/, then into node/)
         var jarPath = resolveExistingPath(projectRoot,
-            "aether/node/target/aether-node.jar",   // CI: from repo root
-            "../node/target/aether-node.jar",        // Local: from aether/e2e-tests/
-            "node/target/aether-node.jar");          // Fallback
+            "aether/node/target/aether-node.jar",
+            "../node/target/aether-node.jar",
+            "node/target/aether-node.jar");
         var dockerfilePath = resolveExistingPath(projectRoot,
-            "aether/docker/aether-node/Dockerfile",  // CI: from repo root
-            "../docker/aether-node/Dockerfile",      // Local: from aether/e2e-tests/
+            "aether/docker/aether-node/Dockerfile",
+            "../docker/aether-node/Dockerfile",
             "docker/aether-node/Dockerfile");
         var configPath = resolveExistingPath(projectRoot,
-            "aether/docker/aether-node/aether.toml",  // CI: from repo root
-            "../docker/aether-node/aether.toml",      // Local: from aether/e2e-tests/
+            "aether/docker/aether-node/aether.toml",
+            "../docker/aether-node/aether.toml",
             "docker/aether-node/aether.toml");
 
         if (jarPath == null) {
@@ -236,7 +147,6 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
                 "\nRun 'mvn package -pl aether/node' first.");
         }
 
-        // Build image once with caching disabled (deleteOnExit=false keeps it cached)
         var image = new ImageFromDockerfile(IMAGE_NAME, false)
             .withFileFromPath("Dockerfile", dockerfilePath)
             .withFileFromPath("aether-node.jar", jarPath)
@@ -250,10 +160,6 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     }
 
     /// Resolves the first existing path from the list of candidates.
-    ///
-    /// @param root base path to resolve against
-    /// @param candidates paths to try in order
-    /// @return first existing path or null if none exist
     private static Path resolveExistingPath(Path root, String... candidates) {
         for (var candidate : candidates) {
             var path = root.resolve(candidate);
@@ -264,95 +170,45 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         return null;
     }
 
-    /// With host networking, ports are directly on the host — no Docker port mapping exists.
-    /// The default implementation looks up bindings which are empty in host mode.
-    @Override
-    public Integer getMappedPort(int originalPort) {
-        if (HOST_NETWORKING_SUPPORTED) {
-            return originalPort;
-        }
-        return super.getMappedPort(originalPort);
-    }
-
-    /// Returns exposed ports for Testcontainers wait strategies.
-    ///
-    ///
-    /// In host networking mode, returns only the management port. This is separate from
-    /// `containerDef.getExposedPorts()` (used by tryStart's port binding check) which
-    /// stays empty — Docker has no port bindings in host mode, so the binding check
-    /// would fail if containerDef had exposed ports. HttpWaitStrategy uses this method
-    /// (via WaitStrategyTarget interface) to find the target port for health checks.
-    @Override
-    public List<Integer> getExposedPorts() {
-        if (HOST_NETWORKING_SUPPORTED) {
-            return List.of(managementPortValue);
-        }
-        return super.getExposedPorts();
-    }
-
     /// Returns the node ID for this container.
     public String nodeId() {
         return nodeId;
     }
 
-    /// Returns the management port for this node.
-    public int managementPort() {
-        return managementPortValue;
-    }
-
-    /// Returns the cluster port for this node.
-    public int clusterPort() {
-        return clusterPortValue;
-    }
-
-    /// Returns the management API base URL.
+    /// Returns the management API base URL using Testcontainers' mapped port.
     public String managementUrl() {
-        return "http://localhost:" + managementPortValue;
+        return "http://" + getHost() + ":" + getMappedPort(MANAGEMENT_PORT);
     }
 
     /// Returns the cluster address for peer configuration.
-    ///
-    ///
-    /// On Linux (host networking), peers connect via localhost.
-    /// On macOS (bridge networking), peers connect via Docker network aliases.
+    /// Uses container alias as DNS hostname for inter-container communication.
     public String clusterAddress() {
-        var host = HOST_NETWORKING_SUPPORTED ? "localhost" : nodeId;
-        return nodeId + ":" + host + ":" + clusterPortValue;
+        return nodeId + ":" + nodeId + ":" + CLUSTER_PORT;
     }
 
     // ===== API Helpers =====
 
     /// Fetches the node health status.
-    ///
-    /// @return health response JSON
     public String getHealth() {
         return get("/api/health");
     }
 
     /// Fetches the cluster status.
-    ///
-    /// @return status response JSON
     public String getStatus() {
         return get("/api/status");
     }
 
     /// Fetches the list of active nodes.
-    ///
-    /// @return nodes response JSON
     public String getNodes() {
         return get("/api/nodes");
     }
 
     /// Fetches the list of deployed slices.
-    ///
-    /// @return slices response JSON
     public String getSlices() {
         return get("/api/slices");
     }
 
     /// Fetches cluster metrics.
-    ///
-    /// @return metrics response JSON
     public String getMetrics() {
         return get("/api/metrics");
     }
@@ -396,42 +252,27 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     }
 
     /// Scales a deployed slice.
-    ///
-    /// @param artifact artifact coordinates
-    /// @param instances target instance count
-    /// @return scale response JSON
     public String scale(String artifact, int instances) {
         var body = "{\"artifact\":\"" + artifact + "\",\"instances\":" + instances + "}";
         return post("/api/scale", body);
     }
 
     /// Undeploys a slice from the cluster by deleting the E2E blueprint.
-    ///
-    /// @param artifact artifact coordinates (unused, kept for API compatibility)
-    /// @return undeploy response JSON
     public String undeploy(String artifact) {
         return delete("/api/blueprint/" + E2E_BLUEPRINT_ID);
     }
 
     /// Applies a blueprint to the cluster.
-    ///
-    /// @param blueprint blueprint content (TOML format)
-    /// @return apply response JSON
     public String applyBlueprint(String blueprint) {
         return post("/api/blueprint", blueprint);
     }
 
     /// Lists all applied blueprints.
-    ///
-    /// @return blueprints JSON
     public String listBlueprints() {
         return get("/api/blueprints");
     }
 
     /// Deletes a specific blueprint and undeploys its slices.
-    ///
-    /// @param blueprintId blueprint identifier
-    /// @return response JSON
     public String deleteBlueprint(String blueprintId) {
         return delete("/api/blueprint/" + blueprintId);
     }
@@ -439,13 +280,6 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // ===== Artifact Upload (Maven Protocol) =====
 
     /// Uploads an artifact to the DHT via Maven protocol.
-    /// This is required for slice deployment to work - artifacts must be in DHT, not local filesystem.
-    ///
-    /// @param groupPath group path with slashes (e.g., "org/pragmatica-lite/aether/test")
-    /// @param artifactId artifact ID
-    /// @param version version
-    /// @param jarPath path to local jar file
-    /// @return true if upload succeeded
     public boolean uploadArtifact(String groupPath, String artifactId, String version, Path jarPath) {
         try {
             var jarContent = Files.readAllBytes(jarPath);
@@ -457,12 +291,6 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     }
 
     /// Uploads pre-built artifact bytes to the DHT via Maven protocol.
-    ///
-    /// @param groupPath group path with slashes
-    /// @param artifactId artifact ID
-    /// @param version version
-    /// @param jarContent JAR file bytes
-    /// @return true if upload succeeded
     public boolean uploadArtifactBytes(String groupPath, String artifactId, String version, byte[] jarContent) {
         try {
             var remotePath = "/repository/" + groupPath + "/" + artifactId + "/" + version +
@@ -483,10 +311,6 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     }
 
     /// Performs a PUT request with binary body.
-    ///
-    /// @param path API path
-    /// @param body binary content
-    /// @return response body
     public String putBinary(String path, byte[] body) {
         try {
             var request = HttpRequest.newBuilder()
@@ -503,9 +327,6 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     }
 
     /// Performs a GET request returning binary content.
-    ///
-    /// @param path API path
-    /// @return response bytes, or empty array on error
     public byte[] getBinary(String path) {
         try {
             var request = HttpRequest.newBuilder()
@@ -524,21 +345,11 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     }
 
     /// Fetches artifact metadata from the repository.
-    ///
-    /// @param groupPath group path with slashes
-    /// @param artifactId artifact ID
-    /// @param version version string
-    /// @return artifact info JSON
     public String getArtifactInfo(String groupPath, String artifactId, String version) {
         return get("/repository/info/" + groupPath + "/" + artifactId + "/" + version);
     }
 
     /// Downloads an artifact JAR via Maven protocol.
-    ///
-    /// @param groupPath group path with slashes
-    /// @param artifactId artifact ID
-    /// @param version version string
-    /// @return JAR bytes, or empty array on error
     public byte[] downloadArtifact(String groupPath, String artifactId, String version) {
         var path = "/repository/" + groupPath + "/" + artifactId + "/" + version +
                    "/" + artifactId + "-" + version + ".jar";
@@ -548,9 +359,6 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // ===== HTTP Helpers =====
 
     /// Performs a GET request to the management API.
-    ///
-    /// @param path API path (e.g., "/health")
-    /// @return response body JSON
     public String get(String path) {
         try {
             var request = HttpRequest.newBuilder()
@@ -566,10 +374,6 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     }
 
     /// Performs a POST request to the management API.
-    ///
-    /// @param path API path (e.g., "/deploy")
-    /// @param body request body JSON
-    /// @return response body JSON
     public String post(String path, String body) {
         try {
             var request = HttpRequest.newBuilder()
@@ -586,9 +390,6 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     }
 
     /// Performs a DELETE request to the management API.
-    ///
-    /// @param path API path (e.g., "/thresholds/cpu")
-    /// @return response body JSON
     public String delete(String path) {
         try {
             var request = HttpRequest.newBuilder()
@@ -606,24 +407,16 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // ===== Metrics API =====
 
     /// Fetches Prometheus-formatted metrics.
-    ///
-    /// @return metrics in Prometheus text format
     public String getPrometheusMetrics() {
         return get("/api/metrics/prometheus");
     }
 
     /// Fetches invocation metrics for all methods.
-    ///
-    /// @return invocation metrics JSON
     public String getInvocationMetrics() {
         return get("/api/invocation-metrics");
     }
 
     /// Fetches invocation metrics with optional filtering.
-    ///
-    /// @param artifact artifact filter (partial match, null to skip)
-    /// @param method method filter (exact match, null to skip)
-    /// @return filtered invocation metrics JSON
     public String getInvocationMetrics(String artifact, String method) {
         var params = new StringBuilder();
         if (artifact != null) {
@@ -638,15 +431,11 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     }
 
     /// Fetches slow invocation records.
-    ///
-    /// @return slow invocations JSON
     public String getSlowInvocations() {
         return get("/api/invocation-metrics/slow");
     }
 
     /// Fetches current threshold strategy configuration.
-    ///
-    /// @return strategy configuration JSON
     public String getInvocationStrategy() {
         return get("/api/invocation-metrics/strategy");
     }
@@ -654,55 +443,37 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // ===== Threshold & Alert API =====
 
     /// Fetches all configured thresholds.
-    ///
-    /// @return thresholds JSON
     public String getThresholds() {
         return get("/api/thresholds");
     }
 
     /// Sets an alert threshold for a metric.
-    ///
-    /// @param metric metric name
-    /// @param warning warning threshold
-    /// @param critical critical threshold
-    /// @return response JSON
     public String setThreshold(String metric, double warning, double critical) {
         var body = "{\"metric\":\"" + metric + "\",\"warning\":" + warning + ",\"critical\":" + critical + "}";
         return post("/api/thresholds", body);
     }
 
     /// Deletes a threshold for a metric.
-    ///
-    /// @param metric metric name
-    /// @return response JSON
     public String deleteThreshold(String metric) {
         return delete("/api/thresholds/" + metric);
     }
 
     /// Fetches all alerts (active and history).
-    ///
-    /// @return alerts JSON
     public String getAlerts() {
         return get("/api/alerts");
     }
 
     /// Fetches active alerts only.
-    ///
-    /// @return active alerts JSON
     public String getActiveAlerts() {
         return get("/api/alerts/active");
     }
 
     /// Fetches alert history.
-    ///
-    /// @return alert history JSON
     public String getAlertHistory() {
         return get("/api/alerts/history");
     }
 
     /// Clears all alerts.
-    ///
-    /// @return response JSON
     public String clearAlerts() {
         return post("/api/alerts/clear", "{}");
     }
@@ -710,8 +481,6 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // ===== TTM API =====
 
     /// Fetches TTM (Tiny Time Mixers) status.
-    ///
-    /// @return TTM status JSON
     public String getTtmStatus() {
         return get("/api/ttm/status");
     }
@@ -719,30 +488,21 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // ===== Controller API =====
 
     /// Fetches controller configuration.
-    ///
-    /// @return controller config JSON
     public String getControllerConfig() {
         return get("/api/controller/config");
     }
 
     /// Fetches controller status (enabled/disabled).
-    ///
-    /// @return controller status JSON
     public String getControllerStatus() {
         return get("/api/controller/status");
     }
 
     /// Updates controller configuration.
-    ///
-    /// @param config configuration JSON
-    /// @return response JSON
     public String setControllerConfig(String config) {
         return post("/api/controller/config", config);
     }
 
     /// Triggers immediate controller evaluation.
-    ///
-    /// @return evaluation result JSON
     public String triggerControllerEvaluation() {
         return post("/api/controller/evaluate", "{}");
     }
@@ -750,53 +510,33 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // ===== Rolling Update API =====
 
     /// Starts a rolling update.
-    ///
-    /// @param oldVersion old artifact version
-    /// @param newVersion new artifact version
-    /// @return response JSON with update ID
     public String startRollingUpdate(String oldVersion, String newVersion) {
         var body = "{\"oldVersion\":\"" + oldVersion + "\",\"newVersion\":\"" + newVersion + "\"}";
         return post("/api/rolling-update/start", body);
     }
 
     /// Gets all active rolling updates.
-    ///
-    /// @return active updates JSON
     public String getRollingUpdates() {
         return get("/api/rolling-updates");
     }
 
     /// Gets status of a specific rolling update.
-    ///
-    /// @param updateId update identifier
-    /// @return update status JSON
     public String getRollingUpdateStatus(String updateId) {
         return get("/api/rolling-update/" + updateId);
     }
 
     /// Adjusts traffic routing during rolling update.
-    ///
-    /// @param updateId update identifier
-    /// @param oldWeight weight for old version
-    /// @param newWeight weight for new version
-    /// @return response JSON
     public String setRollingUpdateRouting(String updateId, int oldWeight, int newWeight) {
         var body = "{\"oldWeight\":" + oldWeight + ",\"newWeight\":" + newWeight + "}";
         return post("/api/rolling-update/" + updateId + "/routing", body);
     }
 
     /// Completes a rolling update.
-    ///
-    /// @param updateId update identifier
-    /// @return response JSON
     public String completeRollingUpdate(String updateId) {
         return post("/api/rolling-update/" + updateId + "/complete", "{}");
     }
 
     /// Rolls back a rolling update.
-    ///
-    /// @param updateId update identifier
-    /// @return response JSON
     public String rollbackRollingUpdate(String updateId) {
         return post("/api/rolling-update/" + updateId + "/rollback", "{}");
     }
@@ -804,39 +544,26 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // ===== Slice Status API =====
 
     /// Fetches detailed slice status with health per instance.
-    ///
-    /// @return slice status JSON
     public String getSlicesStatus() {
         return get("/api/slices/status");
     }
 
     /// Checks if a slice is in FAILED state.
-    ///
-    /// @param artifact artifact to check (partial match on name)
-    /// @return true if the slice is in FAILED state
     public boolean isSliceFailed(String artifact) {
         return "FAILED".equals(getSliceState(artifact));
     }
 
     /// Checks if a slice is in ACTIVE state.
-    ///
-    /// @param artifact artifact to check (partial match on name)
-    /// @return true if the slice is in ACTIVE state
     public boolean isSliceActive(String artifact) {
         return "ACTIVE".equals(getSliceState(artifact));
     }
 
     /// Gets the current state of a slice.
-    ///
-    /// @param artifact artifact to check (partial match on name)
-    /// @return state string or "UNKNOWN" if not found
     public String getSliceState(String artifact) {
         var status = getSlicesStatus();
         if (!status.contains(artifact)) {
             return "NOT_FOUND";
         }
-        // Extract state for the artifact
-        // Simple parsing - look for pattern after the artifact
         var statePattern = java.util.regex.Pattern.compile(
             "\"artifact\":\"[^\"]*" + java.util.regex.Pattern.quote(artifact) + "[^\"]*\",\"state\":\"([A-Z_]+)\"");
         var matcher = statePattern.matcher(status);
@@ -849,11 +576,6 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // ===== Slice Invocation API =====
 
     /// Invokes a slice method via HTTP router.
-    ///
-    /// @param httpMethod HTTP method (GET, POST, etc.)
-    /// @param path       Route path (e.g., "/api/orders")
-    /// @param body       Request body (for POST/PUT)
-    /// @return response body or error JSON
     public String invokeSlice(String httpMethod, String path, String body) {
         return switch (httpMethod.toUpperCase()) {
             case "GET" -> get(path);
@@ -864,18 +586,11 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     }
 
     /// Invokes a slice method with GET.
-    ///
-    /// @param path Route path
-    /// @return response body
     public String invokeGet(String path) {
         return get(path);
     }
 
     /// Invokes a slice method with POST.
-    ///
-    /// @param path Route path
-    /// @param body Request body JSON
-    /// @return response body
     public String invokePost(String path, String body) {
         return post(path, body);
     }
@@ -883,40 +598,26 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // ===== Node Lifecycle API =====
 
     /// Initiates drain on a node, transitioning it from ON_DUTY to DRAINING.
-    ///
-    /// @param nodeId target node identifier
-    /// @return transition result JSON
     public String drainNode(String nodeId) {
         return post("/api/node/drain/" + nodeId, "{}");
     }
 
     /// Activates a drained or decommissioned node, returning it to ON_DUTY.
-    ///
-    /// @param nodeId target node identifier
-    /// @return transition result JSON
     public String activateNode(String nodeId) {
         return post("/api/node/activate/" + nodeId, "{}");
     }
 
     /// Initiates remote shutdown of a node, transitioning it to SHUTTING_DOWN.
-    ///
-    /// @param nodeId target node identifier
-    /// @return transition result JSON
     public String shutdownNode(String nodeId) {
         return post("/api/node/shutdown/" + nodeId, "{}");
     }
 
     /// Fetches lifecycle state for a specific node.
-    ///
-    /// @param nodeId target node identifier
-    /// @return lifecycle entry JSON
     public String getNodeLifecycle(String nodeId) {
         return get("/api/node/lifecycle/" + nodeId);
     }
 
     /// Fetches lifecycle states for all nodes in the cluster.
-    ///
-    /// @return lifecycle entries JSON array
     public String getAllNodeLifecycles() {
         return get("/api/nodes/lifecycle");
     }
@@ -924,8 +625,6 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // ===== Routes API =====
 
     /// Fetches all registered routes.
-    ///
-    /// @return routes JSON
     public String getRoutes() {
         return get("/api/routes");
     }

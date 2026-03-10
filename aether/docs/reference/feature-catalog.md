@@ -115,7 +115,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 50 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, metrics, health, scale, artifact, blueprint, update, invocation-metrics, controller, alerts, thresholds, aspects, traces, observability, config, logging, events, node lifecycle/drain/activate/shutdown |
 | 51 | WebSocket streams | Complete | `/ws/dashboard` (metrics), `/ws/status` (cluster state), `/ws/events` (real-time cluster events with delta broadcasting) |
 | 52 | Dynamic log levels | Complete | Runtime log level adjustment per logger via KV-Store. CLI and API control |
-| 53 | E2E test framework | Complete | Testcontainers-based cluster testing with 2 focused test classes (ArtifactRepository, NodeFailure). 11 redundant tests removed in favor of Forge equivalents |
+| 53 | E2E test framework | Battle-tested | Testcontainers-based cluster testing with 10 test classes on bridge networking. Container DNS for inter-node communication, network partition/disconnect/reconnect support. Tests: ArtifactRepository, NodeFailure, RollingRestart, SwimDetection, NodeDrain, NetworkPartition, SliceLifecycle, TopologyGrowth, LoadBalancerFailover, LeaderIsolation |
 | 76 | Forge integration tests | Battle-tested | In-process EmberCluster tests: 16 test classes covering cluster formation, node failure, chaos, rolling updates, pub-sub delivery, invocation metrics, graceful shutdown, network partitions. Class-level cluster setup, health-endpoint readiness polling, `@Tag("Heavy")` for 5 resource-intensive tests |
 
 ## Developer Tooling

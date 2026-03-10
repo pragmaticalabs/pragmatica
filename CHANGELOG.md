@@ -24,6 +24,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - **SWIM core-to-core health detection** (P1.13) — replaces TCP disconnect as health signal for core nodes. `CoreSwimHealthDetector` bridges SWIM membership events to `TopologyChangeNotification`. 1-2s failure detection vs 15s-2min with TCP. TCP disconnect no longer triggers topology removal — only SWIM `FAULTY`/`LEFT` does
 - **Automatic topology growth** (P1.14) — CDM dynamically assigns core vs worker role to joining nodes. `RabiaEngine` activation gating: seed nodes auto-activate, non-seed nodes wait for CDM authorization. `TopologyConfig` extended with `coreMax`/`coreMin`. New `TopologyGrowthMessage` sealed interface (`ActivateConsensus`, `AssignWorkerRole`). Management API: `GET /api/cluster/topology`. CLI: `aether topology status`
+- **E2E test rework: container networking** — replaced dual-mode networking (Linux host / macOS bridge with PID-based port allocation) with standard bridge networking for all platforms. All containers use identical internal ports (8080/8090) and communicate via DNS. Eliminates port conflicts and enables realistic test scenarios
+- **E2E test scenarios** — 8 new tests leveraging container networking:
+  - `RollingRestartE2ETest` — zero-downtime sequential node restart
+  - `SwimDetectionE2ETest` — SWIM failure detection timing bound
+  - `NodeDrainE2ETest` — graceful drain lifecycle via management API
+  - `NetworkPartitionE2ETest` — minority partition isolation and reconvergence
+  - `SliceLifecycleE2ETest` — full deploy/scale/invoke/undeploy cycle
+  - `TopologyGrowthE2ETest` — dynamic node addition to running cluster
+  - `LoadBalancerFailoverE2ETest` — slice invocation rerouting after failure
+  - `LeaderIsolationE2ETest` — leader disconnect recovery without split-brain
 
 ### Changed
 - Dockerfile version labels now use build-arg `VERSION` instead of hardcoded values
