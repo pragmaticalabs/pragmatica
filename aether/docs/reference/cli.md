@@ -771,6 +771,9 @@ aether workers list
 
 # Show worker pool health summary
 aether workers health
+
+# List worker endpoints
+aether workers endpoints
 ```
 
 Example:
@@ -780,6 +783,9 @@ aether workers list
 
 # Verify worker health
 aether workers health
+
+# See all deployed endpoints across workers
+aether workers endpoints
 ```
 
 #### scheduled-tasks

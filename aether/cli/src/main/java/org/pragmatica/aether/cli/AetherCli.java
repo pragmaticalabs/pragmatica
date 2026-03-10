@@ -75,7 +75,8 @@ AetherCli.ConfigCommand.class,
 AetherCli.ScheduledTasksCommand.class,
 AetherCli.EventsCommand.class,
 AetherCli.NodeCommand.class,
-AetherCli.TopologyStatusCommand.class})
+AetherCli.TopologyStatusCommand.class,
+AetherCli.WorkersCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -2303,6 +2304,61 @@ public class AetherCli implements Runnable {
             var response = parent.fetchFromNode("/api/cluster/topology");
             System.out.println(formatJson(response));
             return 0;
+        }
+    }
+
+    // ===== Workers Commands =====
+
+    @Command(name = "workers", description = "Manage worker nodes",
+    subcommands = {WorkersCommand.ListCommand.class,
+    WorkersCommand.HealthCommand.class,
+    WorkersCommand.EndpointsCommand.class})
+    static class WorkersCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        @Command(name = "list", description = "List worker nodes")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private WorkersCommand workersParent;
+
+            @Override
+            public Integer call() {
+                var response = workersParent.parent.fetchFromNode("/api/workers");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "health", description = "Show worker pool health summary")
+        static class HealthCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private WorkersCommand workersParent;
+
+            @Override
+            public Integer call() {
+                var response = workersParent.parent.fetchFromNode("/api/workers/health");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "endpoints", description = "List worker endpoints")
+        static class EndpointsCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private WorkersCommand workersParent;
+
+            @Override
+            public Integer call() {
+                var response = workersParent.parent.fetchFromNode("/api/workers/endpoints");
+                System.out.println(formatJson(response));
+                return 0;
+            }
         }
     }
 }
