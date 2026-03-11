@@ -15,10 +15,12 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -601,6 +603,174 @@ class ClusterDeploymentManagerTest {
         assertThat(sliceBUnloads).isEmpty();
     }
 
+    // === Multi-Blueprint Lifecycle Tests ===
+
+    @Test
+    void multiBlueprint_deployTwoWithDifferentArtifacts_bothSucceed() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        var blueprintA = createNamedBlueprint("app-a", "service-a");
+        var blueprintB = createNamedBlueprint("app-b", "service-b");
+
+        sendAppBlueprintPut(manager, blueprintA);
+        sendAppBlueprintPut(manager, blueprintB);
+
+        var serviceA = Artifact.artifact("org.example:service-a:1.0.0").unwrap();
+        var serviceB = Artifact.artifact("org.example:service-b:1.0.0").unwrap();
+
+        var loadedArtifacts = filterLoadArtifacts();
+
+        assertThat(loadedArtifacts).contains(serviceA);
+        assertThat(loadedArtifacts).contains(serviceB);
+    }
+
+    @Test
+    void multiBlueprint_deployWithOverlappingArtifact_secondRejected() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        var blueprintA = createNamedBlueprint("app-a", "shared-lib");
+        var blueprintB = createNamedBlueprint("app-b", "shared-lib");
+
+        sendAppBlueprintPut(manager, blueprintA);
+
+        var loadCountAfterA = sliceNodeMap.putKeys.size();
+
+        sendAppBlueprintPut(manager, blueprintB);
+
+        // No additional LOADs after Blueprint B — it was rejected
+        assertThat(sliceNodeMap.putKeys).hasSize(loadCountAfterA);
+
+        var sharedLib = Artifact.artifact("org.example:shared-lib:1.0.0").unwrap();
+        var loadedArtifacts = filterLoadArtifacts();
+
+        assertThat(loadedArtifacts).allSatisfy(a -> assertThat(a).isEqualTo(sharedLib));
+    }
+
+    @Test
+    void multiBlueprint_deleteOne_otherUnaffected() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        var blueprintA = createNamedBlueprint("app-a", "service-a");
+        var blueprintB = createNamedBlueprint("app-b", "service-b");
+
+        sendAppBlueprintPut(manager, blueprintA);
+        sendAppBlueprintPut(manager, blueprintB);
+
+        // Clear tracking to isolate deletion effects
+        sliceNodeMap.putKeys.clear();
+        sliceNodeMap.putValues.clear();
+
+        sendAppBlueprintRemove(manager, blueprintA);
+
+        var serviceA = Artifact.artifact("org.example:service-a:1.0.0").unwrap();
+        var serviceB = Artifact.artifact("org.example:service-b:1.0.0").unwrap();
+
+        // service-a should get UNLOAD commands
+        var unloadArtifacts = filterUnloadArtifacts();
+        assertThat(unloadArtifacts).contains(serviceA);
+
+        // service-b should NOT get any UNLOAD commands
+        assertThat(unloadArtifacts).doesNotContain(serviceB);
+    }
+
+    @Test
+    void multiBlueprint_deleteDuringRollingUpdate_rejected() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        var blueprintA = createNamedBlueprint("app-a", "service-a");
+        sendAppBlueprintPut(manager, blueprintA);
+
+        // Simulate active rolling update by adding version routing
+        var serviceA = Artifact.artifact("org.example:service-a:1.0.0").unwrap();
+        sendVersionRoutingPut(serviceA);
+
+        // Clear tracking to isolate deletion effects
+        sliceNodeMap.putKeys.clear();
+        sliceNodeMap.putValues.clear();
+
+        sendAppBlueprintRemove(manager, blueprintA);
+
+        // Blueprint should NOT be deleted — no UNLOAD commands issued
+        assertThat(sliceNodeMap.putKeys).isEmpty();
+    }
+
+    @Test
+    void multiBlueprint_republishSameBlueprint_allowed() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        // Deploy blueprint with same BlueprintId — v1 artifact
+        var bpId = BlueprintId.blueprintId("org.example:app-a:1.0.0").unwrap();
+        var sliceV1 = ResolvedSlice.resolvedSlice(
+            Artifact.artifact("org.example:service-a:1.0.0").unwrap(), 3, false).unwrap();
+        var blueprintV1 = ExpandedBlueprint.expandedBlueprint(bpId, List.of(sliceV1));
+        sendAppBlueprintPut(manager, blueprintV1);
+
+        // Clear tracking to isolate re-deploy effects
+        sliceNodeMap.putKeys.clear();
+        sliceNodeMap.putValues.clear();
+
+        // Re-deploy same BlueprintId with updated artifact version — this is an update, not a conflict
+        var sliceV2 = ResolvedSlice.resolvedSlice(
+            Artifact.artifact("org.example:service-a:2.0.0").unwrap(), 3, false).unwrap();
+        var blueprintV2 = ExpandedBlueprint.expandedBlueprint(bpId, List.of(sliceV2));
+        sendAppBlueprintPut(manager, blueprintV2);
+
+        var serviceAv2 = Artifact.artifact("org.example:service-a:2.0.0").unwrap();
+        var loadedArtifacts = filterLoadArtifacts();
+
+        assertThat(loadedArtifacts).contains(serviceAv2);
+    }
+
+    @Test
+    void multiBlueprint_restoreFromKVStore_ownerPopulated() {
+        // Pre-populate KVStore with Blueprint A's data
+        var blueprintA = createNamedBlueprint("app-a", "service-a");
+        var bpKey = new AppBlueprintKey(blueprintA.id());
+        var bpValue = new AppBlueprintValue(blueprintA);
+        kvStore.put(bpKey, bpValue);
+
+        // Also store SliceTargetKey so the blueprint's artifact is tracked
+        var serviceA = Artifact.artifact("org.example:service-a:1.0.0").unwrap();
+        var targetKey = SliceTargetKey.sliceTargetKey(serviceA.base());
+        var targetValue = SliceTargetValue.sliceTargetValue(serviceA.version(), 3, 0, Option.some(blueprintA.id()));
+        kvStore.put(targetKey, targetValue);
+
+        // Create a new CDM that will rebuild from KVStore on leader activation
+        var restoredManager = ClusterDeploymentManager.clusterDeploymentManager(
+            self, clusterNode, kvStore, router, List.of(self, node2, node3),
+            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT,
+            ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, sliceNodeMap);
+
+        // Become leader triggers rebuildStateFromKVStore
+        restoredManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+
+        // Clear tracking from restoration
+        sliceNodeMap.putKeys.clear();
+        sliceNodeMap.putValues.clear();
+
+        // Add topology so allocations can happen
+        for (var nodeId : List.of(self, node2, node3)) {
+            kvStore.put(AetherKey.NodeLifecycleKey.nodeLifecycleKey(nodeId),
+                        AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY));
+        }
+        restoredManager.onTopologyChange(TopologyChangeNotification.nodeAdded(node3, List.of(self, node2, node3)));
+
+        sliceNodeMap.putKeys.clear();
+        sliceNodeMap.putValues.clear();
+
+        // Deploy Blueprint B with overlapping artifact "service-a"
+        var blueprintB = createNamedBlueprint("app-b", "service-a");
+        sendAppBlueprintPut(restoredManager, blueprintB);
+
+        // Blueprint B should be rejected — "service-a" already owned by Blueprint A from restore
+        assertThat(sliceNodeMap.putKeys).isEmpty();
+    }
+
     // === Helper Methods ===
 
     private Artifact createTestArtifact() {
@@ -691,6 +861,53 @@ class ClusterDeploymentManagerTest {
                 Artifact.artifact("org.example:" + name + ":1.0.0").unwrap(), 3, false).unwrap())
             .toList();
         return ExpandedBlueprint.expandedBlueprint(bpId, slices);
+    }
+
+    private ExpandedBlueprint createNamedBlueprint(String blueprintName, String... sliceNames) {
+        var bpId = BlueprintId.blueprintId("org.example:" + blueprintName + ":1.0.0").unwrap();
+        var slices = Arrays.stream(sliceNames)
+            .map(name -> ResolvedSlice.resolvedSlice(
+                Artifact.artifact("org.example:" + name + ":1.0.0").unwrap(), 3, false).unwrap())
+            .toList();
+        return ExpandedBlueprint.expandedBlueprint(bpId, slices);
+    }
+
+    private ExpandedBlueprint createVersionedBlueprint(String blueprintName, String version, String... sliceNames) {
+        var bpId = BlueprintId.blueprintId("org.example:" + blueprintName + ":" + version).unwrap();
+        var slices = Arrays.stream(sliceNames)
+            .map(name -> ResolvedSlice.resolvedSlice(
+                Artifact.artifact("org.example:" + name + ":" + version).unwrap(), 3, false).unwrap())
+            .toList();
+        return ExpandedBlueprint.expandedBlueprint(bpId, slices);
+    }
+
+    private void sendAppBlueprintRemove(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint) {
+        var key = new AppBlueprintKey(blueprint.id());
+        var command = new KVCommand.Remove<AppBlueprintKey>(key);
+        var notification = new ValueRemove<AppBlueprintKey, AppBlueprintValue>(command, Option.none());
+        mgr.onAppBlueprintRemove(notification);
+    }
+
+    private void sendVersionRoutingPut(Artifact artifact) {
+        var routingKey = VersionRoutingKey.versionRoutingKey(artifact.base());
+        var routingValue = VersionRoutingValue.versionRoutingValue(artifact.version(), artifact.version());
+        var command = new KVCommand.Put<>(routingKey, routingValue);
+        var notification = new ValuePut<>(command, Option.none());
+        manager.onVersionRoutingPut(notification);
+    }
+
+    private List<Artifact> filterLoadArtifacts() {
+        return java.util.stream.IntStream.range(0, sliceNodeMap.putKeys.size())
+            .filter(i -> sliceNodeMap.putValues.get(i).state() == SliceState.LOAD)
+            .mapToObj(i -> sliceNodeMap.putKeys.get(i).artifact())
+            .toList();
+    }
+
+    private List<Artifact> filterUnloadArtifacts() {
+        return java.util.stream.IntStream.range(0, sliceNodeMap.putKeys.size())
+            .filter(i -> sliceNodeMap.putValues.get(i).state() == SliceState.UNLOAD)
+            .mapToObj(i -> sliceNodeMap.putKeys.get(i).artifact())
+            .toList();
     }
 
     private void assertAllDhtPutsAreLoadFor(Artifact artifact) {

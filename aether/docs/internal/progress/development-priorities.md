@@ -225,8 +225,9 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
     - **Phased rollout:**
       - Phase 1 (0.19.3): ✅ Complete — SWIM protocol, worker node, governor election, worker endpoint registry, CDM pool awareness, worker management API, core-to-core SWIM health detection, automatic topology growth
       - Phase 2a (0.19.3): ✅ Complete — DHT-backed ReplicatedMap, all 3 key types migrated (EndpointKey, SliceNodeKey, HttpNodeRouteKey) from consensus to DHT, unified EndpointRegistry, community-aware replication policy, replication cooldown, governor mesh infrastructure, dead node cleanup, WorkerEndpointRegistry removed, `[dht.replication]` config. **Worker slice execution wired end-to-end:** CDM writes WorkerSliceDirectiveKey/Value, WorkerDeploymentManager self-assigns instances via consistent hashing, loads/activates slices, publishes endpoints to DHT. Governor cleanup removes dead worker DHT entries. PlacementPolicy in SliceTargetValue with Management API + CLI support
-      - Phase 2b (0.19.3): ✅ Complete — Zone-aware multi-group topology: `WorkerGroupId` (`groupName:zone`), `GroupAssignment` (deterministic splitting at `maxGroupSize`), `GroupMembershipTracker`, per-group governor election and Decision relay, `GovernorAnnouncementKey/Value` in consensus for core-side community tracking, CDM community-aware placement with `AllocationPool.workersByCommunity`, `WorkerSliceDirectiveValue.targetCommunity`. Config: `worker.group_name`, `worker.zone`, `worker.max_group_size`. **Gap:** Distributed DHT on workers (Phase 2b.5) deferred — workers still use local DHT; governor mesh TCP connectivity not yet wired
-      - Phase 2c (future): Spot pool, spot-node exclusion from DHT ring
+      - Phase 2b (0.19.3): ✅ Complete — Zone-aware multi-group topology: `WorkerGroupId` (`groupName:zone`), `GroupAssignment` (deterministic splitting at `maxGroupSize`), `GroupMembershipTracker`, per-group governor election and Decision relay, `GovernorAnnouncementKey/Value` in consensus for core-side community tracking, CDM community-aware placement with `AllocationPool.workersByCommunity`, `WorkerSliceDirectiveValue.targetCommunity`. Config: `worker.group_name`, `worker.zone`, `worker.max_group_size`
+      - Phase 2b.5 (0.19.3): ✅ Complete — Global distributed DHT on workers with cross-community governor mesh relay. GovernorMesh TCP connections, DHT relay protocol, follower-to-governor heartbeat, WorkerDeploymentManager tests. Governor advertised address (configurable `advertise_address`). Event-based community scaling: WorkerMetricsPing/Pong, CommunityScalingEvaluator (sliding window, threshold check, cooldown), WorkerMetricsAggregator (governor-side), CommunityScalingRequest → ControlLoop handler with evidence validation
+      - Phase 2c (future): Spot pool, spot-node exclusion from DHT ring. Decision filtering rejected (workers keep full KV-Store replicas — filtering breaks governor transition simplicity)
       - Phase 3 (future): Multi-region, cross-region governors
     - **Foundation exists:** `PassiveNode<K,V>`, `AetherPassiveLB`, `NodeRole.ACTIVE/PASSIVE`, Decision stream to passive nodes
     - **Research:** [10-system comparative analysis](../../internal/passive-worker-pool-research.md) (K8s, Consul, Hazelcast, Nomad, Mesos, CockroachDB, TiKV, FoundationDB, Akka, Orleans, Ray)
@@ -351,12 +352,14 @@ Part of Cloud Integration (#1). Per-provider status:
      - Cluster-aware: distributed counters via consensus or per-node local limits
      - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
 
-11. **Observability Dashboard UI**
+11. **Per-Blueprint Artifact Scoping (Tier 2)** — When artifact exclusivity (Tier 1) becomes too restrictive for multi-tenant clusters, add per-blueprint SliceTargetKey scoping. Changes: `SliceTargetKey(BlueprintId, ArtifactBase)`, CDM `Map<BlueprintId, Map<Artifact, Blueprint>>`, SliceNodeValue `owningBlueprint` field, WorkerSliceDirectiveKey blueprint scoping, Management API `blueprintId` parameter on `/api/scale`. Instance count = sum of all blueprints' allocations. Rolling update guard: reject if artifact has multiple blueprint owners. Prerequisite: Tier 1 (multi-blueprint correctness).
+
+12. **Observability Dashboard UI**
    - Wire `ObservabilityDepthRegistry` data to dashboard with UI for configuring per-method depth thresholds
    - Backend REST API (`/api/observability/depth`) and KV-store sync already implemented
    - Current state is functional; production value but no customers yet
 
-12. **Invocation Observability Dashboard Tab**
+13. **Invocation Observability Dashboard Tab**
    - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
    - Click-to-expand tree view showing invocation depth with input/output at each level
    - Waterfall view for multi-hop request visualization

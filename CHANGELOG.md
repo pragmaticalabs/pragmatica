@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.19.3] - Unreleased
 
+### Multi-Blueprint Lifecycle
+- Fixed critical bug: blueprint deletion now only removes artifacts owned by the deleted blueprint (was removing ALL artifacts)
+- Fixed critical bug: `owningBlueprint` field in SliceTargetValue now correctly populated during blueprint deployment
+- Added artifact exclusivity enforcement — prevents two blueprints from deploying the same artifact (rejects with descriptive error)
+- Added deletion guard — prevents blueprint deletion while its artifacts have active rolling updates
+- CDM state restore now correctly populates blueprint ownership from KV-Store
+- Added `SliceTargetValue.sliceTargetValue(Version, int, int, Option<BlueprintId>)` factory
+
 ### Added
 - **Governor mesh advertised address** — governors now announce a routable TCP address instead of hardcoded `0.0.0.0`. Auto-detects via `InetAddress.getLocalHost()` or uses configurable `advertise_address` in `[worker]` TOML section. Fixes cross-host governor mesh connections
 - **Event-based community scaling** — governors monitor follower metrics locally and send scaling requests to core only when thresholds are sustained. Zero baseline bandwidth. Architecture:

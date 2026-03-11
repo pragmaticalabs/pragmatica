@@ -388,7 +388,10 @@ public interface ClusterDeploymentManager {
                     var artifact = slice.artifact();
                     // Store original requested count — reconcile() handles actual allocation
                     blueprints.put(artifact,
-                                   Blueprint.blueprint(artifact, slice.instances(), slice.minAvailable()));
+                                   Blueprint.blueprint(artifact,
+                                                       slice.instances(),
+                                                       slice.minAvailable(),
+                                                       Option.some(expanded.id())));
                 }
             }
 
@@ -397,7 +400,8 @@ public interface ClusterDeploymentManager {
                                              .withVersion(sliceTargetValue.currentVersion());
                 var instances = sliceTargetValue.targetInstances();
                 var minInstances = sliceTargetValue.effectiveMinInstances();
-                blueprints.put(artifact, Blueprint.blueprint(artifact, instances, minInstances));
+                blueprints.put(artifact,
+                               Blueprint.blueprint(artifact, instances, minInstances, sliceTargetValue.owningBlueprint()));
                 log.trace("Restored slice target: {} with {} instances (min: {})", artifact, instances, minInstances);
             }
 
@@ -467,13 +471,33 @@ public interface ClusterDeploymentManager {
             }
 
             private void handleAppBlueprintRemoval(AppBlueprintKey key) {
+                // Guard: reject deletion if any of this blueprint's artifacts have active rolling updates
+                var removedBlueprintId = key.blueprintId();
+                var rollingUpdateArtifacts = blueprints.entrySet()
+                                                       .stream()
+                                                       .filter(e -> e.getValue()
+                                                                     .owner()
+                                                                     .equals(Option.some(removedBlueprintId)))
+                                                       .map(java.util.Map.Entry::getKey)
+                                                       .filter(a -> activeRoutings.contains(a.base()))
+                                                       .toList();
+                if (!rollingUpdateArtifacts.isEmpty()) {
+                    log.warn("Cannot delete blueprint '{}' — artifacts {} have active rolling updates",
+                             removedBlueprintId.artifact()
+                                               .asString(),
+                             rollingUpdateArtifacts);
+                    return;
+                }
                 log.info("App blueprint '{}' removed",
-                         key.blueprintId()
-                            .artifact()
-                            .asString());
-                // Remove all blueprints that were part of this app
-                var artifactsToRemove = blueprints.keySet()
+                         removedBlueprintId.artifact()
+                                           .asString());
+                // Remove only blueprints owned by the removed app blueprint
+                var artifactsToRemove = blueprints.entrySet()
                                                   .stream()
+                                                  .filter(e -> e.getValue()
+                                                                .owner()
+                                                                .equals(Option.some(removedBlueprintId)))
+                                                  .map(java.util.Map.Entry::getKey)
                                                   .toList();
                 var consensusCommands = new ArrayList<KVCommand<AetherKey>>();
                 for (var artifact : artifactsToRemove) {
@@ -874,7 +898,8 @@ public interface ClusterDeploymentManager {
                          newArtifact,
                          desiredInstances,
                          minInstances);
-                blueprints.put(newArtifact, Blueprint.blueprint(newArtifact, desiredInstances, minInstances));
+                blueprints.put(newArtifact,
+                               Blueprint.blueprint(newArtifact, desiredInstances, minInstances, value.owningBlueprint()));
                 issueAllocationCommandsWithPlacement(newArtifact, desiredInstances, value.effectivePlacement());
             }
 
@@ -890,6 +915,28 @@ public interface ClusterDeploymentManager {
                 // Capture previous expanded blueprint for atomicity rollback (before we overwrite blueprints map)
                 var previousExpanded = capturePreviousBlueprint(expanded);
                 buildDependencyMap(expanded);
+                // Artifact exclusivity: reject if any artifact is already owned by a different blueprint
+                for (var slice : expanded.loadOrder()) {
+                    var artifactBase = slice.artifact()
+                                            .base();
+                    for (var bp : blueprints.values()) {
+                        if (!artifactBase.equals(bp.artifact()
+                                                   .base())) {
+                            continue;
+                        }
+                        var conflict = bp.owner()
+                                         .filter(o -> !o.equals(expanded.id()));
+                        if (!conflict.isEmpty()) {
+                            log.error("Blueprint '{}' rejected — artifact {} already owned by blueprint '{}'. "
+                                      + "Deploy shared services as independent blueprints.",
+                                      expanded.id()
+                                              .asString(),
+                                      slice.artifact(),
+                                      conflict.fold(() -> "", BlueprintId::asString));
+                            return;
+                        }
+                    }
+                }
                 var consensusCommands = new ArrayList<KVCommand<AetherKey>>();
                 // Store the ORIGINAL requested instance count — not capped at available nodes.
                 // Allocation is naturally limited by allocatableNodes(); reconcile() fills the gap
@@ -903,12 +950,16 @@ public interface ClusterDeploymentManager {
                              nodes.size());
                     permanentlyFailed.remove(artifact);
                     blueprints.put(artifact,
-                                   Blueprint.blueprint(artifact, requestedInstances, slice.minAvailable()));
+                                   Blueprint.blueprint(artifact,
+                                                       requestedInstances,
+                                                       slice.minAvailable(),
+                                                       Option.some(expanded.id())));
                     // Create SliceTargetKey so rolling updates can find the current version
                     consensusCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
                                                               SliceTargetValue.sliceTargetValue(artifact.version(),
                                                                                                 requestedInstances,
-                                                                                                slice.minAvailable())));
+                                                                                                slice.minAvailable(),
+                                                                                                Option.some(expanded.id()))));
                     issueAllocationCommandsWithPlacement(artifact, requestedInstances, lookupPlacement(artifact));
                 }
                 submitBatch(consensusCommands);
@@ -1950,13 +2001,18 @@ public interface ClusterDeploymentManager {
     /// @param artifact the artifact to deploy
     /// @param instances current desired instance count
     /// @param minInstances minimum instance count (hard floor for scale-down)
-    record Blueprint(Artifact artifact, int instances, int minInstances) {
+    /// @param owner the owning app blueprint ID, if this artifact was deployed via an app blueprint
+    record Blueprint(Artifact artifact, int instances, int minInstances, Option<BlueprintId> owner) {
+        static Blueprint blueprint(Artifact artifact, int instances, int minInstances, Option<BlueprintId> owner) {
+            return new Blueprint(artifact, instances, minInstances, owner);
+        }
+
         static Blueprint blueprint(Artifact artifact, int instances, int minInstances) {
-            return new Blueprint(artifact, instances, minInstances);
+            return new Blueprint(artifact, instances, minInstances, Option.empty());
         }
 
         static Blueprint blueprint(Artifact artifact, int instances) {
-            return new Blueprint(artifact, instances, 1);
+            return new Blueprint(artifact, instances, 1, Option.empty());
         }
     }
 

@@ -21,6 +21,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 5 | Classloader isolation | Complete | Per-slice classloader prevents dependency conflicts between slices |
 | 6 | Manifest versioning | Complete | Envelope format versioning (v1-v6) for backward-compatible manifest evolution |
 | 66 | Compile-time serde | Complete | `@Codec` annotation processor generates `*Codec` classes for records, enums, and sealed interfaces. `SliceCodec` wire format with deterministic hash-based tags, VLQ encoding, zero runtime reflection. Replaces Fory/Kryo for slice boundary serialization |
+| 102 | Multi-blueprint lifecycle independence | Complete | Blueprint-scoped artifact ownership (`owningBlueprint` in SliceTargetValue), artifact exclusivity enforcement (rejects duplicate artifact across blueprints), owner-filtered blueprint deletion (only removes owned artifacts), rolling update deletion guard, KV-Store restore with ownership. Tier 1 correctness for multi-blueprint clusters |
 
 ## Scaling & Control
 
@@ -212,6 +213,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 70 | Aether runtime rolling upgrade | Planned | Upgrade Aether node software across running cluster without downtime. Node-by-node with health verification |
 | 71 | Email messaging resource | Planned | Facade with pluggable backends (SMTP, AWS SES, SendGrid). Sending (plain text + HTML, attachments) and receiving (automated conversations). SPI-based |
 | 72 | Dead letter handling | Planned | KV-Store backed DLQ for failed pub-sub messages and scheduled task invocations. Retry, inspect, replay via API and CLI |
+| 103 | Per-blueprint artifact scoping (Tier 2) | Planned | Per-blueprint SliceTargetKey scoping for multi-tenant clusters. Blueprint-scoped CDM maps, WorkerSliceDirectiveKey blueprint scoping, Management API `blueprintId` parameter. Prerequisite: Tier 1 (#102) |
 
 ---
 
@@ -220,10 +222,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 23 |
-| Complete | 64 |
+| Complete | 65 |
 | Partial | 1 |
-| Planned | 10 |
-| Total | 98 |
+| Planned | 11 |
+| Total | 100 |
 
 **Battle-tested features (23):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), Forge integration tests
 
@@ -248,6 +250,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | ~~KV-Store state backup~~ | ~~Complete in 0.19.3~~ |
 | Aether runtime rolling upgrade | Official container or binaries |
 | Email messaging resource | — |
+| Per-blueprint artifact scoping (Tier 2) | Multi-blueprint lifecycle Tier 1 (#102) |
 
 ---
 

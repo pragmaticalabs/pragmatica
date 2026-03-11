@@ -74,6 +74,19 @@ public sealed interface AetherValue {
                                         System.currentTimeMillis());
         }
 
+        /// Creates a slice target with explicit minInstances and owning blueprint.
+        public static SliceTargetValue sliceTargetValue(Version version,
+                                                        int instances,
+                                                        int minInstances,
+                                                        Option<BlueprintId> owner) {
+            return new SliceTargetValue(version,
+                                        instances,
+                                        minInstances,
+                                        owner,
+                                        DEFAULT_PLACEMENT,
+                                        System.currentTimeMillis());
+        }
+
         /// Creates a standalone slice target with explicit minInstances and placement.
         public static SliceTargetValue sliceTargetValue(Version version,
                                                         int instances,
