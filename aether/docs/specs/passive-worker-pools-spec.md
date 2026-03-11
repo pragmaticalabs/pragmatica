@@ -1170,8 +1170,8 @@ Core (5-9 nodes, unchanged)
 | P2.1 | Group splitting | Consistent hash-based group assignment with hysteresis |
 | P2.2 | Zone-aware grouping | Zone prefix in NodeId, zone-aligned hashing |
 | P2.3 | Multi-governor | Multiple groups with independent governors |
-| P2.4 | Spot pool | Spot worker support, preemption handling |
-| P2.5 | Decision filtering | Governor filters irrelevant Decisions before relay |
+| P2.4 | ~~Spot pool~~ | ~~Spot worker support, preemption handling~~ — **Deferred to Phase 3** |
+| P2.5 | ~~Decision filtering~~ | ~~Governor filters irrelevant Decisions before relay~~ — **Rejected:** high-cardinality keys already migrated to DHT; remaining KV keys are low-volume metadata. Filtering would introduce partial KV-Store state on workers, requiring resync on governor transitions — complexity outweighs negligible bandwidth savings |
 | P2.6 | KV-Store migration | Core nodes switch to WorkerEndpointRegistry for all endpoint data |
 | P2.7 | Cross-group routing | Worker-to-worker routing across groups via core |
 | P2.8 | Dashboard integration | Worker pool visualization in management dashboard |
@@ -1262,10 +1262,10 @@ Core (5-9 nodes)
 | # | Question | Impact | Notes |
 |---|----------|--------|-------|
 | OQ-1 | **Worker artifact repository:** Should workers cache downloaded artifacts locally, or always fetch from DHT? | Phase 1 | Local caching is obvious optimization but adds disk management complexity. |
-| OQ-2 | **Governor-to-governor communication:** Should governors communicate directly for cross-group routing, or always route through core? | Phase 2 | Direct governor-to-governor could reduce latency for cross-group invocations but adds connection complexity. |
+| OQ-2 | **Governor-to-governor communication:** Should governors communicate directly for cross-group routing, or always route through core? | Phase 2 | **Resolved (0.19.3):** GovernorMesh provides direct TCP connections between governors for DHT relay. Cross-community routing bypasses core entirely. |
 | OQ-3 | **SWIM protocol tuning for large groups:** At 100+ members per group, should SWIM period increase to reduce network overhead? | Phase 2 | SWIM is O(1) per member, but absolute overhead still matters at scale. |
-| OQ-4 | **Worker KV-Store scope:** Should workers receive ALL Decisions or only Decisions relevant to their assigned slices? | Phase 2 | Filtering reduces worker memory and processing. But filtering requires the governor to know each worker's slice assignments. |
-| OQ-5 | **Observability on workers:** How do worker metrics (CPU, latency, error rates) flow to the dashboard? Via governor aggregation or direct push? | Phase 1 | Governor aggregation is consistent with the architecture but adds reporting latency. |
+| OQ-4 | **Worker KV-Store scope:** Should workers receive ALL Decisions or only Decisions relevant to their assigned slices? | Phase 2 | **Rejected (0.19.3):** Workers keep full KV-Store replicas. Filtering would break governor transition simplicity (new governor would need KV-Store resync with core). High-cardinality keys already migrated to DHT, so remaining metadata volume is low. The complexity and edge cases of filtered state far outweigh the modest memory savings. |
+| OQ-5 | **Observability on workers:** How do worker metrics (CPU, latency, error rates) flow to the dashboard? Via governor aggregation or direct push? | Phase 1 | **Resolved (0.19.3):** Event-based governor aggregation. Governors collect follower metrics via WorkerMetricsPing/Pong, evaluate locally with CommunityScalingEvaluator, and send CommunityScalingRequest to core only when scaling is needed. Zero baseline bandwidth. On-demand CommunityMetricsSnapshot for diagnostics/dashboard. |
 | OQ-6 | **Worker management API:** Should workers expose a management API directly, or proxy all management through core? | Phase 1 | Direct API is simpler for debugging. Proxy is more secure. |
 | OQ-7 | **Scheduled tasks on workers:** Can scheduled tasks run on worker nodes, or only on core? | Phase 2 | Leader-only tasks must run on core. All-node tasks could run on workers for better distribution. |
 | OQ-8 | **Pub/sub on workers:** Can workers be pub/sub subscribers? Topic subscriptions are currently per-node in consensus. | Phase 2 | Would require moving `TopicSubscriptionKey` to the non-consensus registry or allowing workers to subscribe through governors. |
