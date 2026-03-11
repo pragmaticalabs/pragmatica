@@ -17,8 +17,10 @@ import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationContext;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -105,6 +107,23 @@ public interface AppHttpServer {
 
     /// Get the HttpForwarder used by this server, if configured.
     Option<HttpForwarder> httpForwarder();
+
+    /// Create a MapSubscription adapter for DHT events.
+    default MapSubscription<HttpNodeRouteKey, HttpNodeRouteValue> asHttpRouteSubscription() {
+        return new MapSubscription<>() {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onPut(HttpNodeRouteKey key, HttpNodeRouteValue value) {
+                onRoutePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onRemove(HttpNodeRouteKey key) {
+                onRouteRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
+            }
+        };
+    }
 
     static AppHttpServer appHttpServer(AppHttpConfig config,
                                        NodeId selfNodeId,

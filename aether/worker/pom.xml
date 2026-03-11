@@ -85,6 +85,15 @@
             <artifactId>aether-metrics</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-dht</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>dht</artifactId>
+        </dependency>
 
         <!-- Network -->
         <dependency>

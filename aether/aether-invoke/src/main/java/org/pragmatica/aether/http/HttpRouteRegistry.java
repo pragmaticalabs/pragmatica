@@ -1,7 +1,9 @@
 package org.pragmatica.aether.http;
 
+import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -58,6 +60,23 @@ public interface HttpRouteRegistry {
 
     /// Get all registered routes (for monitoring/debugging and router building).
     List<RouteInfo> allRoutes();
+
+    /// Create a MapSubscription adapter for DHT events.
+    default MapSubscription<HttpNodeRouteKey, HttpNodeRouteValue> asHttpRouteSubscription() {
+        return new MapSubscription<>() {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onPut(HttpNodeRouteKey key, HttpNodeRouteValue value) {
+                onRoutePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onRemove(HttpNodeRouteKey key) {
+                onRouteRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
+            }
+        };
+    }
 
     /// Immediately evict a node from all cached routes.
     /// Local-only operation — does not affect KV store.

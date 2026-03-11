@@ -58,6 +58,7 @@ public record Main(String[] args) {
         var managementPort = parseManagementPort(aetherConfig);
         var peers = parsePeers(nodeId, port, aetherConfig);
         var sliceConfig = parseSliceConfig(aetherConfig);
+        var dhtConfig = parseDhtConfig(aetherConfig);
         logStartupInfo(nodeId, port, managementPort, peers, aetherConfig, sliceConfig);
         var config = AetherNodeConfig.aetherNodeConfig(nodeId,
                                                        port,
@@ -65,7 +66,7 @@ public record Main(String[] args) {
                                                        AetherNodeConfig.defaultSliceActionConfig(),
                                                        sliceConfig,
                                                        managementPort,
-                                                       org.pragmatica.dht.DHTConfig.DEFAULT);
+                                                       dhtConfig);
         var finalConfig = wireTlsIfEnabled(config, aetherConfig);
         var node = AetherNode.aetherNode(finalConfig)
                              .unwrap();
@@ -124,6 +125,13 @@ public record Main(String[] args) {
     private SliceConfig parseSliceConfig(Option<AetherConfig> aetherConfig) {
         return aetherConfig.map(AetherConfig::slice)
                            .or(SliceConfig.sliceConfig());
+    }
+
+    private org.pragmatica.dht.DHTConfig parseDhtConfig(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(AetherConfig::dhtReplication)
+                           .map(dhtRepl -> org.pragmatica.dht.DHTConfig.withReplication(dhtRepl.targetRf()))
+                           .flatMap(Result::option)
+                           .or(org.pragmatica.dht.DHTConfig.DEFAULT);
     }
 
     private Option<AetherConfig> loadConfig() {

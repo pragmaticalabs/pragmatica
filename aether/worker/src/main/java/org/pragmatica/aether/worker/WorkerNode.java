@@ -2,8 +2,14 @@ package org.pragmatica.aether.worker;
 
 import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.aether.config.WorkerConfig.SwimSettings;
+import org.pragmatica.aether.dht.AetherMaps;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.dht.ConsistentHashRing;
+import org.pragmatica.dht.DHTConfig;
+import org.pragmatica.dht.DHTNode;
+import org.pragmatica.dht.LocalDHTClient;
+import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.aether.worker.bootstrap.SnapshotRequest;
 import org.pragmatica.aether.worker.bootstrap.SnapshotResponse;
 import org.pragmatica.aether.worker.bootstrap.WorkerBootstrap;
@@ -73,6 +79,9 @@ public interface WorkerNode {
     /// Whether this node is the elected governor.
     boolean isGovernor();
 
+    /// DHT-backed replicated maps for endpoint, slice-node, and HTTP route data.
+    AetherMaps aetherMaps();
+
     /// Create a worker node from configuration.
     @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01", "JBCT-STY-05", "unchecked", "rawtypes"})
     static Result<WorkerNode> workerNode(WorkerConfig config) {
@@ -120,6 +129,7 @@ public interface WorkerNode {
         var mutationForwarder = MutationForwarder.mutationForwarder(nodeId, workerNetwork, passiveNode);
         var workerBootstrap = WorkerBootstrap.workerBootstrap(nodeId, workerNetwork);
         var swimConfig = toSwimConfig(config.swimSettings());
+        var aetherMaps = createAetherMaps(nodeId);
         return new AssembledWorkerNode(config,
                                        nodeId,
                                        passiveNode,
@@ -129,7 +139,17 @@ public interface WorkerNode {
                                        workerBootstrap,
                                        swimConfig,
                                        serializer,
-                                       deserializer);
+                                       deserializer,
+                                       aetherMaps);
+    }
+
+    private static AetherMaps createAetherMaps(NodeId nodeId) {
+        var storage = MemoryStorageEngine.memoryStorageEngine();
+        var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+        ring.addNode(nodeId);
+        var dhtNode = DHTNode.dhtNode(nodeId, storage, ring, DHTConfig.SINGLE_NODE);
+        var dhtClient = LocalDHTClient.localDHTClient(dhtNode);
+        return AetherMaps.aetherMaps(dhtClient);
     }
 
     private static List<NodeInfo> parseCoreNodes(WorkerConfig config, NodeId selfId) {
@@ -196,6 +216,7 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
     private final Deserializer deserializer;
     private final AtomicReference<Option<NodeId>> currentGovernor = new AtomicReference<>(Option.empty());
     private final CopyOnWriteArrayList<SwimMember> membershipSnapshot = new CopyOnWriteArrayList<>();
+    private final AetherMaps aetherMaps;
     private volatile SwimProtocol swimProtocol;
 
     AssembledWorkerNode(WorkerConfig config,
@@ -207,7 +228,8 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
                         WorkerBootstrap workerBootstrap,
                         SwimConfig swimConfig,
                         Serializer serializer,
-                        Deserializer deserializer) {
+                        Deserializer deserializer,
+                        AetherMaps aetherMaps) {
         this.config = config;
         this.nodeId = nodeId;
         this.passiveNode = passiveNode;
@@ -218,6 +240,7 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
         this.swimConfig = swimConfig;
         this.serializer = serializer;
         this.deserializer = deserializer;
+        this.aetherMaps = aetherMaps;
     }
 
     @Override
@@ -235,6 +258,11 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
         return currentGovernor.get()
                               .map(nodeId::equals)
                               .or(false);
+    }
+
+    @Override
+    public AetherMaps aetherMaps() {
+        return aetherMaps;
     }
 
     @Override

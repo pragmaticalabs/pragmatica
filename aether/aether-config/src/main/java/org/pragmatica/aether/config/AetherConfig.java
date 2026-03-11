@@ -41,9 +41,10 @@ import static org.pragmatica.lang.Result.success;
 /// @param docker     Docker-specific settings
 /// @param kubernetes Kubernetes-specific settings
 /// @param ttm        TTM (Tiny Time Mixers) predictive scaling configuration
-/// @param slice      Slice loading and repository configuration
-/// @param appHttp    Application HTTP server configuration
-/// @param backup     Backup configuration
+/// @param slice          Slice loading and repository configuration
+/// @param appHttp        Application HTTP server configuration
+/// @param backup         Backup configuration
+/// @param dhtReplication DHT replication behavior configuration
 public record AetherConfig(ClusterConfig cluster,
                            NodeConfig node,
                            Option<TlsConfig> tls,
@@ -52,7 +53,8 @@ public record AetherConfig(ClusterConfig cluster,
                            TtmConfig ttm,
                            SliceConfig slice,
                            AppHttpConfig appHttp,
-                           BackupConfig backup) {
+                           BackupConfig backup,
+                           DhtReplicationConfig dhtReplication) {
     /// Factory method following JBCT naming convention.
     public static Result<AetherConfig> aetherConfig(ClusterConfig cluster,
                                                     NodeConfig node,
@@ -62,8 +64,18 @@ public record AetherConfig(ClusterConfig cluster,
                                                     TtmConfig ttm,
                                                     SliceConfig slice,
                                                     AppHttpConfig appHttp,
-                                                    BackupConfig backup) {
-        return success(new AetherConfig(cluster, node, tls, docker, kubernetes, ttm, slice, appHttp, backup));
+                                                    BackupConfig backup,
+                                                    DhtReplicationConfig dhtReplication) {
+        return success(new AetherConfig(cluster,
+                                        node,
+                                        tls,
+                                        docker,
+                                        kubernetes,
+                                        ttm,
+                                        slice,
+                                        appHttp,
+                                        backup,
+                                        dhtReplication));
     }
 
     /// Create configuration with defaults for specified environment.
@@ -77,7 +89,8 @@ public record AetherConfig(ClusterConfig cluster,
                             TtmConfig.ttmConfig(),
                             SliceConfig.sliceConfig(),
                             AppHttpConfig.appHttpConfig(),
-                            BackupConfig.backupConfig(env)).unwrap();
+                            BackupConfig.backupConfig(env),
+                            DhtReplicationConfig.dhtReplicationConfig()).unwrap();
     }
 
     /// Create default configuration (Docker environment).
@@ -132,6 +145,7 @@ public record AetherConfig(ClusterConfig cluster,
         private SliceConfig sliceConfig;
         private AppHttpConfig appHttpConfig;
         private BackupConfig backupConfig;
+        private DhtReplicationConfig dhtReplicationConfig;
 
         @SuppressWarnings("JBCT-NAM-01")
         public Builder withEnvironment(Environment environment) {
@@ -199,6 +213,11 @@ public record AetherConfig(ClusterConfig cluster,
             return this;
         }
 
+        public Builder dhtReplication(DhtReplicationConfig dhtReplicationConfig) {
+            this.dhtReplicationConfig = dhtReplicationConfig;
+            return this;
+        }
+
         public AetherConfig build() {
             var base = AetherConfig.aetherConfig(environment);
             var clusterConfig = applyClusterOverrides(base.cluster());
@@ -210,6 +229,7 @@ public record AetherConfig(ClusterConfig cluster,
             var finalSlice = sliceFor();
             var finalAppHttp = appHttpFor();
             var finalBackup = backupFor();
+            var finalDhtReplication = dhtReplicationFor();
             return AetherConfig.aetherConfig(clusterConfig,
                                              nodeConfig,
                                              finalTls,
@@ -218,7 +238,8 @@ public record AetherConfig(ClusterConfig cluster,
                                              finalTtm,
                                              finalSlice,
                                              finalAppHttp,
-                                             finalBackup)
+                                             finalBackup,
+                                             finalDhtReplication)
                                .unwrap();
         }
 
@@ -270,6 +291,10 @@ public record AetherConfig(ClusterConfig cluster,
 
         private BackupConfig backupFor() {
             return option(backupConfig).or(BackupConfig.backupConfig(environment));
+        }
+
+        private DhtReplicationConfig dhtReplicationFor() {
+            return option(dhtReplicationConfig).or(DhtReplicationConfig.dhtReplicationConfig());
         }
     }
 }

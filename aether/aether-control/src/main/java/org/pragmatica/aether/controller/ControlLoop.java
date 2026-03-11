@@ -4,6 +4,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.ClusterController.BlueprintChange;
 import org.pragmatica.aether.controller.ClusterController.ControlContext;
 import org.pragmatica.aether.controller.CompositeLoadFactor.LoadFactorResult;
+import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.metrics.MetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.SliceState;
@@ -12,6 +13,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
@@ -77,6 +79,23 @@ public interface ControlLoop {
     /// Handle quorum state changes (stop evaluation when quorum disappears).
     @MessageReceiver
     void onQuorumStateChange(QuorumStateNotification notification);
+
+    /// Create a MapSubscription adapter for DHT slice-node events.
+    default MapSubscription<SliceNodeKey, SliceNodeValue> asSliceNodeSubscription() {
+        return new MapSubscription<>() {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onPut(SliceNodeKey key, SliceNodeValue value) {
+                onSliceNodePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onRemove(SliceNodeKey key) {
+                onSliceNodeRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
+            }
+        };
+    }
 
     /// Register a blueprint for controller management.
     void registerBlueprint(Artifact artifact, int instances, int minInstances);

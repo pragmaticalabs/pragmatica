@@ -2,13 +2,16 @@ package org.pragmatica.aether.deployment.loadbalancer;
 
 import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.RouteChange;
+import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.lang.Option;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -49,6 +52,23 @@ public interface LoadBalancerManager {
 
     @MessageReceiver
     void onTopologyChange(TopologyChangeNotification topologyChange);
+
+    /// Create a MapSubscription adapter for DHT events.
+    default MapSubscription<HttpNodeRouteKey, HttpNodeRouteValue> asHttpRouteSubscription() {
+        return new MapSubscription<>() {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onPut(HttpNodeRouteKey key, HttpNodeRouteValue value) {
+                onRoutePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onRemove(HttpNodeRouteKey key) {
+                onRouteRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
+            }
+        };
+    }
 
     sealed interface LoadBalancerManagerState {
         default void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut) {}

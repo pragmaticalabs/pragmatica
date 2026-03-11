@@ -1,6 +1,7 @@
 package org.pragmatica.aether.deployment.node;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.dht.ReplicatedMap;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.invoke.InvocationHandler;
@@ -80,6 +81,23 @@ public interface NodeDeploymentManager {
 
     boolean isActive();
 
+    /// Create a MapSubscription adapter for DHT slice-node events.
+    default MapSubscription<SliceNodeKey, SliceNodeValue> asSliceNodeSubscription() {
+        return new MapSubscription<>() {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onPut(SliceNodeKey key, SliceNodeValue value) {
+                onSliceNodePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onRemove(SliceNodeKey key) {
+                onSliceNodeRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
+            }
+        };
+    }
+
     /// Information about a suspended slice that can be reactivated.
     /// Tracks the slice key and the original deployment state.
     record SuspendedSlice(SliceNodeKey key, SliceDeployment deployment) {}
@@ -109,7 +127,8 @@ public interface NodeDeploymentManager {
                                          ConcurrentHashMap<SliceNodeKey, SliceDeployment> deployments,
                                          Option<HttpRoutePublisher> httpRoutePublisher,
                                          Option<SliceInvokerFacade> sliceInvokerFacade,
-                                         ReplicatedMap<EndpointKey, EndpointValue> endpointMap) implements NodeDeploymentState {
+                                         ReplicatedMap<EndpointKey, EndpointValue> endpointMap,
+                                         ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap) implements NodeDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(ActiveNodeDeploymentState.class);
 
             private static final Fn1<Cause, SliceNodeKey> CLEANUP_FAILED = Causes.forOneValue("Failed to cleanup slice %s during abrupt removal");
@@ -765,9 +784,9 @@ public interface NodeDeploymentManager {
             }
 
             private Promise<Unit> deleteSliceNodeKey(SliceNodeKey sliceKey) {
-                return cluster.apply(List.of(new KVCommand.Remove<>(sliceKey)))
-                              .mapToUnit()
-                              .onSuccess(_ -> log.debug("Deleted slice-node-key {} from KV store", sliceKey));
+                return sliceNodeMap.remove(sliceKey)
+                                   .mapToUnit()
+                                   .onSuccess(_ -> log.debug("Deleted slice-node-key {} from DHT", sliceKey));
             }
 
             private void executeWithStateTransition(SliceNodeKey sliceKey,
@@ -849,14 +868,11 @@ public interface NodeDeploymentManager {
                 log.debug("updateSliceState: {} -> {}",
                           sliceKey,
                           value.state());
-                KVCommand<AetherKey> command = new KVCommand.Put<>(sliceKey, value);
-                // Submit command to cluster for consensus
-                return cluster.apply(List.of(command))
-                              .mapToUnit()
-                              .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
-                                                        sliceKey.artifact(),
-                                                        value.state()))
-                              .onFailure(cause -> logStateUpdateFailure(sliceKey, cause));
+                return sliceNodeMap.put(sliceKey, value)
+                                   .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
+                                                             sliceKey.artifact(),
+                                                             value.state()))
+                                   .onFailure(cause -> logStateUpdateFailure(sliceKey, cause));
             }
 
             private void logStateUpdateFailure(SliceNodeKey sliceKey, Cause cause) {
@@ -992,7 +1008,8 @@ public interface NodeDeploymentManager {
                                                        ClusterNode<KVCommand<AetherKey>> cluster,
                                                        KVStore<AetherKey, AetherValue> kvStore,
                                                        InvocationHandler invocationHandler,
-                                                       ReplicatedMap<EndpointKey, EndpointValue> endpointMap) {
+                                                       ReplicatedMap<EndpointKey, EndpointValue> endpointMap,
+                                                       ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap) {
         return nodeDeploymentManager(self,
                                      router,
                                      sliceStore,
@@ -1003,7 +1020,8 @@ public interface NodeDeploymentManager {
                                      SliceCodec.sliceCodec(List.of()),
                                      Option.none(),
                                      Option.none(),
-                                     endpointMap);
+                                     endpointMap,
+                                     sliceNodeMap);
     }
 
     static NodeDeploymentManager nodeDeploymentManager(NodeId self,
@@ -1016,7 +1034,8 @@ public interface NodeDeploymentManager {
                                                        SliceCodec nodeCodec,
                                                        Option<HttpRoutePublisher> httpRoutePublisher,
                                                        Option<SliceInvokerFacade> sliceInvokerFacade,
-                                                       ReplicatedMap<EndpointKey, EndpointValue> endpointMap) {
+                                                       ReplicatedMap<EndpointKey, EndpointValue> endpointMap,
+                                                       ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap) {
         record deploymentManager(NodeId self,
                                  SliceStore sliceStore,
                                  ClusterNode<KVCommand<AetherKey>> cluster,
@@ -1030,6 +1049,7 @@ public interface NodeDeploymentManager {
                                  Option<HttpRoutePublisher> httpRoutePublisher,
                                  Option<SliceInvokerFacade> sliceInvokerFacade,
                                  ReplicatedMap<EndpointKey, EndpointValue> endpointMap,
+                                 ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap,
                                  AtomicReference<Runnable> shutdownCallback) implements NodeDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(NodeDeploymentManager.class);
 
@@ -1069,7 +1089,8 @@ public interface NodeDeploymentManager {
                                                                                                 new ConcurrentHashMap<>(),
                                                                                                 httpRoutePublisher(),
                                                                                                 sliceInvokerFacade(),
-                                                                                                endpointMap());
+                                                                                                endpointMap(),
+                                                                                                sliceNodeMap());
                             state().set(activeState);
                             log.info("Node {} NodeDeploymentManager activated", self().id());
                             // Register ON_DUTY lifecycle state (only if key doesn't exist — preserve DECOMMISSIONED on restart)
@@ -1176,6 +1197,7 @@ public interface NodeDeploymentManager {
                                      httpRoutePublisher,
                                      sliceInvokerFacade,
                                      endpointMap,
+                                     sliceNodeMap,
                                      new AtomicReference<>());
     }
 }

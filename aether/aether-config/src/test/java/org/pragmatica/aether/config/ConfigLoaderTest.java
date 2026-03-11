@@ -214,6 +214,65 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void loadFromString_parsesDhtReplicationConfig() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [dht.replication]
+            cooldown_delay_ms = 5000
+            cooldown_rate = 5000
+            target_rf = 5
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.dhtReplication().cooldownDelay().millis()).isEqualTo(5000);
+                assertThat(config.dhtReplication().cooldownRate()).isEqualTo(5000);
+                assertThat(config.dhtReplication().targetRf()).isEqualTo(5);
+            });
+    }
+
+    @Test
+    void loadFromString_usesDefaultDhtReplicationConfig() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.dhtReplication().cooldownDelay().millis()).isEqualTo(10_000);
+                assertThat(config.dhtReplication().cooldownRate()).isEqualTo(10_000);
+                assertThat(config.dhtReplication().targetRf()).isEqualTo(3);
+            });
+    }
+
+    @Test
+    void loadFromString_parsesPartialDhtReplicationConfig() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [dht.replication]
+            target_rf = 0
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.dhtReplication().cooldownDelay().millis()).isEqualTo(10_000);
+                assertThat(config.dhtReplication().cooldownRate()).isEqualTo(10_000);
+                assertThat(config.dhtReplication().targetRf()).isEqualTo(0);
+            });
+    }
+
+    @Test
     void loadFromString_appliesCliOverrides() {
         var toml = """
             [cluster]

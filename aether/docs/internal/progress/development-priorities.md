@@ -224,7 +224,7 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
       - **Zone-aware grouping** — consistent hashing with zone prefix in NodeId. Workers in same zone auto-group.
     - **Phased rollout:**
       - Phase 1 (0.19.3): ✅ Complete — SWIM protocol, worker node, governor election, worker endpoint registry, CDM pool awareness, worker management API, core-to-core SWIM health detection, automatic topology growth
-      - Phase 2a (0.19.3): ✅ Complete — DHT-backed ReplicatedMap, endpoint migration from consensus to DHT, unified EndpointRegistry, community-aware replication policy, replication cooldown, governor mesh infrastructure, dead node cleanup
+      - Phase 2a (0.19.3): ✅ Complete — DHT-backed ReplicatedMap, all 3 key types migrated (EndpointKey, SliceNodeKey, HttpNodeRouteKey) from consensus to DHT, unified EndpointRegistry, community-aware replication policy, replication cooldown, governor mesh infrastructure, dead node cleanup, WorkerEndpointRegistry removed, `[dht.replication]` config
       - Phase 2b (future): Multi-group topology, zone-aware grouping, multi-governor
       - Phase 2c (future): Spot pool, spot-node exclusion from DHT ring
       - Phase 3 (future): Multi-region, cross-region governors

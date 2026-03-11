@@ -1,12 +1,15 @@
 package org.pragmatica.aether.deployment;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.List;
@@ -28,6 +31,23 @@ public sealed interface DeploymentMap {
 
     @MessageReceiver
     void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove);
+
+    /// Create a MapSubscription adapter for DHT slice-node events.
+    default MapSubscription<SliceNodeKey, SliceNodeValue> asSliceNodeSubscription() {
+        return new MapSubscription<>() {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onPut(SliceNodeKey key, SliceNodeValue value) {
+                onSliceNodePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onRemove(SliceNodeKey key) {
+                onSliceNodeRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
+            }
+        };
+    }
 
     Map<Artifact, SliceState> byNode(NodeId nodeId);
 

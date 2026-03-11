@@ -15,6 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - **Governor mesh infrastructure** — `GovernorMesh` and `GovernorDiscovery` for cross-community DHT traffic routing (full wiring in Phase 2b)
   - **DHT node cleanup** — `DhtNodeCleanup` removes dead node endpoints from DHT on SWIM DEAD detection
   - **AetherMaps** — factory for 3 named maps (endpoints, slice-nodes, http-routes) with serializers
+  - **SliceNodeKey DHT migration** — SliceNodeKey reads/writes moved from consensus to `slice-nodes` ReplicatedMap. CDM, NDM, ControlLoop, DeploymentMap, ArtifactDeploymentTracker all subscribe via `asSliceNodeSubscription()` adapters
+  - **HttpNodeRouteKey DHT migration** — HttpNodeRouteKey reads/writes moved from consensus to `http-routes` ReplicatedMap. HttpRoutePublisher, HttpRouteRegistry, AppHttpServer, LoadBalancerManager all subscribe via `asHttpRouteSubscription()` adapters
+  - **WorkerEndpointRegistry removed** — dead code from Phase 1 replaced by DHT-backed endpoint registry. `WorkerRoutes`, `WorkerGroupHealthReport`, `WorkerEndpointEntry` deleted
+  - **DHT replication config** — `[dht.replication]` TOML section for `cooldown_delay_ms`, `cooldown_rate`, `target_rf` with environment-aware defaults
 - **Container image publishing** — `release.yml` builds multi-arch Docker images (amd64+arm64) via buildx, publishes to GHCR and Docker Hub. SHA256 checksums generated for all release artifacts
 - **Upgrade script** (`aether/upgrade.sh`) — detects current version, downloads new JARs to temp dir, verifies SHA256 checksums, atomic binary swap with backup, running process detection
 - **Rolling cluster upgrade script** (`aether/script/rolling-aether-upgrade.sh`) — API-driven zero-downtime upgrades: discovers nodes, drains → shuts down → waits for restart → activates → canary checks each node. Supports `--dry-run`, `--canary-wait`, `--api-key`, `--skip-download`

@@ -317,6 +317,21 @@ Default `path` by environment:
 - DOCKER: `/data/backups`
 - KUBERNETES: `/var/aether/backups`
 
+## DHT Replication Configuration
+
+```toml
+[dht.replication]
+cooldown_delay_ms = 10000
+cooldown_rate = 10000
+target_rf = 3
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `cooldown_delay_ms` | long | `10000` | Delay (ms) after node startup before upgrading to target RF |
+| `cooldown_rate` | int | `10000` | Max entries/sec during replication warmup |
+| `target_rf` | int | `3` | Target replication factor (0 = full replication) |
+
 ## Configuration Best Practices
 
 ### Production

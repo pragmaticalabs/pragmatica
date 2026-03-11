@@ -5,6 +5,7 @@ import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.Number;
 
 import java.nio.file.Path;
@@ -94,6 +95,7 @@ public final class ConfigLoader {
         populateSliceConfig(doc, builder);
         populateAppHttpConfig(doc, builder);
         populateBackupConfig(doc, builder);
+        populateDhtReplicationConfig(doc, builder);
         return builder;
     }
 
@@ -245,6 +247,27 @@ public final class ConfigLoader {
             var remote = doc.getString("backup", "remote")
                             .or("");
             builder.backup(BackupConfig.backupConfig(true, interval, path, remote));
+        }
+    }
+
+    private static void populateDhtReplicationConfig(TomlDocument doc, AetherConfig.Builder builder) {
+        var hasDelay = doc.getLong("dht.replication", "cooldown_delay_ms")
+                          .isPresent();
+        var hasRate = doc.getInt("dht.replication", "cooldown_rate")
+                         .isPresent();
+        var hasRf = doc.getInt("dht.replication", "target_rf")
+                       .isPresent();
+        if (hasDelay || hasRate || hasRf) {
+            var delayMs = doc.getLong("dht.replication", "cooldown_delay_ms")
+                             .or(DhtReplicationConfig.DEFAULT_COOLDOWN_DELAY.millis());
+            var rate = doc.getInt("dht.replication", "cooldown_rate")
+                          .or(DhtReplicationConfig.DEFAULT_COOLDOWN_RATE);
+            var rf = doc.getInt("dht.replication", "target_rf")
+                        .or(DhtReplicationConfig.DEFAULT_TARGET_RF);
+            builder.dhtReplication(DhtReplicationConfig.dhtReplicationConfig(TimeSpan.timeSpan(delayMs)
+                                                                                     .millis(),
+                                                                             rate,
+                                                                             rf));
         }
     }
 

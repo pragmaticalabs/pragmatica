@@ -8,19 +8,15 @@ import org.pragmatica.aether.http.handler.HttpRequestHandlerFactory;
 import org.pragmatica.aether.http.handler.HttpRouteDefinition;
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.dht.ReplicatedMap;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
-import org.pragmatica.cluster.node.ClusterNode;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
@@ -118,9 +114,8 @@ public interface HttpRoutePublisher {
     }
 
     static HttpRoutePublisher httpRoutePublisher(NodeId selfNodeId,
-                                                 ClusterNode<KVCommand<AetherKey>> cluster,
-                                                 KVStore<AetherKey, ?> kvStore) {
-        return new HttpRoutePublisherImpl(selfNodeId, cluster, kvStore);
+                                                 ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRouteMap) {
+        return new HttpRoutePublisherImpl(selfNodeId, httpRouteMap);
     }
 }
 
@@ -128,17 +123,16 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     private static final Logger log = LoggerFactory.getLogger(HttpRoutePublisherImpl.class);
 
     private final NodeId selfNodeId;
-    private final ClusterNode<KVCommand<AetherKey>> cluster;
+    private final ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRouteMap;
     private final Map<Artifact, HttpRequestHandler> handlers = new ConcurrentHashMap<>();
     private final Map<Artifact, SliceRouter> sliceRouters = new ConcurrentHashMap<>();
     private final Map<Artifact, List<HttpRouteDefinition>> publishedRoutes = new ConcurrentHashMap<>();
     private final RouteMetadataExtractor routeMetadataExtractor = RouteMetadataExtractor.routeMetadataExtractor();
 
     HttpRoutePublisherImpl(NodeId selfNodeId,
-                           ClusterNode<KVCommand<AetherKey>> cluster,
-                           KVStore<AetherKey, ?> kvStore) {
+                           ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRouteMap) {
         this.selfNodeId = selfNodeId;
-        this.cluster = cluster;
+        this.httpRouteMap = httpRouteMap;
     }
 
     @Override
@@ -239,23 +233,21 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     }
 
     private Promise<Unit> publishRoutesToCluster(List<HttpRouteDefinition> routes, Artifact artifact) {
-        var commands = buildPublishCommands(routes);
-        log.debug("Publishing {} HTTP routes for slice {}", commands.size(), artifact);
-        return cluster.apply(commands)
+        log.debug("Publishing {} HTTP routes for slice {}", routes.size(), artifact);
+        var promises = routes.stream()
+                             .map(this::publishSingleRoute)
+                             .toList();
+        return Promise.allOf(promises)
                       .mapToUnit()
                       .onSuccess(_ -> log.debug("Published {} HTTP routes for slice {}",
                                                 routes.size(),
                                                 artifact));
     }
 
-    private List<KVCommand<AetherKey>> buildPublishCommands(List<HttpRouteDefinition> routes) {
-        var commands = new ArrayList<KVCommand<AetherKey>>();
-        for (var route : routes) {
-            var key = HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(), route.pathPrefix(), selfNodeId);
-            var value = HttpNodeRouteValue.httpNodeRouteValue(route.artifactCoord(), route.sliceMethod());
-            commands.add(new KVCommand.Put<>(key, value));
-        }
-        return commands;
+    private Promise<Unit> publishSingleRoute(HttpRouteDefinition route) {
+        var key = HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(), route.pathPrefix(), selfNodeId);
+        var value = HttpNodeRouteValue.httpNodeRouteValue(route.artifactCoord(), route.sliceMethod());
+        return httpRouteMap.put(key, value);
     }
 
     @Override
@@ -269,23 +261,17 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     }
 
     private Promise<Unit> unpublishRoutesFromCluster(List<HttpRouteDefinition> routes) {
-        var commands = buildUnpublishCommands(routes);
-        return cluster.apply(commands)
+        var promises = routes.stream()
+                             .map(route -> httpRouteMap.remove(HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(),
+                                                                                                 route.pathPrefix(),
+                                                                                                 selfNodeId)))
+                             .toList();
+        return Promise.allOf(promises)
                       .mapToUnit()
                       .onSuccess(_ -> log.debug("Unpublished {} HTTP routes",
                                                 routes.size()))
                       .onFailure(cause -> log.error("Failed to unpublish HTTP routes: {}",
                                                     cause.message()));
-    }
-
-    private List<KVCommand<AetherKey>> buildUnpublishCommands(List<HttpRouteDefinition> routes) {
-        var commands = new ArrayList<KVCommand<AetherKey>>();
-        for (var route : routes) {
-            commands.add(new KVCommand.Remove<>(HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(),
-                                                                                  route.pathPrefix(),
-                                                                                  selfNodeId)));
-        }
-        return commands;
     }
 
     @Override

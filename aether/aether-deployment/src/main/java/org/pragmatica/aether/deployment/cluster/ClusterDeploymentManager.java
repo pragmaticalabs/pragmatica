@@ -3,7 +3,8 @@ package org.pragmatica.aether.deployment.cluster;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
-import org.pragmatica.aether.endpoint.WorkerEndpointRegistry;
+import org.pragmatica.aether.dht.MapSubscription;
+import org.pragmatica.aether.dht.ReplicatedMap;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
@@ -119,6 +120,23 @@ public interface ClusterDeploymentManager {
     @MessageReceiver
     void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
 
+    /// Create a MapSubscription adapter for DHT slice-node events.
+    default MapSubscription<SliceNodeKey, SliceNodeValue> asSliceNodeSubscription() {
+        return new MapSubscription<>() {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onPut(SliceNodeKey key, SliceNodeValue value) {
+                onSliceNodePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onRemove(SliceNodeKey key) {
+                onSliceNodeRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
+            }
+        };
+    }
+
     /// Controls whether multi-slice blueprint deployments are atomic.
     enum DeploymentAtomicity {
         /// Each slice deploys independently; failures don't affect siblings.
@@ -201,8 +219,8 @@ public interface ClusterDeploymentManager {
                       DeploymentAtomicity atomicity,
                       int coreMax,
                       Set<NodeId> seedNodes,
-                      Option<WorkerEndpointRegistry> workerEndpointRegistry,
-                      Map<SliceNodeKey, Long> transitionalStateTimestamps) implements ClusterDeploymentState {
+                      Map<SliceNodeKey, Long> transitionalStateTimestamps,
+                      ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
             private static final int MAX_RETRIES = 5;
             private static final long MAX_RETRY_DELAY_SECONDS = 30;
@@ -416,14 +434,14 @@ public interface ClusterDeploymentManager {
                 var artifactsToRemove = blueprints.keySet()
                                                   .stream()
                                                   .toList();
-                var allCommands = new ArrayList<KVCommand<AetherKey>>();
+                var consensusCommands = new ArrayList<KVCommand<AetherKey>>();
                 for (var artifact : artifactsToRemove) {
                     blueprints.remove(artifact);
-                    allCommands.addAll(collectDeallocationCommands(artifact));
+                    issueDeallocationCommands(artifact);
                     // Remove SliceTargetKey to clean up desired-state tracking
-                    allCommands.add(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(artifact.base())));
+                    consensusCommands.add(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(artifact.base())));
                 }
-                submitBatch(allCommands);
+                submitBatch(consensusCommands);
                 // Schedule reconciliation to clean up any stuck UNLOADING entries
                 SharedScheduler.schedule(this::reconcile, timeSpan(5).seconds());
             }
@@ -504,9 +522,7 @@ public interface ClusterDeploymentManager {
             /// Build an AllocationPool combining core nodes and worker nodes.
             /// Used for policy-based placement decisions.
             AllocationPool buildAllocationPool() {
-                var workerNodes = workerEndpointRegistry.map(WorkerEndpointRegistry::allWorkerNodeIds)
-                                                        .or(List.of());
-                return AllocationPool.allocationPool(allocatableNodes(), workerNodes);
+                return AllocationPool.allocationPool(allocatableNodes(), List.of());
             }
 
             /// Check if a node has ON_DUTY lifecycle state in KV store.
@@ -587,13 +603,12 @@ public interface ClusterDeploymentManager {
                 var targetNodes = allocatableNodes().stream()
                                                   .filter(n -> !n.equals(drainingNode))
                                                   .collect(Collectors.toSet());
-                var commands = collectAllocationsForNodes(artifact, 1, targetNodes);
-                if (commands.isEmpty()) {
+                var allocated = issueAllocationsForNodes(artifact, 1, targetNodes);
+                if (allocated == 0) {
                     log.warn("Drain eviction: no allocatable node for replacement of {} (will retry)", artifact);
                     SharedScheduler.schedule(() -> evictNextSliceFromNode(drainingNode), timeSpan(5).seconds());
                     return;
                 }
-                submitBatch(commands);
                 // Schedule check: once replacement is ACTIVE, unload from draining node
                 SharedScheduler.schedule(() -> checkReplacementAndUnload(originalKey), timeSpan(3).seconds());
             }
@@ -725,7 +740,6 @@ public interface ClusterDeploymentManager {
                 var newVersion = value.currentVersion();
                 var newArtifact = artifactBase.withVersion(newVersion);
                 var desiredInstances = value.targetInstances();
-                var allCommands = new ArrayList<KVCommand<AetherKey>>();
                 // Only remove old versions if NOT in a rolling update (no active routing)
                 if (!activeRoutings.contains(artifactBase)) {
                     var oldVersions = blueprints.keySet()
@@ -736,7 +750,7 @@ public interface ClusterDeploymentManager {
                     for (var oldArtifact : oldVersions) {
                         log.info("Removing old version {} (new version: {})", oldArtifact, newArtifact);
                         blueprints.remove(oldArtifact);
-                        allCommands.addAll(collectDeallocationCommands(oldArtifact));
+                        issueDeallocationCommands(oldArtifact);
                     }
                 }
                 var minInstances = value.effectiveMinInstances();
@@ -745,8 +759,7 @@ public interface ClusterDeploymentManager {
                          desiredInstances,
                          minInstances);
                 blueprints.put(newArtifact, Blueprint.blueprint(newArtifact, desiredInstances, minInstances));
-                allCommands.addAll(collectAllocationCommands(newArtifact, desiredInstances));
-                submitBatch(allCommands);
+                issueAllocationCommands(newArtifact, desiredInstances);
             }
 
             private void handleAppBlueprintChange(AppBlueprintKey key, AppBlueprintValue value) {
@@ -761,7 +774,7 @@ public interface ClusterDeploymentManager {
                 // Capture previous expanded blueprint for atomicity rollback (before we overwrite blueprints map)
                 var previousExpanded = capturePreviousBlueprint(expanded);
                 buildDependencyMap(expanded);
-                var allCommands = new ArrayList<KVCommand<AetherKey>>();
+                var consensusCommands = new ArrayList<KVCommand<AetherKey>>();
                 // Store the ORIGINAL requested instance count — not capped at available nodes.
                 // Allocation is naturally limited by allocatableNodes(); reconcile() fills the gap
                 // when more nodes register ON_DUTY lifecycle state.
@@ -776,13 +789,13 @@ public interface ClusterDeploymentManager {
                     blueprints.put(artifact,
                                    Blueprint.blueprint(artifact, requestedInstances, slice.minAvailable()));
                     // Create SliceTargetKey so rolling updates can find the current version
-                    allCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
-                                                        SliceTargetValue.sliceTargetValue(artifact.version(),
-                                                                                          requestedInstances,
-                                                                                          slice.minAvailable())));
-                    allCommands.addAll(collectAllocationCommands(artifact, requestedInstances));
+                    consensusCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
+                                                              SliceTargetValue.sliceTargetValue(artifact.version(),
+                                                                                                requestedInstances,
+                                                                                                slice.minAvailable())));
+                    issueAllocationCommands(artifact, requestedInstances);
                 }
-                submitBatch(allCommands);
+                submitBatch(consensusCommands);
                 // Track in-flight blueprint for atomicity enforcement
                 trackInFlightBlueprint(expanded, previousExpanded);
             }
@@ -836,13 +849,11 @@ public interface ClusterDeploymentManager {
                                             .filter(a -> artifactBase.matches(a) && !a.version()
                                                                                       .equals(currentVersion))
                                             .toList();
-                var allCommands = new ArrayList<KVCommand<AetherKey>>();
                 for (var oldArtifact : oldVersions) {
                     log.info("Removing old version {} after rolling update completion", oldArtifact);
                     blueprints.remove(oldArtifact);
-                    allCommands.addAll(collectDeallocationCommands(oldArtifact));
+                    issueDeallocationCommands(oldArtifact);
                 }
-                submitBatch(allCommands);
             }
 
             private void trackSliceState(SliceNodeKey sliceKey, SliceNodeValue sliceNodeValue) {
@@ -992,24 +1003,39 @@ public interface ClusterDeploymentManager {
             private void issueActivateCommand(SliceNodeKey sliceKey) {
                 log.debug("Issuing ACTIVATE command for {}", sliceKey);
                 var value = SliceNodeValue.sliceNodeValue(SliceState.ACTIVATE);
-                var command = new KVCommand.Put<AetherKey, AetherValue>(sliceKey, value);
-                cluster.apply(List.of(command))
-                       .onFailure(cause -> log.error("Failed to issue ACTIVATE command for {}: {}",
-                                                     sliceKey,
-                                                     cause.message()));
+                sliceNodeMap.put(sliceKey, value)
+                            .onFailure(cause -> log.error("Failed to issue ACTIVATE command for {}: {}",
+                                                          sliceKey,
+                                                          cause.message()));
             }
 
-            private KVCommand<AetherKey> prepareLoadCommand(SliceNodeKey sliceKey) {
-                log.debug("Preparing LOAD command for {}", sliceKey);
+            @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget write
+            private void issueLoadCommand(SliceNodeKey sliceKey) {
+                log.debug("Issuing LOAD command for {}", sliceKey);
                 sliceStates.put(sliceKey, SliceState.LOAD);
                 var timestamp = System.currentTimeMillis();
                 router.route(DeploymentStarted.deploymentStarted(sliceKey.artifact(), sliceKey.nodeId(), timestamp));
-                return new KVCommand.Put<>(sliceKey, SliceNodeValue.sliceNodeValue(SliceState.LOAD));
+                sliceNodeMap.put(sliceKey,
+                                 SliceNodeValue.sliceNodeValue(SliceState.LOAD))
+                            .onFailure(cause -> handleSliceNodeWriteFailure(sliceKey, cause));
             }
 
-            private KVCommand<AetherKey> prepareUnloadCommand(SliceNodeKey sliceKey) {
-                log.debug("Preparing UNLOAD command for {}", sliceKey);
-                return new KVCommand.Put<>(sliceKey, SliceNodeValue.sliceNodeValue(SliceState.UNLOAD));
+            @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget write
+            private void issueUnloadCommand(SliceNodeKey sliceKey) {
+                log.debug("Issuing UNLOAD command for {}", sliceKey);
+                sliceNodeMap.put(sliceKey,
+                                 SliceNodeValue.sliceNodeValue(SliceState.UNLOAD))
+                            .onFailure(cause -> log.error("Failed to issue UNLOAD command for {}: {}",
+                                                          sliceKey,
+                                                          cause.message()));
+            }
+
+            @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget write
+            private void removeSliceNodeKey(SliceNodeKey sliceKey) {
+                sliceNodeMap.remove(sliceKey)
+                            .onFailure(cause -> log.error("Failed to remove slice-node-key {}: {}",
+                                                          sliceKey,
+                                                          cause.message()));
             }
 
             private void submitBatch(List<KVCommand<AetherKey>> commands) {
@@ -1026,16 +1052,13 @@ public interface ClusterDeploymentManager {
                     return;
                 }
                 log.error("Batch consensus write failed ({} commands): {}", commands.size(), cause.message());
-                rollbackOptimisticEntries(commands);
                 SharedScheduler.schedule(this::reconcile, timeSpan(5).seconds());
             }
 
-            private void rollbackOptimisticEntries(List<KVCommand<AetherKey>> commands) {
-                for (var command : commands) {
-                    if (command instanceof KVCommand.Put(var key, var value) && key instanceof SliceNodeKey snk && value instanceof SliceNodeValue snv && snv.state() == SliceState.LOAD) {
-                        sliceStates.remove(snk);
-                    }
-                }
+            private void handleSliceNodeWriteFailure(SliceNodeKey sliceKey, Cause cause) {
+                log.error("DHT write failed for {}: {}", sliceKey, cause.message());
+                sliceStates.remove(sliceKey);
+                SharedScheduler.schedule(this::reconcile, timeSpan(5).seconds());
             }
 
             private void handleNodeRemoval(NodeId removedNode) {
@@ -1048,24 +1071,23 @@ public interface ClusterDeploymentManager {
                 // Remove from in-memory state immediately
                 sliceKeysToRemove.forEach(sliceStates::remove);
                 sliceKeysToRemove.forEach(transitionalStateTimestamps::remove);
+                // Remove slice-node keys via DHT
+                sliceKeysToRemove.forEach(this::removeSliceNodeKey);
                 // Find endpoint keys for the removed node by scanning KVStore snapshot
                 var endpointKeysToRemove = findEndpointKeysForNode(removedNode);
                 // Clean up HTTP routes containing the removed node
                 var httpRouteCommands = cleanupHttpRoutesForNode(removedNode);
-                // Combine all commands
-                List<KVCommand<AetherKey>> allCommands = new ArrayList<>();
-                sliceKeysToRemove.stream()
-                                 .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
-                                 .forEach(allCommands::add);
+                // Combine consensus-only commands (endpoints, HTTP routes, lifecycle)
+                List<KVCommand<AetherKey>> consensusCommands = new ArrayList<>();
                 endpointKeysToRemove.stream()
                                     .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
-                                    .forEach(allCommands::add);
-                allCommands.addAll(httpRouteCommands);
+                                    .forEach(consensusCommands::add);
+                consensusCommands.addAll(httpRouteCommands);
                 // Remove lifecycle key for departed node
-                allCommands.add(new KVCommand.Remove<>(NodeLifecycleKey.nodeLifecycleKey(removedNode)));
+                consensusCommands.add(new KVCommand.Remove<>(NodeLifecycleKey.nodeLifecycleKey(removedNode)));
                 // Remove from KVStore to prevent stale state after leader changes
-                if (!allCommands.isEmpty()) {
-                    cluster.apply(allCommands)
+                if (!consensusCommands.isEmpty()) {
+                    cluster.apply(consensusCommands)
                            .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
                                                          removedNode,
                                                          cause.message()));
@@ -1201,33 +1223,30 @@ public interface ClusterDeploymentManager {
                 if (orphanedEntries.isEmpty()) {
                     return;
                 }
-                List<KVCommand<AetherKey>> commands = new ArrayList<>();
                 for (var entry : orphanedEntries) {
                     var key = entry.getKey();
                     var state = entry.getValue();
                     sliceStates.remove(key);
                     if (state == SliceState.UNLOAD || state == SliceState.UNLOADING) {
-                        // Already in teardown, just remove the KV entry
-                        commands.add(new KVCommand.Remove<>(key));
+                        // Already in teardown, just remove the DHT entry
+                        removeSliceNodeKey(key);
                     } else {
                         // Issue UNLOAD to trigger proper teardown on the node
-                        commands.add(new KVCommand.Put<>(key, SliceNodeValue.sliceNodeValue(SliceState.UNLOAD)));
+                        issueUnloadCommand(key);
                     }
                 }
                 log.info("Cleaning up {} orphaned slice entries (no matching blueprint)", orphanedEntries.size());
-                cluster.apply(commands)
-                       .onFailure(cause -> log.error("Failed to clean up orphaned slice entries: {}",
-                                                     cause.message()));
             }
 
-            /// Collect allocation commands across cluster nodes using round-robin strategy.
-            private List<KVCommand<AetherKey>> collectAllocationCommands(Artifact artifact, int desiredInstances) {
+            /// Issue allocation commands across cluster nodes using round-robin strategy via DHT.
+            @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget writes
+            private void issueAllocationCommands(Artifact artifact, int desiredInstances) {
                 if (hasNoAllocatableNodes(artifact)) {
-                    return List.of();
+                    return;
                 }
                 var currentInstances = getCurrentInstances(artifact);
                 logAllocationAttempt(artifact, desiredInstances, currentInstances);
-                return collectAdjustmentCommands(artifact, desiredInstances, currentInstances);
+                issueAdjustmentCommands(artifact, desiredInstances, currentInstances);
             }
 
             /// Check if there are no allocatable nodes available for allocation.
@@ -1250,24 +1269,25 @@ public interface ClusterDeploymentManager {
                           allocatableNodes().size());
             }
 
-            /// Collect adjustment commands by scaling up or down as needed.
-            private List<KVCommand<AetherKey>> collectAdjustmentCommands(Artifact artifact,
-                                                                         int desiredInstances,
-                                                                         List<SliceNodeKey> currentInstances) {
+            /// Issue adjustment commands by scaling up or down as needed via DHT.
+            @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget writes
+            private void issueAdjustmentCommands(Artifact artifact,
+                                                 int desiredInstances,
+                                                 List<SliceNodeKey> currentInstances) {
                 var currentCount = currentInstances.size();
                 if (desiredInstances > currentCount) {
-                    return collectScaleUpCommands(artifact, desiredInstances - currentCount, currentInstances);
+                    issueScaleUpCommands(artifact, desiredInstances - currentCount, currentInstances);
                 } else if (desiredInstances < currentCount) {
-                    return collectScaleDownCommands(artifact, currentCount - desiredInstances, currentInstances);
+                    issueScaleDownCommands(artifact, currentCount - desiredInstances, currentInstances);
                 }
-                return List.of();
             }
 
-            private List<KVCommand<AetherKey>> collectScaleUpCommands(Artifact artifact,
-                                                                      int toAdd,
-                                                                      List<SliceNodeKey> existingInstances) {
+            @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget writes
+            private void issueScaleUpCommands(Artifact artifact,
+                                              int toAdd,
+                                              List<SliceNodeKey> existingInstances) {
                 var nodes = allocatableNodes();
-                log.debug("collectScaleUpCommands: artifact={}, toAdd={}, allocatableNodes={}, nodeIds={}",
+                log.debug("issueScaleUpCommands: artifact={}, toAdd={}, allocatableNodes={}, nodeIds={}",
                           artifact,
                           toAdd,
                           nodes.size(),
@@ -1275,31 +1295,27 @@ public interface ClusterDeploymentManager {
                 var nodesWithInstances = existingInstances.stream()
                                                           .map(SliceNodeKey::nodeId)
                                                           .collect(Collectors.toSet());
-                var commands = new ArrayList<KVCommand<AetherKey>>();
+                var allocated = 0;
                 // Phase 1: Allocate to truly empty nodes (nodes with NO slices at all)
                 var trulyEmptyNodes = findTrulyEmptyNodes();
-                log.debug("collectScaleUpCommands: found {} truly empty nodes: {}",
+                log.debug("issueScaleUpCommands: found {} truly empty nodes: {}",
                           trulyEmptyNodes.size(),
                           trulyEmptyNodes);
-                var emptyNodeCommands = collectAllocationsForNodes(artifact, toAdd, trulyEmptyNodes);
-                commands.addAll(emptyNodeCommands);
-                log.debug("collectScaleUpCommands: allocated {} instances to truly empty nodes",
-                          emptyNodeCommands.size());
-                var remaining = toAdd - emptyNodeCommands.size();
+                var emptyNodeCount = issueAllocationsForNodes(artifact, toAdd, trulyEmptyNodes);
+                allocated += emptyNodeCount;
+                log.debug("issueScaleUpCommands: allocated {} instances to truly empty nodes", emptyNodeCount);
+                var remaining = toAdd - allocated;
                 if (remaining <= 0) {
-                    return commands;
+                    return;
                 }
                 // Phase 2: Allocate to nodes without THIS artifact (but may have other slices)
-                var emptyForArtifactCommands = collectAllocationsForEmptyNodes(artifact, remaining, nodesWithInstances);
-                commands.addAll(emptyForArtifactCommands);
-                log.debug("collectScaleUpCommands: allocated {} instances to nodes without this artifact, remaining={}",
-                          emptyForArtifactCommands.size(),
-                          remaining - emptyForArtifactCommands.size());
+                var emptyForArtifactCount = issueAllocationsForEmptyNodes(artifact, remaining, nodesWithInstances);
+                allocated += emptyForArtifactCount;
+                log.debug("issueScaleUpCommands: allocated {} instances to nodes without this artifact, remaining={}",
+                          emptyForArtifactCount,
+                          remaining - emptyForArtifactCount);
                 // Phase 3: Round-robin for any remaining
-                var roundRobinCommands = collectRoundRobinAllocations(artifact,
-                                                                      remaining - emptyForArtifactCommands.size());
-                commands.addAll(roundRobinCommands);
-                return commands;
+                issueRoundRobinAllocations(artifact, toAdd - allocated);
             }
 
             /// Find allocatable nodes that have absolutely no slices deployed (truly empty).
@@ -1314,40 +1330,42 @@ public interface ClusterDeploymentManager {
                                        .collect(Collectors.toSet());
             }
 
-            /// Collect allocation commands for a specific set of nodes.
-            private List<KVCommand<AetherKey>> collectAllocationsForNodes(Artifact artifact,
-                                                                          int toAdd,
-                                                                          Set<NodeId> targetNodes) {
-                var commands = new ArrayList<KVCommand<AetherKey>>();
+            /// Issue allocation commands for a specific set of nodes via DHT.
+            private int issueAllocationsForNodes(Artifact artifact,
+                                                 int toAdd,
+                                                 Set<NodeId> targetNodes) {
+                var allocated = 0;
                 for (var node : targetNodes) {
-                    if (commands.size() >= toAdd) {
+                    if (allocated >= toAdd) {
                         break;
                     }
-                    tryAllocate(artifact, node).onPresent(commands::add);
+                    if (tryAllocate(artifact, node)) {
+                        allocated++;
+                    }
                 }
-                return commands;
+                return allocated;
             }
 
-            private List<KVCommand<AetherKey>> collectAllocationsForEmptyNodes(Artifact artifact,
-                                                                               int toAdd,
-                                                                               Set<NodeId> nodesWithInstances) {
+            private int issueAllocationsForEmptyNodes(Artifact artifact,
+                                                      int toAdd,
+                                                      Set<NodeId> nodesWithInstances) {
                 var nodes = allocatableNodes();
                 var nodeCount = nodes.size();
                 if (nodeCount == 0) {
-                    return List.of();
+                    return 0;
                 }
-                var commands = new ArrayList<KVCommand<AetherKey>>();
-                for (var i = 0; i < nodeCount && commands.size() < toAdd; i++) {
+                var allocated = 0;
+                for (var i = 0; i < nodeCount && allocated < toAdd; i++) {
                     var nodeIndex = Math.floorMod(allocationIndex.getAndIncrement(), nodeCount);
                     var node = nodes.get(nodeIndex);
-                    if (!nodesWithInstances.contains(node)) {
-                        tryAllocate(artifact, node).onPresent(commands::add);
+                    if (!nodesWithInstances.contains(node) && tryAllocate(artifact, node)) {
+                        allocated++;
                     }
                 }
-                return commands;
+                return allocated;
             }
 
-            private Option<KVCommand<AetherKey>> tryAllocate(Artifact artifact, NodeId node) {
+            private boolean tryAllocate(Artifact artifact, NodeId node) {
                 var sliceKey = new SliceNodeKey(artifact, node);
                 var alreadyExists = sliceStates.containsKey(sliceKey);
                 log.debug("tryAllocate: artifact={}, node={}, sliceKey={}, alreadyExists={}",
@@ -1356,35 +1374,42 @@ public interface ClusterDeploymentManager {
                           sliceKey,
                           alreadyExists);
                 if (!alreadyExists) {
-                    return Option.some(prepareLoadCommand(sliceKey));
+                    issueLoadCommand(sliceKey);
+                    return true;
                 }
-                return Option.none();
+                return false;
             }
 
-            private List<KVCommand<AetherKey>> collectRoundRobinAllocations(Artifact artifact, int remaining) {
+            @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget writes
+            private void issueRoundRobinAllocations(Artifact artifact, int remaining) {
+                if (remaining <= 0) {
+                    return;
+                }
                 var nodes = allocatableNodes();
-                var commands = new ArrayList<KVCommand<AetherKey>>();
+                var allocated = 0;
                 var attempts = 0;
                 var maxAttempts = nodes.size() * 2;
                 // Prevent infinite loop
-                while (commands.size() < remaining && attempts < maxAttempts) {
+                while (allocated < remaining && attempts < maxAttempts) {
                     var nodeIndex = Math.floorMod(allocationIndex.getAndIncrement(), nodes.size());
                     var node = nodes.get(nodeIndex);
-                    tryAllocate(artifact, node).onPresent(commands::add);
+                    if (tryAllocate(artifact, node)) {
+                        allocated++;
+                    }
                     attempts++;
                 }
-                if (commands.size() < remaining) {
+                if (allocated < remaining) {
                     log.warn("Could only allocate {} of {} requested instances for {} (not enough nodes without instances)",
-                             commands.size(),
+                             allocated,
                              remaining,
                              artifact);
                 }
-                return commands;
             }
 
-            private List<KVCommand<AetherKey>> collectScaleDownCommands(Artifact artifact,
-                                                                        int toRemove,
-                                                                        List<SliceNodeKey> existingInstances) {
+            @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget writes
+            private void issueScaleDownCommands(Artifact artifact,
+                                                int toRemove,
+                                                List<SliceNodeKey> existingInstances) {
                 var blueprint = blueprints.get(artifact);
                 var minInstances = blueprint != null
                                    ? blueprint.minInstances()
@@ -1402,13 +1427,12 @@ public interface ClusterDeploymentManager {
                              activeCount);
                 }
                 if (actualRemove == 0) {
-                    return List.of();
+                    return;
                 }
                 // Remove from the end (LIFO to maintain round-robin balance)
-                return existingInstances.stream()
-                                        .skip(Math.max(0, activeCount - actualRemove))
-                                        .map(this::prepareUnloadCommand)
-                                        .collect(Collectors.toList());
+                existingInstances.stream()
+                                 .skip(Math.max(0, activeCount - actualRemove))
+                                 .forEach(this::issueUnloadCommand);
             }
 
             private List<SliceNodeKey> getCurrentInstances(Artifact artifact) {
@@ -1455,9 +1479,7 @@ public interface ClusterDeploymentManager {
                     return;
                 }
                 log.warn("Detected {} slices stuck in transitional states", stuckEntries.size());
-                var commands = new ArrayList<KVCommand<AetherKey>>();
-                stuckEntries.forEach(key -> collectStuckRemediationCommand(commands, key));
-                submitBatch(commands);
+                stuckEntries.forEach(this::issueStuckRemediationCommand);
             }
 
             /// Check whether a slice has exceeded 2x its transitional state timeout.
@@ -1471,10 +1493,11 @@ public interface ClusterDeploymentManager {
                             .isPresent();
             }
 
-            /// Collect the appropriate remediation command for a stuck slice.
+            /// Issue the appropriate remediation command for a stuck slice via DHT.
             /// LOADING/ACTIVATING: issue UNLOAD to reset, reconciliation will re-deploy.
-            /// DEACTIVATING/UNLOADING: force-remove from KV store to clean up.
-            private void collectStuckRemediationCommand(List<KVCommand<AetherKey>> commands, SliceNodeKey sliceKey) {
+            /// DEACTIVATING/UNLOADING: force-remove from DHT to clean up.
+            @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget writes
+            private void issueStuckRemediationCommand(SliceNodeKey sliceKey) {
                 var state = sliceStates.get(sliceKey);
                 if (state == null) {
                     return;
@@ -1487,28 +1510,23 @@ public interface ClusterDeploymentManager {
                                  sliceKey.artifact(),
                                  sliceKey.nodeId());
                         sliceStates.remove(sliceKey);
-                        commands.add(new KVCommand.Put<>(sliceKey, SliceNodeValue.sliceNodeValue(SliceState.UNLOAD)));
+                        issueUnloadCommand(sliceKey);
                     }
                     case DEACTIVATING, UNLOADING -> {
-                        log.warn("Force-removing stuck {} slice {} on {} from KV store",
+                        log.warn("Force-removing stuck {} slice {} on {} from DHT",
                                  state,
                                  sliceKey.artifact(),
                                  sliceKey.nodeId());
                         sliceStates.remove(sliceKey);
-                        commands.add(new KVCommand.Remove<>(sliceKey));
+                        removeSliceNodeKey(sliceKey);
                     }
                     default -> {}
                 }
             }
 
-            private void issueUnloadCommand(SliceNodeKey sliceKey) {
-                submitBatch(List.of(prepareUnloadCommand(sliceKey)));
-            }
-
-            private List<KVCommand<AetherKey>> collectDeallocationCommands(Artifact artifact) {
-                return getCurrentInstances(artifact).stream()
-                                          .map(this::prepareUnloadCommand)
-                                          .collect(Collectors.toList());
+            @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget writes
+            private void issueDeallocationCommands(Artifact artifact) {
+                getCurrentInstances(artifact).forEach(this::issueUnloadCommand);
             }
 
             /// Reconcile desired state (blueprints) with actual state (slice states).
@@ -1522,7 +1540,6 @@ public interface ClusterDeploymentManager {
                           blueprints.size(),
                           activeNodes.get()
                                      .size());
-                var allCommands = new ArrayList<KVCommand<AetherKey>>();
                 var reconciled = 0;
                 for (var blueprint : blueprints.values()) {
                     var artifact = blueprint.artifact();
@@ -1536,14 +1553,13 @@ public interface ClusterDeploymentManager {
                                  artifact,
                                  currentInstances.size(),
                                  desiredInstances);
-                        allCommands.addAll(collectAllocationCommands(artifact, desiredInstances));
+                        issueAllocationCommands(artifact, desiredInstances);
                         reconciled++;
                     }
                 }
                 log.debug("Reconciliation complete: {} of {} blueprints required adjustment",
                           reconciled,
                           blueprints.size());
-                submitBatch(allCommands);
                 cleanupOrphanedSliceEntries();
                 detectStuckTransitionalStates();
             }
@@ -1603,20 +1619,20 @@ public interface ClusterDeploymentManager {
             private void unloadBlueprintSlices(InFlightBlueprint inflight) {
                 var allSlices = new HashSet<>(inflight.pendingSlices());
                 allSlices.addAll(inflight.activeSlices());
-                var allCommands = new ArrayList<KVCommand<AetherKey>>();
+                var consensusCommands = new ArrayList<KVCommand<AetherKey>>();
                 for (var artifact : allSlices) {
                     blueprints.remove(artifact);
-                    allCommands.addAll(collectDeallocationCommands(artifact));
-                    allCommands.add(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(artifact.base())));
+                    issueDeallocationCommands(artifact);
+                    consensusCommands.add(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(artifact.base())));
                 }
                 // Remove the app blueprint from KV-Store
                 var bpKey = new AppBlueprintKey(inflight.id());
-                allCommands.add(new KVCommand.Remove<>(bpKey));
+                consensusCommands.add(new KVCommand.Remove<>(bpKey));
                 log.info("ALL_OR_NOTHING: Unloading {} slices from failed blueprint {}",
                          allSlices.size(),
                          inflight.id()
                                  .asString());
-                submitBatch(allCommands);
+                submitBatch(consensusCommands);
             }
 
             /// Restore the previous blueprint version by re-submitting it via KV-Store.
@@ -1679,7 +1695,8 @@ public interface ClusterDeploymentManager {
                                                              Option<ComputeProvider> computeProvider,
                                                              AutoHealConfig autoHealConfig,
                                                              DeploymentAtomicity atomicity,
-                                                             int coreMax) {
+                                                             int coreMax,
+                                                             ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap) {
         record clusterDeploymentManager(NodeId self,
                                         ClusterNode<KVCommand<AetherKey>> cluster,
                                         KVStore<AetherKey, AetherValue> kvStore,
@@ -1691,7 +1708,8 @@ public interface ClusterDeploymentManager {
                                         int coreMax,
                                         Set<NodeId> seedNodes,
                                         AtomicReference<ClusterDeploymentState> state,
-                                        AtomicReference<List<NodeId>> topologyRef) implements ClusterDeploymentManager {
+                                        AtomicReference<List<NodeId>> topologyRef,
+                                        ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap) implements ClusterDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(clusterDeploymentManager.class);
 
             @Override
@@ -1725,8 +1743,8 @@ public interface ClusterDeploymentManager {
                                                                         atomicity,
                                                                         coreMax,
                                                                         seedNodes,
-                                                                        Option.none(),
-                                                                        new ConcurrentHashMap<>());
+                                                                        new ConcurrentHashMap<>(),
+                                                                        sliceNodeMap);
                     // Swap to Active FIRST — ensures topology changes arriving on other threads
                     // are dispatched to Active.onTopologyChange() instead of being lost in Dormant.
                     state.set(activeState);
@@ -1857,6 +1875,7 @@ public interface ClusterDeploymentManager {
                                             coreMax,
                                             new HashSet<>(initialTopology),
                                             new AtomicReference<>(new ClusterDeploymentState.Dormant()),
-                                            new AtomicReference<>(List.copyOf(initialTopology)));
+                                            new AtomicReference<>(List.copyOf(initialTopology)),
+                                            sliceNodeMap);
     }
 }

@@ -46,6 +46,7 @@ class NodeDeploymentManagerTest {
     private TestKVStore kvStore;
     private TestInvocationHandler invocationHandler;
     private StubEndpointMap endpointMap;
+    private StubSliceNodeMap sliceNodeMap;
     private NodeDeploymentManager manager;
 
     @BeforeEach
@@ -57,8 +58,9 @@ class NodeDeploymentManagerTest {
         kvStore = new TestKVStore();
         invocationHandler = new TestInvocationHandler();
         endpointMap = new StubEndpointMap();
+        sliceNodeMap = new StubSliceNodeMap();
         manager = NodeDeploymentManager.nodeDeploymentManager(
-                self, router, sliceStore, clusterNode, kvStore, invocationHandler, endpointMap
+                self, router, sliceStore, clusterNode, kvStore, invocationHandler, endpointMap, sliceNodeMap
                                                              );
     }
 
@@ -246,20 +248,14 @@ class NodeDeploymentManagerTest {
         var key = new SliceNodeKey(artifact, self);
 
         manager.onQuorumStateChange(QuorumStateNotification.established());
-        // First command is lifecycle ON_DUTY registration
-        var sliceCommandOffset = clusterNode.appliedCommands.size();
         sendValuePut(key, SliceState.LOAD);
 
-        // Now writes LOADING first, then LOADED after success (after lifecycle command)
-        assertThat(clusterNode.appliedCommands).hasSize(sliceCommandOffset + 2);
-
-        var loadingCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset);
-        assertThat(loadingCommand.key()).isEqualTo(key);
-        assertThat(loadingCommand.value()).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.LOADING));
-
-        var loadedCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset + 1);
-        assertThat(loadedCommand.key()).isEqualTo(key);
-        assertThat(loadedCommand.value()).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.LOADED));
+        // Writes LOADING first, then LOADED after success — via DHT sliceNodeMap
+        assertThat(sliceNodeMap.putKeys).hasSize(2);
+        assertThat(sliceNodeMap.putKeys.get(0)).isEqualTo(key);
+        assertThat(sliceNodeMap.putValues.get(0)).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.LOADING));
+        assertThat(sliceNodeMap.putKeys.get(1)).isEqualTo(key);
+        assertThat(sliceNodeMap.putValues.get(1)).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.LOADED));
     }
 
     @Test
@@ -271,25 +267,19 @@ class NodeDeploymentManagerTest {
         sliceStore.markAsLoadedWithSlice(artifact);
 
         manager.onQuorumStateChange(QuorumStateNotification.established());
-        // First command is lifecycle ON_DUTY registration
-        var sliceCommandOffset = clusterNode.appliedCommands.size();
+        sliceNodeMap.putKeys.clear();
+        sliceNodeMap.putValues.clear();
         sendValuePut(key, SliceState.ACTIVATE);
 
-        // Now writes ACTIVATING first, then ACTIVE after success (plus endpoint publish commands, after lifecycle command)
-        assertThat(clusterNode.appliedCommands).hasSizeGreaterThanOrEqualTo(sliceCommandOffset + 2);
+        // Writes ACTIVATING first, then ACTIVE after success — via DHT sliceNodeMap
+        assertThat(sliceNodeMap.putKeys).hasSizeGreaterThanOrEqualTo(2);
+        assertThat(sliceNodeMap.putKeys.get(0)).isEqualTo(key);
+        assertThat(sliceNodeMap.putValues.get(0)).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.ACTIVATING));
 
-        var activatingCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset);
-        assertThat(activatingCommand.key()).isEqualTo(key);
-        assertThat(activatingCommand.value()).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.ACTIVATING));
-
-        // Find the ACTIVE state command (may be after endpoint commands)
-        var activeCommand = clusterNode.appliedCommands.stream()
-            .filter(cmd -> cmd instanceof KVCommand.Put)
-            .map(cmd -> (KVCommand.Put<AetherKey, AetherValue>) cmd)
-            .filter(cmd -> cmd.value().equals(SliceNodeValue.sliceNodeValue(SliceState.ACTIVE)))
-            .findFirst()
-            .orElseThrow();
-        assertThat(activeCommand.key()).isEqualTo(key);
+        // Find the ACTIVE state in sliceNodeMap puts
+        var activeIndex = sliceNodeMap.putValues.indexOf(SliceNodeValue.sliceNodeValue(SliceState.ACTIVE));
+        assertThat(activeIndex).isGreaterThanOrEqualTo(0);
+        assertThat(sliceNodeMap.putKeys.get(activeIndex)).isEqualTo(key);
     }
 
     @Test
@@ -298,13 +288,14 @@ class NodeDeploymentManagerTest {
         var key = new SliceNodeKey(artifact, self);
 
         manager.onQuorumStateChange(QuorumStateNotification.established());
-        // First command is lifecycle ON_DUTY registration
-        var sliceCommandOffset = clusterNode.appliedCommands.size();
+        sliceNodeMap.putKeys.clear();
+        sliceNodeMap.putValues.clear();
         sendValuePut(key, SliceState.DEACTIVATE);
 
-        assertThat(clusterNode.appliedCommands).hasSize(sliceCommandOffset + 1);
-        var putCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset);
-        assertThat(putCommand.value()).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.LOADED));
+        // Writes LOADED after successful deactivation — via DHT sliceNodeMap
+        assertThat(sliceNodeMap.putKeys).hasSize(1);
+        assertThat(sliceNodeMap.putKeys.get(0)).isEqualTo(key);
+        assertThat(sliceNodeMap.putValues.get(0)).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.LOADED));
     }
 
     @Test
@@ -315,20 +306,18 @@ class NodeDeploymentManagerTest {
         sliceStore.failNextLoad = true;
 
         manager.onQuorumStateChange(QuorumStateNotification.established());
-        // First command is lifecycle ON_DUTY registration
-        var sliceCommandOffset = clusterNode.appliedCommands.size();
+        sliceNodeMap.putKeys.clear();
+        sliceNodeMap.putValues.clear();
         sendValuePut(key, SliceState.LOAD);
 
-        // Now writes LOADING first, then FAILED after failure (after lifecycle command)
-        assertThat(clusterNode.appliedCommands).hasSize(sliceCommandOffset + 2);
+        // Writes LOADING first, then FAILED after failure — via DHT sliceNodeMap
+        assertThat(sliceNodeMap.putKeys).hasSize(2);
+        assertThat(sliceNodeMap.putValues.get(0)).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.LOADING));
 
-        var loadingCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset);
-        assertThat(loadingCommand.value()).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.LOADING));
-
-        var failedCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(sliceCommandOffset + 1);
-        assertThat(failedCommand.value()).isInstanceOf(SliceNodeValue.class);
-        assertThat(((SliceNodeValue) failedCommand.value()).state()).isEqualTo(SliceState.FAILED);
-        assertThat(((SliceNodeValue) failedCommand.value()).failureReason().isPresent()).isTrue();
+        var failedValue = sliceNodeMap.putValues.get(1);
+        assertThat(failedValue).isInstanceOf(SliceNodeValue.class);
+        assertThat(((SliceNodeValue) failedValue).state()).isEqualTo(SliceState.FAILED);
+        assertThat(((SliceNodeValue) failedValue).failureReason().isPresent()).isTrue();
     }
 
     // === ValueRemove Tests ===
@@ -601,6 +590,40 @@ class NodeDeploymentManagerTest {
         @Override
         public String name() {
             return "test-endpoints";
+        }
+    }
+
+    static class StubSliceNodeMap implements ReplicatedMap<SliceNodeKey, SliceNodeValue> {
+        final List<SliceNodeKey> putKeys = new CopyOnWriteArrayList<>();
+        final List<SliceNodeValue> putValues = new CopyOnWriteArrayList<>();
+        final List<SliceNodeKey> removeKeys = new CopyOnWriteArrayList<>();
+
+        @Override
+        public Promise<Unit> put(SliceNodeKey key, SliceNodeValue value) {
+            putKeys.add(key);
+            putValues.add(value);
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public Promise<Option<SliceNodeValue>> get(SliceNodeKey key) {
+            return Promise.success(Option.none());
+        }
+
+        @Override
+        public Promise<Boolean> remove(SliceNodeKey key) {
+            removeKeys.add(key);
+            return Promise.success(true);
+        }
+
+        @Override
+        public ReplicatedMap<SliceNodeKey, SliceNodeValue> subscribe(MapSubscription<SliceNodeKey, SliceNodeValue> subscription) {
+            return this;
+        }
+
+        @Override
+        public String name() {
+            return "test-slice-nodes";
         }
     }
 
