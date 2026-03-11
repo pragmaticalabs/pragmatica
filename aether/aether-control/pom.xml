@@ -61,6 +61,11 @@
             <artifactId>aether-config</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>worker</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <!-- Logging -->
         <dependency>

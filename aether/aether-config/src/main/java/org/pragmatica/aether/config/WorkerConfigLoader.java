@@ -65,6 +65,10 @@ public final class WorkerConfigLoader {
                                      .or(WorkerConfig.DEFAULT_HEARTBEAT_INTERVAL_MS);
         var heartbeatTimeoutMs = doc.getLong("worker", "heartbeat_timeout_ms")
                                     .or(WorkerConfig.DEFAULT_HEARTBEAT_TIMEOUT_MS);
+        var advertiseAddress = doc.getString("worker", "advertise_address")
+                                  .or(WorkerConfig.DEFAULT_ADVERTISE_ADDRESS);
+        var metricsAggregationIntervalMs = doc.getLong("worker", "metrics_aggregation_interval_ms")
+                                              .or(WorkerConfig.DEFAULT_METRICS_AGGREGATION_INTERVAL_MS);
         return swimSettings.flatMap(swim -> sliceConfig.flatMap(slice -> assembleConfig(coreNodes,
                                                                                         clusterPort,
                                                                                         swimPort,
@@ -74,7 +78,9 @@ public final class WorkerConfigLoader {
                                                                                         zone,
                                                                                         maxGroupSize,
                                                                                         heartbeatIntervalMs,
-                                                                                        heartbeatTimeoutMs)));
+                                                                                        heartbeatTimeoutMs,
+                                                                                        advertiseAddress,
+                                                                                        metricsAggregationIntervalMs)));
     }
 
     private static Result<WorkerConfig> assembleConfig(List<String> coreNodes,
@@ -86,7 +92,9 @@ public final class WorkerConfigLoader {
                                                        String zone,
                                                        int maxGroupSize,
                                                        long heartbeatIntervalMs,
-                                                       long heartbeatTimeoutMs) {
+                                                       long heartbeatTimeoutMs,
+                                                       String advertiseAddress,
+                                                       long metricsAggregationIntervalMs) {
         return WorkerConfig.workerConfig(coreNodes,
                                          clusterPort,
                                          swimPort,
@@ -96,7 +104,9 @@ public final class WorkerConfigLoader {
                                          zone,
                                          maxGroupSize,
                                          heartbeatIntervalMs,
-                                         heartbeatTimeoutMs);
+                                         heartbeatTimeoutMs,
+                                         advertiseAddress,
+                                         metricsAggregationIntervalMs);
     }
 
     private static List<String> parseCoreNodes(TomlDocument doc) {

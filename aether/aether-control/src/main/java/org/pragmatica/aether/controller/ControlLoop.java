@@ -27,6 +27,8 @@ import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
+import org.pragmatica.aether.worker.metrics.CommunityScalingRequest;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 
 import java.util.ArrayList;
@@ -112,6 +114,15 @@ public interface ControlLoop {
     /// Stop the control loop.
     void stop();
 
+    /// Handle community scaling request from a governor.
+    void onCommunityScalingRequest(CommunityScalingRequest request);
+
+    /// Handle community metrics snapshot from a governor.
+    void onCommunityMetricsSnapshot(CommunityMetricsSnapshot snapshot);
+
+    /// Get stored community snapshots.
+    Map<String, CommunityMetricsSnapshot> communitySnapshots();
+
     static ControlLoop controlLoop(NodeId self,
                                    ClusterController controller,
                                    MetricsCollector metricsCollector,
@@ -135,7 +146,9 @@ public interface ControlLoop {
                            AtomicReference<Long> activationTime,
                            ConcurrentHashMap<Artifact, Long> sliceActivationTimes,
                            AtomicLong quorumSequence,
-                           Consumer<ScalingEvent> eventPublisher) implements ControlLoop {
+                           Consumer<ScalingEvent> eventPublisher,
+                           ConcurrentHashMap<String, CommunityMetricsSnapshot> communitySnapshotStore,
+                           ConcurrentHashMap<String, Long> communityScalingCooldowns) implements ControlLoop {
             private static final Logger log = LoggerFactory.getLogger(ControlLoop.class);
 
             @Override
@@ -238,6 +251,115 @@ public interface ControlLoop {
             @Override
             public void stop() {
                 stopEvaluation();
+            }
+
+            @Override
+            public void onCommunityScalingRequest(CommunityScalingRequest request) {
+                if (evaluationTask.get() == null) {
+                    log.debug("Ignoring community scaling request: not leader");
+                    return;
+                }
+                if (isStaleEvidence(request)) {
+                    return;
+                }
+                if (isInCooldown(request)) {
+                    return;
+                }
+                var blueprint = blueprints.get(request.artifact());
+                if (blueprint == null) {
+                    log.info("No blueprint found for community scaling request: {}", request.artifact());
+                    return;
+                }
+                applyCommunityScaling(request, blueprint);
+            }
+
+            @Override
+            public void onCommunityMetricsSnapshot(CommunityMetricsSnapshot snapshot) {
+                communitySnapshotStore.put(snapshot.communityId(), snapshot);
+                log.debug("Stored community metrics snapshot for '{}' from {}",
+                          snapshot.communityId(),
+                          snapshot.governorId()
+                                  .id());
+            }
+
+            @Override
+            public Map<String, CommunityMetricsSnapshot> communitySnapshots() {
+                return Map.copyOf(communitySnapshotStore);
+            }
+
+            private boolean isStaleEvidence(CommunityScalingRequest request) {
+                var age = System.currentTimeMillis() - request.evidence()
+                                                             .timestampMs();
+                if (age > 30_000) {
+                    log.info("Rejecting stale community scaling request from {} (age: {}ms)", request.communityId(), age);
+                    return true;
+                }
+                return false;
+            }
+
+            private boolean isInCooldown(CommunityScalingRequest request) {
+                var artifactKey = request.artifact()
+                                         .asString();
+                var lastScaling = communityScalingCooldowns.get(artifactKey);
+                if (lastScaling != null && (System.currentTimeMillis() - lastScaling) < configRef.get()
+                                                                                                 .sliceCooldownMs()) {
+                    log.debug("Community scaling request for {} in cooldown", artifactKey);
+                    return true;
+                }
+                return false;
+            }
+
+            private void applyCommunityScaling(CommunityScalingRequest request,
+                                               ClusterController.Blueprint blueprint) {
+                var artifactKey = request.artifact()
+                                         .asString();
+                var clusterSize = topology.get()
+                                          .size() + totalWorkerCount();
+                if (clusterSize == 0) {
+                    clusterSize = 1;
+                }
+                var newInstances = Math.min(request.requestedInstances(), clusterSize);
+                newInstances = Math.max(newInstances, blueprint.minInstances());
+                if (newInstances == blueprint.instances()) {
+                    log.debug("Community scaling request for {} results in no change", artifactKey);
+                    return;
+                }
+                log.info("Applying community scaling {} for {}: {} -> {} (requested by {})",
+                         request.direction(),
+                         request.artifact(),
+                         blueprint.instances(),
+                         newInstances,
+                         request.governorId()
+                                .id());
+                blueprints.put(request.artifact(),
+                               new ClusterController.Blueprint(request.artifact(),
+                                                               newInstances,
+                                                               blueprint.minInstances()));
+                communityScalingCooldowns.put(artifactKey, System.currentTimeMillis());
+                var key = SliceTargetKey.sliceTargetKey(request.artifact()
+                                                               .base());
+                var value = SliceTargetValue.sliceTargetValue(request.artifact()
+                                                                     .version(),
+                                                              newInstances);
+                cluster.apply(List.of(new KVCommand.Put<>(key, value)))
+                       .onFailure(cause -> log.error("Failed to apply community scaling: {}",
+                                                     cause.message()));
+                publishCommunityScalingEvent(request, blueprint.instances(), newInstances);
+            }
+
+            private void publishCommunityScalingEvent(CommunityScalingRequest request,
+                                                      int previousInstances,
+                                                      int newInstances) {
+                var scalingEvent = "UP".equals(request.direction())
+                                   ? ScalingEvent.ScaledUp.scaledUp(request.artifact(), previousInstances, newInstances)
+                                   : ScalingEvent.ScaledDown.scaledDown(request.artifact(),
+                                                                        previousInstances,
+                                                                        newInstances);
+                eventPublisher.accept(scalingEvent);
+            }
+
+            private int totalWorkerCount() {
+                return 0;
             }
 
             private void startEvaluation() {
@@ -494,7 +616,7 @@ public interface ControlLoop {
                                                                                 currentBlueprint.instances() - reduceBy);
                 };
                 var clusterSize = topology.get()
-                                          .size();
+                                          .size() + totalWorkerCount();
                 if (clusterSize == 0) {
                     log.debug("Scaling {} capped at 1 (cluster size is 0)", artifact);
                     clusterSize = 1;
@@ -576,6 +698,8 @@ public interface ControlLoop {
                                new AtomicReference<>(null),
                                new ConcurrentHashMap<>(),
                                new AtomicLong(0),
-                               eventPublisher);
+                               eventPublisher,
+                               new ConcurrentHashMap<>(),
+                               new ConcurrentHashMap<>());
     }
 }

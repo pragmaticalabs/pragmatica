@@ -40,6 +40,8 @@ public sealed interface WorkerCodecs {
         all.addAll(MutationCodecs.CODECS);
         all.addAll(BootstrapCodecs.CODECS);
         all.addAll(HeartbeatCodecs.CODECS);
+        // Worker metrics codecs (WorkerMetricsPing, WorkerMetricsPong, CommunityScaling*, etc.)
+        all.addAll(org.pragmatica.aether.worker.metrics.MetricsCodecs.CODECS);
         // Network codecs (DHTRelayMessage)
         all.addAll(org.pragmatica.aether.worker.network.NetworkCodecs.CODECS);
         // DHT codecs

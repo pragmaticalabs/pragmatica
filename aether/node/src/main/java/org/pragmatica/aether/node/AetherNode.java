@@ -64,6 +64,8 @@ import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
 import org.pragmatica.aether.ttm.TTMManager;
 import org.pragmatica.aether.update.RollingUpdateManager;
+import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
+import org.pragmatica.aether.worker.metrics.CommunityScalingRequest;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.MetricsMessage;
 import org.pragmatica.cluster.node.rabia.NodeConfig;
@@ -1206,6 +1208,9 @@ public interface AetherNode {
                                               eventAggregator::onSliceFailure));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledUp.class, eventAggregator::onScaledUp));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledDown.class, eventAggregator::onScaledDown));
+        // Community scaling messages from worker governors
+        entries.add(MessageRouter.Entry.route(CommunityScalingRequest.class, controlLoop::onCommunityScalingRequest));
+        entries.add(MessageRouter.Entry.route(CommunityMetricsSnapshot.class, controlLoop::onCommunityMetricsSnapshot));
         entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                               eventAggregator::onConnectionEstablished));
         entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionFailed.class,

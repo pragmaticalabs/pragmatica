@@ -33,7 +33,9 @@ public record ClusterEvent(Instant timestamp,
         SCALE_DOWN,
         SLICE_FAILURE,
         CONNECTION_ESTABLISHED,
-        CONNECTION_FAILED
+        CONNECTION_FAILED,
+        COMMUNITY_SCALE_REQUEST,
+        COMMUNITY_METRICS_SNAPSHOT
     }
 
     public enum Severity {

@@ -29,6 +29,10 @@ import org.pragmatica.aether.worker.bootstrap.SnapshotResponse;
 import org.pragmatica.aether.worker.bootstrap.WorkerBootstrap;
 import org.pragmatica.aether.worker.heartbeat.FollowerHeartbeat;
 import org.pragmatica.aether.worker.heartbeat.FollowerHealthTracker;
+import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshotRequest;
+import org.pragmatica.aether.worker.metrics.WorkerMetricsAggregator;
+import org.pragmatica.aether.worker.metrics.WorkerMetricsPing;
+import org.pragmatica.aether.worker.metrics.WorkerMetricsPong;
 import org.pragmatica.aether.worker.governor.DecisionRelay;
 import org.pragmatica.aether.worker.governor.GovernorCleanup;
 import org.pragmatica.aether.worker.governor.GovernorElection;
@@ -70,7 +74,9 @@ import org.pragmatica.swim.SwimMember;
 import org.pragmatica.swim.SwimMembershipListener;
 import org.pragmatica.swim.SwimProtocol;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -397,6 +403,7 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
     private volatile SwimProtocol swimProtocol;
     private volatile FollowerHealthTracker followerHealthTracker;
     private volatile boolean heartbeatSenderActive;
+    private volatile WorkerMetricsAggregator metricsAggregator;
 
     AssembledWorkerNode(WorkerConfig config,
                         NodeId nodeId,
@@ -474,6 +481,7 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
         LOG.info("Stopping worker node {}", nodeId.id());
         stopHeartbeatSender();
         stopHealthTracker();
+        stopMetricsAggregator();
         stopSwim();
         return workerNetwork.stop()
                             .flatMap(_ -> passiveNode.stop())
@@ -550,12 +558,19 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
         Entry snapshotRespRoute = route(SnapshotResponse.class,
                                         (SnapshotResponse resp) -> workerBootstrap.onSnapshotReceived(resp));
         Entry heartbeatRoute = route(FollowerHeartbeat.class, (FollowerHeartbeat hb) -> handleFollowerHeartbeat(hb));
+        Entry metricsPingRoute = route(WorkerMetricsPing.class, (WorkerMetricsPing ping) -> handleMetricsPing(ping));
+        Entry metricsPongRoute = route(WorkerMetricsPong.class, (WorkerMetricsPong pong) -> handleMetricsPong(pong));
+        Entry snapshotReqMetricsRoute = route(CommunityMetricsSnapshotRequest.class,
+                                              (CommunityMetricsSnapshotRequest req) -> handleCommunitySnapshotRequest(req));
         var allEntries = new ArrayList<>(passiveNode.routeEntries());
         allEntries.add(decisionRoute);
         allEntries.add(mutationRoute);
         allEntries.add(snapshotReqRoute);
         allEntries.add(snapshotRespRoute);
         allEntries.add(heartbeatRoute);
+        allEntries.add(metricsPingRoute);
+        allEntries.add(metricsPongRoute);
+        allEntries.add(snapshotReqMetricsRoute);
         allEntries.addAll(kvNotificationRouter.asRouteEntries());
         // DHT request routes — handle incoming DHT operations from peer workers
         var dhtNode = dhtComponents.dhtNode();
@@ -613,14 +628,56 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
         }
     }
 
+    private void handleMetricsPing(WorkerMetricsPing ping) {
+        if (!isGovernor()) {
+            var pong = collectLocalMetrics();
+            workerNetwork.send(ping.sender(), pong);
+        }
+    }
+
+    private void handleMetricsPong(WorkerMetricsPong pong) {
+        var aggregator = metricsAggregator;
+        if (aggregator != null && isGovernor()) {
+            aggregator.onMetricsPong(pong);
+        }
+    }
+
+    private void handleCommunitySnapshotRequest(CommunityMetricsSnapshotRequest request) {
+        var aggregator = metricsAggregator;
+        if (aggregator != null && isGovernor()) {
+            aggregator.onSnapshotRequest(request);
+        }
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private WorkerMetricsPong collectLocalMetrics() {
+        var osBean = java.lang.management.ManagementFactory.getOperatingSystemMXBean();
+        var memBean = java.lang.management.ManagementFactory.getMemoryMXBean();
+        var cpuLoad = osBean.getSystemLoadAverage() / Runtime.getRuntime()
+                                                            .availableProcessors();
+        if (cpuLoad < 0) {
+            cpuLoad = 0.0;
+        }
+        var heapUsed = memBean.getHeapMemoryUsage()
+                              .getUsed();
+        var heapMax = memBean.getHeapMemoryUsage()
+                             .getMax();
+        var heapUsage = heapMax > 0
+                        ? (double) heapUsed / heapMax
+                        : 0.0;
+        return WorkerMetricsPong.workerMetricsPong(nodeId, cpuLoad, heapUsage, 0L, 0.0, 0.0);
+    }
+
     private void manageHeartbeatOnRoleChange(GovernorState state) {
         switch (state) {
             case GovernorState.Governor _ -> {
                 stopHeartbeatSender();
                 startHealthTracker();
+                startMetricsAggregator();
             }
             case GovernorState.Follower f -> {
                 stopHealthTracker();
+                stopMetricsAggregator();
                 startHeartbeatSender(f.governorId());
             }
         }
@@ -637,6 +694,35 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
             tracker.clear();
             followerHealthTracker = null;
         }
+    }
+
+    private void startMetricsAggregator() {
+        var aggregator = WorkerMetricsAggregator.workerMetricsAggregator(nodeId,
+                                                                         workerNetwork,
+                                                                         passiveNode,
+                                                                         () -> groupMembershipTracker.myGroup()
+                                                                                                     .communityId(),
+                                                                         this::connectedGroupFollowers,
+                                                                         config.metricsAggregationIntervalMs());
+        metricsAggregator = aggregator;
+        aggregator.start();
+        LOG.debug("Started metrics aggregator on governor {}", nodeId.id());
+    }
+
+    private void stopMetricsAggregator() {
+        var aggregator = metricsAggregator;
+        if (aggregator != null) {
+            aggregator.stop();
+            metricsAggregator = null;
+        }
+    }
+
+    private List<NodeId> connectedGroupFollowers() {
+        var groupMembers = groupMembershipTracker.myGroupMembers();
+        return workerNetwork.connectedPeers()
+                            .stream()
+                            .filter(groupMembers::contains)
+                            .toList();
     }
 
     private void startHeartbeatSender(NodeId governorId) {
@@ -816,7 +902,7 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
                                                     .communityId();
             var key = GovernorAnnouncementKey.forCommunity(communityId);
             var members = buildMemberList();
-            var tcpAddress = "0.0.0.0:" + (config.swimPort() + 100);
+            var tcpAddress = resolveAdvertiseAddress();
             var value = GovernorAnnouncementValue.governorAnnouncementValue(nodeId, members, tcpAddress);
             LOG.info("Announcing governor for community '{}': {} with {} members (version {})",
                      communityId,
@@ -881,6 +967,22 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
                                                                   key);
                              }
         });
+    }
+
+    @SuppressWarnings({"JBCT-STY-05", "JBCT-RET-01"})
+    private String resolveAdvertiseAddress() {
+        var configuredAddress = config.advertiseAddress();
+        if (configuredAddress != null && !configuredAddress.isBlank()) {
+            return configuredAddress;
+        }
+        var port = config.swimPort() + 100;
+        try{
+            return InetAddress.getLocalHost()
+                              .getHostAddress() + ":" + port;
+        } catch (UnknownHostException e) {
+            LOG.warn("Could not detect local host address, using localhost:{}", port);
+            return "localhost:" + port;
+        }
     }
 
     private void logGovernorChange(GovernorState state) {

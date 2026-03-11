@@ -12,11 +12,13 @@ import static org.pragmatica.lang.Result.success;
 /// Worker nodes are passive compute nodes that run slices without
 /// participating in Rabia consensus.
 ///
-/// @param coreNodes    Core cluster addresses to connect to (host:port)
-/// @param clusterPort  Port for cluster TCP communication
-/// @param swimPort     Port for SWIM UDP failure detection
-/// @param swimSettings SWIM protocol tuning
-/// @param sliceConfig  Slice repository configuration
+/// @param coreNodes                     Core cluster addresses to connect to (host:port)
+/// @param clusterPort                   Port for cluster TCP communication
+/// @param swimPort                      Port for SWIM UDP failure detection
+/// @param swimSettings                  SWIM protocol tuning
+/// @param sliceConfig                   Slice repository configuration
+/// @param advertiseAddress              Address to advertise for cross-host communication (empty = auto-detect)
+/// @param metricsAggregationIntervalMs  Metrics aggregation interval in milliseconds
 @SuppressWarnings({"JBCT-ZONE-02", "JBCT-ZONE-03"})
 public record WorkerConfig(List<String> coreNodes,
                            int clusterPort,
@@ -27,7 +29,9 @@ public record WorkerConfig(List<String> coreNodes,
                            String zone,
                            int maxGroupSize,
                            long heartbeatIntervalMs,
-                           long heartbeatTimeoutMs) {
+                           long heartbeatTimeoutMs,
+                           String advertiseAddress,
+                           long metricsAggregationIntervalMs) {
     public static final int DEFAULT_CLUSTER_PORT = 7100;
     public static final int DEFAULT_SWIM_PORT = 7200;
     public static final String DEFAULT_GROUP_NAME = "default";
@@ -35,6 +39,8 @@ public record WorkerConfig(List<String> coreNodes,
     public static final int DEFAULT_MAX_GROUP_SIZE = 100;
     public static final long DEFAULT_HEARTBEAT_INTERVAL_MS = 500;
     public static final long DEFAULT_HEARTBEAT_TIMEOUT_MS = 2000;
+    public static final String DEFAULT_ADVERTISE_ADDRESS = "";
+    public static final long DEFAULT_METRICS_AGGREGATION_INTERVAL_MS = 5000;
 
     /// Compact constructor to normalize null/blank/invalid values to defaults.
     public WorkerConfig {
@@ -53,6 +59,12 @@ public record WorkerConfig(List<String> coreNodes,
         if (heartbeatTimeoutMs <= 0) {
             heartbeatTimeoutMs = DEFAULT_HEARTBEAT_TIMEOUT_MS;
         }
+        if (advertiseAddress == null) {
+            advertiseAddress = DEFAULT_ADVERTISE_ADDRESS;
+        }
+        if (metricsAggregationIntervalMs <= 0) {
+            metricsAggregationIntervalMs = DEFAULT_METRICS_AGGREGATION_INTERVAL_MS;
+        }
     }
 
     /// Factory method with validation for all fields following JBCT naming convention.
@@ -64,21 +76,18 @@ public record WorkerConfig(List<String> coreNodes,
                                                     String groupName,
                                                     String zone,
                                                     int maxGroupSize) {
-        return checkCoreNodes(coreNodes).flatMap(_ -> checkPort("clusterPort", clusterPort))
-                             .flatMap(_ -> checkPort("swimPort", swimPort))
-                             .flatMap(_ -> checkNotBlank("groupName", groupName))
-                             .flatMap(_ -> checkNotBlank("zone", zone))
-                             .flatMap(_ -> checkMinValue("maxGroupSize", maxGroupSize, 2))
-                             .map(_ -> new WorkerConfig(List.copyOf(coreNodes),
-                                                        clusterPort,
-                                                        swimPort,
-                                                        swimSettings,
-                                                        sliceConfig,
-                                                        groupName,
-                                                        zone,
-                                                        maxGroupSize,
-                                                        DEFAULT_HEARTBEAT_INTERVAL_MS,
-                                                        DEFAULT_HEARTBEAT_TIMEOUT_MS));
+        return workerConfig(coreNodes,
+                            clusterPort,
+                            swimPort,
+                            swimSettings,
+                            sliceConfig,
+                            groupName,
+                            zone,
+                            maxGroupSize,
+                            DEFAULT_HEARTBEAT_INTERVAL_MS,
+                            DEFAULT_HEARTBEAT_TIMEOUT_MS,
+                            DEFAULT_ADVERTISE_ADDRESS,
+                            DEFAULT_METRICS_AGGREGATION_INTERVAL_MS);
     }
 
     /// Factory method with validation for all fields including heartbeat settings.
@@ -92,6 +101,33 @@ public record WorkerConfig(List<String> coreNodes,
                                                     int maxGroupSize,
                                                     long heartbeatIntervalMs,
                                                     long heartbeatTimeoutMs) {
+        return workerConfig(coreNodes,
+                            clusterPort,
+                            swimPort,
+                            swimSettings,
+                            sliceConfig,
+                            groupName,
+                            zone,
+                            maxGroupSize,
+                            heartbeatIntervalMs,
+                            heartbeatTimeoutMs,
+                            DEFAULT_ADVERTISE_ADDRESS,
+                            DEFAULT_METRICS_AGGREGATION_INTERVAL_MS);
+    }
+
+    /// Factory method with validation for all fields including advertise address and metrics settings.
+    public static Result<WorkerConfig> workerConfig(List<String> coreNodes,
+                                                    int clusterPort,
+                                                    int swimPort,
+                                                    SwimSettings swimSettings,
+                                                    SliceConfig sliceConfig,
+                                                    String groupName,
+                                                    String zone,
+                                                    int maxGroupSize,
+                                                    long heartbeatIntervalMs,
+                                                    long heartbeatTimeoutMs,
+                                                    String advertiseAddress,
+                                                    long metricsAggregationIntervalMs) {
         return checkCoreNodes(coreNodes).flatMap(_ -> checkPort("clusterPort", clusterPort))
                              .flatMap(_ -> checkPort("swimPort", swimPort))
                              .flatMap(_ -> checkNotBlank("groupName", groupName))
@@ -106,7 +142,9 @@ public record WorkerConfig(List<String> coreNodes,
                                                         zone,
                                                         maxGroupSize,
                                                         heartbeatIntervalMs,
-                                                        heartbeatTimeoutMs));
+                                                        heartbeatTimeoutMs,
+                                                        advertiseAddress,
+                                                        metricsAggregationIntervalMs));
     }
 
     /// Factory method with defaults for group fields following JBCT naming convention.
