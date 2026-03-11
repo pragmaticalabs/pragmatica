@@ -9,6 +9,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -84,6 +85,25 @@ public final class GovernorCleanup {
         if (keys != null) {
             keys.remove(key);
         }
+    }
+
+    /// Clean up DHT entries for all nodes not in the alive set.
+    public Promise<Unit> cleanupDeadNodes(Set<NodeId> aliveNodes) {
+        var deadNodes = new HashSet<NodeId>();
+        deadNodes.addAll(endpointIndex.keySet());
+        deadNodes.addAll(sliceNodeIndex.keySet());
+        deadNodes.addAll(httpRouteIndex.keySet());
+        deadNodes.removeAll(aliveNodes);
+        if (deadNodes.isEmpty()) {
+            log.info("No dead nodes found during reconciliation");
+            return Promise.unitPromise();
+        }
+        log.info("Reconciliation found {} dead nodes: {}", deadNodes.size(), deadNodes);
+        var result = Promise.unitPromise();
+        for (var deadNode : deadNodes) {
+            result = result.flatMap(_ -> cleanupDeadNode(deadNode));
+        }
+        return result;
     }
 
     /// Clean up all DHT entries for a dead node.

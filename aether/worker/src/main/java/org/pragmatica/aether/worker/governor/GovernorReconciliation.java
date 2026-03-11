@@ -28,11 +28,8 @@ public sealed interface GovernorReconciliation {
     static Promise<Unit> reconcile(Set<NodeId> aliveNodes,
                                    GovernorCleanup cleanup) {
         log.info("Governor reconciliation: checking DHT entries against {} alive nodes", aliveNodes.size());
-        // The cleanup index is populated from DHT subscription events.
-        // On a fresh election, the index may be empty — subscription events will populate it going forward.
-        // The ongoing GovernorCleanup handles the steady-state case.
-        log.info("Governor reconciliation complete — ongoing cleanup will handle entries as they appear");
-        return Promise.unitPromise();
+        return cleanup.cleanupDeadNodes(aliveNodes)
+                      .onSuccess(_ -> log.info("Governor reconciliation complete"));
     }
 
     record unused() implements GovernorReconciliation {}

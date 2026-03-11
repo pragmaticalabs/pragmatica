@@ -2,6 +2,7 @@ package org.pragmatica.aether.worker.bootstrap;
 
 import org.pragmatica.aether.worker.WorkerError;
 import org.pragmatica.aether.worker.network.WorkerNetwork;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -24,17 +25,25 @@ public final class WorkerBootstrap {
 
     private final NodeId selfId;
     private final WorkerNetwork network;
+    private final KVStore<?, ?> kvStore;
     private volatile boolean bootstrapped;
+    private volatile long snapshotSequence = - 1;
 
-    private WorkerBootstrap(NodeId selfId, WorkerNetwork network) {
+    private WorkerBootstrap(NodeId selfId, WorkerNetwork network, KVStore<?, ?> kvStore) {
         this.selfId = selfId;
         this.network = network;
+        this.kvStore = kvStore;
         this.bootstrapped = false;
     }
 
     /// Factory method.
-    public static WorkerBootstrap workerBootstrap(NodeId selfId, WorkerNetwork network) {
-        return new WorkerBootstrap(selfId, network);
+    public static WorkerBootstrap workerBootstrap(NodeId selfId, WorkerNetwork network, KVStore<?, ?> kvStore) {
+        return new WorkerBootstrap(selfId, network, kvStore);
+    }
+
+    /// The sequence number at which the snapshot was taken, or -1 if no snapshot applied.
+    public long snapshotSequence() {
+        return snapshotSequence;
     }
 
     /// Request a snapshot from the given source node.
@@ -76,6 +85,14 @@ public final class WorkerBootstrap {
 
     private void applySnapshot(SnapshotResponse response) {
         LOG.info("Applying snapshot at sequence {}, size={} bytes", response.sequenceNumber(), response.kvState().length);
+        kvStore.restoreSnapshot(response.kvState())
+               .onSuccess(_ -> markSnapshotApplied(response.sequenceNumber()))
+               .onFailure(cause -> LOG.error("Failed to apply snapshot: {}", cause));
+    }
+
+    private void markSnapshotApplied(long sequenceNumber) {
+        snapshotSequence = sequenceNumber;
         bootstrapped = true;
+        LOG.info("Snapshot applied successfully at sequence {}", sequenceNumber);
     }
 }

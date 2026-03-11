@@ -17,6 +17,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -118,6 +119,40 @@ class GovernorCleanupTest {
             assertThat(endpointMap.removedKeys).containsExactly(epKey);
             assertThat(sliceNodeMap.removedKeys).containsExactly(snKey);
             assertThat(httpRouteMap.removedKeys).containsExactly(hrKey);
+        }
+    }
+
+    @Nested
+    class CleanupDeadNodes {
+        @Test
+        void cleanupDeadNodes_removesOnlyDeadNodeEntries() {
+            var deadKey = endpointKey("endpoints/com.example:svc:1.0.0/doWork:0");
+            var aliveKey = endpointKey("endpoints/com.example:svc:1.0.0/doWork:1");
+            cleanup.trackEndpoint(DEAD_NODE, deadKey);
+            cleanup.trackEndpoint(ALIVE_NODE, aliveKey);
+
+            var result = cleanup.cleanupDeadNodes(Set.of(ALIVE_NODE)).await();
+
+            result.onFailure(_ -> fail("Expected success"));
+            assertThat(endpointMap.removedKeys).containsExactly(deadKey);
+        }
+
+        @Test
+        void cleanupDeadNodes_noDeadNodes_isNoOp() {
+            cleanup.trackEndpoint(ALIVE_NODE, endpointKey("endpoints/com.example:svc:1.0.0/doWork:0"));
+
+            var result = cleanup.cleanupDeadNodes(Set.of(ALIVE_NODE)).await();
+
+            result.onFailure(_ -> fail("Expected success"));
+            assertThat(endpointMap.removedKeys).isEmpty();
+        }
+
+        @Test
+        void cleanupDeadNodes_emptyIndex_isNoOp() {
+            var result = cleanup.cleanupDeadNodes(Set.of(ALIVE_NODE)).await();
+
+            result.onFailure(_ -> fail("Expected success"));
+            assertThat(endpointMap.removedKeys).isEmpty();
         }
     }
 

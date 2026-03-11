@@ -158,7 +158,7 @@ public interface WorkerNode {
                                            Deserializer deserializer) {
         var decisionRelay = DecisionRelay.decisionRelay(nodeId, workerNetwork);
         var mutationForwarder = MutationForwarder.mutationForwarder(nodeId, workerNetwork, passiveNode);
-        var workerBootstrap = WorkerBootstrap.workerBootstrap(nodeId, workerNetwork);
+        var workerBootstrap = WorkerBootstrap.workerBootstrap(nodeId, workerNetwork, passiveNode.kvStore());
         var swimConfig = toSwimConfig(config.swimSettings());
         var governorMesh = GovernorMesh.governorMesh(workerNetwork);
         var communityMembers = new ConcurrentHashMap<String, List<NodeId>>();
@@ -654,6 +654,7 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
         if (!previous.equals(newGovernor)) {
             logGovernorChange(state);
             triggerReconciliationIfNewGovernor(state, previous);
+            triggerBootstrapIfNeeded(state);
             announceGovernorChange(state);
         }
     }
@@ -663,7 +664,40 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
                                                                 .or(false)) {
             var aliveNodes = collectAliveNodeIds();
             GovernorReconciliation.reconcile(aliveNodes, governorCleanup);
+            // Delayed reconciliation: subscription events may populate the cleanup index after election
+            scheduleDelayedReconciliation();
         }
+    }
+
+    private void scheduleDelayedReconciliation() {
+        Promise.<Unit> promise()
+               .timeout(timeSpan(5).seconds())
+               .onFailure(_ -> runDelayedReconciliation());
+    }
+
+    private void runDelayedReconciliation() {
+        var aliveNodes = collectAliveNodeIds();
+        GovernorReconciliation.reconcile(aliveNodes, governorCleanup);
+    }
+
+    private void triggerBootstrapIfNeeded(GovernorState state) {
+        if (workerBootstrap.isBootstrapped()) {
+            return;
+        }
+        switch (state) {
+            case GovernorState.Governor _ -> markGovernorBootstrapped();
+            case GovernorState.Follower f -> requestFollowerBootstrap(f.governorId());
+        }
+    }
+
+    private void markGovernorBootstrapped() {
+        workerBootstrap.markBootstrapped();
+        LOG.info("Governor {} bootstrapped from core Decision stream", nodeId.id());
+    }
+
+    private void requestFollowerBootstrap(NodeId governorId) {
+        workerBootstrap.requestSnapshot(some(governorId));
+        LOG.info("Follower {} requesting bootstrap from governor {}", nodeId.id(), governorId.id());
     }
 
     private Set<NodeId> collectAliveNodeIds() {
