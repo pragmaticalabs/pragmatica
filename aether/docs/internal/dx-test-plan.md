@@ -23,9 +23,9 @@ podman run -it --rm \
 > On Linux, add `--add-host=host.containers.internal:host-gateway` to the command above,
 > or use `--network=host` instead of `-p` flags.
 >
-> **`-v .m2/repository`** — mounts local Maven cache so locally-built deps resolve (not published to Central yet). Remove this mount for a true clean-room test once 0.19.3 is published.
+> **`-v .m2/repository`** — mounts local Maven cache so locally-built deps resolve (not published to Central yet). Remove this mount for a true clean-room test once 0.20.0 is published.
 >
-> **`--version` flag** — when testing unreleased versions, use `jbct init --version 0.19.3` to override the dependency versions in generated pom.xml. Without this flag, `jbct init` uses the latest published release from GitHub (0.19.3).
+> **`--version` flag** — when testing unreleased versions, use `jbct init --version 0.20.0` to override the dependency versions in generated pom.xml. Without this flag, `jbct init` uses the latest published release from GitHub (0.20.0).
 
 ### Inside the container — prerequisites
 
@@ -49,7 +49,7 @@ mvn --version    # should show 3.9.12
 **Goal:** Verify install.sh downloads and configures all tools.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/release-0.19.3/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/release-0.20.0/install.sh | sh
 source ~/.bashrc    # or ~/.zshrc
 ```
 
@@ -57,7 +57,7 @@ source ~/.bashrc    # or ~/.zshrc
 
 | # | Check | Command | Expected |
 |---|-------|---------|----------|
-| 1.1 | jbct installed | `jbct --version` | Version printed (0.19.3-candidate) |
+| 1.1 | jbct installed | `jbct --version` | Version printed (0.20.0-candidate) |
 | 1.2 | aether installed | `aether --help` | Help text with subcommands |
 | 1.3 | aether-forge installed | `aether-forge --help` | Help text |
 | 1.4 | Binaries in PATH | `which jbct aether aether-forge` | All three found |
@@ -71,7 +71,7 @@ source ~/.bashrc    # or ~/.zshrc
 ```bash
 cd /tmp
 jbct init my-slice -g com.example -a my-slice --no-ai
-# For unreleased versions: jbct init my-slice -g com.example -a my-slice --no-ai --version 0.19.3
+# For unreleased versions: jbct init my-slice -g com.example -a my-slice --no-ai --version 0.20.0
 cd my-slice
 ```
 

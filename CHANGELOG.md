@@ -4,7 +4,9 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.19.3] - Unreleased
+## [0.20.0] - Unreleased
+
+## [0.19.3]
 
 ### Multi-Blueprint Lifecycle
 - Fixed critical bug: blueprint deletion now only removes artifacts owned by the deleted blueprint (was removing ALL artifacts)

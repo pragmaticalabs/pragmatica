@@ -332,7 +332,7 @@ No polling. No periodic reconciliation loops for core state.
 
 ---
 
-## Current Capabilities (v0.19.3)
+## Current Capabilities (v0.20.0)
 
 ### Implemented
 
