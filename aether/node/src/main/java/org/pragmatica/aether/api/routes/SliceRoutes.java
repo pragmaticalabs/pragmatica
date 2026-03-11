@@ -58,7 +58,7 @@ public final class SliceRoutes implements RouteSource {
     }
 
     // Request DTOs - nullable types required for JSON deserialization
-    record ScaleRequest(String artifact, Integer instances) {}
+    record ScaleRequest(String artifact, Integer instances, String placement) {}
 
     @Override
     public Stream<Route<?>> routes() {
@@ -97,14 +97,16 @@ public final class SliceRoutes implements RouteSource {
                               .toJson(this::buildTopologyResponse));
     }
 
-    private record ScaleParams(String artifact, int instances) {}
+    private record ScaleParams(String artifact, int instances, Option<String> placement) {}
 
     private Result<ScaleParams> validateScaleRequest(ScaleRequest request) {
         return Result.all(Option.option(request.artifact())
                                 .toResult(MISSING_ARTIFACT_OR_INSTANCES),
                           Option.option(request.instances())
                                 .toResult(MISSING_ARTIFACT_OR_INSTANCES))
-                     .map(ScaleParams::new);
+                     .map((art, inst) -> new ScaleParams(art,
+                                                         inst,
+                                                         Option.option(request.placement())));
     }
 
     private Promise<ScaleResponse> handleScale(ScaleRequest request) {
@@ -114,7 +116,8 @@ public final class SliceRoutes implements RouteSource {
                                                               .flatMap(artifact -> guardBlueprintMembership(artifact).flatMap(_ -> guardMinInstances(artifact,
                                                                                                                                                      params.instances()))
                                                                                                            .flatMap(_ -> applyDeployCommand(artifact,
-                                                                                                                                            params.instances()))
+                                                                                                                                            params.instances(),
+                                                                                                                                            params.placement()))
                                                                                                            .map(_ -> new ScaleResponse("scaled",
                                                                                                                                        artifact.asString(),
                                                                                                                                        params.instances()))));
@@ -330,16 +333,30 @@ public final class SliceRoutes implements RouteSource {
                                                                                               List.of())));
     }
 
-    private Promise<List<Long>> applyDeployCommand(Artifact artifact, int instances) {
+    private Promise<List<Long>> applyDeployCommand(Artifact artifact, int instances, Option<String> placement) {
         var node = nodeSupplier.get();
         var key = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
         var existing = node.kvStore()
                            .get(key)
                            .filter(v -> v instanceof AetherValue.SliceTargetValue)
-                           .map(v -> ((AetherValue.SliceTargetValue) v).withInstances(instances));
-        AetherValue value = existing.or(AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(), instances));
+                           .map(v -> applyScaleToExisting((AetherValue.SliceTargetValue) v,
+                                                          instances,
+                                                          placement));
+        var defaultPlacement = placement.or("CORE_ONLY");
+        AetherValue value = existing.or(AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(),
+                                                                                      instances,
+                                                                                      instances,
+                                                                                      defaultPlacement));
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
         return node.apply(List.of(command));
+    }
+
+    private static AetherValue.SliceTargetValue applyScaleToExisting(AetherValue.SliceTargetValue existing,
+                                                                     int instances,
+                                                                     Option<String> placement) {
+        var updated = existing.withInstances(instances);
+        return placement.map(updated::withPlacement)
+                        .or(updated);
     }
 
     private TopologyResponse buildTopologyResponse() {

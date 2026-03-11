@@ -9,23 +9,30 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
+import org.pragmatica.aether.config.PlacementPolicy;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -120,6 +127,18 @@ public interface ClusterDeploymentManager {
     @MessageReceiver
     void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
 
+    @MessageReceiver
+    void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut);
+
+    @MessageReceiver
+    void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove);
+
+    @MessageReceiver
+    void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut);
+
+    @MessageReceiver
+    void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> valueRemove);
+
     /// Create a MapSubscription adapter for DHT slice-node events.
     default MapSubscription<SliceNodeKey, SliceNodeValue> asSliceNodeSubscription() {
         return new MapSubscription<>() {
@@ -180,6 +199,14 @@ public interface ClusterDeploymentManager {
 
         default void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {}
 
+        default void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) {}
+
+        default void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) {}
+
+        default void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut) {}
+
+        default void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> valueRemove) {}
+
         /// Dormant state when node is NOT the leader.
         record Dormant() implements ClusterDeploymentState {}
 
@@ -219,6 +246,8 @@ public interface ClusterDeploymentManager {
                       DeploymentAtomicity atomicity,
                       int coreMax,
                       Set<NodeId> seedNodes,
+                      Set<NodeId> workerNodes,
+                      Map<String, GovernorAnnouncementValue> communityGovernors,
                       Map<SliceNodeKey, Long> transitionalStateTimestamps,
                       ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
@@ -274,9 +303,10 @@ public interface ClusterDeploymentManager {
             void rebuildStateFromKVStore() {
                 log.info("Rebuilding cluster deployment state from KVStore");
                 kvStore.forEach(AetherKey.class, AetherValue.class, this::processKVEntry);
-                log.info("Restored {} blueprints and {} slice states from KVStore",
+                log.info("Restored {} blueprints, {} slice states, and {} worker nodes from KVStore",
                          blueprints.size(),
-                         sliceStates.size());
+                         sliceStates.size(),
+                         workerNodes.size());
                 // Trigger activation for any slices stuck in LOADED state
                 triggerLoadedSliceActivation();
                 // Clean up stale entries pointing to nodes not in topology
@@ -324,6 +354,8 @@ public interface ClusterDeploymentManager {
                     case AetherKey.VersionRoutingKey routingKey -> activeRoutings.add(routingKey.artifactBase());
                     case NodeLifecycleKey lifecycleKey when value instanceof NodeLifecycleValue lifecycleValue ->
                     restoreDrainingNode(lifecycleKey, lifecycleValue);
+                    case ActivationDirectiveKey activationKey when value instanceof ActivationDirectiveValue activationValue ->
+                    restoreWorkerNode(activationKey, activationValue);
                     default -> {}
                 }
             }
@@ -332,6 +364,13 @@ public interface ClusterDeploymentManager {
                 if (value.state() == NodeLifecycleState.DRAINING) {
                     drainingNodes.add(key.nodeId());
                     log.info("Restored draining node: {}", key.nodeId());
+                }
+            }
+
+            private void restoreWorkerNode(ActivationDirectiveKey key, ActivationDirectiveValue value) {
+                if (ActivationDirectiveValue.WORKER.equals(value.role())) {
+                    workerNodes.add(key.nodeId());
+                    log.trace("Restored worker node: {}", key.nodeId());
                 }
             }
 
@@ -522,7 +561,15 @@ public interface ClusterDeploymentManager {
             /// Build an AllocationPool combining core nodes and worker nodes.
             /// Used for policy-based placement decisions.
             AllocationPool buildAllocationPool() {
-                return AllocationPool.allocationPool(allocatableNodes(), List.of());
+                var communityWorkers = buildCommunityWorkerMap();
+                return AllocationPool.allocationPool(allocatableNodes(), List.copyOf(workerNodes), communityWorkers);
+            }
+
+            private Map<String, List<NodeId>> buildCommunityWorkerMap() {
+                // Community governors are tracked but individual worker-to-community mapping
+                // requires cross-referencing SWIM membership (tracked by governors, not CDM).
+                // For now, the flat workerNodes set is used for allocation.
+                return Map.of();
             }
 
             /// Check if a node has ON_DUTY lifecycle state in KV store.
@@ -554,6 +601,62 @@ public interface ClusterDeploymentManager {
                     }
                     default -> {}
                 }
+            }
+
+            @Override
+            public void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) {
+                var nodeId = valuePut.cause()
+                                     .key()
+                                     .nodeId();
+                var role = valuePut.cause()
+                                   .value()
+                                   .role();
+                handleActivationDirectivePut(nodeId, role);
+            }
+
+            private void handleActivationDirectivePut(NodeId nodeId, String role) {
+                if (ActivationDirectiveValue.WORKER.equals(role)) {
+                    if (workerNodes.add(nodeId)) {
+                        log.info("Worker node {} registered, total workers: {}", nodeId, workerNodes.size());
+                        reconcile();
+                    }
+                } else {
+                    workerNodes.remove(nodeId);
+                }
+            }
+
+            @Override
+            public void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) {
+                var nodeId = valueRemove.cause()
+                                        .key()
+                                        .nodeId();
+                if (workerNodes.remove(nodeId)) {
+                    log.info("Worker node {} deregistered, total workers: {}", nodeId, workerNodes.size());
+                    reconcile();
+                }
+            }
+
+            @Override
+            public void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut) {
+                var communityId = valuePut.cause()
+                                          .key()
+                                          .communityId();
+                var announcement = valuePut.cause()
+                                           .value();
+                communityGovernors.put(communityId, announcement);
+                log.info("Governor announced for community '{}': {} with {} members",
+                         communityId,
+                         announcement.governorId(),
+                         announcement.memberCount());
+            }
+
+            @Override
+            public void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> valueRemove) {
+                var communityId = valueRemove.cause()
+                                             .key()
+                                             .communityId();
+                communityGovernors.remove(communityId);
+                log.info("Governor departed for community '{}'", communityId);
             }
 
             /// Start drain eviction: for each slice on the draining node, deploy replacement
@@ -759,7 +862,7 @@ public interface ClusterDeploymentManager {
                          desiredInstances,
                          minInstances);
                 blueprints.put(newArtifact, Blueprint.blueprint(newArtifact, desiredInstances, minInstances));
-                issueAllocationCommands(newArtifact, desiredInstances);
+                issueAllocationCommandsWithPlacement(newArtifact, desiredInstances, value.effectivePlacement());
             }
 
             private void handleAppBlueprintChange(AppBlueprintKey key, AppBlueprintValue value) {
@@ -793,7 +896,7 @@ public interface ClusterDeploymentManager {
                                                               SliceTargetValue.sliceTargetValue(artifact.version(),
                                                                                                 requestedInstances,
                                                                                                 slice.minAvailable())));
-                    issueAllocationCommands(artifact, requestedInstances);
+                    issueAllocationCommandsWithPlacement(artifact, requestedInstances, lookupPlacement(artifact));
                 }
                 submitBatch(consensusCommands);
                 // Track in-flight blueprint for atomicity enforcement
@@ -1092,6 +1195,8 @@ public interface ClusterDeploymentManager {
                                                          removedNode,
                                                          cause.message()));
                 }
+                // Remove from worker set if this was a worker
+                workerNodes.remove(removedNode);
                 log.info("Removed {} slice states, {} endpoints, and {} HTTP route updates for departed node {}",
                          sliceKeysToRemove.size(),
                          endpointKeysToRemove.size(),
@@ -1527,6 +1632,68 @@ public interface ClusterDeploymentManager {
             @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget writes
             private void issueDeallocationCommands(Artifact artifact) {
                 getCurrentInstances(artifact).forEach(this::issueUnloadCommand);
+                // Also remove worker directive if it exists
+                removeWorkerDirective(artifact);
+            }
+
+            /// Issue allocation commands, considering placement policy.
+            /// For policies that target workers, writes WorkerSliceDirectiveKey/Value to consensus.
+            @SuppressWarnings("JBCT-RET-01")
+            private void issueAllocationCommandsWithPlacement(Artifact artifact,
+                                                              int desiredInstances,
+                                                              String placement) {
+                var policy = PlacementPolicy.valueOf(placement);
+                var pool = buildAllocationPool();
+                var targetNodes = pool.nodesForPolicy(policy);
+                if (targetNodes.isEmpty()) {
+                    log.warn("No nodes available for placement {} of {}, falling back to core", placement, artifact);
+                    issueAllocationCommands(artifact, desiredInstances);
+                    return;
+                }
+                // If policy targets workers (and workers are available), write worker directive
+                if (policy != PlacementPolicy.CORE_ONLY && pool.hasWorkers()) {
+                    writeWorkerDirective(artifact, desiredInstances, placement);
+                }
+                // For CORE_ONLY or fallback, use existing core allocation
+                if (policy == PlacementPolicy.CORE_ONLY || (policy == PlacementPolicy.WORKERS_PREFERRED && !pool.hasWorkers())) {
+                    issueAllocationCommands(artifact, desiredInstances);
+                }
+                // For ALL, allocate on both core and workers
+                if (policy == PlacementPolicy.ALL) {
+                    issueAllocationCommands(artifact, desiredInstances);
+                }
+            }
+
+            @SuppressWarnings("JBCT-RET-01")
+            private void writeWorkerDirective(Artifact artifact, int targetInstances, String placement) {
+                var key = WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact);
+                var value = WorkerSliceDirectiveValue.workerSliceDirectiveValue(artifact, targetInstances, placement);
+                var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+                cluster.apply(List.of(command))
+                       .onSuccess(_ -> log.info("Written worker directive for {} with {} instances",
+                                                artifact,
+                                                targetInstances))
+                       .onFailure(cause -> log.error("Failed to write worker directive for {}: {}",
+                                                     artifact,
+                                                     cause.message()));
+            }
+
+            @SuppressWarnings("JBCT-RET-01")
+            private void removeWorkerDirective(Artifact artifact) {
+                var key = WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact);
+                var command = new KVCommand.Remove<AetherKey>(key);
+                cluster.apply(List.of(command))
+                       .onFailure(cause -> log.debug("No worker directive to remove for {}: {}",
+                                                     artifact,
+                                                     cause.message()));
+            }
+
+            /// Look up placement for an artifact from its SliceTargetValue in KVStore.
+            private String lookupPlacement(Artifact artifact) {
+                return kvStore.get(SliceTargetKey.sliceTargetKey(artifact.base()))
+                              .filter(v -> v instanceof SliceTargetValue)
+                              .map(v -> ((SliceTargetValue) v).effectivePlacement())
+                              .or("CORE_ONLY");
             }
 
             /// Reconcile desired state (blueprints) with actual state (slice states).
@@ -1743,6 +1910,8 @@ public interface ClusterDeploymentManager {
                                                                         atomicity,
                                                                         coreMax,
                                                                         seedNodes,
+                                                                        ConcurrentHashMap.newKeySet(),
+                                                                        new ConcurrentHashMap<>(),
                                                                         new ConcurrentHashMap<>(),
                                                                         sliceNodeMap);
                     // Swap to Active FIRST — ensures topology changes arriving on other threads
@@ -1844,6 +2013,30 @@ public interface ClusterDeploymentManager {
             public void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {
                 state.get()
                      .onNodeLifecyclePut(valuePut);
+            }
+
+            @Override
+            public void onActivationDirectivePut(ValuePut<ActivationDirectiveKey, ActivationDirectiveValue> valuePut) {
+                state.get()
+                     .onActivationDirectivePut(valuePut);
+            }
+
+            @Override
+            public void onActivationDirectiveRemove(ValueRemove<ActivationDirectiveKey, ActivationDirectiveValue> valueRemove) {
+                state.get()
+                     .onActivationDirectiveRemove(valueRemove);
+            }
+
+            @Override
+            public void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut) {
+                state.get()
+                     .onGovernorAnnouncementPut(valuePut);
+            }
+
+            @Override
+            public void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> valueRemove) {
+                state.get()
+                     .onGovernorAnnouncementRemove(valueRemove);
             }
 
             @Override

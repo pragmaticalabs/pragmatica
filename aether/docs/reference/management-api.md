@@ -233,9 +233,16 @@ Scale a blueprint-deployed slice to a new instance count. The slice must be part
 ```json
 {
   "artifact": "org.example:my-slice:1.0.0",
-  "instances": 5
+  "instances": 5,
+  "placement": "WORKER_PREFERRED"
 }
 ```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `artifact` | string | Yes | Full artifact coordinates (group:artifact:version) |
+| `instances` | integer | Yes | Target number of instances |
+| `placement` | string | No | Placement strategy: `CORE_ONLY` (default), `WORKER_PREFERRED`, `WORKER_ONLY`. When omitted, preserves existing placement or defaults to `CORE_ONLY` for new targets. |
 
 **Response:**
 ```json

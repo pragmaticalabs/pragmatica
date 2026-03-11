@@ -15,6 +15,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - **Governor mesh infrastructure** — `GovernorMesh` and `GovernorDiscovery` for cross-community DHT traffic routing (full wiring in Phase 2b)
   - **DHT node cleanup** — `DhtNodeCleanup` removes dead node endpoints from DHT on SWIM DEAD detection
   - **AetherMaps** — factory for 3 named maps (endpoints, slice-nodes, http-routes) with serializers
+- **Worker Slice Execution (P1+P2a Completion)** — end-to-end worker node functionality: slices deployed with `WORKERS_PREFERRED` placement run on worker nodes, publish endpoints to DHT, and SliceInvoker routes traffic to workers:
+  - **CDM worker awareness** — ClusterDeploymentManager discovers workers via `ActivationDirectiveKey(WORKER)`, populates `AllocationPool` with worker nodes, writes `WorkerSliceDirectiveKey/Value` directives to consensus for worker slice deployment
+  - **PlacementPolicy in SliceTargetValue** — `placement` field (CORE_ONLY, WORKERS_PREFERRED, WORKERS_ONLY, ALL) added to slice target configuration. Management API `POST /api/scale` accepts optional `placement` parameter. CLI: `aether scale --placement`
+  - **WorkerDeploymentManager** — sealed interface with Dormant/Active states managing slice lifecycle on workers: watches `WorkerSliceDirectiveKey` from KVNotificationRouter, self-assigns instances via consistent hashing of SWIM members, drives SliceStore load→activate chain, publishes endpoints and slice-node state to DHT
+  - **WorkerInstanceAssignment** — deterministic consistent hashing for instance distribution across workers. Same inputs produce same assignment on every worker — no coordination needed
+  - **Governor cleanup** — `GovernorCleanup` maintains per-node index of DHT entries (endpoints, slice-nodes, HTTP routes). On SWIM FAULTY/LEFT, governor removes dead node's entries from all three DHT maps. `GovernorReconciliation` runs on governor election to clean orphaned entries
+  - **KVNotificationRouter on workers** — workers build notification router on PassiveNode's KVStore to watch `WorkerSliceDirectiveKey` entries, same pattern as AetherNode's notification wiring
   - **SliceNodeKey DHT migration** — SliceNodeKey reads/writes moved from consensus to `slice-nodes` ReplicatedMap. CDM, NDM, ControlLoop, DeploymentMap, ArtifactDeploymentTracker all subscribe via `asSliceNodeSubscription()` adapters
   - **HttpNodeRouteKey DHT migration** — HttpNodeRouteKey reads/writes moved from consensus to `http-routes` ReplicatedMap. HttpRoutePublisher, HttpRouteRegistry, AppHttpServer, LoadBalancerManager all subscribe via `asHttpRouteSubscription()` adapters
   - **WorkerEndpointRegistry removed** — dead code from Phase 1 replaced by DHT-backed endpoint registry. `WorkerRoutes`, `WorkerGroupHealthReport`, `WorkerEndpointEntry` deleted
@@ -33,6 +40,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - **CDM pool awareness** — `AllocationPool` record, `WorkerSliceDirectiveKey`/`WorkerSliceDirectiveValue` in consensus KV-Store
   - **Worker management API** — `GET /api/workers`, `GET /api/workers/health`, `GET /api/workers/endpoints`
   - **CLI commands** — `aether workers list`, `aether workers health`
+
+- **Multi-Group Worker Topology (Phase 2b)** — workers self-organize into zone-aware groups with per-group governors. Deterministic group computation from SWIM membership — same inputs produce same groups on every worker:
+  - **WorkerGroupId** — `(groupName, zone)` identity record with `communityId()` format (`groupName:zone`)
+  - **GroupAssignment** — deterministic zone-aware group computation: extracts zone from NodeId, splits zones exceeding `maxGroupSize` via round-robin subgroups
+  - **GroupMembershipTracker** — tracks SWIM membership and computes zone-aware groups, exposes `myGroup()`, `myGroupMembers()`, `allGroups()`
+  - **Per-group governor election** — governor election scoped to own group members, not all SWIM members
+  - **Per-group Decision relay** — governor only relays Decisions to own group followers, reducing broadcast scope
+  - **GovernorAnnouncementKey/Value** — governors announce themselves to consensus KV-Store. Core nodes track community sizes and governor identities via `ClusterDeploymentManager`
+  - **CDM community-aware placement** — `AllocationPool` extended with `workersByCommunity` map. CDM tracks governor announcements for community-aware instance distribution
+  - **WorkerSliceDirectiveValue** extended with optional `targetCommunity` for community-scoped deployment
+  - **Worker configuration** — `WorkerConfig` extended with `groupName` (default `"default"`), `zone` (default `"local"`), `maxGroupSize` (default `100`). TOML: `worker.group_name`, `worker.zone`, `worker.max_group_size`
 
 - **KV-Store durable backup** — serializes cluster metadata (slice targets, node lifecycle, config) to a single TOML file managed in a local git repo. Git provides versioning, history, diffs, and optional remote push for offsite backup
   - **TOML Writer** (`integrations/config/toml`) — serialization support added to the custom TOML library, including inline table parsing

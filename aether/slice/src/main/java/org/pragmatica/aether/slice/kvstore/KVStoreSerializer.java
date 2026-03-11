@@ -145,6 +145,7 @@ public final class KVStoreSerializer {
             case WorkerSliceDirectiveKey _ -> "worker-directive";
             case ActivationDirectiveKey _ -> "activation";
             case GossipKeyRotationKey _ -> "gossip-key-rotation";
+            case GovernorAnnouncementKey _ -> "governor-announcement";
         };
     }
 
@@ -187,6 +188,7 @@ public final class KVStoreSerializer {
             case ActivationDirectiveValue v -> v.role();
             case GossipKeyRotationValue v -> serializeGossipKeyRotation(v);
             case NodeLifecycleValue v -> serializeNodeLifecycle(v);
+            case GovernorAnnouncementValue v -> serializeGovernorAnnouncement(v);
             case AppBlueprintValue _ -> "";
         };
     }
@@ -195,7 +197,7 @@ public final class KVStoreSerializer {
         return v.currentVersion()
                 .withQualifier() + PIPE + v.targetInstances() + PIPE + v.minInstances() + PIPE + v.owningBlueprint()
                                                                                                   .fold(() -> "",
-                                                                                                        bp -> bp.asString()) + PIPE + v.updatedAt();
+                                                                                                        bp -> bp.asString()) + PIPE + v.updatedAt() + PIPE + v.effectivePlacement();
     }
 
     private static String serializeSliceNode(SliceNodeValue v) {
@@ -251,7 +253,8 @@ public final class KVStoreSerializer {
 
     private static String serializeWorkerDirective(WorkerSliceDirectiveValue v) {
         return v.artifact()
-                .asString() + PIPE + v.targetInstances() + PIPE + v.placement() + PIPE + v.updatedAt();
+                .asString() + PIPE + v.targetInstances() + PIPE + v.placement() + PIPE + v.targetCommunity()
+                                                                                          .or("") + PIPE + v.updatedAt();
     }
 
     private static String serializeGossipKeyRotation(GossipKeyRotationValue v) {
@@ -261,6 +264,11 @@ public final class KVStoreSerializer {
     private static String serializeNodeLifecycle(NodeLifecycleValue v) {
         return v.state()
                 .name() + PIPE + v.updatedAt();
+    }
+
+    private static String serializeGovernorAnnouncement(GovernorAnnouncementValue v) {
+        return v.governorId()
+                .id() + PIPE + v.memberCount() + PIPE + v.announcedAt();
     }
 
     // --- Deserialization helpers ---
@@ -297,26 +305,31 @@ public final class KVStoreSerializer {
             case "worker-directive" -> parseWorkerDirectiveEntry(identity, rawValue);
             case "activation" -> parseActivationEntry(identity, rawValue);
             case "gossip-key-rotation" -> parseGossipKeyRotationEntry(identity, rawValue);
+            case "governor-announcement" -> parseGovernorAnnouncementEntry(identity, rawValue);
             default -> new SerializationError.UnknownKeyType(section).result();
         };
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseSliceTargetEntry(String identity, String raw) {
         var parts = raw.split("\\|", - 1);
-        if (parts.length != 5) {
-            return parseFailure("slice-target value requires 5 fields, got " + parts.length);
+        if (parts.length != 5 && parts.length != 6) {
+            return parseFailure("slice-target value requires 5 or 6 fields, got " + parts.length);
         }
         return SliceTargetKey.sliceTargetKey("slice-target/" + identity)
                              .flatMap(key -> buildSliceTargetValue(parts).map(val -> entry(key, val)));
     }
 
     private static Result<AetherValue> buildSliceTargetValue(String[] parts) {
+        var placement = parts.length >= 6 && !parts[5].isEmpty()
+                        ? parts[5]
+                        : "CORE_ONLY";
         return org.pragmatica.aether.artifact.Version.version(parts[0])
                   .flatMap(ver -> parseOptionalBlueprintId(parts[3])
         .map(bp -> new SliceTargetValue(ver,
                                         Integer.parseInt(parts[1]),
                                         Integer.parseInt(parts[2]),
                                         bp,
+                                        placement,
                                         Long.parseLong(parts[4]))));
     }
 
@@ -523,15 +536,22 @@ public final class KVStoreSerializer {
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseWorkerDirectiveEntry(String identity, String raw) {
         var parts = raw.split("\\|", - 1);
-        if (parts.length != 4) {
-            return parseFailure("worker-directive value requires 4 fields, got " + parts.length);
+        if (parts.length != 4 && parts.length != 5) {
+            return parseFailure("worker-directive value requires 4 or 5 fields, got " + parts.length);
         }
+        var targetCommunity = parts.length >= 5 && !parts[3].isEmpty()
+                              ? Option.some(parts[3])
+                              : Option.<String>none();
+        var timestampIndex = parts.length >= 5
+                             ? 4
+                             : 3;
         return WorkerSliceDirectiveKey.workerSliceDirectiveKey("worker-directive/" + identity)
                                       .flatMap(key -> org.pragmatica.aether.artifact.Artifact.artifact(parts[0])
                                                          .map(art -> new WorkerSliceDirectiveValue(art,
                                                                                                    Integer.parseInt(parts[1]),
                                                                                                    parts[2],
-                                                                                                   Long.parseLong(parts[3])))
+                                                                                                   targetCommunity,
+                                                                                                   Long.parseLong(parts[timestampIndex])))
                                                          .map(val -> entry(key, val)));
     }
 
@@ -539,6 +559,20 @@ public final class KVStoreSerializer {
         return ActivationDirectiveKey.activationDirectiveKey("activation/" + identity)
                                      .map(key -> entry(key,
                                                        new ActivationDirectiveValue(raw)));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseGovernorAnnouncementEntry(String identity,
+                                                                                            String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 3) {
+            return parseFailure("governor-announcement value requires 3 fields, got " + parts.length);
+        }
+        return GovernorAnnouncementKey.governorAnnouncementKey("governor-announcement/" + identity)
+                                      .flatMap(key -> org.pragmatica.consensus.NodeId.nodeId(parts[0])
+                                                         .map(nodeId -> new GovernorAnnouncementValue(nodeId,
+                                                                                                      Integer.parseInt(parts[1]),
+                                                                                                      Long.parseLong(parts[2])))
+                                                         .map(val -> entry(key, val)));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseGossipKeyRotationEntry(String identity, String raw) {

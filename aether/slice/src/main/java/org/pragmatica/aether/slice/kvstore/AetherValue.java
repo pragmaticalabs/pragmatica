@@ -32,20 +32,53 @@ public sealed interface AetherValue {
                             int targetInstances,
                             int minInstances,
                             Option<BlueprintId> owningBlueprint,
+                            String placement,
                             long updatedAt) implements AetherValue {
+        private static final String DEFAULT_PLACEMENT = "CORE_ONLY";
+
+        /// Compact constructor: normalize null/empty placement at construction time.
+        public SliceTargetValue {
+            if (placement == null || placement.isEmpty()) {
+                placement = DEFAULT_PLACEMENT;
+            }
+        }
+
         /// Creates a new slice target value with current timestamp.
         public static SliceTargetValue sliceTargetValue(Version version, int instances, Option<BlueprintId> owner) {
-            return new SliceTargetValue(version, instances, instances, owner, System.currentTimeMillis());
+            return new SliceTargetValue(version,
+                                        instances,
+                                        instances,
+                                        owner,
+                                        DEFAULT_PLACEMENT,
+                                        System.currentTimeMillis());
         }
 
         /// Creates a standalone slice target (not part of any app blueprint).
         public static SliceTargetValue sliceTargetValue(Version version, int instances) {
-            return new SliceTargetValue(version, instances, instances, none(), System.currentTimeMillis());
+            return new SliceTargetValue(version,
+                                        instances,
+                                        instances,
+                                        none(),
+                                        DEFAULT_PLACEMENT,
+                                        System.currentTimeMillis());
         }
 
         /// Creates a standalone slice target with explicit minInstances.
         public static SliceTargetValue sliceTargetValue(Version version, int instances, int minInstances) {
-            return new SliceTargetValue(version, instances, minInstances, none(), System.currentTimeMillis());
+            return new SliceTargetValue(version,
+                                        instances,
+                                        minInstances,
+                                        none(),
+                                        DEFAULT_PLACEMENT,
+                                        System.currentTimeMillis());
+        }
+
+        /// Creates a standalone slice target with explicit minInstances and placement.
+        public static SliceTargetValue sliceTargetValue(Version version,
+                                                        int instances,
+                                                        int minInstances,
+                                                        String placement) {
+            return new SliceTargetValue(version, instances, minInstances, none(), placement, System.currentTimeMillis());
         }
 
         /// Returns the effective minimum instances (handles backward-compat where minInstances == 0).
@@ -53,21 +86,38 @@ public sealed interface AetherValue {
             return Math.max(1, minInstances);
         }
 
-        /// Returns a new value with updated instance count, preserving minInstances.
+        /// Returns the effective placement (guaranteed non-null by compact constructor).
+        public String effectivePlacement() {
+            return placement;
+        }
+
+        /// Returns a new value with updated instance count, preserving minInstances and placement.
         public SliceTargetValue withInstances(int newCount) {
             return new SliceTargetValue(currentVersion,
                                         newCount,
                                         minInstances,
                                         owningBlueprint,
+                                        placement,
                                         System.currentTimeMillis());
         }
 
-        /// Returns a new value with updated version, preserving minInstances.
+        /// Returns a new value with updated placement, preserving all other fields.
+        public SliceTargetValue withPlacement(String newPlacement) {
+            return new SliceTargetValue(currentVersion,
+                                        targetInstances,
+                                        minInstances,
+                                        owningBlueprint,
+                                        newPlacement,
+                                        System.currentTimeMillis());
+        }
+
+        /// Returns a new value with updated version, preserving minInstances and placement.
         public SliceTargetValue withVersion(Version newVersion) {
             return new SliceTargetValue(newVersion,
                                         targetInstances,
                                         minInstances,
                                         owningBlueprint,
+                                        placement,
                                         System.currentTimeMillis());
         }
     }
@@ -380,19 +430,41 @@ public sealed interface AetherValue {
     /// @param artifact the slice artifact to deploy
     /// @param targetInstances total desired instances across worker pool
     /// @param placement which pool(s) are eligible (matches PlacementPolicy enum name)
+    /// @param targetCommunity optional community targeting (empty = all communities)
     /// @param updatedAt timestamp of last update
     record WorkerSliceDirectiveValue(Artifact artifact,
                                      int targetInstances,
                                      String placement,
+                                     Option<String> targetCommunity,
                                      long updatedAt) implements AetherValue {
         public static WorkerSliceDirectiveValue workerSliceDirectiveValue(Artifact artifact,
                                                                           int targetInstances,
                                                                           String placement) {
-            return new WorkerSliceDirectiveValue(artifact, targetInstances, placement, System.currentTimeMillis());
+            return new WorkerSliceDirectiveValue(artifact,
+                                                 targetInstances,
+                                                 placement,
+                                                 none(),
+                                                 System.currentTimeMillis());
+        }
+
+        /// Creates a directive targeting a specific community.
+        public static WorkerSliceDirectiveValue workerSliceDirectiveValue(Artifact artifact,
+                                                                          int targetInstances,
+                                                                          String placement,
+                                                                          String targetCommunity) {
+            return new WorkerSliceDirectiveValue(artifact,
+                                                 targetInstances,
+                                                 placement,
+                                                 Option.option(targetCommunity),
+                                                 System.currentTimeMillis());
         }
 
         public WorkerSliceDirectiveValue withInstances(int newCount) {
-            return new WorkerSliceDirectiveValue(artifact, newCount, placement, System.currentTimeMillis());
+            return new WorkerSliceDirectiveValue(artifact,
+                                                 newCount,
+                                                 placement,
+                                                 targetCommunity,
+                                                 System.currentTimeMillis());
         }
     }
 
@@ -446,6 +518,33 @@ public sealed interface AetherValue {
         /// Returns true if a previous key is available for dual-key decryption.
         public boolean hasPreviousKey() {
             return ! previousKey.isEmpty();
+        }
+    }
+
+    /// Governor announcement value for multi-group worker topology.
+    /// Governors write this to consensus so core nodes track active worker communities.
+    ///
+    /// @param governorId the NodeId of the elected governor
+    /// @param memberCount number of workers in this community
+    /// @param announcedAt timestamp when governor was announced
+    record GovernorAnnouncementValue(NodeId governorId,
+                                     int memberCount,
+                                     long announcedAt) implements AetherValue {
+        /// Creates a new governor announcement with current timestamp.
+        public static GovernorAnnouncementValue governorAnnouncementValue(NodeId governorId, int memberCount) {
+            return new GovernorAnnouncementValue(governorId, memberCount, System.currentTimeMillis());
+        }
+
+        /// Creates a governor announcement with explicit timestamp.
+        public static GovernorAnnouncementValue governorAnnouncementValue(NodeId governorId,
+                                                                          int memberCount,
+                                                                          long announcedAt) {
+            return new GovernorAnnouncementValue(governorId, memberCount, announcedAt);
+        }
+
+        /// Returns an updated announcement with new member count.
+        public GovernorAnnouncementValue withMemberCount(int newCount) {
+            return new GovernorAnnouncementValue(governorId, newCount, System.currentTimeMillis());
         }
     }
 

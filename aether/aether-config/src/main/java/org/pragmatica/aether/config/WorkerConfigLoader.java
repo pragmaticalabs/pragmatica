@@ -18,6 +18,9 @@ import static org.pragmatica.lang.Result.success;
 /// core_nodes = ["node1:7100", "node2:7100", "node3:7100"]
 /// cluster_port = 7100
 /// swim_port = 7200
+/// group_name = "default"
+/// zone = "local"
+/// max_group_size = 100
 ///
 /// [worker.swim]
 /// period_ms = 1000
@@ -52,19 +55,38 @@ public final class WorkerConfigLoader {
                           .or(WorkerConfig.DEFAULT_SWIM_PORT);
         var swimSettings = parseSwimSettings(doc);
         var sliceConfig = parseSliceConfig(doc);
+        var groupName = doc.getString("worker", "group_name")
+                           .or(WorkerConfig.DEFAULT_GROUP_NAME);
+        var zone = doc.getString("worker", "zone")
+                      .or(WorkerConfig.DEFAULT_ZONE);
+        var maxGroupSize = doc.getInt("worker", "max_group_size")
+                              .or(WorkerConfig.DEFAULT_MAX_GROUP_SIZE);
         return swimSettings.flatMap(swim -> sliceConfig.flatMap(slice -> assembleConfig(coreNodes,
                                                                                         clusterPort,
                                                                                         swimPort,
                                                                                         swim,
-                                                                                        slice)));
+                                                                                        slice,
+                                                                                        groupName,
+                                                                                        zone,
+                                                                                        maxGroupSize)));
     }
 
     private static Result<WorkerConfig> assembleConfig(List<String> coreNodes,
                                                        int clusterPort,
                                                        int swimPort,
                                                        SwimSettings swimSettings,
-                                                       SliceConfig sliceConfig) {
-        return WorkerConfig.workerConfig(coreNodes, clusterPort, swimPort, swimSettings, sliceConfig);
+                                                       SliceConfig sliceConfig,
+                                                       String groupName,
+                                                       String zone,
+                                                       int maxGroupSize) {
+        return WorkerConfig.workerConfig(coreNodes,
+                                         clusterPort,
+                                         swimPort,
+                                         swimSettings,
+                                         sliceConfig,
+                                         groupName,
+                                         zone,
+                                         maxGroupSize);
     }
 
     private static List<String> parseCoreNodes(TomlDocument doc) {

@@ -49,7 +49,7 @@ class SliceTargetValueTest {
     @Test
     void sliceTargetValue_effectiveMinInstances_defaultsToOne() {
         var version = Version.version("1.0.0").unwrap();
-        var value = new SliceTargetValue(version, 3, 0, Option.none(), System.currentTimeMillis());
+        var value = new SliceTargetValue(version, 3, 0, Option.none(), "CORE_ONLY", System.currentTimeMillis());
 
         assertThat(value.effectiveMinInstances()).isEqualTo(1);
     }
@@ -104,8 +104,8 @@ class SliceTargetValueTest {
         var version = Version.version("1.0.0").unwrap();
         // Create two values at the same time to have matching updatedAt
         var now = System.currentTimeMillis();
-        var value1 = new SliceTargetValue(version, 3, 3, Option.none(), now);
-        var value2 = new SliceTargetValue(version, 3, 3, Option.none(), now);
+        var value1 = new SliceTargetValue(version, 3, 3, Option.none(), "CORE_ONLY", now);
+        var value2 = new SliceTargetValue(version, 3, 3, Option.none(), "CORE_ONLY", now);
 
         assertThat(value1).isEqualTo(value2);
         assertThat(value1.hashCode()).isEqualTo(value2.hashCode());
@@ -116,8 +116,8 @@ class SliceTargetValueTest {
         var version1 = Version.version("1.0.0").unwrap();
         var version2 = Version.version("2.0.0").unwrap();
         var now = System.currentTimeMillis();
-        var value1 = new SliceTargetValue(version1, 3, 3, Option.none(), now);
-        var value2 = new SliceTargetValue(version2, 3, 3, Option.none(), now);
+        var value1 = new SliceTargetValue(version1, 3, 3, Option.none(), "CORE_ONLY", now);
+        var value2 = new SliceTargetValue(version2, 3, 3, Option.none(), "CORE_ONLY", now);
 
         assertThat(value1).isNotEqualTo(value2);
     }
@@ -126,8 +126,8 @@ class SliceTargetValueTest {
     void sliceTargetValue_inequality_with_different_instances() {
         var version = Version.version("1.0.0").unwrap();
         var now = System.currentTimeMillis();
-        var value1 = new SliceTargetValue(version, 3, 3, Option.none(), now);
-        var value2 = new SliceTargetValue(version, 5, 5, Option.none(), now);
+        var value1 = new SliceTargetValue(version, 3, 3, Option.none(), "CORE_ONLY", now);
+        var value2 = new SliceTargetValue(version, 5, 5, Option.none(), "CORE_ONLY", now);
 
         assertThat(value1).isNotEqualTo(value2);
     }

@@ -473,12 +473,28 @@ public class AetherCli implements Runnable {
         @CommandLine.Option(names = {"-n", "--instances"}, description = "Target number of instances", required = true)
         private int instances;
 
+        @CommandLine.Option(names = {"-p", "--placement"}, description = "Placement strategy: CORE_ONLY, WORKER_PREFERRED, WORKER_ONLY")
+        private String placement;
+
         @Override
         public Integer call() {
-            var body = "{\"artifact\":\"" + artifact + "\",\"instances\":" + instances + "}";
+            var body = buildScaleBody();
             var response = parent.postToNode("/api/scale", body);
             System.out.println(formatJson(response));
             return 0;
+        }
+
+        private String buildScaleBody() {
+            var sb = new StringBuilder("{\"artifact\":\"").append(artifact)
+                                                          .append("\",\"instances\":")
+                                                          .append(instances);
+            if (placement != null) {
+                sb.append(",\"placement\":\"")
+                  .append(placement)
+                  .append("\"");
+            }
+            return sb.append("}")
+                     .toString();
         }
     }
 

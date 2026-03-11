@@ -546,6 +546,7 @@ public interface RollingUpdateManager {
                                                        instances,
                                                        existingMinInstances,
                                                        Option.none(),
+                                                       "CORE_ONLY",
                                                        System.currentTimeMillis());
                 var targetCmd = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(targetKey, targetValue);
                 log.info("Deploying {} instances of {} (version {})", instances, artifactBase, update.newVersion());
@@ -599,6 +600,7 @@ public interface RollingUpdateManager {
                                                  instances,
                                                  minInstances,
                                                  Option.none(),
+                                                 "CORE_ONLY",
                                                  System.currentTimeMillis());
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
                 return clusterNode.<Unit> apply(List.of(command))

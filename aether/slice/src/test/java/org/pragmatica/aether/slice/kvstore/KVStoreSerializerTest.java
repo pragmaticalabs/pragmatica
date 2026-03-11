@@ -40,13 +40,13 @@ class KVStoreSerializerTest {
             var artifactBase = ArtifactBase.artifactBase("com.example:my-app").unwrap();
             var version = Version.version("1.0.0").unwrap();
             var key = SliceTargetKey.sliceTargetKey(artifactBase);
-            var value = new SliceTargetValue(version, 3, 2, Option.none(), 1710072000000L);
+            var value = new SliceTargetValue(version, 3, 2, Option.none(), "CORE_ONLY", 1710072000000L);
 
             KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(toml -> {
                                  assertThat(toml).contains("[slice-target]");
-                                 assertThat(toml).contains("\"com.example:my-app\" = \"1.0.0|3|2||1710072000000\"");
+                                 assertThat(toml).contains("\"com.example:my-app\" = \"1.0.0|3|2||1710072000000|CORE_ONLY\"");
                              });
         }
 
@@ -91,21 +91,35 @@ class KVStoreSerializerTest {
         }
 
         @Test
+        void toToml_governorAnnouncement_serializedCorrectly() {
+            var key = GovernorAnnouncementKey.forCommunity("prod:us-east-1");
+            var value = new GovernorAnnouncementValue(
+                NodeId.nodeId("governor-1").unwrap(), 42, 1710072000000L);
+
+            KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(toml -> {
+                                 assertThat(toml).contains("[governor-announcement]");
+                                 assertThat(toml).contains("\"prod:us-east-1\" = \"governor-1|42|1710072000000\"");
+                             });
+        }
+
+        @Test
         void toToml_multipleEntriesSameSection_groupedCorrectly() {
             var ab1 = ArtifactBase.artifactBase("com.example:app-a").unwrap();
             var ab2 = ArtifactBase.artifactBase("com.example:app-b").unwrap();
             var version = Version.version("1.0.0").unwrap();
             var entries = new LinkedHashMap<AetherKey, AetherValue>();
             entries.put(SliceTargetKey.sliceTargetKey(ab1),
-                        new SliceTargetValue(version, 2, 1, Option.none(), 1000L));
+                        new SliceTargetValue(version, 2, 1, Option.none(), "CORE_ONLY", 1000L));
             entries.put(SliceTargetKey.sliceTargetKey(ab2),
-                        new SliceTargetValue(version, 4, 3, Option.none(), 2000L));
+                        new SliceTargetValue(version, 4, 3, Option.none(), "CORE_ONLY", 2000L));
 
             KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(toml -> {
-                                 assertThat(toml).contains("\"com.example:app-a\" = \"1.0.0|2|1||1000\"");
-                                 assertThat(toml).contains("\"com.example:app-b\" = \"1.0.0|4|3||2000\"");
+                                 assertThat(toml).contains("\"com.example:app-a\" = \"1.0.0|2|1||1000|CORE_ONLY\"");
+                                 assertThat(toml).contains("\"com.example:app-b\" = \"1.0.0|4|3||2000|CORE_ONLY\"");
                                  // Only one section header
                                  assertThat(countOccurrences(toml, "[slice-target]")).isEqualTo(1);
                              });
@@ -198,7 +212,7 @@ class KVStoreSerializerTest {
             var ab = ArtifactBase.artifactBase("com.example:svc").unwrap();
             var ver = Version.version("2.0.0").unwrap();
             entries.put(SliceTargetKey.sliceTargetKey(ab),
-                        new SliceTargetValue(ver, 5, 3, Option.none(), 1000L));
+                        new SliceTargetValue(ver, 5, 3, Option.none(), "CORE_ONLY", 1000L));
 
             var nodeId = NodeId.nodeId("node-x").unwrap();
             entries.put(NodeLifecycleKey.nodeLifecycleKey(nodeId),
@@ -233,6 +247,30 @@ class KVStoreSerializerTest {
                                      GossipKeyRotationKey.gossipKeyRotationKey());
                                  assertThat(gk.currentKeyId()).isEqualTo(42);
                                  assertThat(gk.previousKey()).isEqualTo("oldkeydata");
+                             });
+        }
+
+        @Test
+        void roundTrip_governorAnnouncement_preservesFields() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var key = GovernorAnnouncementKey.forCommunity("prod:us-east-1");
+            var value = new GovernorAnnouncementValue(
+                NodeId.nodeId("governor-1").unwrap(), 42, 5000L);
+            entries.put(key, value);
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).hasSize(1);
+                                 var restoredKey = restored.keySet().iterator().next();
+                                 assertThat(restoredKey).isInstanceOf(GovernorAnnouncementKey.class);
+                                 var gak = (GovernorAnnouncementKey) restoredKey;
+                                 assertThat(gak.communityId()).isEqualTo("prod:us-east-1");
+                                 var gav = (GovernorAnnouncementValue) restored.get(restoredKey);
+                                 assertThat(gav.governorId().id()).isEqualTo("governor-1");
+                                 assertThat(gav.memberCount()).isEqualTo(42);
+                                 assertThat(gav.announcedAt()).isEqualTo(5000L);
                              });
         }
 

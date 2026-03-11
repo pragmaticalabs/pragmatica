@@ -1090,7 +1090,15 @@ public interface AetherNode {
                                                   .onPut(AetherKey.NodeLifecycleKey.class,
                                                          nodeDeploymentManager::onNodeLifecyclePut)
                                                   .onPut(AetherKey.NodeLifecycleKey.class,
-                                                         clusterDeploymentManager::onNodeLifecyclePut);
+                                                         clusterDeploymentManager::onNodeLifecyclePut)
+                                                  .onPut(AetherKey.ActivationDirectiveKey.class,
+                                                         clusterDeploymentManager::onActivationDirectivePut)
+                                                  .onRemove(AetherKey.ActivationDirectiveKey.class,
+                                                            clusterDeploymentManager::onActivationDirectiveRemove)
+                                                  .onPut(AetherKey.GovernorAnnouncementKey.class,
+                                                         clusterDeploymentManager::onGovernorAnnouncementPut)
+                                                  .onRemove(AetherKey.GovernorAnnouncementKey.class,
+                                                            clusterDeploymentManager::onGovernorAnnouncementRemove);
         // Dynamic config manager (optional)
         dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
                                                              .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));

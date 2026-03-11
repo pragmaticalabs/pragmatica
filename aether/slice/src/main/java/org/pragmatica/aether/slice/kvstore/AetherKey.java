@@ -768,6 +768,45 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Governor announcement key format:
+    /// ```
+    /// governor-announcement/{communityId}
+    /// ```
+    /// Governors write their identity to consensus so core nodes and GovernorDiscovery
+    /// can track active worker communities.
+    record GovernorAnnouncementKey(String communityId) implements AetherKey {
+        private static final String PREFIX = "governor-announcement/";
+
+        @Override
+        public String asString() {
+            return PREFIX + communityId;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static GovernorAnnouncementKey forCommunity(String communityId) {
+            return new GovernorAnnouncementKey(communityId);
+        }
+
+        public static Result<GovernorAnnouncementKey> governorAnnouncementKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return GOVERNOR_ANNOUNCEMENT_KEY_FORMAT_ERROR.apply(key)
+                                                             .result();
+            }
+            var communityId = key.substring(PREFIX.length());
+            if (communityId.isEmpty()) {
+                return GOVERNOR_ANNOUNCEMENT_KEY_FORMAT_ERROR.apply(key)
+                                                             .result();
+            }
+            return success(new GovernorAnnouncementKey(communityId));
+        }
+    }
+
+    Fn1<Cause, String> GOVERNOR_ANNOUNCEMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid governor-announcement key format: %s");
     Fn1<Cause, String> GOSSIP_KEY_ROTATION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid gossip-key-rotation key format: %s");
     Fn1<Cause, String> SCHEDULED_TASK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid scheduled-task key format: %s");
     Fn1<Cause, String> TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid topic-sub key format: %s");

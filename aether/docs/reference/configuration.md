@@ -295,6 +295,25 @@ var config = AetherNodeConfig.aetherNodeConfig(
 var config = AetherNodeConfig.testConfig(nodeId, port, peers);
 ```
 
+## Worker Configuration
+
+```toml
+[worker]
+group_name = "default"
+zone = "local"
+max_group_size = 100
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `group_name` | string | `"default"` | Logical group name for this worker pool |
+| `zone` | string | `"local"` | Zone identifier for zone-aware grouping. Workers in the same zone auto-cluster |
+| `max_group_size` | int | `100` | Maximum members per group before splitting. Groups split at this threshold; merge below 50% |
+
+Zone is also extracted from the NodeId: everything before the last dash (e.g., `us-east-worker-1` → zone `us-east-worker`). The explicit `zone` config takes precedence for group computation.
+
+Workers self-organize into groups deterministically from SWIM membership. Same membership produces identical groups on every worker — no coordination needed. Each group elects its own governor (lowest ALIVE NodeId).
+
 ## Backup Configuration
 
 ```toml

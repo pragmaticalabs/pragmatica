@@ -165,18 +165,21 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
 | 80 | SWIM failure detection | Complete | UDP-based protocol with periodic probes, indirect probing, piggybacked membership updates. Standalone `integrations/swim/` module. Used for both worker-to-worker and core-to-core health detection via `CoreSwimHealthDetector` |
-| 81 | Worker node | Partial | Passive compute nodes that run slices without participating in Rabia consensus. WorkerNode composes PassiveNode + SWIM + Governor. **Gap:** Phase 1 only — single group, flat topology, no auto-splitting |
-| 82 | Governor election | Partial | Pure deterministic computation — lowest ALIVE NodeId from SWIM membership. No election messages exchanged. **Gap:** No sticky incumbent yet |
+| 81 | Worker node | Complete | Passive compute nodes that run slices without participating in Rabia consensus. WorkerNode composes PassiveNode + SWIM + Governor + WorkerDeploymentManager. Full slice lifecycle: receives directives from CDM, self-assigns instances via consistent hashing, loads/activates slices, publishes endpoints to DHT |
+| 82 | Governor election | Complete | Pure deterministic computation — lowest ALIVE NodeId from SWIM membership, scoped to own group. No election messages exchanged. Governor cleanup removes dead node DHT entries. Reconciliation on new governor election. GovernorAnnouncement published to consensus for core-side discovery |
 | 83 | Worker endpoint registry | Complete | `WorkerEndpointRegistry` removed (Phase 2a) — replaced by unified `EndpointRegistry` fed by DHT `ReplicatedMap` subscription events. SliceInvoker uses single registry for both core and worker endpoints |
-| 84 | CDM pool awareness | Partial | AllocationPool for core + worker node sets. WorkerSliceDirectiveKey/Value in consensus KV-Store for worker slice deployment directives. PlacementPolicy enum (CORE_ONLY, WORKERS_PREFERRED, WORKERS_ONLY, ALL). **Gap:** Not yet wired to CDM allocation logic |
-| 85 | Worker management API | Partial | `GET /api/workers`, `GET /api/workers/health`, `GET /api/workers/endpoints`. CLI commands: `workers list`, `workers health`. **Gap:** No worker-specific deployment or scaling endpoints |
+| 84 | CDM pool awareness | Complete | AllocationPool for core + worker node sets. CDM discovers workers via `ActivationDirectiveKey(WORKER)`, writes `WorkerSliceDirectiveKey/Value` directives to consensus. PlacementPolicy (CORE_ONLY, WORKERS_PREFERRED, WORKERS_ONLY, ALL) flows from SliceTargetValue through CDM allocation |
+| 85 | Worker management API | Complete | `GET /api/workers`, `GET /api/workers/health`, `GET /api/workers/endpoints`. `POST /api/scale` accepts `placement` parameter. CLI: `workers list`, `workers health`, `scale --placement` |
 | 86 | Core-to-core SWIM health | Complete | `CoreSwimHealthDetector` bridges SWIM `FAULTY`/`LEFT` events to `TopologyChangeNotification.nodeRemoved`. Replaces TCP disconnect detection (15s-2min) with SWIM (1-2s). TCP disconnect decoupled from topology — only triggers reconnection |
 | 87 | Automatic topology growth | Complete | CDM assigns core vs worker role to joining non-seed nodes. `RabiaEngine` activation gating: seed nodes auto-activate on quorum, non-seed nodes wait for `ActivateConsensus` from CDM. `TopologyConfig` extended with `coreMax`/`coreMin`. Management API: `GET /api/cluster/topology`. CLI: `aether topology status` |
 | 88 | DHT-backed ReplicatedMap | Complete | Generic typed `ReplicatedMap<K,V>` abstraction over `DHTClient` with namespace-prefixed keys, serialization, and `MapSubscription` event callbacks. `CachedReplicatedMap` adds LRU + TTL caching. `aether/aether-dht/` module |
 | 89 | Community-aware replication | Complete | `ReplicationPolicy` with home-replica rule (1 home + 2 ring replicas = RF=3). `HomeReplicaResolver` for deterministic community-local selection. Spot-node exclusion via `ConsistentHashRing.nodesFor(key, count, filter)` |
 | 90 | Endpoint DHT migration | Complete | Endpoints moved from consensus KV-Store to DHT `ReplicatedMap`. `EndpointRegistry` fed by DHT subscription events. `NodeDeploymentManager` writes endpoints via DHT. O(3) write amplification vs O(N) with consensus |
 | 91 | Replication cooldown | Complete | Startup RF=1 with background push to RF=3 after configurable delay. Rate-limited to prevent boot storm |
-| 92 | Governor mesh (infrastructure) | Partial | `GovernorMesh` and `GovernorDiscovery` for cross-community DHT traffic routing. **Gap:** Not yet wired to multi-group topology (Phase 2b) |
+| 92 | Governor mesh (infrastructure) | Partial | `GovernorMesh` and `GovernorDiscovery` for cross-community DHT traffic routing. **Gap:** TCP connectivity between governors not yet implemented (Phase 2b.5) |
+| 97 | Multi-group worker topology | Complete | Zone-aware group computation from SWIM membership. `WorkerGroupId` (`groupName:zone`), `GroupAssignment` (deterministic splitting at configurable `maxGroupSize`), `GroupMembershipTracker`. Per-group governor election and Decision relay. `GovernorAnnouncementKey/Value` in consensus for core-side community tracking |
+| 98 | CDM community-aware placement | Complete | `AllocationPool` extended with `workersByCommunity`. CDM tracks `GovernorAnnouncementValue` per community. `WorkerSliceDirectiveValue` extended with optional `targetCommunity` for scoped deployment |
+| 99 | Worker zone configuration | Complete | `WorkerConfig` extended with `groupName`, `zone`, `maxGroupSize`. TOML: `worker.group_name`, `worker.zone`, `worker.max_group_size`. Backward compatible — defaults produce single "default:local" group |
 | 93 | DHT node cleanup | Complete | `DhtNodeCleanup` removes dead node's endpoints from DHT maps on SWIM DEAD detection |
 | 94 | SliceNodeKey DHT migration | Complete | SliceNodeKey reads/writes moved from consensus to `slice-nodes` ReplicatedMap. CDM and NDM write via DHT. 5 subscribers via `asSliceNodeSubscription()` adapters |
 | 95 | HttpNodeRouteKey DHT migration | Complete | HttpNodeRouteKey reads/writes moved from consensus to `http-routes` ReplicatedMap. HttpRoutePublisher writes via DHT. 3 subscribers via `asHttpRouteSubscription()` adapters |
@@ -215,10 +218,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 23 |
-| Complete | 54 |
-| Partial | 6 |
+| Complete | 61 |
+| Partial | 2 |
 | Planned | 10 |
-| Total | 93 |
+| Total | 96 |
 
 **Battle-tested features (23):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), Forge integration tests
 
@@ -228,10 +231,6 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 |---------|---------|
 | TTM predictive scaling | Disabled by default, no live model training |
 | Web dashboard | Node management dashboard in active development (v0.19.0) — observability UI, trace viewer, log levels pending |
-| Worker node | Phase 1 — single group, flat topology, no auto-splitting |
-| Governor election | No sticky incumbent yet |
-| Worker endpoint registry | Not unified with consensus-driven EndpointRegistry |
-| Worker management API | No worker-specific deployment or scaling endpoints |
 
 **Planned features:**
 
@@ -251,4 +250,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-03-10 (v0.19.3)*
+*Last updated: 2026-03-11 (v0.19.3)*

@@ -184,11 +184,19 @@ aether health
 Scale a blueprint-deployed slice. The slice must be part of an active blueprint.
 
 ```bash
-aether scale <artifact> -n <instances>
+aether scale <artifact> -n <instances> [-p <placement>]
 
-# Example
+# Scale instances only
 aether scale org.example:order:1.0.0 -n 5
+
+# Scale with placement strategy
+aether scale org.example:order:1.0.0 -n 5 -p WORKER_PREFERRED
 ```
+
+| Option | Description |
+|--------|-------------|
+| `-n, --instances` | Target number of instances (required) |
+| `-p, --placement` | Placement strategy: `CORE_ONLY`, `WORKER_PREFERRED`, `WORKER_ONLY` (optional) |
 
 > **Note:** Individual deploy/undeploy commands have been removed. Use `blueprint apply` and `blueprint delete` instead.
 
