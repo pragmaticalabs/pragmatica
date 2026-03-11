@@ -162,7 +162,9 @@ public interface WorkerNode {
         var workerDeploymentManager = WorkerDeploymentManager.workerDeploymentManager(nodeId,
                                                                                       sliceStore,
                                                                                       aetherMaps,
-                                                                                      List.of());
+                                                                                      List.of(),
+                                                                                      () -> groupMembershipTracker.myGroup()
+                                                                                                                  .communityId());
         var kvNotificationRouter = createKvNotificationRouter(workerDeploymentManager);
         return new AssembledWorkerNode(config,
                                        nodeId,

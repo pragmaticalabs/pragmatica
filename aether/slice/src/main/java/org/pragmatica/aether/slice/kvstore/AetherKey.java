@@ -666,14 +666,17 @@ public sealed interface AetherKey extends StructuredKey {
     /// Worker slice directive key format:
     /// ```
     /// worker-directive/{groupId}:{artifactId}:{version}
+    /// worker-directive/{communityId}/{groupId}:{artifactId}:{version}
     /// ```
     /// CDM writes directives for worker pools to load/unload slices.
-    record WorkerSliceDirectiveKey(Artifact artifact) implements AetherKey {
+    /// The optional communityId enables per-community directives.
+    record WorkerSliceDirectiveKey(Artifact artifact, Option<String> communityId) implements AetherKey {
         private static final String PREFIX = "worker-directive/";
 
         @Override
         public String asString() {
-            return PREFIX + artifact.asString();
+            return communityId.map(c -> PREFIX + c + "/" + artifact.asString())
+                              .or(PREFIX + artifact.asString());
         }
 
         @Override
@@ -683,7 +686,12 @@ public sealed interface AetherKey extends StructuredKey {
 
         @SuppressWarnings("JBCT-VO-02")
         public static WorkerSliceDirectiveKey workerSliceDirectiveKey(Artifact artifact) {
-            return new WorkerSliceDirectiveKey(artifact);
+            return new WorkerSliceDirectiveKey(artifact, Option.none());
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static WorkerSliceDirectiveKey workerSliceDirectiveKey(Artifact artifact, String communityId) {
+            return new WorkerSliceDirectiveKey(artifact, Option.option(communityId));
         }
 
         public static Result<WorkerSliceDirectiveKey> workerSliceDirectiveKey(String key) {
@@ -691,9 +699,22 @@ public sealed interface AetherKey extends StructuredKey {
                 return WORKER_DIRECTIVE_KEY_FORMAT_ERROR.apply(key)
                                                         .result();
             }
-            var artifactPart = key.substring(PREFIX.length());
+            var rest = key.substring(PREFIX.length());
+            var slashIndex = rest.indexOf('/');
+            if (slashIndex >= 0) {
+                return parseCommunityKey(rest, slashIndex);
+            }
+            return Artifact.artifact(rest)
+                           .map(art -> new WorkerSliceDirectiveKey(art,
+                                                                   Option.none()));
+        }
+
+        private static Result<WorkerSliceDirectiveKey> parseCommunityKey(String rest, int slashIndex) {
+            var communityPart = rest.substring(0, slashIndex);
+            var artifactPart = rest.substring(slashIndex + 1);
             return Artifact.artifact(artifactPart)
-                           .map(WorkerSliceDirectiveKey::new);
+                           .map(art -> new WorkerSliceDirectiveKey(art,
+                                                                   Option.some(communityPart)));
         }
     }
 

@@ -105,6 +105,20 @@ class KVStoreSerializerTest {
         }
 
         @Test
+        void toToml_workerDirectiveWithCommunity_serializedCorrectly() {
+            var artifact = org.pragmatica.aether.artifact.Artifact.artifact("com.example:svc:1.0.0").unwrap();
+            var key = WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact, "prod:us-east-1");
+            var value = WorkerSliceDirectiveValue.workerSliceDirectiveValue(artifact, 5, "WORKERS_ONLY", "prod:us-east-1");
+
+            KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(toml -> {
+                                 assertThat(toml).contains("[worker-directive]");
+                                 assertThat(toml).contains("prod:us-east-1/com.example:svc:1.0.0");
+                             });
+        }
+
+        @Test
         void toToml_multipleEntriesSameSection_groupedCorrectly() {
             var ab1 = ArtifactBase.artifactBase("com.example:app-a").unwrap();
             var ab2 = ArtifactBase.artifactBase("com.example:app-b").unwrap();
@@ -271,6 +285,56 @@ class KVStoreSerializerTest {
                                  assertThat(gav.governorId().id()).isEqualTo("governor-1");
                                  assertThat(gav.memberCount()).isEqualTo(42);
                                  assertThat(gav.announcedAt()).isEqualTo(5000L);
+                             });
+        }
+
+        @Test
+        void roundTrip_workerDirectiveWithCommunity_preservesFields() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var artifact = org.pragmatica.aether.artifact.Artifact.artifact("com.example:svc:1.0.0").unwrap();
+            var key = WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact, "prod:us-east-1");
+            var value = WorkerSliceDirectiveValue.workerSliceDirectiveValue(artifact, 5, "WORKERS_ONLY", "prod:us-east-1");
+            entries.put(key, value);
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).hasSize(1);
+                                 var restoredKey = restored.keySet().iterator().next();
+                                 assertThat(restoredKey).isInstanceOf(WorkerSliceDirectiveKey.class);
+                                 var wdk = (WorkerSliceDirectiveKey) restoredKey;
+                                 assertThat(wdk.artifact()).isEqualTo(artifact);
+                                 assertThat(wdk.communityId().isPresent()).isTrue();
+                                 assertThat(wdk.communityId().or("")).isEqualTo("prod:us-east-1");
+                                 var wdv = (WorkerSliceDirectiveValue) restored.get(restoredKey);
+                                 assertThat(wdv.targetInstances()).isEqualTo(5);
+                                 assertThat(wdv.placement()).isEqualTo("WORKERS_ONLY");
+                                 assertThat(wdv.targetCommunity().or("")).isEqualTo("prod:us-east-1");
+                             });
+        }
+
+        @Test
+        void roundTrip_workerDirectiveNoCommunity_preservesFields() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+            var artifact = org.pragmatica.aether.artifact.Artifact.artifact("com.example:svc:1.0.0").unwrap();
+            var key = WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact);
+            var value = WorkerSliceDirectiveValue.workerSliceDirectiveValue(artifact, 3, "WORKERS_PREFERRED");
+            entries.put(key, value);
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .flatMap(KVStoreSerializer::fromToml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(restored -> {
+                                 assertThat(restored).hasSize(1);
+                                 var restoredKey = restored.keySet().iterator().next();
+                                 assertThat(restoredKey).isInstanceOf(WorkerSliceDirectiveKey.class);
+                                 var wdk = (WorkerSliceDirectiveKey) restoredKey;
+                                 assertThat(wdk.artifact()).isEqualTo(artifact);
+                                 assertThat(wdk.communityId().isPresent()).isFalse();
+                                 var wdv = (WorkerSliceDirectiveValue) restored.get(restoredKey);
+                                 assertThat(wdv.targetInstances()).isEqualTo(3);
+                                 assertThat(wdv.targetCommunity().isPresent()).isFalse();
                              });
         }
 

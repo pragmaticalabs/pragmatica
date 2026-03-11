@@ -57,6 +57,8 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.stream.Collectors;
 import java.util.List;
@@ -566,10 +568,18 @@ public interface ClusterDeploymentManager {
             }
 
             private Map<String, List<NodeId>> buildCommunityWorkerMap() {
-                // Community governors are tracked but individual worker-to-community mapping
-                // requires cross-referencing SWIM membership (tracked by governors, not CDM).
-                // For now, the flat workerNodes set is used for allocation.
-                return Map.of();
+                if (communityGovernors.isEmpty()) {
+                    return Map.of();
+                }
+                var result = new HashMap<String, List<NodeId>>();
+                communityGovernors.forEach((communityId, announcement) -> result.put(communityId,
+                                                                                     List.of(announcement.governorId())));
+                return Map.copyOf(result);
+            }
+
+            /// Returns a snapshot of active community governor announcements.
+            private Map<String, GovernorAnnouncementValue> activeCommunities() {
+                return Map.copyOf(communityGovernors);
             }
 
             /// Check if a node has ON_DUTY lifecycle state in KV store.
@@ -1638,6 +1648,7 @@ public interface ClusterDeploymentManager {
 
             /// Issue allocation commands, considering placement policy.
             /// For policies that target workers, writes WorkerSliceDirectiveKey/Value to consensus.
+            /// When communities exist, distributes instances proportionally across communities.
             @SuppressWarnings("JBCT-RET-01")
             private void issueAllocationCommandsWithPlacement(Artifact artifact,
                                                               int desiredInstances,
@@ -1650,9 +1661,13 @@ public interface ClusterDeploymentManager {
                     issueAllocationCommands(artifact, desiredInstances);
                     return;
                 }
-                // If policy targets workers (and workers are available), write worker directive
+                // If policy targets workers (and workers are available), write worker directive(s)
                 if (policy != PlacementPolicy.CORE_ONLY && pool.hasWorkers()) {
-                    writeWorkerDirective(artifact, desiredInstances, placement);
+                    if (pool.hasCommunities()) {
+                        distributeToCommunities(artifact, desiredInstances, placement);
+                    } else {
+                        writeWorkerDirective(artifact, desiredInstances, placement);
+                    }
                 }
                 // For CORE_ONLY or fallback, use existing core allocation
                 if (policy == PlacementPolicy.CORE_ONLY || (policy == PlacementPolicy.WORKERS_PREFERRED && !pool.hasWorkers())) {
@@ -1679,10 +1694,111 @@ public interface ClusterDeploymentManager {
             }
 
             @SuppressWarnings("JBCT-RET-01")
-            private void removeWorkerDirective(Artifact artifact) {
-                var key = WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact);
-                var command = new KVCommand.Remove<AetherKey>(key);
+            private void writeWorkerDirective(Artifact artifact,
+                                              int targetInstances,
+                                              String placement,
+                                              String communityId) {
+                var key = WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact, communityId);
+                var value = WorkerSliceDirectiveValue.workerSliceDirectiveValue(artifact,
+                                                                                targetInstances,
+                                                                                placement,
+                                                                                communityId);
+                var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
                 cluster.apply(List.of(command))
+                       .onSuccess(_ -> log.info("Written worker directive for {} community '{}' with {} instances",
+                                                artifact,
+                                                communityId,
+                                                targetInstances))
+                       .onFailure(cause -> log.error("Failed to write worker directive for {} community '{}': {}",
+                                                     artifact,
+                                                     communityId,
+                                                     cause.message()));
+            }
+
+            /// Distribute instances proportionally across communities by member count.
+            private void distributeToCommunities(Artifact artifact, int desiredInstances, String placement) {
+                var communities = activeCommunities();
+                var totalMembers = communities.values()
+                                              .stream()
+                                              .mapToInt(GovernorAnnouncementValue::memberCount)
+                                              .sum();
+                if (totalMembers == 0) {
+                    writeWorkerDirective(artifact, desiredInstances, placement);
+                    return;
+                }
+                var sorted = new ArrayList<>(communities.entrySet());
+                sorted.sort(Comparator.<Map.Entry<String, GovernorAnnouncementValue>> comparingInt(e -> e.getValue()
+                                                                                                         .memberCount())
+                                      .reversed());
+                var remaining = desiredInstances;
+                for (var i = 0; i < sorted.size(); i++) {
+                    var share = computeCommunityShare(i, sorted, desiredInstances, totalMembers, remaining);
+                    if (share > 0) {
+                        writeWorkerDirective(artifact,
+                                             share,
+                                             placement,
+                                             sorted.get(i)
+                                                   .getKey());
+                        remaining -= share;
+                    }
+                }
+                assignRemainder(artifact, remaining, placement, sorted);
+            }
+
+            /// Compute instance share for a community: largest gets remainder, others get proportional.
+            private int computeCommunityShare(int index,
+                                              List<Map.Entry<String, GovernorAnnouncementValue>> sorted,
+                                              int desiredInstances,
+                                              int totalMembers,
+                                              int remaining) {
+                if (index == 0) {
+                    return computeLargestCommunityShare(sorted, desiredInstances, totalMembers, remaining);
+                }
+                var memberCount = sorted.get(index)
+                                        .getValue()
+                                        .memberCount();
+                var proportional = Math.max(1, Math.round((float) desiredInstances * memberCount / totalMembers));
+                return Math.min(proportional, remaining);
+            }
+
+            /// Largest community gets what remains after proportional shares for smaller communities.
+            private int computeLargestCommunityShare(List<Map.Entry<String, GovernorAnnouncementValue>> sorted,
+                                                     int desiredInstances,
+                                                     int totalMembers,
+                                                     int remaining) {
+                var share = remaining;
+                for (var j = 1; j < sorted.size(); j++) {
+                    var otherCount = sorted.get(j)
+                                           .getValue()
+                                           .memberCount();
+                    share -= Math.max(1, Math.round((float) desiredInstances * otherCount / totalMembers));
+                }
+                return Math.min(Math.max(1, share), remaining);
+            }
+
+            /// Assign any remaining instances (from rounding) to the largest community.
+            private void assignRemainder(Artifact artifact,
+                                         int remaining,
+                                         String placement,
+                                         List<Map.Entry<String, GovernorAnnouncementValue>> sorted) {
+                if (remaining > 0) {
+                    writeWorkerDirective(artifact,
+                                         remaining,
+                                         placement,
+                                         sorted.getFirst()
+                                               .getKey());
+                }
+            }
+
+            @SuppressWarnings("JBCT-RET-01")
+            private void removeWorkerDirective(Artifact artifact) {
+                var commands = new ArrayList<KVCommand<AetherKey>>();
+                commands.add(new KVCommand.Remove<>(WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact)));
+                for (var communityId : communityGovernors.keySet()) {
+                    commands.add(new KVCommand.Remove<>(WorkerSliceDirectiveKey.workerSliceDirectiveKey(artifact,
+                                                                                                        communityId)));
+                }
+                cluster.apply(commands)
                        .onFailure(cause -> log.debug("No worker directive to remove for {}: {}",
                                                      artifact,
                                                      cause.message()));

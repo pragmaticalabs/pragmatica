@@ -20,6 +20,7 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,18 +63,28 @@ public sealed interface WorkerDeploymentManager {
         }
     }
 
-    /// Create an active WorkerDeploymentManager.
+    /// Create an active WorkerDeploymentManager with community identity supplier.
     static WorkerDeploymentManager workerDeploymentManager(NodeId self,
                                                            SliceStore sliceStore,
                                                            AetherMaps aetherMaps,
-                                                           List<NodeId> initialMembers) {
+                                                           List<NodeId> initialMembers,
+                                                           Supplier<String> communityIdSupplier) {
         return new ActiveWorkerDeploymentManager(self,
                                                  sliceStore,
                                                  aetherMaps.endpoints(),
                                                  aetherMaps.sliceNodes(),
                                                  new ConcurrentHashMap<>(),
                                                  new ConcurrentHashMap<>(),
-                                                 new CopyOnWriteArrayList<>(initialMembers));
+                                                 new CopyOnWriteArrayList<>(initialMembers),
+                                                 communityIdSupplier);
+    }
+
+    /// Create an active WorkerDeploymentManager with default community identity.
+    static WorkerDeploymentManager workerDeploymentManager(NodeId self,
+                                                           SliceStore sliceStore,
+                                                           AetherMaps aetherMaps,
+                                                           List<NodeId> initialMembers) {
+        return workerDeploymentManager(self, sliceStore, aetherMaps, initialMembers, () -> "default:local");
     }
 }
 
@@ -89,6 +100,7 @@ final class ActiveWorkerDeploymentManager implements WorkerDeploymentManager {
     private final ConcurrentHashMap<Artifact, WorkerSliceDeployment> deployments;
     private final ConcurrentHashMap<Artifact, WorkerSliceDirectiveValue> directives;
     private final CopyOnWriteArrayList<NodeId> aliveMembers;
+    private final Supplier<String> communityIdSupplier;
 
     ActiveWorkerDeploymentManager(NodeId self,
                                   SliceStore sliceStore,
@@ -96,7 +108,8 @@ final class ActiveWorkerDeploymentManager implements WorkerDeploymentManager {
                                   ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap,
                                   ConcurrentHashMap<Artifact, WorkerSliceDeployment> deployments,
                                   ConcurrentHashMap<Artifact, WorkerSliceDirectiveValue> directives,
-                                  CopyOnWriteArrayList<NodeId> aliveMembers) {
+                                  CopyOnWriteArrayList<NodeId> aliveMembers,
+                                  Supplier<String> communityIdSupplier) {
         this.self = self;
         this.sliceStore = sliceStore;
         this.endpointMap = endpointMap;
@@ -104,14 +117,33 @@ final class ActiveWorkerDeploymentManager implements WorkerDeploymentManager {
         this.deployments = deployments;
         this.directives = directives;
         this.aliveMembers = aliveMembers;
+        this.communityIdSupplier = communityIdSupplier;
     }
 
     @Override
     public void onDirectivePut(WorkerSliceDirectiveValue directive) {
+        if (isDirectiveForDifferentCommunity(directive)) {
+            return;
+        }
         var artifact = directive.artifact();
         directives.put(artifact, directive);
         log.info("Received worker directive for {} with {} target instances", artifact, directive.targetInstances());
         computeAndApplyAssignment(artifact, directive);
+    }
+
+    private boolean isDirectiveForDifferentCommunity(WorkerSliceDirectiveValue directive) {
+        var myCommunity = communityIdSupplier.get();
+        var isDifferent = directive.targetCommunity()
+                                   .map(target -> !target.equals(myCommunity))
+                                   .or(false);
+        if (isDifferent) {
+            log.debug("Skipping directive for {} — targets community '{}', this worker is in '{}'",
+                      directive.artifact(),
+                      directive.targetCommunity()
+                               .or(""),
+                      myCommunity);
+        }
+        return isDifferent;
     }
 
     @Override
