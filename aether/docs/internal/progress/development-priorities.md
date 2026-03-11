@@ -202,7 +202,7 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
      - Drain connections before node removal (graceful deregistration delay)
      - TLS termination configuration (certificate ARN/ID passthrough)
    - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
-   - **Enables:** Spot Instance Support (part of #3 passive worker pools), Expense Tracking in FUTURE section
+   - **Enables:** Expense Tracking in FUTURE section
 
 2. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
     - Cluster-level schema migration managed by Aether runtime, not individual nodes
@@ -212,25 +212,6 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
     - Readiness gate: traffic only routed after all datasources reach declared version
     - Expand-contract support for zero-downtime schema changes
     - Lightweight `AetherSchemaManager` — plain JDBC, no Flyway/Liquibase dependency
-
-3. **Cluster Scalability via Passive Worker Pools** — [design spec](../../specs/passive-worker-pools-spec.md)
-    - **Problem:** Current design limits cluster to 5-7-9-11 consensus nodes max. Production clusters need tens/hundreds/thousands of nodes.
-    - **Architecture:** Small consensus core (5-7-9 active nodes) + self-organizing worker pools with elected governors.
-    - **Key design decisions (v0.19.3):**
-      - **Elected governors** — workers self-organize into groups, elect a governor (lowest NodeId). Governor is a regular worker that additionally relays Decisions, aggregates health, and proxies mutations. Stateless — no data that can't be reconstructed.
-      - **Automatic flat ↔ layered transition** — at 3 workers = flat. At 500 workers = multiple groups with governors. No config change needed — emergent from group size threshold (~100-150 per group).
-      - **SWIM gossip** — O(1) per-member overhead for worker membership/failure detection. Proven to 10K+ nodes.
-      - **KV-Store split** — consensus holds desired state (<1 MB); new Worker Endpoint Registry holds runtime state (endpoints, routes). Governors aggregate endpoints per group → core sees O(governors) not O(workers).
-      - **Zone-aware grouping** — consistent hashing with zone prefix in NodeId. Workers in same zone auto-group.
-    - **Phased rollout:**
-      - Phase 1 (0.19.3): ✅ Complete — SWIM protocol, worker node, governor election, worker endpoint registry, CDM pool awareness, worker management API, core-to-core SWIM health detection, automatic topology growth
-      - Phase 2a (0.19.3): ✅ Complete — DHT-backed ReplicatedMap, all 3 key types migrated (EndpointKey, SliceNodeKey, HttpNodeRouteKey) from consensus to DHT, unified EndpointRegistry, community-aware replication policy, replication cooldown, governor mesh infrastructure, dead node cleanup, WorkerEndpointRegistry removed, `[dht.replication]` config. **Worker slice execution wired end-to-end:** CDM writes WorkerSliceDirectiveKey/Value, WorkerDeploymentManager self-assigns instances via consistent hashing, loads/activates slices, publishes endpoints to DHT. Governor cleanup removes dead worker DHT entries. PlacementPolicy in SliceTargetValue with Management API + CLI support
-      - Phase 2b (0.19.3): ✅ Complete — Zone-aware multi-group topology: `WorkerGroupId` (`groupName:zone`), `GroupAssignment` (deterministic splitting at `maxGroupSize`), `GroupMembershipTracker`, per-group governor election and Decision relay, `GovernorAnnouncementKey/Value` in consensus for core-side community tracking, CDM community-aware placement with `AllocationPool.workersByCommunity`, `WorkerSliceDirectiveValue.targetCommunity`. Config: `worker.group_name`, `worker.zone`, `worker.max_group_size`
-      - Phase 2b.5 (0.19.3): ✅ Complete — Global distributed DHT on workers with cross-community governor mesh relay. GovernorMesh TCP connections, DHT relay protocol, follower-to-governor heartbeat, WorkerDeploymentManager tests. Governor advertised address (configurable `advertise_address`). Event-based community scaling: WorkerMetricsPing/Pong, CommunityScalingEvaluator (sliding window, threshold check, cooldown), WorkerMetricsAggregator (governor-side), CommunityScalingRequest → ControlLoop handler with evidence validation
-      - Phase 2c (future): Spot pool, spot-node exclusion from DHT ring. Decision filtering rejected (workers keep full KV-Store replicas — filtering breaks governor transition simplicity)
-      - Phase 3 (future): Multi-region, cross-region governors
-    - **Foundation exists:** `PassiveNode<K,V>`, `AetherPassiveLB`, `NodeRole.ACTIVE/PASSIVE`, Decision stream to passive nodes
-    - **Research:** [10-system comparative analysis](../../internal/passive-worker-pool-research.md) (K8s, Consul, Hazelcast, Nomad, Mesos, CockroachDB, TiKV, FoundationDB, Akka, Orleans, Ray)
 
 ### Cloud Provider Support
 
@@ -258,15 +239,26 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### MEDIUM PRIORITY - Developer Tooling & Deployment
 
-4. **Forge Modular Rework**
-    - ~80% done: modules separated (`forge-simulator`, `forge-load`, `forge-cluster`), Ember works
-    - **Remaining scope:**
-      - Remote cluster support in load generator (target remote clusters, not just embedded)
-      - Forge Script DSL: declarative scenario language for load/chaos test definitions, reusable scenario libraries, CI/CD integration
-    - Three independently usable components:
-      - **Ember** — single-process Aether runtime. Standalone for production migration, embedded for development
-      - **Tester** — load generator + chaos testing + Forge Script DSL. Standalone for remote clusters, embedded for local
-      - **Forge** — Ember + Tester + dashboard for local development convenience
+3. **Distributed Scheduler Resource**
+    - Distributed task scheduling as a `@ResourceQualifier` resource for user slices
+    - Builds on existing `ScheduledTaskManager`/`ScheduledTaskRegistry` (internal Aether scheduling, v0.18.0)
+    - `infra-scheduler` currently in-memory only — needs distributed coordination via KV-Store consensus
+    - **API shape:** `@Scheduled` resource qualifier with interval/cron config, distributed locking to prevent duplicate execution
+    - **Execution modes:** single-node (leader-elected), all-nodes, per-community (worker pools)
+    - **Persistence:** durable task state in KV-Store — survives leader failover and node restarts
+    - **Observability:** task execution history, next-fire tracking, failure counts, dead letter integration (#7)
+    - **Management:** REST API for task listing, pause/resume, manual trigger; CLI commands
+
+4. **Notification Resource**
+    - Unified notification facade with pluggable backends via SPI (same `@ResourceQualifier` pattern)
+    - **Channels:** Email, SMS, push notifications
+    - **Email backends (SPI):** SMTP, AWS SES, SendGrid, Mailgun
+    - **SMS backends (SPI):** Twilio, AWS SNS
+    - **Push backends (SPI):** Firebase Cloud Messaging, Apple Push Notification Service
+    - **API shape:** `NotificationSender` resource type with channel-specific configuration
+    - **Config:** per-backend TOML section (`[notifications.smtp]`, `[notifications.ses]`, `[notifications.twilio]`, etc.)
+    - **Scope exclusions:** no template engine (slices own their content), no mailing list management
+    - **Depends on:** Cloud Integration (#1) for SES/SNS/cloud-based backends; SMTP backend standalone
 
 5. **Canary & Blue-Green Deployment Strategies**
      - Current: Rolling updates with weighted routing exist
@@ -280,25 +272,14 @@ Part of Cloud Integration (#1). Per-provider status:
      - Auth failure rate limiting
      - Currently all authenticated keys have equivalent access; Tier 2 differentiates by role
 
-7. **Notification Resource**
-    - Unified notification facade with pluggable backends via SPI (same `@ResourceQualifier` pattern)
-    - **Channels:** Email, SMS, push notifications
-    - **Email backends (SPI):** SMTP, AWS SES, SendGrid, Mailgun
-    - **SMS backends (SPI):** Twilio, AWS SNS
-    - **Push backends (SPI):** Firebase Cloud Messaging, Apple Push Notification Service
-    - **API shape:** `NotificationSender` resource type with channel-specific configuration
-    - **Config:** per-backend TOML section (`[notifications.smtp]`, `[notifications.ses]`, `[notifications.twilio]`, etc.)
-    - **Scope exclusions:** no template engine (slices own their content), no mailing list management
-    - **Depends on:** Cloud Integration (#1) for SES/SNS/cloud-based backends; SMTP backend standalone
-
-8. **Dead Letter Handling**
+7. **Dead Letter Handling**
     - Failed pub-sub messages and failed scheduled task invocations currently logged and lost
     - DLQ storage: KV-Store backed dead letter queue per topic/task
     - Retry policy: configurable max attempts with exponential backoff before dead-lettering
     - Inspection: Management API endpoints to list, inspect, replay, or purge dead letters
     - CLI: `aether dead-letters list`, `aether dead-letters replay <id>`
 
-9. **Slice Development IDE Plugins**
+8. **Slice Development IDE Plugins**
     - IDE plugins for Aether slice development, providing deep integration with the JBCT toolchain
     - **Recommended approach:** build a shared **Language Server (LSP)** backend first, then thin IDE-specific clients. IntelliJ IDEA gets a native plugin for features that LSP cannot express (refactoring, inspections, run configs). VS Code, Eclipse, and NetBeans consume the LSP directly.
 
@@ -342,6 +323,16 @@ Part of Cloud Integration (#1). Per-provider status:
     **Complexity:** Medium-high for LSP + IntelliJ; low for VS Code/Eclipse/NetBeans LSP clients
     **Prerequisite:** Stable JBCT CLI and annotation processor APIs
 
+9. **Forge Modular Rework**
+    - ~80% done: modules separated (`forge-simulator`, `forge-load`, `forge-cluster`), Ember works
+    - **Remaining scope:**
+      - Remote cluster support in load generator (target remote clusters, not just embedded)
+      - Forge Script DSL: declarative scenario language for load/chaos test definitions, reusable scenario libraries, CI/CD integration
+    - Three independently usable components:
+      - **Ember** — single-process Aether runtime. Standalone for production migration, embedded for development
+      - **Tester** — load generator + chaos testing + Forge Script DSL. Standalone for remote clusters, embedded for local
+      - **Forge** — Ember + Tester + dashboard for local development convenience
+
 ### LOWER PRIORITY
 
 10. **Configurable Rate Limiting per HTTP Route**
@@ -354,12 +345,19 @@ Part of Cloud Integration (#1). Per-provider status:
 
 11. **Per-Blueprint Artifact Scoping (Tier 2)** — When artifact exclusivity (Tier 1) becomes too restrictive for multi-tenant clusters, add per-blueprint SliceTargetKey scoping. Changes: `SliceTargetKey(BlueprintId, ArtifactBase)`, CDM `Map<BlueprintId, Map<Artifact, Blueprint>>`, SliceNodeValue `owningBlueprint` field, WorkerSliceDirectiveKey blueprint scoping, Management API `blueprintId` parameter on `/api/scale`. Instance count = sum of all blueprints' allocations. Rolling update guard: reject if artifact has multiple blueprint owners. Prerequisite: Tier 1 (multi-blueprint correctness).
 
-12. **Observability Dashboard UI**
+12. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
+    - Phases 1, 2a, 2b, 2b.5 complete in v0.19.3. Remaining work driven by real demand:
+      - Phase 2c: Spot pool, spot-node exclusion from DHT ring
+      - Phase 3: Multi-region, cross-region governors
+    - **Architecture:** Small consensus core (5-7-9 active nodes) + self-organizing worker pools with elected governors. SWIM gossip for O(1) membership. Zone-aware grouping. Event-based community scaling.
+    - **Research:** [10-system comparative analysis](../../internal/passive-worker-pool-research.md)
+
+13. **Observability Dashboard UI**
    - Wire `ObservabilityDepthRegistry` data to dashboard with UI for configuring per-method depth thresholds
    - Backend REST API (`/api/observability/depth`) and KV-store sync already implemented
    - Current state is functional; production value but no customers yet
 
-13. **Invocation Observability Dashboard Tab**
+14. **Invocation Observability Dashboard Tab**
    - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
    - Click-to-expand tree view showing invocation depth with input/output at each level
    - Waterfall view for multi-hop request visualization
