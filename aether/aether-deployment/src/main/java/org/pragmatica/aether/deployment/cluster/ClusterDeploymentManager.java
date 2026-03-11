@@ -573,7 +573,10 @@ public interface ClusterDeploymentManager {
                 }
                 var result = new HashMap<String, List<NodeId>>();
                 communityGovernors.forEach((communityId, announcement) -> result.put(communityId,
-                                                                                     List.of(announcement.governorId())));
+                                                                                     announcement.members()
+                                                                                                 .isEmpty()
+                                                                                     ? List.of(announcement.governorId())
+                                                                                     : announcement.members()));
                 return Map.copyOf(result);
             }
 

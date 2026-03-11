@@ -19,20 +19,24 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTConfig;
+import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.DHTNode;
-import org.pragmatica.dht.LocalDHTClient;
+import org.pragmatica.dht.DistributedDHTClient;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
+import org.pragmatica.aether.worker.network.WorkerDHTNetwork;
 import org.pragmatica.aether.worker.bootstrap.SnapshotRequest;
 import org.pragmatica.aether.worker.bootstrap.SnapshotResponse;
 import org.pragmatica.aether.worker.bootstrap.WorkerBootstrap;
 import org.pragmatica.aether.worker.governor.DecisionRelay;
 import org.pragmatica.aether.worker.governor.GovernorCleanup;
 import org.pragmatica.aether.worker.governor.GovernorElection;
+import org.pragmatica.aether.worker.governor.GovernorMesh;
 import org.pragmatica.aether.worker.governor.GovernorReconciliation;
 import org.pragmatica.aether.worker.governor.GovernorState;
 import org.pragmatica.aether.worker.group.GroupMembershipTracker;
 import org.pragmatica.aether.worker.mutation.MutationForwarder;
 import org.pragmatica.aether.worker.mutation.WorkerMutation;
+import org.pragmatica.aether.worker.network.DHTRelayMessage;
 import org.pragmatica.aether.worker.network.WorkerNetwork;
 import org.pragmatica.cluster.node.passive.PassiveNode;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
@@ -69,8 +73,11 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -153,11 +160,20 @@ public interface WorkerNode {
         var mutationForwarder = MutationForwarder.mutationForwarder(nodeId, workerNetwork, passiveNode);
         var workerBootstrap = WorkerBootstrap.workerBootstrap(nodeId, workerNetwork);
         var swimConfig = toSwimConfig(config.swimSettings());
-        var aetherMaps = createAetherMaps(nodeId);
-        var governorCleanup = GovernorCleanup.governorCleanup(aetherMaps);
+        var governorMesh = GovernorMesh.governorMesh(workerNetwork);
+        var communityMembers = new ConcurrentHashMap<String, List<NodeId>>();
         var groupMembershipTracker = GroupMembershipTracker.groupMembershipTracker(nodeId,
                                                                                    config.groupName(),
                                                                                    config.maxGroupSize());
+        var dhtComponents = DHTComponents.dhtComponents(nodeId,
+                                                        workerNetwork,
+                                                        governorMesh,
+                                                        communityMembers,
+                                                        serializer,
+                                                        () -> groupMembershipTracker.myGroup()
+                                                                                    .communityId());
+        var aetherMaps = dhtComponents.aetherMaps();
+        var governorCleanup = GovernorCleanup.governorCleanup(aetherMaps);
         var sliceStore = createSliceStore();
         var workerDeploymentManager = WorkerDeploymentManager.workerDeploymentManager(nodeId,
                                                                                       sliceStore,
@@ -165,7 +181,10 @@ public interface WorkerNode {
                                                                                       List.of(),
                                                                                       () -> groupMembershipTracker.myGroup()
                                                                                                                   .communityId());
-        var kvNotificationRouter = createKvNotificationRouter(workerDeploymentManager);
+        var kvNotificationRouter = createKvNotificationRouter(workerDeploymentManager,
+                                                              dhtComponents,
+                                                              governorMesh,
+                                                              communityMembers);
         return new AssembledWorkerNode(config,
                                        nodeId,
                                        passiveNode,
@@ -180,7 +199,10 @@ public interface WorkerNode {
                                        governorCleanup,
                                        groupMembershipTracker,
                                        workerDeploymentManager,
-                                       kvNotificationRouter);
+                                       kvNotificationRouter,
+                                       dhtComponents,
+                                       governorMesh,
+                                       communityMembers);
     }
 
     private static SliceStore createSliceStore() {
@@ -211,7 +233,10 @@ public interface WorkerNode {
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private static KVNotificationRouter<AetherKey, AetherValue> createKvNotificationRouter(WorkerDeploymentManager wdm) {
+    private static KVNotificationRouter<AetherKey, AetherValue> createKvNotificationRouter(WorkerDeploymentManager wdm,
+                                                                                           DHTComponents dhtComponents,
+                                                                                           GovernorMesh governorMesh,
+                                                                                           Map<String, List<NodeId>> communityMembers) {
         return KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                    .onPut(WorkerSliceDirectiveKey.class,
                                           notification -> wdm.onDirectivePut((WorkerSliceDirectiveValue) notification.cause()
@@ -220,16 +245,78 @@ public interface WorkerNode {
                                              notification -> wdm.onDirectiveRemove(notification.cause()
                                                                                                .key()
                                                                                                .artifact()))
+                                   .onPut(GovernorAnnouncementKey.class,
+                                          notification -> onGovernorAnnouncementPut(notification,
+                                                                                    dhtComponents,
+                                                                                    governorMesh,
+                                                                                    communityMembers))
+                                   .onRemove(GovernorAnnouncementKey.class,
+                                             notification -> onGovernorAnnouncementRemove(notification,
+                                                                                          dhtComponents,
+                                                                                          governorMesh,
+                                                                                          communityMembers))
                                    .build();
     }
 
-    private static AetherMaps createAetherMaps(NodeId nodeId) {
-        var storage = MemoryStorageEngine.memoryStorageEngine();
-        var ring = ConsistentHashRing.<NodeId>consistentHashRing();
-        ring.addNode(nodeId);
-        var dhtNode = DHTNode.dhtNode(nodeId, storage, ring, DHTConfig.SINGLE_NODE);
-        var dhtClient = LocalDHTClient.localDHTClient(dhtNode);
-        return AetherMaps.aetherMaps(dhtClient);
+    @SuppressWarnings({"unchecked", "JBCT-RET-01"})
+    private static void onGovernorAnnouncementPut(Object notification,
+                                                  DHTComponents dhtComponents,
+                                                  GovernorMesh governorMesh,
+                                                  Map<String, List<NodeId>> communityMembers) {
+        var valuePut = (org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue>) notification;
+        var announcement = valuePut.cause()
+                                   .value();
+        var communityId = valuePut.cause()
+                                  .key()
+                                  .communityId();
+        governorMesh.registerGovernor(communityId, announcement.governorId(), announcement.tcpAddress());
+        var members = announcement.members();
+        communityMembers.put(communityId, members);
+        members.forEach(memberId -> dhtComponents.dhtNode()
+                                                 .ring()
+                                                 .addNode(memberId));
+    }
+
+    @SuppressWarnings({"unchecked", "JBCT-RET-01"})
+    private static void onGovernorAnnouncementRemove(Object notification,
+                                                     DHTComponents dhtComponents,
+                                                     GovernorMesh governorMesh,
+                                                     Map<String, List<NodeId>> communityMembers) {
+        var valueRemove = (org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue>) notification;
+        var communityId = valueRemove.cause()
+                                     .key()
+                                     .communityId();
+        governorMesh.unregisterGovernor(communityId);
+        Option.option(communityMembers.remove(communityId))
+              .onPresent(removed -> removed.forEach(memberId -> dhtComponents.dhtNode()
+                                                                             .ring()
+                                                                             .removeNode(memberId)));
+    }
+
+    /// Components for distributed DHT operation within the worker community.
+    record DHTComponents(DHTNode dhtNode,
+                         DistributedDHTClient dhtClient,
+                         WorkerDHTNetwork workerDhtNetwork,
+                         AetherMaps aetherMaps) {
+        static DHTComponents dhtComponents(NodeId nodeId,
+                                           WorkerNetwork workerNetwork,
+                                           GovernorMesh governorMesh,
+                                           Map<String, List<NodeId>> communityMembers,
+                                           Serializer serializer,
+                                           Supplier<String> selfCommunityId) {
+            var storage = MemoryStorageEngine.memoryStorageEngine();
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            ring.addNode(nodeId);
+            var dhtNode = DHTNode.dhtNode(nodeId, storage, ring, DHTConfig.DEFAULT);
+            var workerDhtNetwork = WorkerDHTNetwork.workerDHTNetwork(workerNetwork,
+                                                                     governorMesh,
+                                                                     communityMembers,
+                                                                     serializer,
+                                                                     selfCommunityId);
+            var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode, workerDhtNetwork, DHTConfig.DEFAULT);
+            var aetherMaps = AetherMaps.aetherMaps(dhtClient);
+            return new DHTComponents(dhtNode, dhtClient, workerDhtNetwork, aetherMaps);
+        }
     }
 
     private static List<NodeInfo> parseCoreNodes(WorkerConfig config, NodeId selfId) {
@@ -300,6 +387,9 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
     private final GroupMembershipTracker groupMembershipTracker;
     private final WorkerDeploymentManager workerDeploymentManager;
     private final KVNotificationRouter<AetherKey, AetherValue> kvNotificationRouter;
+    private final WorkerNode.DHTComponents dhtComponents;
+    private final GovernorMesh governorMesh;
+    private final Map<String, List<NodeId>> communityMembers;
     private volatile SwimProtocol swimProtocol;
 
     AssembledWorkerNode(WorkerConfig config,
@@ -316,7 +406,10 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
                         GovernorCleanup governorCleanup,
                         GroupMembershipTracker groupMembershipTracker,
                         WorkerDeploymentManager workerDeploymentManager,
-                        KVNotificationRouter<AetherKey, AetherValue> kvNotificationRouter) {
+                        KVNotificationRouter<AetherKey, AetherValue> kvNotificationRouter,
+                        WorkerNode.DHTComponents dhtComponents,
+                        GovernorMesh governorMesh,
+                        Map<String, List<NodeId>> communityMembers) {
         this.config = config;
         this.nodeId = nodeId;
         this.passiveNode = passiveNode;
@@ -332,6 +425,9 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
         this.groupMembershipTracker = groupMembershipTracker;
         this.workerDeploymentManager = workerDeploymentManager;
         this.kvNotificationRouter = kvNotificationRouter;
+        this.dhtComponents = dhtComponents;
+        this.governorMesh = governorMesh;
+        this.communityMembers = communityMembers;
     }
 
     @Override
@@ -385,8 +481,12 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
                        .id());
         workerNetwork.registerPeer(member.nodeId(), member.address());
         groupMembershipTracker.updateMember(member);
+        dhtComponents.dhtNode()
+                     .ring()
+                     .addNode(member.nodeId());
         reEvaluateGovernor();
         notifyDeploymentManagerOfMembershipChange();
+        reAnnounceIfGovernor();
     }
 
     @Override
@@ -405,11 +505,15 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
                        .id());
         workerNetwork.removePeer(member.nodeId());
         groupMembershipTracker.updateMember(member);
+        dhtComponents.dhtNode()
+                     .ring()
+                     .removeNode(member.nodeId());
         reEvaluateGovernor();
         notifyDeploymentManagerOfMembershipChange();
         if (isGovernor()) {
             governorCleanup.cleanupDeadNode(member.nodeId());
         }
+        reAnnounceIfGovernor();
     }
 
     @Override
@@ -417,11 +521,15 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
         LOG.info("Worker member left: {}", leftNodeId.id());
         workerNetwork.removePeer(leftNodeId);
         groupMembershipTracker.removeMember(leftNodeId);
+        dhtComponents.dhtNode()
+                     .ring()
+                     .removeNode(leftNodeId);
         reEvaluateGovernor();
         notifyDeploymentManagerOfMembershipChange();
         if (isGovernor()) {
             governorCleanup.cleanupDeadNode(leftNodeId);
         }
+        reAnnounceIfGovernor();
     }
 
     // -- Internal wiring --
@@ -439,6 +547,31 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
         allEntries.add(snapshotReqRoute);
         allEntries.add(snapshotRespRoute);
         allEntries.addAll(kvNotificationRouter.asRouteEntries());
+        // DHT request routes — handle incoming DHT operations from peer workers
+        var dhtNode = dhtComponents.dhtNode();
+        var dhtClient = dhtComponents.dhtClient();
+        var dhtNetwork = dhtComponents.workerDhtNetwork();
+        allEntries.add(route(DHTMessage.GetRequest.class,
+                             (DHTMessage.GetRequest request) -> dhtNode.handleGetRequest(request,
+                                                                                         response -> dhtNetwork.send(request.sender(),
+                                                                                                                     response))));
+        allEntries.add(route(DHTMessage.PutRequest.class,
+                             (DHTMessage.PutRequest request) -> dhtNode.handlePutRequest(request,
+                                                                                         response -> dhtNetwork.send(request.sender(),
+                                                                                                                     response))));
+        allEntries.add(route(DHTMessage.RemoveRequest.class,
+                             (DHTMessage.RemoveRequest request) -> dhtNode.handleRemoveRequest(request,
+                                                                                               response -> dhtNetwork.send(request.sender(),
+                                                                                                                           response))));
+        allEntries.add(route(DHTMessage.ExistsRequest.class,
+                             (DHTMessage.ExistsRequest request) -> dhtNode.handleExistsRequest(request,
+                                                                                               response -> dhtNetwork.send(request.sender(),
+                                                                                                                           response))));
+        // DHT response routes — complete quorum-based operations
+        allEntries.add(route(DHTMessage.GetResponse.class, dhtClient::onGetResponse));
+        allEntries.add(route(DHTMessage.PutResponse.class, dhtClient::onPutResponse));
+        allEntries.add(route(DHTMessage.RemoveResponse.class, dhtClient::onRemoveResponse));
+        allEntries.add(route(DHTMessage.ExistsResponse.class, dhtClient::onExistsResponse));
         RabiaNode.buildAndWireRouter(passiveNode.delegateRouter(), allEntries);
     }
 
@@ -469,6 +602,10 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
 
     @SuppressWarnings("unchecked")
     private void onWorkerMessage(Object message) {
+        if (message instanceof DHTRelayMessage relay) {
+            workerNetwork.sendRaw(relay.actualTarget(), relay.serializedPayload());
+            return;
+        }
         if (message instanceof Message msg) {
             passiveNode.delegateRouter()
                        .route(msg);
@@ -549,13 +686,28 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
             var communityId = groupMembershipTracker.myGroup()
                                                     .communityId();
             var key = GovernorAnnouncementKey.forCommunity(communityId);
-            var value = GovernorAnnouncementValue.governorAnnouncementValue(nodeId,
-                                                                            groupMembershipTracker.myGroupMembers()
-                                                                                                  .size());
-            LOG.info("Announcing governor for community '{}': {}", communityId, nodeId.id());
+            var members = buildMemberList();
+            var tcpAddress = "0.0.0.0:" + (config.swimPort() + 100);
+            var value = GovernorAnnouncementValue.governorAnnouncementValue(nodeId, members, tcpAddress);
+            LOG.info("Announcing governor for community '{}': {} with {} members",
+                     communityId,
+                     nodeId.id(),
+                     members.size());
             var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
             mutationForwarder.forward(WorkerMutation.workerMutation(nodeId, "governor-" + communityId, command));
         }
+    }
+
+    private void reAnnounceIfGovernor() {
+        if (isGovernor()) {
+            announceGovernorChange(new GovernorState.Governor(nodeId));
+        }
+    }
+
+    private List<NodeId> buildMemberList() {
+        var members = new ArrayList<>(groupMembershipTracker.myGroupMembers());
+        members.add(nodeId);
+        return List.copyOf(members);
     }
 
     @SuppressWarnings("JBCT-RET-01") // MapSubscription callbacks are void

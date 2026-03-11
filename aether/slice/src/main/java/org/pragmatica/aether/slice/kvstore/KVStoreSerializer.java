@@ -2,6 +2,7 @@ package org.pragmatica.aether.slice.kvstore;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -10,6 +11,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -267,8 +269,12 @@ public final class KVStoreSerializer {
     }
 
     private static String serializeGovernorAnnouncement(GovernorAnnouncementValue v) {
+        var memberIds = v.members()
+                         .stream()
+                         .map(NodeId::id)
+                         .collect(Collectors.joining(","));
         return v.governorId()
-                .id() + PIPE + v.memberCount() + PIPE + v.announcedAt();
+                .id() + PIPE + v.memberCount() + PIPE + memberIds + PIPE + v.tcpAddress() + PIPE + v.announcedAt();
     }
 
     // --- Deserialization helpers ---
@@ -564,15 +570,35 @@ public final class KVStoreSerializer {
     private static Result<Map.Entry<AetherKey, AetherValue>> parseGovernorAnnouncementEntry(String identity,
                                                                                             String raw) {
         var parts = raw.split("\\|", - 1);
-        if (parts.length != 3) {
-            return parseFailure("governor-announcement value requires 3 fields, got " + parts.length);
+        if (parts.length != 3 && parts.length != 5) {
+            return parseFailure("governor-announcement value requires 3 or 5 fields, got " + parts.length);
         }
         return GovernorAnnouncementKey.governorAnnouncementKey("governor-announcement/" + identity)
                                       .flatMap(key -> org.pragmatica.consensus.NodeId.nodeId(parts[0])
-                                                         .map(nodeId -> new GovernorAnnouncementValue(nodeId,
-                                                                                                      Integer.parseInt(parts[1]),
-                                                                                                      Long.parseLong(parts[2])))
+                                                         .map(nodeId -> buildGovernorAnnouncementValue(nodeId, parts))
                                                          .map(val -> entry(key, val)));
+    }
+
+    private static GovernorAnnouncementValue buildGovernorAnnouncementValue(NodeId nodeId,
+                                                                            String[] parts) {
+        if (parts.length == 3) {
+            return new GovernorAnnouncementValue(nodeId,
+                                                 Integer.parseInt(parts[1]),
+                                                 List.of(),
+                                                 "",
+                                                 Long.parseLong(parts[2]));
+        }
+        var members = parts[2].isEmpty()
+                      ? List.<NodeId>of()
+                      : Arrays.stream(parts[2].split(","))
+                              .map(id -> NodeId.nodeId(id)
+                                               .unwrap())
+                              .toList();
+        return new GovernorAnnouncementValue(nodeId,
+                                             Integer.parseInt(parts[1]),
+                                             members,
+                                             parts[3],
+                                             Long.parseLong(parts[4]));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseGossipKeyRotationEntry(String identity, String raw) {

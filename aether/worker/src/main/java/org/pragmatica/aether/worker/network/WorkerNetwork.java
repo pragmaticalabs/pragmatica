@@ -99,6 +99,22 @@ public final class WorkerNetwork {
         connectAndSend(target, address, message);
     }
 
+    /// Send raw pre-serialized bytes to a target node.
+    /// Used by governor relay to avoid double serialization of DHT messages.
+    public void sendRaw(NodeId target, byte[] rawBytes) {
+        var channel = connections.get(target);
+        if (channel != null && channel.isActive()) {
+            channel.writeAndFlush(Unpooled.wrappedBuffer(rawBytes));
+            return;
+        }
+        var address = knownAddresses.get(target);
+        if (address == null) {
+            LOG.warn("No known address for worker {} (raw send)", target.id());
+            return;
+        }
+        connectAndSendRaw(target, address, rawBytes);
+    }
+
     /// Broadcast a message to all connected workers.
     public void broadcast(Object message) {
         connections.values()
@@ -115,6 +131,39 @@ public final class WorkerNetwork {
                                         .isActive())
                           .map(Map.Entry::getKey)
                           .toList();
+    }
+
+    private void connectAndSendRaw(NodeId target, InetSocketAddress address, byte[] rawBytes) {
+        var group = workerGroup;
+        if (group == null) {
+            LOG.warn("Worker network not started, cannot connect to {}", target.id());
+            return;
+        }
+        new Bootstrap().group(group)
+                       .channel(NioSocketChannel.class)
+                       .handler(clientInitializer())
+                       .connect(address)
+                       .addListener(future -> handleConnectResultRaw(future.isSuccess(),
+                                                                     target,
+                                                                     future,
+                                                                     rawBytes));
+    }
+
+    @SuppressWarnings("JBCT-STY-05")
+    private void handleConnectResultRaw(boolean success,
+                                        NodeId target,
+                                        io.netty.util.concurrent.Future<?> future,
+                                        byte[] rawBytes) {
+        if (!success) {
+            LOG.warn("Failed to connect to worker {}: {}",
+                     target.id(),
+                     future.cause()
+                           .getMessage());
+            return;
+        }
+        var ch = ((io.netty.channel.ChannelFuture) future).channel();
+        connections.put(target, ch);
+        ch.writeAndFlush(Unpooled.wrappedBuffer(rawBytes));
     }
 
     private void writeMessage(Channel channel, Object message) {

@@ -21,16 +21,9 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
-import org.pragmatica.consensus.net.ClusterNetwork;
-import org.pragmatica.consensus.net.NetworkMessage;
-import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.net.tcp.Server;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -402,123 +395,18 @@ class DistributedDHTClientTest {
     private record CapturedMessage(NodeId target, ProtocolMessage message) {}
 
     /// Network stub that captures all sent messages for inspection.
-    private static final class CapturingNetwork implements ClusterNetwork {
+    private static final class CapturingNetwork implements DHTNetwork {
         final CopyOnWriteArrayList<CapturedMessage> captured = new CopyOnWriteArrayList<>();
 
         @Override
-        public <M extends ProtocolMessage> Unit broadcast(M message) {
-            return Unit.unit();
-        }
-
-        @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public void send(NodeId nodeId, ProtocolMessage message) {
             captured.add(new CapturedMessage(nodeId, message));
-            return Unit.unit();
-        }
-
-        @Override
-        public void connect(NetworkServiceMessage.ConnectNode connectNode) {}
-
-        @Override
-        public void disconnect(NetworkServiceMessage.DisconnectNode disconnectNode) {}
-
-        @Override
-        public void listNodes(NetworkServiceMessage.ListConnectedNodes listConnectedNodes) {}
-
-        @Override
-        public void handleSend(NetworkServiceMessage.Send send) {}
-
-        @Override
-        public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
-
-        @Override
-        public void handlePing(NetworkMessage.Ping ping) {}
-
-        @Override
-        public void handlePong(NetworkMessage.Pong pong) {}
-
-        @Override
-        public Promise<Unit> start() {
-            return Promise.unitPromise();
-        }
-
-        @Override
-        public Promise<Unit> stop() {
-            return Promise.unitPromise();
-        }
-
-        @Override
-        public int connectedNodeCount() {
-            return 0;
-        }
-
-        @Override
-        public Set<NodeId> connectedPeers() {
-            return Set.of();
-        }
-
-        @Override
-        public Option<Server> server() {
-            return Option.none();
         }
     }
 
     /// Minimal no-op network for single-node tests (no remote messaging needed).
-    private static final class NoOpNetwork implements ClusterNetwork {
+    private static final class NoOpNetwork implements DHTNetwork {
         @Override
-        public <M extends ProtocolMessage> Unit broadcast(M message) {
-            return Unit.unit();
-        }
-
-        @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
-            return Unit.unit();
-        }
-
-        @Override
-        public void connect(NetworkServiceMessage.ConnectNode connectNode) {}
-
-        @Override
-        public void disconnect(NetworkServiceMessage.DisconnectNode disconnectNode) {}
-
-        @Override
-        public void listNodes(NetworkServiceMessage.ListConnectedNodes listConnectedNodes) {}
-
-        @Override
-        public void handleSend(NetworkServiceMessage.Send send) {}
-
-        @Override
-        public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
-
-        @Override
-        public void handlePing(NetworkMessage.Ping ping) {}
-
-        @Override
-        public void handlePong(NetworkMessage.Pong pong) {}
-
-        @Override
-        public Promise<Unit> start() {
-            return Promise.unitPromise();
-        }
-
-        @Override
-        public Promise<Unit> stop() {
-            return Promise.unitPromise();
-        }
-
-        @Override
-        public int connectedNodeCount() {
-            return 0;
-        }
-
-        @Override
-        public Set<NodeId> connectedPeers() {
-            return Set.of();
-        }
-
-        @Override
-        public Option<Server> server() {
-            return Option.none();
-        }
+        public void send(NodeId nodeId, ProtocolMessage message) {}
     }
 }

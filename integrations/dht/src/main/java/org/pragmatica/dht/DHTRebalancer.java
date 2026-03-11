@@ -17,7 +17,6 @@
 package org.pragmatica.dht;
 
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.utility.KSUID;
 
 import java.nio.charset.StandardCharsets;
@@ -33,10 +32,10 @@ public final class DHTRebalancer {
     private static final Logger log = LoggerFactory.getLogger(DHTRebalancer.class);
 
     private final DHTNode node;
-    private final ClusterNetwork network;
+    private final DHTNetwork network;
     private final DHTConfig config;
 
-    private DHTRebalancer(DHTNode node, ClusterNetwork network, DHTConfig config) {
+    private DHTRebalancer(DHTNode node, DHTNetwork network, DHTConfig config) {
         this.node = node;
         this.network = network;
         this.config = config;
@@ -47,7 +46,7 @@ public final class DHTRebalancer {
     /// @param node    local DHT node with storage and ring
     /// @param network cluster network for sending migration data
     /// @param config  DHT configuration
-    public static DHTRebalancer dhtRebalancer(DHTNode node, ClusterNetwork network, DHTConfig config) {
+    public static DHTRebalancer dhtRebalancer(DHTNode node, DHTNetwork network, DHTConfig config) {
         return new DHTRebalancer(node, network, config);
     }
 

@@ -17,7 +17,6 @@
 package org.pragmatica.dht;
 
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -29,10 +28,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import static org.pragmatica.lang.Unit.unit;
 
 /// Distributed DHT client with quorum-based reads and writes.
-/// Routes operations to responsible nodes via consistent hashing and ClusterNetwork.
+/// Routes operations to responsible nodes via consistent hashing and DHTNetwork.
 public final class DistributedDHTClient implements DHTClient {
     private final DHTNode node;
-    private final ClusterNetwork network;
+    private final DHTNetwork network;
     private final DHTConfig config;
 
     /// Pending operations indexed by correlation ID.
@@ -40,7 +39,7 @@ public final class DistributedDHTClient implements DHTClient {
 
     private record PendingOperation<T>(QuorumCollector<T> collector) {}
 
-    private DistributedDHTClient(DHTNode node, ClusterNetwork network, DHTConfig config) {
+    private DistributedDHTClient(DHTNode node, DHTNetwork network, DHTConfig config) {
         this.node = node;
         this.network = network;
         this.config = config;
@@ -49,10 +48,10 @@ public final class DistributedDHTClient implements DHTClient {
     /// Create a distributed DHT client.
     ///
     /// @param node    local DHT node for handling local storage operations
-    /// @param network cluster network for inter-node messaging
+    /// @param network DHT network for inter-node messaging
     /// @param config  DHT configuration (replication factor, quorum sizes)
     public static DistributedDHTClient distributedDHTClient(DHTNode node,
-                                                            ClusterNetwork network,
+                                                            DHTNetwork network,
                                                             DHTConfig config) {
         return new DistributedDHTClient(node, network, config);
     }

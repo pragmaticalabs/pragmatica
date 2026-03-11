@@ -47,6 +47,21 @@ class GovernorMeshTest {
         }
 
         @Test
+        void registerGovernor_withTcpAddress_storesMapping() {
+            mesh.registerGovernor("community-1", id("governor-a"), "10.0.1.5:7201");
+
+            assertThat(mesh.governorFor("community-1").isPresent()).isTrue();
+            assertThat(mesh.governorFor("community-1").unwrap()).isEqualTo(id("governor-a"));
+        }
+
+        @Test
+        void registerGovernor_withEmptyTcpAddress_storesMapping() {
+            mesh.registerGovernor("community-1", id("governor-a"), "");
+
+            assertThat(mesh.governorFor("community-1").isPresent()).isTrue();
+        }
+
+        @Test
         void unregisterGovernor_noOp_whenNotExists() {
             mesh.unregisterGovernor("nonexistent");
 

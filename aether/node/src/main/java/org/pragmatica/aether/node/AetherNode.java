@@ -82,6 +82,7 @@ import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTAntiEntropy;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.DHTMessage;
+import org.pragmatica.dht.DHTNetwork;
 import org.pragmatica.dht.DHTNode;
 import org.pragmatica.dht.DHTRebalancer;
 import org.pragmatica.dht.DHTTopologyListener;
@@ -308,8 +309,11 @@ public interface AetherNode {
                                                    Deserializer deserializer,
                                                    SliceCodec nodeCodec,
                                                    DHTNode dhtNode) {
-        // Create distributed DHT client with quorum-based reads/writes via ClusterNetwork
-        var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode, clusterNode.network(), config.artifactRepo());
+        // Create DHTNetwork adapter from ClusterNetwork
+        DHTNetwork dhtNetwork = (target, msg) -> clusterNode.network()
+                                                            .send(target, msg);
+        // Create distributed DHT client with quorum-based reads/writes via DHTNetwork
+        var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode, dhtNetwork, config.artifactRepo());
         // Create AetherMaps for DHT-backed runtime data
         var aetherMaps = AetherMaps.aetherMaps(dhtClient);
         // Create scoped DHT client for cache operations (lower replication, single-replica default)
@@ -328,11 +332,11 @@ public interface AetherNode {
                                                resourceProviderSetup.facade(),
                                                config.sliceAction());
         // Create DHTRebalancer for re-replication on node departure
-        var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, clusterNode.network(), config.artifactRepo());
+        var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, dhtNetwork, config.artifactRepo());
         // Create DHTTopologyListener for ring updates on topology changes
         var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer);
         // Create DHT anti-entropy for replica synchronization
-        var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode, clusterNode.network(), config.artifactRepo());
+        var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode, dhtNetwork, config.artifactRepo());
         record aetherNode(AetherNodeConfig config,
                           MessageRouter.DelegateRouter router,
                           KVStore<AetherKey, AetherValue> kvStore,
@@ -794,24 +798,20 @@ public interface AetherNode {
         // DHT message routes for distributed operations
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
                                                     request -> dhtNode.handleGetRequest(request,
-                                                                                        response -> clusterNode.network()
-                                                                                                               .send(request.sender(),
-                                                                                                                     response))));
+                                                                                        response -> dhtNetwork.send(request.sender(),
+                                                                                                                    response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.PutRequest.class,
                                                     request -> dhtNode.handlePutRequest(request,
-                                                                                        response -> clusterNode.network()
-                                                                                                               .send(request.sender(),
-                                                                                                                     response))));
+                                                                                        response -> dhtNetwork.send(request.sender(),
+                                                                                                                    response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.RemoveRequest.class,
                                                     request -> dhtNode.handleRemoveRequest(request,
-                                                                                           response -> clusterNode.network()
-                                                                                                                  .send(request.sender(),
-                                                                                                                        response))));
+                                                                                           response -> dhtNetwork.send(request.sender(),
+                                                                                                                       response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.ExistsRequest.class,
                                                     request -> dhtNode.handleExistsRequest(request,
-                                                                                           response -> clusterNode.network()
-                                                                                                                  .send(request.sender(),
-                                                                                                                        response))));
+                                                                                           response -> dhtNetwork.send(request.sender(),
+                                                                                                                       response))));
         // DHT response routes — complete the request/response cycle for DistributedDHTClient
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetResponse.class, dhtClient::onGetResponse));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.PutResponse.class, dhtClient::onPutResponse));
@@ -820,16 +820,14 @@ public interface AetherNode {
         // DHT digest routes — anti-entropy replica synchronization
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.DigestRequest.class,
                                                     request -> dhtNode.handleDigestRequest(request,
-                                                                                           response -> clusterNode.network()
-                                                                                                                  .send(request.sender(),
-                                                                                                                        response))));
+                                                                                           response -> dhtNetwork.send(request.sender(),
+                                                                                                                       response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.DigestResponse.class, dhtAntiEntropy::onDigestResponse));
         // DHT migration routes — data transfer for partition repair
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataRequest.class,
                                                     request -> dhtNode.handleMigrationDataRequest(request,
-                                                                                                  response -> clusterNode.network()
-                                                                                                                         .send(request.sender(),
-                                                                                                                               response))));
+                                                                                                  response -> dhtNetwork.send(request.sender(),
+                                                                                                                              response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class,
                                                     dhtAntiEntropy::onMigrationDataResponse));
         // DHT topology listener — update consistent hash ring on node add/remove

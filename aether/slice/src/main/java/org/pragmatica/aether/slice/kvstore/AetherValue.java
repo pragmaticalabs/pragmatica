@@ -12,6 +12,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
 
+import java.util.List;
 import java.util.Set;
 
 import static org.pragmatica.lang.Option.none;
@@ -526,25 +527,49 @@ public sealed interface AetherValue {
     ///
     /// @param governorId the NodeId of the elected governor
     /// @param memberCount number of workers in this community
+    /// @param members list of all member NodeIds in this community
+    /// @param tcpAddress TCP address for cross-community governor mesh communication
     /// @param announcedAt timestamp when governor was announced
     record GovernorAnnouncementValue(NodeId governorId,
                                      int memberCount,
+                                     List<NodeId> members,
+                                     String tcpAddress,
                                      long announcedAt) implements AetherValue {
-        /// Creates a new governor announcement with current timestamp.
+        /// Creates a new governor announcement with current timestamp (backward-compat, no members).
         public static GovernorAnnouncementValue governorAnnouncementValue(NodeId governorId, int memberCount) {
-            return new GovernorAnnouncementValue(governorId, memberCount, System.currentTimeMillis());
+            return new GovernorAnnouncementValue(governorId, memberCount, List.of(), "", System.currentTimeMillis());
         }
 
-        /// Creates a governor announcement with explicit timestamp.
+        /// Creates a governor announcement with explicit timestamp (backward-compat, no members).
         public static GovernorAnnouncementValue governorAnnouncementValue(NodeId governorId,
                                                                           int memberCount,
                                                                           long announcedAt) {
-            return new GovernorAnnouncementValue(governorId, memberCount, announcedAt);
+            return new GovernorAnnouncementValue(governorId, memberCount, List.of(), "", announcedAt);
+        }
+
+        /// Creates a governor announcement with full member list and TCP address.
+        public static GovernorAnnouncementValue governorAnnouncementValue(NodeId governorId,
+                                                                          List<NodeId> members,
+                                                                          String tcpAddress) {
+            return new GovernorAnnouncementValue(governorId,
+                                                 members.size(),
+                                                 List.copyOf(members),
+                                                 tcpAddress,
+                                                 System.currentTimeMillis());
         }
 
         /// Returns an updated announcement with new member count.
         public GovernorAnnouncementValue withMemberCount(int newCount) {
-            return new GovernorAnnouncementValue(governorId, newCount, System.currentTimeMillis());
+            return new GovernorAnnouncementValue(governorId, newCount, members, tcpAddress, System.currentTimeMillis());
+        }
+
+        /// Returns an updated announcement with new members and TCP address.
+        public GovernorAnnouncementValue withMembers(List<NodeId> newMembers, String newTcpAddress) {
+            return new GovernorAnnouncementValue(governorId,
+                                                 newMembers.size(),
+                                                 List.copyOf(newMembers),
+                                                 newTcpAddress,
+                                                 System.currentTimeMillis());
         }
     }
 

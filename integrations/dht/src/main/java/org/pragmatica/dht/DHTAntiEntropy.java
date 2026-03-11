@@ -17,7 +17,6 @@
 package org.pragmatica.dht;
 
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.utility.KSUID;
 
 import java.nio.charset.StandardCharsets;
@@ -43,7 +42,7 @@ public final class DHTAntiEntropy {
     record PendingDigest(NodeId peer, int partitionIndex, byte[] localDigest) {}
 
     private final DHTNode node;
-    private final ClusterNetwork network;
+    private final DHTNetwork network;
     private final DHTConfig config;
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -51,7 +50,7 @@ public final class DHTAntiEntropy {
     /// Pending digest comparisons indexed by correlation ID.
     private final ConcurrentHashMap<String, PendingDigest> pendingDigests = new ConcurrentHashMap<>();
 
-    private DHTAntiEntropy(DHTNode node, ClusterNetwork network, DHTConfig config) {
+    private DHTAntiEntropy(DHTNode node, DHTNetwork network, DHTConfig config) {
         this.node = node;
         this.network = network;
         this.config = config;
@@ -67,7 +66,7 @@ public final class DHTAntiEntropy {
     /// @param node    local DHT node with storage and ring
     /// @param network cluster network for sending digest requests
     /// @param config  DHT configuration
-    public static DHTAntiEntropy dhtAntiEntropy(DHTNode node, ClusterNetwork network, DHTConfig config) {
+    public static DHTAntiEntropy dhtAntiEntropy(DHTNode node, DHTNetwork network, DHTConfig config) {
         return new DHTAntiEntropy(node, network, config);
     }
 

@@ -13,6 +13,7 @@ import org.pragmatica.lang.Option;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -93,14 +94,15 @@ class KVStoreSerializerTest {
         @Test
         void toToml_governorAnnouncement_serializedCorrectly() {
             var key = GovernorAnnouncementKey.forCommunity("prod:us-east-1");
+            var members = List.of(NodeId.nodeId("worker-1").unwrap(), NodeId.nodeId("worker-2").unwrap());
             var value = new GovernorAnnouncementValue(
-                NodeId.nodeId("governor-1").unwrap(), 42, 1710072000000L);
+                NodeId.nodeId("governor-1").unwrap(), 2, members, "0.0.0.0:7201", 1710072000000L);
 
             KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(toml -> {
                                  assertThat(toml).contains("[governor-announcement]");
-                                 assertThat(toml).contains("\"prod:us-east-1\" = \"governor-1|42|1710072000000\"");
+                                 assertThat(toml).contains("\"prod:us-east-1\" = \"governor-1|2|worker-1,worker-2|0.0.0.0:7201|1710072000000\"");
                              });
         }
 
@@ -268,8 +270,9 @@ class KVStoreSerializerTest {
         void roundTrip_governorAnnouncement_preservesFields() {
             var entries = new LinkedHashMap<AetherKey, AetherValue>();
             var key = GovernorAnnouncementKey.forCommunity("prod:us-east-1");
+            var members = List.of(NodeId.nodeId("worker-a").unwrap(), NodeId.nodeId("worker-b").unwrap());
             var value = new GovernorAnnouncementValue(
-                NodeId.nodeId("governor-1").unwrap(), 42, 5000L);
+                NodeId.nodeId("governor-1").unwrap(), 2, members, "10.0.1.5:7201", 5000L);
             entries.put(key, value);
 
             KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
@@ -283,7 +286,11 @@ class KVStoreSerializerTest {
                                  assertThat(gak.communityId()).isEqualTo("prod:us-east-1");
                                  var gav = (GovernorAnnouncementValue) restored.get(restoredKey);
                                  assertThat(gav.governorId().id()).isEqualTo("governor-1");
-                                 assertThat(gav.memberCount()).isEqualTo(42);
+                                 assertThat(gav.memberCount()).isEqualTo(2);
+                                 assertThat(gav.members()).hasSize(2);
+                                 assertThat(gav.members().get(0).id()).isEqualTo("worker-a");
+                                 assertThat(gav.members().get(1).id()).isEqualTo("worker-b");
+                                 assertThat(gav.tcpAddress()).isEqualTo("10.0.1.5:7201");
                                  assertThat(gav.announcedAt()).isEqualTo(5000L);
                              });
         }
