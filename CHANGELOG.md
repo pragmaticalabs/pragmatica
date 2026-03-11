@@ -48,8 +48,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - **Per-group governor election** — governor election scoped to own group members, not all SWIM members
   - **Per-group Decision relay** — governor only relays Decisions to own group followers, reducing broadcast scope
   - **GovernorAnnouncementKey/Value** — governors announce themselves to consensus KV-Store. Core nodes track community sizes and governor identities via `ClusterDeploymentManager`
-  - **CDM community-aware placement** — `AllocationPool` extended with `workersByCommunity` map. CDM tracks governor announcements for community-aware instance distribution
+  - **CDM community-aware placement** — `AllocationPool` extended with `workersByCommunity` map. CDM tracks governor announcements for community-aware instance distribution. End-to-end wiring: CDM distributes instances across communities, writes per-community directives, workers filter by targetCommunity
   - **WorkerSliceDirectiveValue** extended with optional `targetCommunity` for community-scoped deployment
+  - **AetherKey community serialization** — `GovernorAnnouncementKey` round-trip through KV-Store backup/restore with pipe-delimited communityId format
   - **Worker configuration** — `WorkerConfig` extended with `groupName` (default `"default"`), `zone` (default `"local"`), `maxGroupSize` (default `100`). TOML: `worker.group_name`, `worker.zone`, `worker.max_group_size`
 
 - **KV-Store durable backup** — serializes cluster metadata (slice targets, node lifecycle, config) to a single TOML file managed in a local git repo. Git provides versioning, history, diffs, and optional remote push for offsite backup
