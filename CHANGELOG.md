@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [0.19.3] - Unreleased
 
 ### Added
+- **Governor mesh advertised address** — governors now announce a routable TCP address instead of hardcoded `0.0.0.0`. Auto-detects via `InetAddress.getLocalHost()` or uses configurable `advertise_address` in `[worker]` TOML section. Fixes cross-host governor mesh connections
+- **Event-based community scaling** — governors monitor follower metrics locally and send scaling requests to core only when thresholds are sustained. Zero baseline bandwidth. Architecture:
+  - **Worker metrics messages** — `WorkerMetricsPing`/`WorkerMetricsPong` between governor and followers (~100 bytes per pong)
+  - **Community scaling messages** — `CommunityScalingRequest` (governor→core, event-driven), `CommunityMetricsSnapshotRequest`/`CommunityMetricsSnapshot` (core→governor, on-demand diagnostics)
+  - **CommunityScalingEvaluator** — sliding window (5 samples × 5s default) with sustained-breach detection for CPU, P95 latency, error rate. Per-direction cooldown prevents thrashing
+  - **WorkerMetricsAggregator** — governor-side component with periodic ping cycle, follower pong collection, JMX self-metrics, stale cleanup, evaluator integration
+  - **ControlLoop community scaling handler** — validates evidence freshness (<30s), checks blueprint existence and cooldown, applies scaling via existing KV-Store path, publishes ScalingEvent
+  - **Scaling cap includes workers** — `prepareChangeToBlueprint()` now counts worker nodes in cluster size for scaling cap calculation
+  - **ClusterEvent types** — added `COMMUNITY_SCALE_REQUEST` and `COMMUNITY_METRICS_SNAPSHOT` to EventType enum
+
 - **Passive Worker Pools Phase 2a — DHT-Backed ReplicatedMap** — moves high-cardinality endpoint data from consensus KV-Store to DHT, reducing write amplification from O(N) to O(3):
   - **`aether/aether-dht` module** — generic typed `ReplicatedMap<K,V>` abstraction with namespace-prefixed keys, `MapSubscription` event callbacks, `CachedReplicatedMap` (LRU + TTL), `ReplicatedMapFactory`
   - **Community-aware replication** — `ReplicationPolicy` with home-replica rule (1 home + 2 ring replicas = RF=3), `HomeReplicaResolver` for deterministic community-local selection, `ConsistentHashRing` spot-node exclusion filter

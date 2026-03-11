@@ -176,7 +176,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 89 | Community-aware replication | Complete | `ReplicationPolicy` with home-replica rule (1 home + 2 ring replicas = RF=3). `HomeReplicaResolver` for deterministic community-local selection. Spot-node exclusion via `ConsistentHashRing.nodesFor(key, count, filter)` |
 | 90 | Endpoint DHT migration | Complete | Endpoints moved from consensus KV-Store to DHT `ReplicatedMap`. `EndpointRegistry` fed by DHT subscription events. `NodeDeploymentManager` writes endpoints via DHT. O(3) write amplification vs O(N) with consensus |
 | 91 | Replication cooldown | Complete | Startup RF=1 with background push to RF=3 after configurable delay. Rate-limited to prevent boot storm |
-| 92 | Governor mesh (infrastructure) | Partial | `GovernorMesh` and `GovernorDiscovery` for cross-community DHT traffic routing. **Gap:** TCP connectivity between governors not yet implemented (Phase 2b.5) |
+| 92 | Governor mesh (infrastructure) | Complete | `GovernorMesh` and `GovernorDiscovery` for cross-community DHT traffic routing. Governors advertise routable address (auto-detect or configurable `advertise_address`). Cross-host TCP connectivity functional |
 | 97 | Multi-group worker topology | Complete | Zone-aware group computation from SWIM membership. `WorkerGroupId` (`groupName:zone`), `GroupAssignment` (deterministic splitting at configurable `maxGroupSize`), `GroupMembershipTracker`. Per-group governor election and Decision relay. `GovernorAnnouncementKey/Value` in consensus for core-side community tracking |
 | 98 | CDM community-aware placement | Complete | `AllocationPool` extended with `workersByCommunity`. CDM tracks `GovernorAnnouncementValue` per community. `WorkerSliceDirectiveValue` extended with optional `targetCommunity` for scoped deployment |
 | 99 | Worker zone configuration | Complete | `WorkerConfig` extended with `groupName`, `zone`, `maxGroupSize`. TOML: `worker.group_name`, `worker.zone`, `worker.max_group_size`. Backward compatible — defaults produce single "default:local" group |
@@ -184,6 +184,8 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 94 | SliceNodeKey DHT migration | Complete | SliceNodeKey reads/writes moved from consensus to `slice-nodes` ReplicatedMap. CDM and NDM write via DHT. 5 subscribers via `asSliceNodeSubscription()` adapters |
 | 95 | HttpNodeRouteKey DHT migration | Complete | HttpNodeRouteKey reads/writes moved from consensus to `http-routes` ReplicatedMap. HttpRoutePublisher writes via DHT. 3 subscribers via `asHttpRouteSubscription()` adapters |
 | 96 | DHT replication config | Complete | `[dht.replication]` TOML section: `cooldown_delay_ms`, `cooldown_rate`, `target_rf`. Environment-aware defaults |
+| 100 | Event-based community scaling | Complete | Governors monitor follower metrics via `WorkerMetricsPing`/`Pong`, detect sustained threshold breaches (CPU >80%, P95 >500ms, error rate >10%), send `CommunityScalingRequest` to core. Zero baseline bandwidth. `CommunityScalingEvaluator` (sliding window, cooldown), `WorkerMetricsAggregator` (periodic aggregation). Core `ControlLoop` validates and applies scaling. On-demand `CommunityMetricsSnapshot` for diagnostics/dashboard |
+| 101 | Governor advertised address | Complete | Governors announce routable TCP address instead of `0.0.0.0`. Auto-detects via `InetAddress.getLocalHost()` or configurable `worker.advertise_address` in TOML. Required for cross-host governor mesh |
 
 ## Known Limitations
 
@@ -218,10 +220,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 23 |
-| Complete | 61 |
-| Partial | 2 |
+| Complete | 64 |
+| Partial | 1 |
 | Planned | 10 |
-| Total | 96 |
+| Total | 98 |
 
 **Battle-tested features (23):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), Forge integration tests
 
@@ -230,7 +232,6 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Feature | Key Gap |
 |---------|---------|
 | TTM predictive scaling | Disabled by default, no live model training |
-| Web dashboard | Node management dashboard in active development (v0.19.0) — observability UI, trace viewer, log levels pending |
 
 **Planned features:**
 
