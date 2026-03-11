@@ -221,13 +221,13 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | Status | Count |
 |--------|-------|
-| Battle-tested | 23 |
-| Complete | 65 |
+| Battle-tested | 24 |
+| Complete | 77 |
 | Partial | 1 |
-| Planned | 11 |
-| Total | 100 |
+| Planned | 13 |
+| Total | 115 |
 
-**Battle-tested features (23):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), Forge integration tests
+**Battle-tested features (24):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), E2E test framework, Forge integration tests
 
 **Partial features and their gaps:**
 
