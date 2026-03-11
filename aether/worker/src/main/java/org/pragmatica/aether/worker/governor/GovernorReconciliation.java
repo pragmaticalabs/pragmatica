@@ -1,6 +1,7 @@
 package org.pragmatica.aether.worker.governor;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.dht.DHTNode;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -19,14 +20,32 @@ import org.slf4j.LoggerFactory;
 public sealed interface GovernorReconciliation {
     Logger log = LoggerFactory.getLogger(GovernorReconciliation.class);
 
-    /// Reconcile DHT entries against the alive member set.
-    /// Removes entries for nodes not present in aliveNodes.
+    /// Reconcile DHT entries against the alive member set, rebuilding the index from DHT storage first.
+    ///
+    /// @param aliveNodes set of nodes currently alive per SWIM
+    /// @param cleanup the GovernorCleanup to drive removal
+    /// @param dhtNode the DHT node to read storage entries from
+    /// @return promise completing when reconciliation is done
+    static Promise<Unit> reconcile(Set<NodeId> aliveNodes,
+                                   GovernorCleanup cleanup,
+                                   DHTNode dhtNode) {
+        log.info("Governor reconciliation: rebuilding index from DHT storage");
+        return cleanup.rebuildIndex(dhtNode)
+                      .flatMap(_ -> reconcileFromIndex(aliveNodes, cleanup));
+    }
+
+    /// Reconcile DHT entries against the alive member set using the existing index.
     ///
     /// @param aliveNodes set of nodes currently alive per SWIM
     /// @param cleanup the GovernorCleanup to drive removal
     /// @return promise completing when reconciliation is done
     static Promise<Unit> reconcile(Set<NodeId> aliveNodes,
                                    GovernorCleanup cleanup) {
+        return reconcileFromIndex(aliveNodes, cleanup);
+    }
+
+    private static Promise<Unit> reconcileFromIndex(Set<NodeId> aliveNodes,
+                                                    GovernorCleanup cleanup) {
         log.info("Governor reconciliation: checking DHT entries against {} alive nodes", aliveNodes.size());
         return cleanup.cleanupDeadNodes(aliveNodes)
                       .onSuccess(_ -> log.info("Governor reconciliation complete"));

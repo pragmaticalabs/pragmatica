@@ -6,9 +6,12 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.dht.DHTMessage;
+import org.pragmatica.dht.DHTNode;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +28,10 @@ import org.slf4j.LoggerFactory;
 @SuppressWarnings({"JBCT-RET-01", "JBCT-STY-05"})
 public final class GovernorCleanup {
     private static final Logger log = LoggerFactory.getLogger(GovernorCleanup.class);
+
+    private static final String ENDPOINTS_PREFIX = "endpoints/";
+    private static final String SLICE_NODES_PREFIX = "slice-nodes/";
+    private static final String HTTP_ROUTES_PREFIX = "http-routes/";
 
     private final AetherMaps aetherMaps;
     private final Map<NodeId, Set<EndpointKey>> endpointIndex;
@@ -127,6 +134,78 @@ public final class GovernorCleanup {
                                  .flatMap(_ -> removeSequentially(aetherMaps.httpRoutes(),
                                                                   httpRouteKeys))
                                  .onSuccess(_ -> clearIndices(deadNode));
+    }
+
+    /// Rebuild the cleanup index from DHT storage entries.
+    /// Called on governor election to repopulate the in-memory index.
+    public Promise<Unit> rebuildIndex(DHTNode dhtNode) {
+        clearAllIndices();
+        return dhtNode.storage()
+                      .entries()
+                      .map(this::processEntries)
+                      .mapToUnit();
+    }
+
+    private void clearAllIndices() {
+        endpointIndex.clear();
+        sliceNodeIndex.clear();
+        httpRouteIndex.clear();
+    }
+
+    private int processEntries(List<DHTMessage.KeyValue> entries) {
+        var count = 0;
+        for (var entry : entries) {
+            var keyStr = new String(entry.key(), StandardCharsets.UTF_8);
+            if (tryProcessEndpoint(keyStr, entry.value()) || tryProcessSliceNode(keyStr) || tryProcessHttpRoute(keyStr)) {
+                count++;
+            }
+        }
+        log.info("Rebuilt cleanup index from DHT: {} tracked entries", count);
+        return count;
+    }
+
+    private boolean tryProcessEndpoint(String keyStr, byte[] value) {
+        if (!keyStr.startsWith(ENDPOINTS_PREFIX)) {
+            return false;
+        }
+        var innerKey = keyStr.substring(ENDPOINTS_PREFIX.length());
+        return EndpointKey.endpointKey(innerKey)
+                          .flatMap(ek -> NodeId.nodeId(new String(value, StandardCharsets.UTF_8))
+                                               .map(nid -> trackEndpointAndReturn(nid, ek)))
+                          .fold(_ -> false, _ -> true);
+    }
+
+    private NodeId trackEndpointAndReturn(NodeId nid, EndpointKey ek) {
+        trackEndpoint(nid, ek);
+        return nid;
+    }
+
+    private boolean tryProcessSliceNode(String keyStr) {
+        if (!keyStr.startsWith(SLICE_NODES_PREFIX)) {
+            return false;
+        }
+        var innerKey = keyStr.substring(SLICE_NODES_PREFIX.length());
+        return SliceNodeKey.sliceNodeKey(innerKey)
+                           .fold(_ -> false, this::trackAndReturnSliceNode);
+    }
+
+    private boolean trackAndReturnSliceNode(SliceNodeKey snk) {
+        trackSliceNode(snk.nodeId(), snk);
+        return true;
+    }
+
+    private boolean tryProcessHttpRoute(String keyStr) {
+        if (!keyStr.startsWith(HTTP_ROUTES_PREFIX)) {
+            return false;
+        }
+        var innerKey = keyStr.substring(HTTP_ROUTES_PREFIX.length());
+        return HttpNodeRouteKey.httpNodeRouteKey(innerKey)
+                               .fold(_ -> false, this::trackAndReturnHttpRoute);
+    }
+
+    private boolean trackAndReturnHttpRoute(HttpNodeRouteKey hrk) {
+        trackHttpRoute(hrk.nodeId(), hrk);
+        return true;
     }
 
     private void clearIndices(NodeId deadNode) {

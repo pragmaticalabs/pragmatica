@@ -66,7 +66,15 @@ public final class WorkerDHTNetwork implements DHTNetwork {
         if (tryCrossCommunityRelay(target, message)) {
             return;
         }
+        if (governorMesh.isPresent() && !isKnownInAnyCommunity(target)) {
+            LOG.warn("DHT target {} not found in any known community — falling back to direct send (may fail)",
+                     target.id());
+        }
         workerNetwork.send(target, message);
+    }
+
+    private boolean isKnownInAnyCommunity(NodeId target) {
+        return findCommunityFor(target).isPresent();
     }
 
     private boolean isLocalPeer(NodeId target) {

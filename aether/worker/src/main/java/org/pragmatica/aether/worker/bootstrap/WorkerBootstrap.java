@@ -28,6 +28,7 @@ public final class WorkerBootstrap {
     private final KVStore<?, ?> kvStore;
     private volatile boolean bootstrapped;
     private volatile long snapshotSequence = - 1;
+    private volatile int retryCount = 0;
 
     private WorkerBootstrap(NodeId selfId, WorkerNetwork network, KVStore<?, ?> kvStore) {
         this.selfId = selfId;
@@ -75,6 +76,11 @@ public final class WorkerBootstrap {
     /// Mark bootstrap as complete.
     public void markBootstrapped() {
         bootstrapped = true;
+    }
+
+    /// Increment the retry counter and return the new value.
+    public int incrementRetry() {
+        return ++ retryCount;
     }
 
     private void sendSnapshotRequest(NodeId source) {

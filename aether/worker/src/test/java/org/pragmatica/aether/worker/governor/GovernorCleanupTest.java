@@ -13,10 +13,15 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.dht.ConsistentHashRing;
+import org.pragmatica.dht.DHTConfig;
+import org.pragmatica.dht.DHTNode;
+import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -192,6 +197,82 @@ class GovernorCleanupTest {
 
             result.onFailure(_ -> fail("Expected success"));
             assertThat(httpRouteMap.removedKeys).isEmpty();
+        }
+    }
+
+    @Nested
+    class RebuildIndex {
+        private DHTNode dhtNode;
+        private MemoryStorageEngine storage;
+
+        @BeforeEach
+        void setUpDht() {
+            storage = MemoryStorageEngine.memoryStorageEngine();
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            ring.addNode(ALIVE_NODE);
+            dhtNode = DHTNode.dhtNode(ALIVE_NODE, storage, ring, DHTConfig.DEFAULT);
+        }
+
+        @Test
+        void rebuildIndex_populatesEndpointIndex() {
+            putStorageEntry("endpoints/endpoints/com.example:svc:1.0.0/doWork:0",
+                            DEAD_NODE.id());
+
+            var result = cleanup.rebuildIndex(dhtNode).await();
+
+            result.onFailure(_ -> fail("Expected success"));
+            // Verify the index has the entry by cleaning up the dead node
+            var cleanupResult = cleanup.cleanupDeadNode(DEAD_NODE).await();
+            cleanupResult.onFailure(_ -> fail("Expected success"));
+            assertThat(endpointMap.removedKeys).hasSize(1);
+        }
+
+        @Test
+        void rebuildIndex_populatesSliceNodeIndex() {
+            putStorageEntry("slice-nodes/slices/" + DEAD_NODE.id() + "/com.example:svc:1.0.0",
+                            "RUNNING||false");
+
+            var result = cleanup.rebuildIndex(dhtNode).await();
+
+            result.onFailure(_ -> fail("Expected success"));
+            var cleanupResult = cleanup.cleanupDeadNode(DEAD_NODE).await();
+            cleanupResult.onFailure(_ -> fail("Expected success"));
+            assertThat(sliceNodeMap.removedKeys).hasSize(1);
+        }
+
+        @Test
+        void rebuildIndex_populatesHttpRouteIndex() {
+            putStorageEntry("http-routes/http-node-routes/GET:/api/v1/:" + DEAD_NODE.id(),
+                            "com.example:svc:1.0.0|doWork|ACTIVE|100|0");
+
+            var result = cleanup.rebuildIndex(dhtNode).await();
+
+            result.onFailure(_ -> fail("Expected success"));
+            var cleanupResult = cleanup.cleanupDeadNode(DEAD_NODE).await();
+            cleanupResult.onFailure(_ -> fail("Expected success"));
+            assertThat(httpRouteMap.removedKeys).hasSize(1);
+        }
+
+        @Test
+        void rebuildIndex_clearsExistingIndex() {
+            // Track an entry manually
+            var key = endpointKey("endpoints/com.example:svc:1.0.0/doWork:0");
+            cleanup.trackEndpoint(DEAD_NODE, key);
+
+            // Rebuild with empty storage
+            var result = cleanup.rebuildIndex(dhtNode).await();
+
+            result.onFailure(_ -> fail("Expected success"));
+            // The manually tracked entry should be gone
+            var cleanupResult = cleanup.cleanupDeadNode(DEAD_NODE).await();
+            cleanupResult.onFailure(_ -> fail("Expected success"));
+            assertThat(endpointMap.removedKeys).isEmpty();
+        }
+
+        private void putStorageEntry(String key, String value) {
+            storage.put(key.getBytes(StandardCharsets.UTF_8),
+                        value.getBytes(StandardCharsets.UTF_8))
+                   .await();
         }
     }
 

@@ -76,6 +76,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -382,6 +383,7 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final AtomicReference<Option<NodeId>> currentGovernor = new AtomicReference<>(Option.empty());
+    private final AtomicLong membershipVersion = new AtomicLong(0);
     private final AetherMaps aetherMaps;
     private final GovernorCleanup governorCleanup;
     private final GroupMembershipTracker groupMembershipTracker;
@@ -650,6 +652,7 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
             case GovernorState.Follower f -> some(f.governorId());
         };
         var previous = currentGovernor.getAndSet(newGovernor);
+        membershipVersion.incrementAndGet();
         mutationForwarder.updateGovernor(newGovernor);
         if (!previous.equals(newGovernor)) {
             logGovernorChange(state);
@@ -663,7 +666,7 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
         if (state instanceof GovernorState.Governor && !previous.map(nodeId::equals)
                                                                 .or(false)) {
             var aliveNodes = collectAliveNodeIds();
-            GovernorReconciliation.reconcile(aliveNodes, governorCleanup);
+            GovernorReconciliation.reconcile(aliveNodes, governorCleanup, dhtComponents.dhtNode());
             // Delayed reconciliation: subscription events may populate the cleanup index after election
             scheduleDelayedReconciliation();
         }
@@ -677,7 +680,7 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
 
     private void runDelayedReconciliation() {
         var aliveNodes = collectAliveNodeIds();
-        GovernorReconciliation.reconcile(aliveNodes, governorCleanup);
+        GovernorReconciliation.reconcile(aliveNodes, governorCleanup, dhtComponents.dhtNode());
     }
 
     private void triggerBootstrapIfNeeded(GovernorState state) {
@@ -697,7 +700,29 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
 
     private void requestFollowerBootstrap(NodeId governorId) {
         workerBootstrap.requestSnapshot(some(governorId));
+        scheduleBootstrapTimeout(governorId);
         LOG.info("Follower {} requesting bootstrap from governor {}", nodeId.id(), governorId.id());
+    }
+
+    private void scheduleBootstrapTimeout(NodeId governorId) {
+        Promise.<Unit> promise()
+               .timeout(timeSpan(30).seconds())
+               .onFailure(_ -> handleBootstrapTimeout(governorId));
+    }
+
+    private void handleBootstrapTimeout(NodeId governorId) {
+        if (workerBootstrap.isBootstrapped()) {
+            return;
+        }
+        if (workerBootstrap.incrementRetry() > 1) {
+            LOG.warn("Bootstrap timed out after retry — marking {} as bootstrapped (will sync via Decision stream)",
+                     nodeId.id());
+            workerBootstrap.markBootstrapped();
+            return;
+        }
+        LOG.warn("Bootstrap timed out for {} — retrying snapshot from governor {}", nodeId.id(), governorId.id());
+        workerBootstrap.requestSnapshot(some(governorId));
+        scheduleBootstrapTimeout(governorId);
     }
 
     private Set<NodeId> collectAliveNodeIds() {
@@ -723,10 +748,11 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
             var members = buildMemberList();
             var tcpAddress = "0.0.0.0:" + (config.swimPort() + 100);
             var value = GovernorAnnouncementValue.governorAnnouncementValue(nodeId, members, tcpAddress);
-            LOG.info("Announcing governor for community '{}': {} with {} members",
+            LOG.info("Announcing governor for community '{}': {} with {} members (version {})",
                      communityId,
                      nodeId.id(),
-                     members.size());
+                     members.size(),
+                     membershipVersion.get());
             var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
             mutationForwarder.forward(WorkerMutation.workerMutation(nodeId, "governor-" + communityId, command));
         }
