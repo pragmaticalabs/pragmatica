@@ -25,12 +25,16 @@ public record WorkerConfig(List<String> coreNodes,
                            SliceConfig sliceConfig,
                            String groupName,
                            String zone,
-                           int maxGroupSize) {
+                           int maxGroupSize,
+                           long heartbeatIntervalMs,
+                           long heartbeatTimeoutMs) {
     public static final int DEFAULT_CLUSTER_PORT = 7100;
     public static final int DEFAULT_SWIM_PORT = 7200;
     public static final String DEFAULT_GROUP_NAME = "default";
     public static final String DEFAULT_ZONE = "local";
     public static final int DEFAULT_MAX_GROUP_SIZE = 100;
+    public static final long DEFAULT_HEARTBEAT_INTERVAL_MS = 500;
+    public static final long DEFAULT_HEARTBEAT_TIMEOUT_MS = 2000;
 
     /// Compact constructor to normalize null/blank/invalid values to defaults.
     public WorkerConfig {
@@ -42,6 +46,12 @@ public record WorkerConfig(List<String> coreNodes,
         }
         if (maxGroupSize < 2) {
             maxGroupSize = DEFAULT_MAX_GROUP_SIZE;
+        }
+        if (heartbeatIntervalMs <= 0) {
+            heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS;
+        }
+        if (heartbeatTimeoutMs <= 0) {
+            heartbeatTimeoutMs = DEFAULT_HEARTBEAT_TIMEOUT_MS;
         }
     }
 
@@ -66,7 +76,37 @@ public record WorkerConfig(List<String> coreNodes,
                                                         sliceConfig,
                                                         groupName,
                                                         zone,
-                                                        maxGroupSize));
+                                                        maxGroupSize,
+                                                        DEFAULT_HEARTBEAT_INTERVAL_MS,
+                                                        DEFAULT_HEARTBEAT_TIMEOUT_MS));
+    }
+
+    /// Factory method with validation for all fields including heartbeat settings.
+    public static Result<WorkerConfig> workerConfig(List<String> coreNodes,
+                                                    int clusterPort,
+                                                    int swimPort,
+                                                    SwimSettings swimSettings,
+                                                    SliceConfig sliceConfig,
+                                                    String groupName,
+                                                    String zone,
+                                                    int maxGroupSize,
+                                                    long heartbeatIntervalMs,
+                                                    long heartbeatTimeoutMs) {
+        return checkCoreNodes(coreNodes).flatMap(_ -> checkPort("clusterPort", clusterPort))
+                             .flatMap(_ -> checkPort("swimPort", swimPort))
+                             .flatMap(_ -> checkNotBlank("groupName", groupName))
+                             .flatMap(_ -> checkNotBlank("zone", zone))
+                             .flatMap(_ -> checkMinValue("maxGroupSize", maxGroupSize, 2))
+                             .map(_ -> new WorkerConfig(List.copyOf(coreNodes),
+                                                        clusterPort,
+                                                        swimPort,
+                                                        swimSettings,
+                                                        sliceConfig,
+                                                        groupName,
+                                                        zone,
+                                                        maxGroupSize,
+                                                        heartbeatIntervalMs,
+                                                        heartbeatTimeoutMs));
     }
 
     /// Factory method with defaults for group fields following JBCT naming convention.

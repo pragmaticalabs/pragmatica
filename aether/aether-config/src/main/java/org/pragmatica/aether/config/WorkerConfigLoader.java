@@ -61,6 +61,10 @@ public final class WorkerConfigLoader {
                       .or(WorkerConfig.DEFAULT_ZONE);
         var maxGroupSize = doc.getInt("worker", "max_group_size")
                               .or(WorkerConfig.DEFAULT_MAX_GROUP_SIZE);
+        var heartbeatIntervalMs = doc.getLong("worker", "heartbeat_interval_ms")
+                                     .or(WorkerConfig.DEFAULT_HEARTBEAT_INTERVAL_MS);
+        var heartbeatTimeoutMs = doc.getLong("worker", "heartbeat_timeout_ms")
+                                    .or(WorkerConfig.DEFAULT_HEARTBEAT_TIMEOUT_MS);
         return swimSettings.flatMap(swim -> sliceConfig.flatMap(slice -> assembleConfig(coreNodes,
                                                                                         clusterPort,
                                                                                         swimPort,
@@ -68,7 +72,9 @@ public final class WorkerConfigLoader {
                                                                                         slice,
                                                                                         groupName,
                                                                                         zone,
-                                                                                        maxGroupSize)));
+                                                                                        maxGroupSize,
+                                                                                        heartbeatIntervalMs,
+                                                                                        heartbeatTimeoutMs)));
     }
 
     private static Result<WorkerConfig> assembleConfig(List<String> coreNodes,
@@ -78,7 +84,9 @@ public final class WorkerConfigLoader {
                                                        SliceConfig sliceConfig,
                                                        String groupName,
                                                        String zone,
-                                                       int maxGroupSize) {
+                                                       int maxGroupSize,
+                                                       long heartbeatIntervalMs,
+                                                       long heartbeatTimeoutMs) {
         return WorkerConfig.workerConfig(coreNodes,
                                          clusterPort,
                                          swimPort,
@@ -86,7 +94,9 @@ public final class WorkerConfigLoader {
                                          sliceConfig,
                                          groupName,
                                          zone,
-                                         maxGroupSize);
+                                         maxGroupSize,
+                                         heartbeatIntervalMs,
+                                         heartbeatTimeoutMs);
     }
 
     private static List<String> parseCoreNodes(TomlDocument doc) {

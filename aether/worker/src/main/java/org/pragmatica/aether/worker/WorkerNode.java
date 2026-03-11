@@ -27,6 +27,8 @@ import org.pragmatica.aether.worker.network.WorkerDHTNetwork;
 import org.pragmatica.aether.worker.bootstrap.SnapshotRequest;
 import org.pragmatica.aether.worker.bootstrap.SnapshotResponse;
 import org.pragmatica.aether.worker.bootstrap.WorkerBootstrap;
+import org.pragmatica.aether.worker.heartbeat.FollowerHeartbeat;
+import org.pragmatica.aether.worker.heartbeat.FollowerHealthTracker;
 import org.pragmatica.aether.worker.governor.DecisionRelay;
 import org.pragmatica.aether.worker.governor.GovernorCleanup;
 import org.pragmatica.aether.worker.governor.GovernorElection;
@@ -393,6 +395,8 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
     private final GovernorMesh governorMesh;
     private final Map<String, List<NodeId>> communityMembers;
     private volatile SwimProtocol swimProtocol;
+    private volatile FollowerHealthTracker followerHealthTracker;
+    private volatile boolean heartbeatSenderActive;
 
     AssembledWorkerNode(WorkerConfig config,
                         NodeId nodeId,
@@ -468,6 +472,8 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
     @Override
     public Promise<Unit> stop() {
         LOG.info("Stopping worker node {}", nodeId.id());
+        stopHeartbeatSender();
+        stopHealthTracker();
         stopSwim();
         return workerNetwork.stop()
                             .flatMap(_ -> passiveNode.stop())
@@ -543,11 +549,13 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
         Entry snapshotReqRoute = route(SnapshotRequest.class, (SnapshotRequest req) -> handleSnapshotRequest(req));
         Entry snapshotRespRoute = route(SnapshotResponse.class,
                                         (SnapshotResponse resp) -> workerBootstrap.onSnapshotReceived(resp));
+        Entry heartbeatRoute = route(FollowerHeartbeat.class, (FollowerHeartbeat hb) -> handleFollowerHeartbeat(hb));
         var allEntries = new ArrayList<>(passiveNode.routeEntries());
         allEntries.add(decisionRoute);
         allEntries.add(mutationRoute);
         allEntries.add(snapshotReqRoute);
         allEntries.add(snapshotRespRoute);
+        allEntries.add(heartbeatRoute);
         allEntries.addAll(kvNotificationRouter.asRouteEntries());
         // DHT request routes — handle incoming DHT operations from peer workers
         var dhtNode = dhtComponents.dhtNode();
@@ -596,6 +604,67 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
     private void handleSnapshotRequest(SnapshotRequest request) {
         var kvState = serializer.encode(passiveNode.kvStore());
         workerBootstrap.onSnapshotRequest(request, kvState, decisionRelay.lastSequence());
+    }
+
+    private void handleFollowerHeartbeat(FollowerHeartbeat heartbeat) {
+        var tracker = followerHealthTracker;
+        if (tracker != null && isGovernor()) {
+            tracker.onHeartbeat(heartbeat);
+        }
+    }
+
+    private void manageHeartbeatOnRoleChange(GovernorState state) {
+        switch (state) {
+            case GovernorState.Governor _ -> {
+                stopHeartbeatSender();
+                startHealthTracker();
+            }
+            case GovernorState.Follower f -> {
+                stopHealthTracker();
+                startHeartbeatSender(f.governorId());
+            }
+        }
+    }
+
+    private void startHealthTracker() {
+        followerHealthTracker = FollowerHealthTracker.followerHealthTracker();
+        LOG.debug("Started follower health tracker on governor {}", nodeId.id());
+    }
+
+    private void stopHealthTracker() {
+        var tracker = followerHealthTracker;
+        if (tracker != null) {
+            tracker.clear();
+            followerHealthTracker = null;
+        }
+    }
+
+    private void startHeartbeatSender(NodeId governorId) {
+        heartbeatSenderActive = true;
+        scheduleNextHeartbeat(governorId);
+        LOG.debug("Started heartbeat sender to governor {}", governorId.id());
+    }
+
+    private void stopHeartbeatSender() {
+        heartbeatSenderActive = false;
+    }
+
+    private void scheduleNextHeartbeat(NodeId governorId) {
+        if (!heartbeatSenderActive) {
+            return;
+        }
+        Promise.<Unit> promise()
+               .timeout(timeSpan(config.heartbeatIntervalMs()).millis())
+               .onFailure(_ -> sendHeartbeatAndReschedule(governorId));
+    }
+
+    private void sendHeartbeatAndReschedule(NodeId governorId) {
+        if (!heartbeatSenderActive) {
+            return;
+        }
+        var heartbeat = FollowerHeartbeat.followerHeartbeat(nodeId, decisionRelay.lastSequence());
+        workerNetwork.send(governorId, heartbeat);
+        scheduleNextHeartbeat(governorId);
     }
 
     private Promise<Unit> startWorkerNetwork() {
@@ -656,6 +725,7 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
         mutationForwarder.updateGovernor(newGovernor);
         if (!previous.equals(newGovernor)) {
             logGovernorChange(state);
+            manageHeartbeatOnRoleChange(state);
             triggerReconciliationIfNewGovernor(state, previous);
             triggerBootstrapIfNeeded(state);
             announceGovernorChange(state);
