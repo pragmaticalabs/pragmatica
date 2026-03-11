@@ -3,12 +3,16 @@ package org.pragmatica.aether.deployment.node;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.dht.MapSubscription;
+import org.pragmatica.aether.dht.ReplicatedMap;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.SliceStore.LoadedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.*;
@@ -41,6 +45,7 @@ class NodeDeploymentManagerTest {
     private TestClusterNode clusterNode;
     private TestKVStore kvStore;
     private TestInvocationHandler invocationHandler;
+    private StubEndpointMap endpointMap;
     private NodeDeploymentManager manager;
 
     @BeforeEach
@@ -51,8 +56,9 @@ class NodeDeploymentManagerTest {
         clusterNode = new TestClusterNode(self);
         kvStore = new TestKVStore();
         invocationHandler = new TestInvocationHandler();
+        endpointMap = new StubEndpointMap();
         manager = NodeDeploymentManager.nodeDeploymentManager(
-                self, router, sliceStore, clusterNode, kvStore, invocationHandler
+                self, router, sliceStore, clusterNode, kvStore, invocationHandler, endpointMap
                                                              );
     }
 
@@ -563,6 +569,38 @@ class NodeDeploymentManagerTest {
         @Override
         public Option<SliceBridge> findBridgeByClassLoader(ClassLoader classLoader) {
             return Option.none();
+        }
+    }
+
+    static class StubEndpointMap implements ReplicatedMap<EndpointKey, EndpointValue> {
+        final List<EndpointKey> putKeys = new CopyOnWriteArrayList<>();
+        final List<EndpointKey> removeKeys = new CopyOnWriteArrayList<>();
+
+        @Override
+        public Promise<Unit> put(EndpointKey key, EndpointValue value) {
+            putKeys.add(key);
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public Promise<Option<EndpointValue>> get(EndpointKey key) {
+            return Promise.success(Option.none());
+        }
+
+        @Override
+        public Promise<Boolean> remove(EndpointKey key) {
+            removeKeys.add(key);
+            return Promise.success(true);
+        }
+
+        @Override
+        public ReplicatedMap<EndpointKey, EndpointValue> subscribe(MapSubscription<EndpointKey, EndpointValue> subscription) {
+            return this;
+        }
+
+        @Override
+        public String name() {
+            return "test-endpoints";
         }
     }
 

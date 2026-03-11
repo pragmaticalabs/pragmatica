@@ -61,6 +61,7 @@
         <module>http-routing-adapter</module>
         <!-- Split node modules - ordered by dependency -->
         <module>aether-metrics</module>
+        <module>aether-dht</module>
         <module>aether-invoke</module>
         <module>aether-deployment</module>
         <module>aether-control</module>
@@ -306,6 +307,11 @@
                 <version>${project.version}</version>
             </dependency>
 
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>aether-dht</artifactId>
+                <version>${project.version}</version>
+            </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>aether-invoke</artifactId>

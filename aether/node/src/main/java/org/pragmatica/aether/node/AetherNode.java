@@ -21,6 +21,7 @@ import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
+import org.pragmatica.aether.dht.AetherMaps;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
@@ -309,6 +310,8 @@ public interface AetherNode {
                                                    DHTNode dhtNode) {
         // Create distributed DHT client with quorum-based reads/writes via ClusterNetwork
         var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode, clusterNode.network(), config.artifactRepo());
+        // Create AetherMaps for DHT-backed runtime data
+        var aetherMaps = AetherMaps.aetherMaps(dhtClient);
         // Create scoped DHT client for cache operations (lower replication, single-replica default)
         var cacheDhtClient = dhtClient.scoped(config.cache());
         var artifactStore = ArtifactStore.artifactStore(dhtClient);
@@ -624,8 +627,10 @@ public interface AetherNode {
                                                                                                  provider,
                                                                                                  config.appHttp()
                                                                                                        .port()));
-        // Create endpoint registry
+        // Create endpoint registry and wire DHT subscription for endpoint events
         var endpointRegistry = EndpointRegistry.endpointRegistry();
+        aetherMaps.endpoints()
+                  .subscribe(endpointRegistry.asMapSubscription());
         // Create topic subscription registry for pub/sub messaging
         var topicSubscriptionRegistry = TopicSubscriptionRegistry.topicSubscriptionRegistry();
         // Create scheduled task registry and manager for periodic slice method invocation
@@ -729,7 +734,8 @@ public interface AetherNode {
                                                                                 config.sliceAction(),
                                                                                 nodeCodec,
                                                                                 Option.some(httpRoutePublisher),
-                                                                                Option.some(sliceInvoker));
+                                                                                Option.some(sliceInvoker),
+                                                                                aetherMaps.endpoints());
         // Create application HTTP server for slice-provided routes (with HTTP forwarding support)
         var appHttpServer = AppHttpServer.appHttpServer(config.appHttp(),
                                                         config.self(),
@@ -1026,10 +1032,8 @@ public interface AetherNode {
         // KV-Store notification sub-router — type-safe key-based dispatch.
         // Replaces per-handler filterPut/filterRemove with key-type dispatch via KVNotificationRouter.
         // Registration order within each key type = dispatch order.
+        // Endpoints now come from DHT subscription, not consensus KV notifications
         var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
-                                                  .onPut(AetherKey.EndpointKey.class, endpointRegistry::onEndpointPut)
-                                                  .onRemove(AetherKey.EndpointKey.class,
-                                                            endpointRegistry::onEndpointRemove)
                                                   .onPut(AetherKey.SliceNodeKey.class,
                                                          nodeDeploymentManager::onSliceNodePut)
                                                   .onRemove(AetherKey.SliceNodeKey.class,

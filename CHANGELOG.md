@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [0.19.3] - Unreleased
 
 ### Added
+- **Passive Worker Pools Phase 2a — DHT-Backed ReplicatedMap** — moves high-cardinality endpoint data from consensus KV-Store to DHT, reducing write amplification from O(N) to O(3):
+  - **`aether/aether-dht` module** — generic typed `ReplicatedMap<K,V>` abstraction with namespace-prefixed keys, `MapSubscription` event callbacks, `CachedReplicatedMap` (LRU + TTL), `ReplicatedMapFactory`
+  - **Community-aware replication** — `ReplicationPolicy` with home-replica rule (1 home + 2 ring replicas = RF=3), `HomeReplicaResolver` for deterministic community-local selection, `ConsistentHashRing` spot-node exclusion filter
+  - **Endpoint migration** — `EndpointRegistry` unified with DHT subscription events (core + worker endpoints in single registry), `NodeDeploymentManager` writes endpoints via DHT `ReplicatedMap`, `SliceInvoker` simplified to single-registry lookup
+  - **Replication cooldown** — startup RF=1 with background push to RF=3 after configurable delay, rate-limited to prevent boot storm
+  - **Governor mesh infrastructure** — `GovernorMesh` and `GovernorDiscovery` for cross-community DHT traffic routing (full wiring in Phase 2b)
+  - **DHT node cleanup** — `DhtNodeCleanup` removes dead node endpoints from DHT on SWIM DEAD detection
+  - **AetherMaps** — factory for 3 named maps (endpoints, slice-nodes, http-routes) with serializers
 - **Container image publishing** — `release.yml` builds multi-arch Docker images (amd64+arm64) via buildx, publishes to GHCR and Docker Hub. SHA256 checksums generated for all release artifacts
 - **Upgrade script** (`aether/upgrade.sh`) — detects current version, downloads new JARs to temp dir, verifies SHA256 checksums, atomic binary swap with backup, running process detection
 - **Rolling cluster upgrade script** (`aether/script/rolling-aether-upgrade.sh`) — API-driven zero-downtime upgrades: discovers nodes, drains → shuts down → waits for restart → activates → canary checks each node. Supports `--dry-run`, `--canary-wait`, `--api-key`, `--skip-download`

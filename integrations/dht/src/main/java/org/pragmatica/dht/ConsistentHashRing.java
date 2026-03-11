@@ -20,6 +20,7 @@ import org.pragmatica.lang.Option;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.function.Predicate;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -142,6 +143,39 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
             while (seen.size() < replicaCount && seen.size() < nodeToVirtualNodes.size()) {
                 N node = ring.get(current);
                 seen.add(node);
+                current = Option.option(ring.higherKey(current))
+                                .or(ring::firstKey);
+            }
+            return new ArrayList<>(seen);
+        } finally{
+            lock.readLock()
+                .unlock();
+        }
+    }
+
+    /// Get the primary and replica nodes for a given key, excluding filtered nodes.
+    /// Returns up to replicaCount nodes that pass the filter, starting with primary.
+    ///
+    /// @param key          the key to look up
+    /// @param replicaCount maximum number of nodes to return
+    /// @param filter       predicate that must return true for a node to be included
+    public List<N> nodesFor(byte[] key, int replicaCount, Predicate<N> filter) {
+        lock.readLock()
+            .lock();
+        try{
+            if (ring.isEmpty() || replicaCount <= 0) {
+                return List.of();
+            }
+            int hash = hash(key);
+            Set<N> seen = new LinkedHashSet<>();
+            Set<N> visited = new HashSet<>();
+            int current = Option.option(ring.ceilingKey(hash))
+                                .or(ring::firstKey);
+            while (seen.size() < replicaCount && visited.size() < nodeToVirtualNodes.size()) {
+                N node = ring.get(current);
+                if (visited.add(node) && filter.test(node)) {
+                    seen.add(node);
+                }
                 current = Option.option(ring.higherKey(current))
                                 .or(ring::firstKey);
             }

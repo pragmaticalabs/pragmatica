@@ -3,6 +3,7 @@ package org.pragmatica.aether.endpoint;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
@@ -45,6 +46,32 @@ public interface EndpointRegistry {
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
     void onEndpointRemove(ValueRemove<EndpointKey, EndpointValue> valueRemove);
+
+    /// Direct endpoint registration (used by DHT subscription and consensus handlers).
+    @SuppressWarnings("JBCT-RET-01") // Mutating operation — void is intentional
+    void registerEndpoint(EndpointKey key, EndpointValue value);
+
+    /// Direct endpoint unregistration (used by DHT subscription and consensus handlers).
+    @SuppressWarnings("JBCT-RET-01") // Mutating operation — void is intentional
+    void unregisterEndpoint(EndpointKey key);
+
+    /// Create a MapSubscription adapter for this registry.
+    /// Allows the registry to be fed by DHT ReplicatedMap events.
+    default MapSubscription<EndpointKey, EndpointValue> asMapSubscription() {
+        return new MapSubscription<>() {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onPut(EndpointKey key, EndpointValue value) {
+                registerEndpoint(key, value);
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onRemove(EndpointKey key) {
+                unregisterEndpoint(key);
+            }
+        };
+    }
 
     /// Find all endpoints for a given artifact and method.
     List<Endpoint> findEndpoints(Artifact artifact, MethodName methodName);
@@ -130,10 +157,22 @@ public interface EndpointRegistry {
             @Override
             @SuppressWarnings("JBCT-RET-01")
             public void onEndpointPut(ValuePut<EndpointKey, EndpointValue> valuePut) {
-                var endpointKey = valuePut.cause()
-                                          .key();
-                var endpointValue = valuePut.cause()
-                                            .value();
+                registerEndpoint(valuePut.cause()
+                                         .key(),
+                                 valuePut.cause()
+                                         .value());
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onEndpointRemove(ValueRemove<EndpointKey, EndpointValue> valueRemove) {
+                unregisterEndpoint(valueRemove.cause()
+                                              .key());
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void registerEndpoint(EndpointKey endpointKey, EndpointValue endpointValue) {
                 var endpoint = Endpoint.endpoint(endpointKey.artifact(),
                                                  endpointKey.methodName(),
                                                  endpointKey.instanceNumber(),
@@ -144,9 +183,7 @@ public interface EndpointRegistry {
 
             @Override
             @SuppressWarnings("JBCT-RET-01")
-            public void onEndpointRemove(ValueRemove<EndpointKey, EndpointValue> valueRemove) {
-                var endpointKey = valueRemove.cause()
-                                             .key();
+            public void unregisterEndpoint(EndpointKey endpointKey) {
                 Option.option(endpoints.remove(endpointKey))
                       .onPresent(removed -> log.debug("Unregistered endpoint: {}", removed));
             }

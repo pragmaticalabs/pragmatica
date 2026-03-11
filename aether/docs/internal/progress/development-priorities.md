@@ -224,8 +224,10 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
       - **Zone-aware grouping** — consistent hashing with zone prefix in NodeId. Workers in same zone auto-group.
     - **Phased rollout:**
       - Phase 1 (0.19.3): ✅ Complete — SWIM protocol, worker node, governor election, worker endpoint registry, CDM pool awareness, worker management API, core-to-core SWIM health detection, automatic topology growth
-      - Phase 2 (0.21.x): Auto-layering, multi-governor, spot pool, zone-aware grouping
-      - Phase 3 (future): Multi-region, cross-region governors, DHT worker participation
+      - Phase 2a (0.19.3): ✅ Complete — DHT-backed ReplicatedMap, endpoint migration from consensus to DHT, unified EndpointRegistry, community-aware replication policy, replication cooldown, governor mesh infrastructure, dead node cleanup
+      - Phase 2b (future): Multi-group topology, zone-aware grouping, multi-governor
+      - Phase 2c (future): Spot pool, spot-node exclusion from DHT ring
+      - Phase 3 (future): Multi-region, cross-region governors
     - **Foundation exists:** `PassiveNode<K,V>`, `AetherPassiveLB`, `NodeRole.ACTIVE/PASSIVE`, Decision stream to passive nodes
     - **Research:** [10-system comparative analysis](../../internal/passive-worker-pool-research.md) (K8s, Consul, Hazelcast, Nomad, Mesos, CockroachDB, TiKV, FoundationDB, Akka, Orleans, Ray)
 

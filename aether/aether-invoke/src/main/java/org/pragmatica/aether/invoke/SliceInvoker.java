@@ -4,7 +4,6 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.endpoint.EndpointRegistry.Endpoint;
-import org.pragmatica.aether.endpoint.WorkerEndpointRegistry;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
 import org.pragmatica.aether.slice.MethodHandle;
@@ -250,30 +249,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                             deserializer,
                             DEFAULT_TIMEOUT_MS,
                             rollingUpdateManager,
-                            observabilityInterceptor,
-                            Option.none());
-    }
-
-    /// Create a new SliceInvoker with worker endpoint registry for dual lookup.
-    static SliceInvoker sliceInvoker(NodeId self,
-                                     ClusterNetwork network,
-                                     EndpointRegistry endpointRegistry,
-                                     InvocationHandler invocationHandler,
-                                     Serializer serializer,
-                                     Deserializer deserializer,
-                                     RollingUpdateManager rollingUpdateManager,
-                                     ObservabilityInterceptor observabilityInterceptor,
-                                     Option<WorkerEndpointRegistry> workerEndpointRegistry) {
-        return sliceInvoker(self,
-                            network,
-                            endpointRegistry,
-                            invocationHandler,
-                            serializer,
-                            deserializer,
-                            DEFAULT_TIMEOUT_MS,
-                            rollingUpdateManager,
-                            observabilityInterceptor,
-                            workerEndpointRegistry);
+                            observabilityInterceptor);
     }
 
     /// Create with custom timeout.
@@ -286,29 +262,6 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                      long timeoutMs,
                                      RollingUpdateManager rollingUpdateManager,
                                      ObservabilityInterceptor observabilityInterceptor) {
-        return sliceInvoker(self,
-                            network,
-                            endpointRegistry,
-                            invocationHandler,
-                            serializer,
-                            deserializer,
-                            timeoutMs,
-                            rollingUpdateManager,
-                            observabilityInterceptor,
-                            Option.none());
-    }
-
-    /// Create with custom timeout and worker endpoint registry.
-    static SliceInvoker sliceInvoker(NodeId self,
-                                     ClusterNetwork network,
-                                     EndpointRegistry endpointRegistry,
-                                     InvocationHandler invocationHandler,
-                                     Serializer serializer,
-                                     Deserializer deserializer,
-                                     long timeoutMs,
-                                     RollingUpdateManager rollingUpdateManager,
-                                     ObservabilityInterceptor observabilityInterceptor,
-                                     Option<WorkerEndpointRegistry> workerEndpointRegistry) {
         return new SliceInvokerImpl(self,
                                     network,
                                     endpointRegistry,
@@ -317,8 +270,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                     deserializer,
                                     timeoutMs,
                                     rollingUpdateManager,
-                                    observabilityInterceptor,
-                                    workerEndpointRegistry);
+                                    observabilityInterceptor);
     }
 }
 
@@ -340,7 +292,6 @@ class SliceInvokerImpl implements SliceInvoker {
     private final ScheduledExecutorService scheduler;
     private final RollingUpdateManager rollingUpdateManager;
     private final ObservabilityInterceptor observabilityInterceptor;
-    private final Option<WorkerEndpointRegistry> workerEndpointRegistry;
 
     // Pending request-response invocations awaiting responses
     // Maps correlationId -> (promise, createdAtMs)
@@ -368,8 +319,7 @@ class SliceInvokerImpl implements SliceInvoker {
                      Deserializer deserializer,
                      long timeoutMs,
                      RollingUpdateManager rollingUpdateManager,
-                     ObservabilityInterceptor observabilityInterceptor,
-                     Option<WorkerEndpointRegistry> workerEndpointRegistry) {
+                     ObservabilityInterceptor observabilityInterceptor) {
         this.self = self;
         this.network = network;
         this.endpointRegistry = endpointRegistry;
@@ -379,7 +329,6 @@ class SliceInvokerImpl implements SliceInvoker {
         this.timeoutMs = timeoutMs;
         this.rollingUpdateManager = rollingUpdateManager;
         this.observabilityInterceptor = observabilityInterceptor;
-        this.workerEndpointRegistry = workerEndpointRegistry;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(this::createSchedulerThread);
         // Schedule periodic cleanup of stale pending invocations
         scheduler.scheduleAtFixedRate(this::cleanupStaleInvocations,
@@ -659,23 +608,11 @@ class SliceInvokerImpl implements SliceInvoker {
             if (updateEndpoint.isPresent()) {
                 return updateEndpoint;
             }
-            // Fall back to regular selection, then worker endpoints
-            return selectCoreOrWorkerEndpointOption(slice, method);
+            // Fall back to regular selection
+            return endpointRegistry.selectEndpoint(slice, method);
         }
-        // Failover - exclude failed nodes, then try worker endpoints
-        var coreEndpoint = endpointRegistry.selectEndpointExcluding(slice, method, exclude);
-        if (coreEndpoint.isPresent()) {
-            return coreEndpoint;
-        }
-        return workerEndpointRegistry.flatMap(registry -> registry.selectWorkerEndpointAsCore(slice, method));
-    }
-
-    private Option<Endpoint> selectCoreOrWorkerEndpointOption(Artifact slice, MethodName method) {
-        var coreEndpoint = endpointRegistry.selectEndpoint(slice, method);
-        if (coreEndpoint.isPresent()) {
-            return coreEndpoint;
-        }
-        return workerEndpointRegistry.flatMap(registry -> registry.selectWorkerEndpointAsCore(slice, method));
+        // Failover - exclude failed nodes
+        return endpointRegistry.selectEndpointExcluding(slice, method, exclude);
     }
 
     private <R> void invokeEndpointWithFailover(Promise<R> promise, FailoverContext<R> ctx, Endpoint endpoint) {
@@ -1008,17 +945,8 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private Promise<Endpoint> selectCoreOrWorkerEndpoint(Artifact slice, MethodName method) {
-        // Try core endpoints first, fall back to worker endpoints
-        var coreEndpoint = endpointRegistry.selectEndpoint(slice, method);
-        if (coreEndpoint.isPresent()) {
-            return coreEndpoint.async(NO_ENDPOINT_FOUND);
-        }
-        return workerEndpointRegistry.flatMap(registry -> registry.selectWorkerEndpointAsCore(slice, method))
-                                     .onPresent(endpoint -> log.debug("Selected worker endpoint via governor {} for {}.{}",
-                                                                      endpoint.nodeId(),
-                                                                      slice,
-                                                                      method))
-                                     .async(NO_ENDPOINT_FOUND);
+        return endpointRegistry.selectEndpoint(slice, method)
+                               .async(NO_ENDPOINT_FOUND);
     }
 
     private Promise<Endpoint> selectEndpointWithAffinity(Artifact slice, MethodName method, Object request) {

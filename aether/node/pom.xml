@@ -113,6 +113,11 @@
         <!-- Split node modules -->
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-dht</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>aether-invoke</artifactId>
             <version>${project.version}</version>
         </dependency>
