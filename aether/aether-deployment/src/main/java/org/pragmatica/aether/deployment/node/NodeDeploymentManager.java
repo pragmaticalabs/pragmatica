@@ -761,7 +761,14 @@ public interface NodeDeploymentManager {
 
             private void handleUnloading(SliceNodeKey sliceKey) {
                 // 1. Write UNLOADING to KV first - wait for consensus before starting unload
-                transitionTo(sliceKey, SliceState.UNLOADING).flatMap(_ -> unloadSliceWithTimeout(sliceKey))
+                // 2. Clean up published resources (routes, endpoints, topics, tasks) before unloading —
+                //    UNLOAD may skip DEACTIVATE, so cleanup must happen here too
+                transitionTo(sliceKey, SliceState.UNLOADING).flatMap(_ -> unpublishEndpoints(sliceKey))
+                            .flatMap(_ -> unpublishTopicSubscriptions(sliceKey))
+                            .flatMap(_ -> unpublishScheduledTasks(sliceKey))
+                            .flatMap(_ -> unpublishHttpRoutes(sliceKey))
+                            .onSuccessRun(() -> unregisterSliceFromInvocation(sliceKey))
+                            .flatMap(_ -> unloadSliceWithTimeout(sliceKey))
                             .flatMap(_ -> deleteSliceNodeKey(sliceKey))
                             .onSuccess(_ -> removeFromDeployments(sliceKey))
                             .onFailure(cause -> handleUnloadFailure(sliceKey, cause));
