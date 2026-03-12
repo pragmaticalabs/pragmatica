@@ -18,8 +18,6 @@ import org.pragmatica.messaging.MessageRouter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -151,11 +149,14 @@ class LeaderManagerTest {
                 localRouter.route(nodeAdded(nodeId, topology));
             }
 
-            // Establish quorum - first election uses INITIAL_ELECTION_DELAY (10s) for serializer warmup
+            // Establish quorum (sets active=true but does NOT auto-trigger initial election)
             localRouter.route(QuorumStateNotification.established());
 
-            // Wait for scheduled proposal (10s initial delay + margin)
-            Thread.sleep(10_500);
+            // Simulate what AetherNode does: explicitly trigger election after consensus sync
+            localLeaderManager.triggerElection();
+
+            // Wait for proposal (rank 0 = BASE_ELECTION_DELAY of 2s + margin)
+            Thread.sleep(3_000);
 
             // Proposal should have been submitted by min node
             assertThat(localProposals).hasSize(1);
@@ -216,7 +217,7 @@ class LeaderManagerTest {
         }
 
         @Test
-        void triggerElection_eventuallyElectsLeader_whenMinNodeInactive() {
+        void triggerElection_nonMinNode_doesNotSubmit() throws InterruptedException {
             // Create manager for node-b (NOT min node) with expectedCluster
             var localRouter = MessageRouter.mutable();
             var localProposals = new CopyOnWriteArrayList<LeaderProposal>();
@@ -224,8 +225,8 @@ class LeaderManagerTest {
                 localProposals.add(new LeaderProposal(candidate, viewSequence));
                 return Promise.unitPromise();
             };
-            // self=node-b, expectedCluster=[node-a, node-b, node-c]
-            // node-a is min but never proposes (simulating it being inactive)
+            // self=node-b (rank 1), expectedCluster=[node-a, node-b, node-c]
+            // Only the min node (node-a) should submit proposals
             var localManager = LeaderManager.leaderManager(self, localRouter, handler, nodes);
             localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
             localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
@@ -240,16 +241,14 @@ class LeaderManagerTest {
             // Establish quorum (sets active=true)
             localRouter.route(QuorumStateNotification.established());
 
-            // Directly call triggerElection enough times to exceed fallback threshold.
-            // Each call increments electionRetryCount in scheduleElectionRetryIfNeeded().
-            // After ELECTION_FALLBACK_RETRIES (6) increments, the next call triggers fallback.
-            for (var i = 0; i <= LeaderManager.ELECTION_FALLBACK_RETRIES; i++) {
-                localManager.triggerElection();
-            }
+            // Trigger election — node-b is not the designated candidate, should not submit
+            localManager.triggerElection();
 
-            // Non-min node should have taken over submission for the designated min candidate
-            assertThat(localProposals).isNotEmpty();
-            assertThat(localProposals.getLast().candidate()).isEqualTo(nodes.getFirst());
+            // Wait for stagger delay + several retries
+            Thread.sleep(5_000);
+
+            // node-b should NOT have submitted any proposals (only min node submits)
+            assertThat(localProposals).isEmpty();
         }
 
         @Test
@@ -284,8 +283,11 @@ class LeaderManagerTest {
             Thread.sleep(100);
             localRouter.route(QuorumStateNotification.established());
 
-            // Wait for retry mechanism to kick in and eventually propose
-            Thread.sleep(5_000);
+            // Simulate AetherNode triggering election after consensus sync
+            localManager.triggerElection();
+
+            // Wait for proposal (rank 0 = BASE_ELECTION_DELAY of 2s + margin)
+            Thread.sleep(3_000);
 
             // Despite flapping, proposals should eventually be submitted
             assertThat(localProposals).isNotEmpty();
@@ -313,9 +315,10 @@ class LeaderManagerTest {
                 localRouter.route(nodeAdded(nodeId, list.stream().sorted().toList()));
             }
 
-            // Establish quorum and wait for initial election proposal
+            // Establish quorum and trigger election (simulating AetherNode)
             localRouter.route(QuorumStateNotification.established());
-            Thread.sleep(4_000);
+            localManager.triggerElection();
+            Thread.sleep(500);
 
             // Commit leader — resets retry count and sets hasEverHadLeader=true
             localManager.onLeaderCommitted(minNode);
@@ -328,7 +331,7 @@ class LeaderManagerTest {
             Thread.sleep(50);
             localRouter.route(QuorumStateNotification.established());
 
-            // Wait for re-election proposal (uses PROPOSAL_RETRY_DELAY since hasEverHadLeader=true)
+            // Wait for re-election proposal (auto-triggered by start() since hasEverHadLeader=true)
             Thread.sleep(1_000);
 
             // Min node should submit a new proposal for re-election
