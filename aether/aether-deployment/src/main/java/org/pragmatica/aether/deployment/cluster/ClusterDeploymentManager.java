@@ -568,7 +568,7 @@ public interface ClusterDeploymentManager {
             }
 
             private boolean shouldPromoteToCore(int currentCoreCount) {
-                return coreMax == 0 || currentCoreCount <= coreMax;
+                return coreMax == 0 || currentCoreCount < coreMax;
             }
 
             private void updateTopology(List<NodeId> topology) {

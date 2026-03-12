@@ -771,6 +771,49 @@ class ClusterDeploymentManagerTest {
         assertThat(sliceNodeMap.putKeys).isEmpty();
     }
 
+    @SuppressWarnings("unchecked")
+    @Test
+    void handleAppBlueprintChange_ownerPopulatedInSliceTargetValue() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        var blueprintA = createNamedBlueprint("app-owner", "service-owned");
+        sendAppBlueprintPut(manager, blueprintA);
+
+        // Find the SliceTargetKey Put command in applied commands
+        var targetValues = clusterNode.appliedCommands.stream()
+            .filter(cmd -> cmd instanceof KVCommand.Put<?, ?> put && put.key() instanceof SliceTargetKey)
+            .map(cmd -> ((KVCommand.Put<?, ?>) cmd).value())
+            .map(SliceTargetValue.class::cast)
+            .toList();
+
+        assertThat(targetValues).isNotEmpty();
+
+        var targetValue = targetValues.getFirst();
+        assertThat(targetValue.owningBlueprint().isPresent()).isTrue();
+        assertThat(targetValue.owningBlueprint().unwrap()).isEqualTo(blueprintA.id());
+    }
+
+    @Test
+    void handleSliceTargetChange_preservesOwner() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        var artifact = createTestArtifact();
+        var bpId = BlueprintId.blueprintId("org.example:owner-bp:1.0.0").unwrap();
+
+        // Send a slice target with explicit owner
+        var key = SliceTargetKey.sliceTargetKey(artifact.base());
+        var value = SliceTargetValue.sliceTargetValue(artifact.version(), 3, 0, Option.some(bpId));
+        var command = new KVCommand.Put<>(key, value);
+        var notification = new ValuePut<>(command, Option.none());
+        manager.onSliceTargetPut(notification);
+
+        // Verify LOAD commands were issued (owner didn't break allocation)
+        assertThat(sliceNodeMap.putKeys).hasSize(3);
+        assertAllDhtPutsAreLoadFor(artifact);
+    }
+
     // === Helper Methods ===
 
     private Artifact createTestArtifact() {

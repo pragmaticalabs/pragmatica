@@ -1122,7 +1122,7 @@ public interface NodeDeploymentManager {
                 }
             }
 
-            private static final int MAX_LIFECYCLE_RETRIES = 10;
+            private static final int MAX_LIFECYCLE_RETRIES = 60;
 
             private void registerLifecycleOnDuty() {
                 var lifecycleKey = AetherKey.NodeLifecycleKey.nodeLifecycleKey(self());
@@ -1156,7 +1156,7 @@ public interface NodeDeploymentManager {
                          attempt,
                          MAX_LIFECYCLE_RETRIES,
                          cause.message());
-                SharedScheduler.schedule(() -> writeLifecycleOnDuty(lifecycleKey, attempt + 1), timeSpan(1).seconds());
+                SharedScheduler.schedule(() -> writeLifecycleOnDuty(lifecycleKey, attempt + 1), timeSpan(2).seconds());
             }
 
             @Override
