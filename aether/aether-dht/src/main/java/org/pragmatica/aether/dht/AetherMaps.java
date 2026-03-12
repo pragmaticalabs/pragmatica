@@ -25,6 +25,14 @@ public interface AetherMaps {
     /// The HTTP routes map — maps HttpNodeRouteKey to HttpNodeRouteValue.
     ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRoutes();
 
+    /// Dispatch a remote DHT put to the appropriate map's subscribers.
+    @SuppressWarnings("JBCT-RET-01")
+    void dispatchRemotePut(byte[] rawKey, byte[] rawValue);
+
+    /// Dispatch a remote DHT remove to the appropriate map's subscribers.
+    @SuppressWarnings("JBCT-RET-01")
+    void dispatchRemoteRemove(byte[] rawKey);
+
     /// Create AetherMaps backed by the given DHT client.
     static AetherMaps aetherMaps(DHTClient client) {
         var factory = ReplicatedMapFactory.replicatedMapFactory(client);
@@ -45,7 +53,51 @@ public interface AetherMaps {
                                                                               AetherMaps::deserializeHttpRouteValue);
         record aetherMaps(ReplicatedMap<EndpointKey, EndpointValue> endpoints,
                           ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodes,
-                          ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRoutes) implements AetherMaps {}
+                          ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRoutes) implements AetherMaps {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void dispatchRemotePut(byte[] rawKey, byte[] rawValue) {
+                dispatchPutToFirst(rawKey,
+                                   rawValue,
+                                   asNamespaced(sliceNodes),
+                                   asNamespaced(endpoints),
+                                   asNamespaced(httpRoutes));
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void dispatchRemoteRemove(byte[] rawKey) {
+                dispatchRemoveToFirst(rawKey,
+                                      asNamespaced(sliceNodes),
+                                      asNamespaced(endpoints),
+                                      asNamespaced(httpRoutes));
+            }
+
+            private static <K, V> NamespacedReplicatedMap<K, V> asNamespaced(ReplicatedMap<K, V> map) {
+                return (NamespacedReplicatedMap<K, V>) map;
+            }
+
+            @SafeVarargs
+            private static void dispatchPutToFirst(byte[] rawKey,
+                                                   byte[] rawValue,
+                                                   NamespacedReplicatedMap<?, ?>... maps) {
+                for (var map : maps) {
+                    if (map.onRemotePut(rawKey, rawValue)) {
+                        return;
+                    }
+                }
+            }
+
+            @SafeVarargs
+            private static void dispatchRemoveToFirst(byte[] rawKey,
+                                                      NamespacedReplicatedMap<?, ?>... maps) {
+                for (var map : maps) {
+                    if (map.onRemoteRemove(rawKey)) {
+                        return;
+                    }
+                }
+            }
+        }
         return new aetherMaps(endpoints, sliceNodes, httpRoutes);
     }
 

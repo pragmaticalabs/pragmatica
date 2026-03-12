@@ -115,8 +115,8 @@ public final class StatusRoutes implements RouteSource {
         // Always include self
         nodeIds.add(node.self()
                         .id());
-        // Add nodes from initial topology
-        node.initialTopology()
+        // Add connected peers (live view, reflects node departures)
+        node.connectedPeerIds()
             .forEach(nid -> nodeIds.add(nid.id()));
         // Add nodes from metrics
         for (NodeId nodeId : metrics.keySet()) {

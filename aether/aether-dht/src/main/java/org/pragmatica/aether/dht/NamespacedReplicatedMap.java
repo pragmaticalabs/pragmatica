@@ -6,6 +6,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
@@ -69,6 +70,40 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     @Override
     public String name() {
         return name;
+    }
+
+    /// Dispatch a remote DHT put to local subscribers if the key matches this map's namespace.
+    /// Returns true if the key was dispatched (prefix matched), false otherwise.
+    boolean onRemotePut(byte[] rawKey, byte[] rawValue) {
+        if (!startsWith(rawKey, namespacePrefix)) {
+            return false;
+        }
+        var key = keyDeserializer.apply(Arrays.copyOfRange(rawKey, namespacePrefix.length, rawKey.length));
+        var value = valueDeserializer.apply(rawValue);
+        notifyPut(key, value);
+        return true;
+    }
+
+    /// Dispatch a remote DHT remove to local subscribers if the key matches this map's namespace.
+    boolean onRemoteRemove(byte[] rawKey) {
+        if (!startsWith(rawKey, namespacePrefix)) {
+            return false;
+        }
+        var key = keyDeserializer.apply(Arrays.copyOfRange(rawKey, namespacePrefix.length, rawKey.length));
+        subscriptions.forEach(sub -> safeOnRemove(sub, key));
+        return true;
+    }
+
+    private static boolean startsWith(byte[] array, byte[] prefix) {
+        if (array.length < prefix.length) {
+            return false;
+        }
+        for (int i = 0; i < prefix.length; i++) {
+            if (array[i] != prefix[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private byte[] prefixKey(byte[] rawKey) {
