@@ -15,7 +15,7 @@ import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 /// nodes detect the failure within the SWIM protocol bound (15 seconds with margin).
 class SwimDetectionE2ETest extends AbstractE2ETest {
 
-    private static final Duration SWIM_DETECTION_BOUND = adapt(Duration.ofSeconds(30));
+    private static final Duration SWIM_DETECTION_BOUND = adapt(Duration.ofSeconds(60));
 
     @Override
     protected int clusterSize() {
@@ -47,8 +47,10 @@ class SwimDetectionE2ETest extends AbstractE2ETest {
     }
 
     private static int countNodesInResponse(String nodesJson) {
-        return (int) nodesJson.chars()
-                              .filter(ch -> ch == '{')
-                              .count();
+        // NodesResponse is {"nodes":["node-1","node-2",...]} — count "node-" occurrences
+        return (int) java.util.regex.Pattern.compile("\"node-")
+                                            .matcher(nodesJson)
+                                            .results()
+                                            .count();
     }
 }

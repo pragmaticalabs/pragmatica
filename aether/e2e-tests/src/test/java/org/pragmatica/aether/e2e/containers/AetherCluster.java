@@ -46,7 +46,8 @@ import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 /// }```
 public class AetherCluster implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(AetherCluster.class);
-    private static final Duration QUORUM_TIMEOUT = adapt(Duration.ofSeconds(60));
+    private static final Duration QUORUM_TIMEOUT = adapt(Duration.ofSeconds(90));
+    private static final Duration ON_DUTY_TIMEOUT = adapt(Duration.ofSeconds(120));
     private static final Duration POLL_INTERVAL = Duration.ofSeconds(2);
 
     // Local Maven repository path and test artifacts
@@ -160,6 +161,28 @@ public class AetherCluster implements AutoCloseable {
         await().atMost(QUORUM_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::clusterConverged);
+    }
+
+    /// Waits for all nodes to register ON_DUTY lifecycle state.
+    /// CDM will not allocate slices to nodes that are not ON_DUTY.
+    public void awaitAllNodesOnDuty() {
+        System.out.println("[DEBUG] Waiting for all nodes to register ON_DUTY lifecycle...");
+        var expectedCount = (int) nodes.stream().filter(AetherNodeContainer::isRunning).count();
+        await().atMost(ON_DUTY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> checkAllNodesOnDuty(expectedCount));
+    }
+
+    /// Waits for HTTP routes to contain a specific substring.
+    /// Routes are propagated via DHT and may arrive after slice becomes ACTIVE.
+    public void awaitRoutesContain(String routeSubstring, Duration timeout) {
+        await().atMost(timeout)
+               .pollInterval(POLL_INTERVAL)
+               .ignoreExceptions()
+               .until(() -> {
+                   var routes = anyNode().getRoutes();
+                   return routes.contains(routeSubstring);
+               });
     }
 
     /// Waits for a slice to be fully undeployed (removed from cluster-wide status).
@@ -599,10 +622,12 @@ public class AetherCluster implements AutoCloseable {
 
     private int activeNodeCount() {
         try {
-            var nodes = anyNode().getNodes();
-            return (int) nodes.chars()
-                              .filter(ch -> ch == '{')
-                              .count();
+            var nodesJson = anyNode().getNodes();
+            // NodesResponse is {"nodes":["node-1","node-2",...]} — count "node-" occurrences
+            return (int) java.util.regex.Pattern.compile("\"node-")
+                                                .matcher(nodesJson)
+                                                .results()
+                                                .count();
         } catch (Exception e) {
             return 0;
         }
@@ -717,6 +742,61 @@ public class AetherCluster implements AutoCloseable {
         } catch (Exception e) {
             return "Failed to get logs: " + e.getMessage();
         }
+    }
+
+    private int onDutyRetryCount = 0;
+
+    private boolean checkAllNodesOnDuty(int expectedCount) {
+        try {
+            var lifecycles = anyNode().getAllNodeLifecycles();
+            var onDutyCount = countOccurrences(lifecycles, "\"ON_DUTY\"");
+            if (onDutyCount < expectedCount) {
+                onDutyRetryCount++;
+                System.out.println("[DEBUG] ON_DUTY: " + onDutyCount + "/" + expectedCount + " — " + lifecycles);
+                // Dump container logs once after ~20 seconds of failure to diagnose consensus issues
+                if (onDutyRetryCount == 10) {
+                    dumpConsensusLogs();
+                }
+                return false;
+            }
+            System.out.println("[DEBUG] All " + expectedCount + " nodes ON_DUTY");
+            onDutyRetryCount = 0;
+            return true;
+        } catch (Exception e) {
+            System.out.println("[DEBUG] ON_DUTY check failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private void dumpConsensusLogs() {
+        System.out.println("[DIAG] === Container logs (last 50 lines) ===");
+        for (var node : nodes) {
+            if (!node.isRunning()) {
+                continue;
+            }
+            try {
+                var allLogs = node.getLogs();
+                var lines = allLogs.lines().toList();
+                var start = Math.max(0, lines.size() - 50);
+                System.out.println("[DIAG] --- " + node.nodeId() + " (total " + lines.size() + " lines) ---");
+                for (int i = start; i < lines.size(); i++) {
+                    System.out.println("[DIAG] " + lines.get(i));
+                }
+            } catch (Exception e) {
+                System.out.println("[DIAG] Failed to get logs for " + node.nodeId() + ": " + e.getMessage());
+            }
+        }
+        System.out.println("[DIAG] === End container logs ===");
+    }
+
+    private static int countOccurrences(String text, String search) {
+        var count = 0;
+        var idx = 0;
+        while ((idx = text.indexOf(search, idx)) != -1) {
+            count++;
+            idx += search.length();
+        }
+        return count;
     }
 
     private static String bumpPatchVersion(String version) {

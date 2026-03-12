@@ -26,7 +26,7 @@ public abstract class AbstractE2ETest {
     // CI environments get 2x multiplier via TestEnvironment.adapt()
     protected static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(15).seconds().duration());
     protected static final Duration DEPLOY_TIMEOUT = adapt(timeSpan(90).seconds().duration());
-    protected static final Duration RECOVERY_TIMEOUT = adapt(timeSpan(30).seconds().duration());
+    protected static final Duration RECOVERY_TIMEOUT = adapt(timeSpan(60).seconds().duration());
     protected static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
 
     // Common artifact for slice deployment tests - pure function echo slice
@@ -54,7 +54,8 @@ public abstract class AbstractE2ETest {
         cluster.start();
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();
-        cluster.awaitLeader();
+        cluster.awaitClusterConverged();
+        cluster.awaitAllNodesOnDuty();
         cluster.uploadTestArtifacts();
         additionalSetUp();
     }

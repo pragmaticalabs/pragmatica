@@ -28,13 +28,13 @@ class BackupApiE2ETest extends AbstractE2ETest {
     }
 
     @Test
-    void backupList_whenDisabled_returnsDisabledMessage() {
+    void backupList_whenDisabled_returnsEmptyList() {
         var node = cluster.anyNode();
         var response = node.get("/api/backups");
 
         assertThat(response)
-            .describedAs("Backup list should indicate backup is disabled")
-            .contains("Backup is not enabled");
+            .describedAs("Backup list should return empty list when backup is disabled")
+            .isEqualTo("[]");
     }
 
     @Test
