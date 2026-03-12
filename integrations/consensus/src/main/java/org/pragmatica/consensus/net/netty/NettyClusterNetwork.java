@@ -238,7 +238,13 @@ public class NettyClusterNetwork implements ClusterNetwork {
               .filter(nodeId -> peerLinks.remove(nodeId, channel))
               .onPresent(nodeId -> {
                              passivePeers.remove(nodeId);
-                             log.info("Node {} TCP disconnected, awaiting SWIM health check", nodeId);
+                             // Only process view change if quorum was already established.
+                             // This prevents quorum oscillation during initial startup while
+                             // ensuring proper quorum tracking after partition/disconnect events.
+                             if (quorumEstablished.get()) {
+                                 processViewChange(REMOVE, nodeId);
+                             }
+                             log.info("Node {} TCP disconnected, quorumWasEstablished={}", nodeId, quorumEstablished.get());
                          });
     }
 

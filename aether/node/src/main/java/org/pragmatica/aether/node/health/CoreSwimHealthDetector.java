@@ -38,7 +38,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private static final SwimConfig CORE_SWIM_CONFIG = SwimConfig.swimConfig(Duration.ofMillis(500),
                                                                              Duration.ofMillis(300),
                                                                              3,
-                                                                             Duration.ofSeconds(3),
+                                                                             Duration.ofSeconds(10),
                                                                              8);
 
     private final MessageRouter router;
