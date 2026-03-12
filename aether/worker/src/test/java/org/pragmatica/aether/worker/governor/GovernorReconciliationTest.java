@@ -88,6 +88,12 @@ class GovernorReconciliationTest {
         public ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRoutes() {
             return httpRouteMap;
         }
+
+        @Override
+        public void dispatchRemotePut(byte[] rawKey, byte[] rawValue) {}
+
+        @Override
+        public void dispatchRemoteRemove(byte[] rawKey) {}
     }
 
     static class StubEndpointMap implements ReplicatedMap<EndpointKey, EndpointValue> {

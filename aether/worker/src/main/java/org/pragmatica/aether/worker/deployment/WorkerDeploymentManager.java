@@ -20,6 +20,7 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.slf4j.Logger;
@@ -75,7 +76,7 @@ public sealed interface WorkerDeploymentManager {
                                                  aetherMaps.sliceNodes(),
                                                  new ConcurrentHashMap<>(),
                                                  new ConcurrentHashMap<>(),
-                                                 new CopyOnWriteArrayList<>(initialMembers),
+                                                 new AtomicReference<>(List.copyOf(initialMembers)),
                                                  communityIdSupplier);
     }
 
@@ -99,7 +100,7 @@ final class ActiveWorkerDeploymentManager implements WorkerDeploymentManager {
     private final ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap;
     private final ConcurrentHashMap<Artifact, WorkerSliceDeployment> deployments;
     private final ConcurrentHashMap<Artifact, WorkerSliceDirectiveValue> directives;
-    private final CopyOnWriteArrayList<NodeId> aliveMembers;
+    private final AtomicReference<List<NodeId>> aliveMembers;
     private final Supplier<String> communityIdSupplier;
 
     ActiveWorkerDeploymentManager(NodeId self,
@@ -108,7 +109,7 @@ final class ActiveWorkerDeploymentManager implements WorkerDeploymentManager {
                                   ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap,
                                   ConcurrentHashMap<Artifact, WorkerSliceDeployment> deployments,
                                   ConcurrentHashMap<Artifact, WorkerSliceDirectiveValue> directives,
-                                  CopyOnWriteArrayList<NodeId> aliveMembers,
+                                  AtomicReference<List<NodeId>> aliveMembers,
                                   Supplier<String> communityIdSupplier) {
         this.self = self;
         this.sliceStore = sliceStore;
@@ -157,8 +158,7 @@ final class ActiveWorkerDeploymentManager implements WorkerDeploymentManager {
 
     @Override
     public void onMembershipChange(List<NodeId> newMembers) {
-        aliveMembers.clear();
-        aliveMembers.addAll(newMembers);
+        aliveMembers.set(List.copyOf(newMembers));
         log.debug("Membership changed to {} members, recomputing assignments", newMembers.size());
         directives.forEach(this::computeAndApplyAssignment);
     }
@@ -166,7 +166,7 @@ final class ActiveWorkerDeploymentManager implements WorkerDeploymentManager {
     private void computeAndApplyAssignment(Artifact artifact, WorkerSliceDirectiveValue directive) {
         var assigned = WorkerInstanceAssignment.assignedInstances(artifact,
                                                                   directive.targetInstances(),
-                                                                  List.copyOf(aliveMembers),
+                                                                  aliveMembers.get(),
                                                                   self);
         var current = Option.option(deployments.get(artifact));
         if (assigned > 0 && needsDeploy(current)) {
@@ -186,7 +186,7 @@ final class ActiveWorkerDeploymentManager implements WorkerDeploymentManager {
     }
 
     private static boolean needsUndeploy(Option<WorkerSliceDeployment> current) {
-        return current.map(c -> c.state() != DeploymentState.IDLE)
+        return current.map(c -> c.state() == DeploymentState.LOADED || c.state() == DeploymentState.ACTIVE)
                       .or(false);
     }
 

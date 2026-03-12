@@ -3,6 +3,7 @@ package org.pragmatica.aether.worker.governor;
 import org.pragmatica.aether.worker.network.WorkerNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.parse.Number;
 
 import java.net.InetSocketAddress;
 import java.util.Map;
@@ -13,7 +14,7 @@ import org.slf4j.LoggerFactory;
 
 /// Default implementation of the governor mesh registry.
 /// Optionally registers peer addresses in WorkerNetwork for TCP connectivity.
-@SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+@SuppressWarnings("JBCT-RET-01")
 final class GovernorMeshInstance implements GovernorMesh {
     private static final Logger LOG = LoggerFactory.getLogger(GovernorMeshInstance.class);
 
@@ -79,6 +80,8 @@ final class GovernorMeshInstance implements GovernorMesh {
         if (parts.length != 2) {
             return Option.empty();
         }
-        return Option.option(new InetSocketAddress(parts[0], Integer.parseInt(parts[1])));
+        return Number.parseInt(parts[1])
+                     .option()
+                     .map(port -> new InetSocketAddress(parts[0], port));
     }
 }
