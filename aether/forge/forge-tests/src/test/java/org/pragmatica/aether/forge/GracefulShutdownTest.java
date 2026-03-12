@@ -36,6 +36,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class GracefulShutdownTest {
     private static final int BASE_PORT = 12000;
     private static final int BASE_MGMT_PORT = 12100;
+    private static final int BASE_APP_HTTP_PORT = 12200;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
@@ -57,7 +58,7 @@ class GracefulShutdownTest {
         var methodName = testInfo.getTestMethod().orElseThrow().getName();
         var portOffset = METHOD_PORT_OFFSETS.getOrDefault(methodName, 0);
 
-        cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "gs");
+        cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, BASE_APP_HTTP_PORT + portOffset, "gs");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();

@@ -34,10 +34,11 @@ class EmberClusterIntegrationTest {
 
     private static final int BASE_PORT = 12500;
     private static final int BASE_MGMT_PORT = 12600;
+    private static final int BASE_APP_HTTP_PORT = 12700;
 
     @BeforeAll
     void setUp() {
-        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "fci");
+        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "fci");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();

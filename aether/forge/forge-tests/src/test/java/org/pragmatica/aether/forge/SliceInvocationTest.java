@@ -41,6 +41,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class SliceInvocationTest {
     private static final int BASE_PORT = 6000;
     private static final int BASE_MGMT_PORT = 6100;
+    private static final int BASE_APP_HTTP_PORT = 6200;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
@@ -51,7 +52,7 @@ class SliceInvocationTest {
 
     @BeforeAll
     void setUp() {
-        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "si");
+        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "si");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();

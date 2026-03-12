@@ -36,6 +36,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class NodeLifecycleTest {
     private static final int BASE_PORT = 13000;
     private static final int BASE_MGMT_PORT = 13100;
+    private static final int BASE_APP_HTTP_PORT = 13200;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
@@ -44,7 +45,7 @@ class NodeLifecycleTest {
 
     @BeforeAll
     void setUp() {
-        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "lc");
+        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "lc");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();

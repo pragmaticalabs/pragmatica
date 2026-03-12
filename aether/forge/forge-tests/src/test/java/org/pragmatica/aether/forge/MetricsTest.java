@@ -36,6 +36,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class MetricsTest {
     private static final int BASE_PORT = 6500;
     private static final int BASE_MGMT_PORT = 6600;
+    private static final int BASE_APP_HTTP_PORT = 6700;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration METRICS_INTERVAL = Duration.ofSeconds(2);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
@@ -45,7 +46,7 @@ class MetricsTest {
 
     @BeforeAll
     void setUp() {
-        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "mt");
+        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "mt");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();

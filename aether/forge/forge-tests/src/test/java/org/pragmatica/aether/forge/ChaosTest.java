@@ -43,6 +43,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class ChaosTest {
     private static final int BASE_PORT = 9500;
     private static final int BASE_MGMT_PORT = 9600;
+    private static final int BASE_APP_HTTP_PORT = 9700;
     private static final Duration CHAOS_DURATION = Duration.ofSeconds(30);
     private static final Duration RECOVERY_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
@@ -56,7 +57,7 @@ class ChaosTest {
     @BeforeEach
     void setUp(TestInfo testInfo) {
         int portOffset = getPortOffset(testInfo);
-        cluster = emberCluster(5, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "ch");
+        cluster = emberCluster(5, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, BASE_APP_HTTP_PORT + portOffset, "ch");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();

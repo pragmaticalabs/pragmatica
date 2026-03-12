@@ -37,6 +37,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class ManagementApiTest {
     private static final int BASE_PORT = 10000;
     private static final int BASE_MGMT_PORT = 10100;
+    private static final int BASE_APP_HTTP_PORT = 10200;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
@@ -47,7 +48,7 @@ class ManagementApiTest {
 
     @BeforeAll
     void setUp() {
-        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "ma");
+        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "ma");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();

@@ -324,11 +324,13 @@ public class AetherCluster implements AutoCloseable {
     /// @param nodeId node to disconnect
     public void disconnectNode(String nodeId) {
         var container = node(nodeId);
-        var dockerClient = DockerClientFactory.instance().client();
-        dockerClient.disconnectFromNetworkCmd()
-                    .withContainerId(container.getContainerId())
-                    .withNetworkId(network.getId())
-                    .exec();
+        retryDockerOp(() -> {
+            var dockerClient = DockerClientFactory.instance().client();
+            dockerClient.disconnectFromNetworkCmd()
+                        .withContainerId(container.getContainerId())
+                        .withNetworkId(network.getId())
+                        .exec();
+        }, "disconnect " + nodeId);
         System.out.println("[DEBUG] Disconnected " + nodeId + " from cluster network");
     }
 
@@ -337,13 +339,15 @@ public class AetherCluster implements AutoCloseable {
     /// @param nodeId node to reconnect
     public void reconnectNode(String nodeId) {
         var container = node(nodeId);
-        var dockerClient = DockerClientFactory.instance().client();
-        dockerClient.connectToNetworkCmd()
-                    .withContainerId(container.getContainerId())
-                    .withNetworkId(network.getId())
-                    .withContainerNetwork(new com.github.dockerjava.api.model.ContainerNetwork()
-                        .withAliases(List.of(nodeId)))
-                    .exec();
+        retryDockerOp(() -> {
+            var dockerClient = DockerClientFactory.instance().client();
+            dockerClient.connectToNetworkCmd()
+                        .withContainerId(container.getContainerId())
+                        .withNetworkId(network.getId())
+                        .withContainerNetwork(new com.github.dockerjava.api.model.ContainerNetwork()
+                            .withAliases(List.of(nodeId)))
+                        .exec();
+        }, "reconnect " + nodeId);
         System.out.println("[DEBUG] Reconnected " + nodeId + " to cluster network");
     }
 
@@ -731,6 +735,28 @@ public class AetherCluster implements AutoCloseable {
         } catch (Exception e) {
             System.err.println("[WARN] Failed to repackage artifact for rolling update: " + e.getMessage());
         }
+    }
+
+    private static void retryDockerOp(Runnable op, String description) {
+        RuntimeException lastException = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                op.run();
+                return;
+            } catch (RuntimeException e) {
+                lastException = e;
+                System.out.println("[WARN] Docker operation '" + description + "' failed (attempt " + attempt + "/3): " + e.getMessage());
+                if (attempt < 3) {
+                    try {
+                        Thread.sleep(2000L * attempt);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw e;
+                    }
+                }
+            }
+        }
+        throw lastException;
     }
 
     private static byte[] repackageJarWithVersion(Path originalJar, String targetVersion) throws Exception {

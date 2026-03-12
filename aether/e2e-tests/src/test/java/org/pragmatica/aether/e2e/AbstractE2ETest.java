@@ -54,6 +54,7 @@ public abstract class AbstractE2ETest {
         cluster.start();
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();
+        cluster.awaitLeader();
         cluster.uploadTestArtifacts();
         additionalSetUp();
     }

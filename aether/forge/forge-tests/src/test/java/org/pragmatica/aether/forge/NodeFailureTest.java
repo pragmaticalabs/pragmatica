@@ -34,6 +34,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class NodeFailureTest {
     private static final int BASE_PORT = 7050;
     private static final int BASE_MGMT_PORT = 7150;
+    private static final int BASE_APP_HTTP_PORT = 7250;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
@@ -43,7 +44,7 @@ class NodeFailureTest {
     @BeforeEach
     void setUp(TestInfo testInfo) {
         int portOffset = getPortOffset(testInfo);
-        cluster = emberCluster(5, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "nf");
+        cluster = emberCluster(5, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, BASE_APP_HTTP_PORT + portOffset, "nf");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();

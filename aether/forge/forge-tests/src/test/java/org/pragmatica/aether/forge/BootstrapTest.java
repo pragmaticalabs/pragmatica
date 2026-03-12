@@ -37,6 +37,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class BootstrapTest {
     private static final int BASE_PORT = 7500;
     private static final int BASE_MGMT_PORT = 7600;
+    private static final int BASE_APP_HTTP_PORT = 7700;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
@@ -49,7 +50,7 @@ class BootstrapTest {
     void setUp(TestInfo testInfo) {
         // Use method-specific port offset to avoid port conflicts between tests
         int portOffset = getPortOffset(testInfo);
-        cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "bt");
+        cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, BASE_APP_HTTP_PORT + portOffset, "bt");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();
