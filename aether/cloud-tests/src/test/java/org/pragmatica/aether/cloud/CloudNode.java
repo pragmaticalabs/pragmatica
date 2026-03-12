@@ -86,6 +86,103 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
         return httpGet("/api/nodes");
     }
 
+    /// Performs an HTTP POST to the management API.
+    public Result<String> httpPost(String path, String body, String contentType) {
+        var url = "http://" + publicIp + ":" + MANAGEMENT_PORT + path;
+
+        try {
+            var request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Content-Type", contentType)
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .timeout(Duration.ofSeconds(30))
+                .build();
+
+            var response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                return Result.success(response.body());
+            }
+
+            return new CloudTestError.HttpRequestFailed(url, "HTTP " + response.statusCode() + ": " + response.body()).result();
+        } catch (Exception e) {
+            return new CloudTestError.HttpRequestFailed(url, e.getMessage()).result();
+        }
+    }
+
+    /// Performs an HTTP PUT with binary body to the management API.
+    public Result<String> httpPut(String path, byte[] body) {
+        var url = "http://" + publicIp + ":" + MANAGEMENT_PORT + path;
+
+        try {
+            var request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Content-Type", "application/octet-stream")
+                .PUT(HttpRequest.BodyPublishers.ofByteArray(body))
+                .timeout(Duration.ofSeconds(60))
+                .build();
+
+            var response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                return Result.success(response.body());
+            }
+
+            return new CloudTestError.HttpRequestFailed(url, "HTTP " + response.statusCode() + ": " + response.body()).result();
+        } catch (Exception e) {
+            return new CloudTestError.HttpRequestFailed(url, e.getMessage()).result();
+        }
+    }
+
+    /// Deploys a blueprint via TOML to the management API.
+    public Result<String> deploy(String artifact, int instances) {
+        var blueprintId = "cloud.test:deploy:1.0.0";
+        var blueprint = """
+            id = "%s"
+
+            [[slices]]
+            artifact = "%s"
+            instances = %d
+            """.formatted(blueprintId, artifact, instances);
+
+        return httpPost("/api/blueprint", blueprint, "application/toml");
+    }
+
+    /// Uploads an artifact JAR to the DHT repository via management API.
+    public Result<String> uploadArtifact(String groupPath, String artifactId, String version, byte[] jarContent) {
+        var path = "/repository/" + groupPath + "/" + artifactId + "/" + version + "/" + artifactId + "-" + version + ".jar";
+        log.info("[{}] Uploading artifact to {} ({} bytes)", nodeId, path, jarContent.length);
+
+        return httpPut(path, jarContent);
+    }
+
+    /// Fetches slice status from the management API.
+    public Result<String> getSlicesStatus() {
+        return httpGet("/api/slices/status");
+    }
+
+    /// Fetches registered routes from the management API.
+    public Result<String> getRoutes() {
+        return httpGet("/api/routes");
+    }
+
+    /// Invokes a slice endpoint via HTTP GET on the APP port (same as management for now).
+    public Result<String> invokeGet(String path) {
+        return httpGet(path);
+    }
+
+    /// Undeploys a blueprint by ID.
+    public Result<String> undeploy(String blueprintId) {
+        return httpDelete("/api/blueprint/" + blueprintId);
+    }
+
+    /// Scales a deployed slice.
+    public Result<String> scale(String artifact, int instances) {
+        var body = "{\"artifact\":\"" + artifact + "\",\"instances\":" + instances + "}";
+
+        return httpPost("/api/scale", body, "application/json");
+    }
+
     // --- Leaf: perform HTTP GET to management API ---
 
     private Result<String> httpGet(String path) {
@@ -96,6 +193,30 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
                 .uri(URI.create(url))
                 .timeout(Duration.ofSeconds(10))
                 .GET()
+                .build();
+
+            var response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                return Result.success(response.body());
+            }
+
+            return new CloudTestError.HttpRequestFailed(url, "HTTP " + response.statusCode()).result();
+        } catch (Exception e) {
+            return new CloudTestError.HttpRequestFailed(url, e.getMessage()).result();
+        }
+    }
+
+    // --- Leaf: perform HTTP DELETE to management API ---
+
+    private Result<String> httpDelete(String path) {
+        var url = "http://" + publicIp + ":" + MANAGEMENT_PORT + path;
+
+        try {
+            var request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(10))
+                .DELETE()
                 .build();
 
             var response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
