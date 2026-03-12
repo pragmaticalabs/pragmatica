@@ -2148,4 +2148,60 @@ class CstLinterTest {
             assertNoRule(diagnostics, "JBCT-RET-01");
         }
     }
+
+    // ========== @Contract Annotation Support ==========
+    @Nested
+    @DisplayName("@Contract annotation suppresses JBCT-RET-01")
+    class ContractAnnotationTests {
+        @Test
+        void contractOnMethod_suppressesVoidWarning() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                public class Test {
+                    @Contract
+                    public void fireAndForget() {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-01");
+        }
+
+        @Test
+        void contractOnClass_suppressesAllVoidWarnings() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                @Contract
+                public class Test {
+                    public void methodOne() {}
+                    public void methodTwo() {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-01");
+        }
+
+        @Test
+        void contractScopeIsLimited_otherMethodsStillFlagged() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                public class Test {
+                    @Contract
+                    public void contractMethod() {}
+
+                    public void nonContractMethod() {}
+                }
+                """);
+            assertHasRule(diagnostics, "JBCT-RET-01");
+        }
+
+        @Test
+        void fullyQualifiedContract_alsoWorks() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                public class Test {
+                    @org.pragmatica.lang.Contract
+                    public void fireAndForget() {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-01");
+        }
+    }
 }
