@@ -113,6 +113,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -206,6 +207,10 @@ public interface AetherNode {
     /// Get the number of currently connected peer nodes in the cluster.
     /// This is a network-level count, not based on metrics exchange.
     int connectedNodeCount();
+
+    /// Get the IDs of currently connected peer nodes.
+    /// This is a live view — reflects actual TCP connections, not static config.
+    Set<NodeId> connectedPeerIds();
 
     /// Check if this node is the current leader.
     boolean isLeader();
@@ -441,20 +446,13 @@ public interface AetherNode {
                                           eventLoopMetricsCollector.register(server.workerGroup());
                                           log.info("Registered EventLoopGroups for metrics collection");
                                       });
-                                                 // TODO: Leader election timing issue workaround.
-                //
-                // The problem: QuorumStateNotification.ESTABLISHED fires when quorum is detected,
-                // but consensus may still be syncing (nodes exchanging phase/sequence info).
-                // If LeaderManager submits a proposal immediately on ESTABLISHED, it can fail
-                // because other nodes aren't ready yet, causing retries and phase divergence.
-                //
-                // The fix: LeaderManager no longer submits proposals automatically in consensus mode.
-                // Instead, we trigger election manually here after clusterNode.start() completes.
-                // At this point, consensus is fully synchronized and ready for proposals.
-                //
-                // Future improvement: Add ConsensusReadyNotification that fires after sync completes,
-                // separate from QuorumStateNotification which only indicates network connectivity.
-                // LeaderManager would then listen for ConsensusReadyNotification instead of ESTABLISHED.
+                                                 // Trigger leader election after consensus sync completes.
+                // This is the correct trigger point because consensus is
+                // guaranteed ready (startPromise resolved). LeaderManager.start()
+                // does NOT auto-trigger in consensus mode — ESTABLISHED fires
+                // before sync, so proposals would be rejected by dormant engines.
+                // LeaderManager applies rank-based staggered delay internally
+                // to prevent livelock from simultaneous proposals.
                 clusterNode.leaderManager()
                            .triggerElection();
                                              })
@@ -527,6 +525,12 @@ public interface AetherNode {
             public int connectedNodeCount() {
                 return clusterNode.network()
                                   .connectedNodeCount();
+            }
+
+            @Override
+            public Set<NodeId> connectedPeerIds() {
+                return clusterNode.network()
+                                  .connectedPeers();
             }
 
             @Override
@@ -804,12 +808,16 @@ public interface AetherNode {
                                                                                                                     response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.PutRequest.class,
                                                     request -> dhtNode.handlePutRequest(request,
-                                                                                        response -> dhtNetwork.send(request.sender(),
-                                                                                                                    response))));
+                                                                                        response -> handleRemotePutResponse(dhtNetwork,
+                                                                                                                            aetherMaps,
+                                                                                                                            request,
+                                                                                                                            response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.RemoveRequest.class,
                                                     request -> dhtNode.handleRemoveRequest(request,
-                                                                                           response -> dhtNetwork.send(request.sender(),
-                                                                                                                       response))));
+                                                                                           response -> handleRemoteRemoveResponse(dhtNetwork,
+                                                                                                                                  aetherMaps,
+                                                                                                                                  request,
+                                                                                                                                  response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.ExistsRequest.class,
                                                     request -> dhtNode.handleExistsRequest(request,
                                                                                            response -> dhtNetwork.send(request.sender(),
@@ -1012,6 +1020,28 @@ public interface AetherNode {
                                                                                        gossipKey.keyId())
                                                                 .option())
                      .or(GossipEncryptor.none());
+    }
+
+    @SuppressWarnings("JBCT-RET-01") // Side-effect: send response + dispatch notification
+    private static void handleRemotePutResponse(DHTNetwork dhtNetwork,
+                                                AetherMaps aetherMaps,
+                                                DHTMessage.PutRequest request,
+                                                DHTMessage.PutResponse response) {
+        dhtNetwork.send(request.sender(), response);
+        if (response.success()) {
+            aetherMaps.dispatchRemotePut(request.key(), request.value());
+        }
+    }
+
+    @SuppressWarnings("JBCT-RET-01") // Side-effect: send response + dispatch notification
+    private static void handleRemoteRemoveResponse(DHTNetwork dhtNetwork,
+                                                   AetherMaps aetherMaps,
+                                                   DHTMessage.RemoveRequest request,
+                                                   DHTMessage.RemoveResponse response) {
+        dhtNetwork.send(request.sender(), response);
+        if (response.found()) {
+            aetherMaps.dispatchRemoteRemove(request.key());
+        }
     }
 
     private static List<MessageRouter.Entry<?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,
