@@ -1,8 +1,8 @@
 package org.pragmatica.aether.node.health;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
-import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -19,17 +19,17 @@ import org.pragmatica.swim.SwimTransport;
 
 import java.net.InetSocketAddress;
 import java.time.Duration;
-import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/// Bridges SWIM membership events to TopologyChangeNotification for core-to-core health detection.
+/// Bridges SWIM failure detection to NCN channel management.
 ///
-/// SWIM detects node failures via UDP probing, which is more reliable than TCP disconnect
-/// for determining actual node health. TCP disconnects may be transient network glitches;
-/// SWIM's probe-suspect-faulty progression provides confirmed failure detection.
+/// Cooperative model with NettyClusterNetwork (NCN):
+/// - **SWIM → NCN:** On member FAULTY/LEFT, routes DisconnectNode to close zombie TCP channels
+/// - **NCN → SWIM:** On TCP Hello handshake, onNodeConnected() resets FAULTY state
+/// - **NCN owns:** quorum tracking, topology notifications
+/// - **SWIM owns:** departure detection via UDP probing
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03", "JBCT-EX-01"})
 public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private static final Logger log = LoggerFactory.getLogger(CoreSwimHealthDetector.class);
@@ -46,7 +46,6 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final GossipEncryptor encryptor;
-    private final List<NodeId> currentTopology;
     private volatile SwimProtocol swimProtocol;
     private volatile SwimTransport swimTransport;
 
@@ -60,7 +59,6 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.encryptor = encryptor;
-        this.currentTopology = new CopyOnWriteArrayList<>(extractNodeIds(topologyConfig.coreNodes()));
     }
 
     /// Factory method for creating a CoreSwimHealthDetector with encryption.
@@ -82,7 +80,12 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
     /// Start the SWIM protocol for core node health detection.
     /// SWIM port = cluster port + 1.
+    /// Idempotent: if SWIM is already running, this is a no-op.
     public Promise<Unit> start() {
+        if (swimProtocol != null) {
+            log.debug("SWIM already running, skipping start");
+            return Promise.success(Unit.unit());
+        }
         var selfPort = findSelfPort();
         var swimPort = selfPort + 1;
         var selfHost = topologyConfig.coreNodes()
@@ -114,10 +117,14 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         }
     }
 
-    /// Update the tracked topology view. Called when topology changes are received from other sources.
-    public void updateTopology(List<NodeId> topology) {
-        currentTopology.clear();
-        currentTopology.addAll(topology);
+    /// Notify SWIM that a TCP connection was established to a peer.
+    /// Resets FAULTY/SUSPECT state so SWIM can detect future departures.
+    /// A completed TCP Hello handshake is proof the node is alive.
+    public void onNodeConnected(NodeId nodeId) {
+        var protocol = swimProtocol;
+        if (protocol != null) {
+            protocol.markAlive(nodeId);
+        }
     }
 
     // ---- SwimMembershipListener ----
@@ -133,23 +140,17 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
     @Override
     public void onMemberFaulty(SwimMember member) {
-        log.error("SWIM member faulty: {}, routing topology removal", member.nodeId());
-        routeNodeRemoved(member.nodeId());
+        log.error("SWIM member faulty: {}, routing DisconnectNode", member.nodeId());
+        router.route(new NetworkServiceMessage.DisconnectNode(member.nodeId()));
     }
 
     @Override
     public void onMemberLeft(NodeId leftNodeId) {
-        log.warn("SWIM member left: {}, routing topology removal", leftNodeId);
-        routeNodeRemoved(leftNodeId);
+        log.warn("SWIM member left: {}, routing DisconnectNode", leftNodeId);
+        router.route(new NetworkServiceMessage.DisconnectNode(leftNodeId));
     }
 
     // ---- Internal ----
-    private void routeNodeRemoved(NodeId nodeId) {
-        currentTopology.remove(nodeId);
-        var notification = TopologyChangeNotification.nodeRemoved(nodeId, List.copyOf(currentTopology));
-        router.route(notification);
-    }
-
     private int findSelfPort() {
         return topologyConfig.coreNodes()
                              .stream()
@@ -204,11 +205,5 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                     .host(),
                                                 swimPort);
         protocol.addSeedMember(node.id(), swimAddress);
-    }
-
-    private static List<NodeId> extractNodeIds(List<NodeInfo> nodes) {
-        return nodes.stream()
-                    .map(NodeInfo::id)
-                    .toList();
     }
 }

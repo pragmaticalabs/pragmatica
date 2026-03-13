@@ -30,7 +30,6 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -44,6 +43,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.LengthFieldPrepender;
+import io.netty.handler.timeout.ReadTimeoutHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -55,12 +55,22 @@ import static org.pragmatica.consensus.net.netty.NettyClusterNetwork.ViewChangeO
 public class NettyClusterNetwork implements ClusterNetwork {
     private static final Logger log = LoggerFactory.getLogger(NettyClusterNetwork.class);
     private static final double SCALE = 0.3d;
+    /// Read timeout for detecting zombie TCP channels. If no data is received within this period,
+    /// the channel is closed. All peers are pinged every ~1 second, so 10 seconds provides ample margin
+    /// while enabling fast recovery after network partitions.
+    private static final int READ_TIMEOUT_SECONDS = 10;
 
     private static final int LENGTH_FIELD_LEN = 4;
     private static final int INITIAL_BYTES_TO_STRIP = LENGTH_FIELD_LEN;
 
+    /// Minimum age (in nanos) a channel must have before DisconnectNode can remove it.
+    /// Channels younger than this are considered fresh reconnections that should survive
+    /// SWIM's delayed FAULTY detection. Set to ReadTimeout + SWIM probe interval margin.
+    private static final long CHANNEL_PROTECTION_NANOS = java.time.Duration.ofSeconds(READ_TIMEOUT_SECONDS + 5).toNanos();
+
     private final NodeInfo self;
     private final Map<NodeId, Channel> peerLinks = new ConcurrentHashMap<>();
+    private final Map<NodeId, Long> channelEstablishedAt = new ConcurrentHashMap<>();
     private final Set<NodeId> passivePeers = ConcurrentHashMap.newKeySet();
     private final Map<Channel, NodeId> channelToNodeId = new ConcurrentHashMap<>();
     private final Set<Channel> pendingChannels = ConcurrentHashMap.newKeySet();
@@ -95,6 +105,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
         this.router = router;
         this.handlers = () -> {
             var result = new ArrayList<ChannelHandler>();
+            result.add(new ReadTimeoutHandler(READ_TIMEOUT_SECONDS));
             result.add(new LengthFieldBasedFrameDecoder(1048576, 0, LENGTH_FIELD_LEN, 0, INITIAL_BYTES_TO_STRIP));
             result.add(new LengthFieldPrepender(LENGTH_FIELD_LEN));
             result.add(new Decoder(deserializer));
@@ -112,17 +123,11 @@ public class NettyClusterNetwork implements ClusterNetwork {
                                                 .randomize(SCALE));
     }
 
-    private Option<NodeId> randomNode() {
-        if (!isRunning.get() || peerLinks.isEmpty()) {
-            return Option.none();
-        }
-        var ids = new ArrayList<>(peerLinks.keySet());
-        Collections.shuffle(ids);
-        return Option.some(ids.getFirst());
-    }
-
     private void pingNodes() {
-        randomNode().onPresent(peerId -> sendToChannel(peerId, new Ping(self.id()), peerLinks.get(peerId)));
+        if (isRunning.get()) {
+            var ping = new Ping(self.id());
+            peerLinks.forEach((peerId, channel) -> sendToChannel(peerId, ping, channel));
+        }
         schedulePing();
     }
 
@@ -212,6 +217,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
             return;
         }
         channelToNodeId.put(channel, hello.sender());
+        channelEstablishedAt.put(hello.sender(), System.nanoTime());
         // Track passive peers
         trackPassiveRole(hello.sender(), unknownNodeInfo);
         // Send AddNode BEFORE ConnectionEstablished if unknown
@@ -238,6 +244,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
               .filter(nodeId -> peerLinks.remove(nodeId, channel))
               .onPresent(nodeId -> {
                              passivePeers.remove(nodeId);
+                             channelEstablishedAt.remove(nodeId);
                              // Only process view change if quorum was already established.
                              // This prevents quorum oscillation during initial startup while
                              // ensuring proper quorum tracking after partition/disconnect events.
@@ -335,26 +342,44 @@ public class NettyClusterNetwork implements ClusterNetwork {
 
     @Override
     public void disconnect(DisconnectNode disconnectNode) {
-        Option.option(peerLinks.remove(disconnectNode.nodeId()))
-              .onPresent(channel -> {
-                             channelToNodeId.remove(channel);
-                             passivePeers.remove(disconnectNode.nodeId());
-                             processViewChange(REMOVE,
-                                               disconnectNode.nodeId());
-                             channel.close()
-                                    .addListener(future -> {
-                                                     if (future.isSuccess()) {
-                                                         log.info("Node {} disconnected from node {}",
-                                                                  self.id(),
-                                                                  disconnectNode.nodeId());
-                                                     } else {
-                                                         log.warn("Node {} failed to disconnect from node {}: ",
-                                                                  self.id(),
-                                                                  disconnectNode.nodeId(),
-                                                                  future.cause());
-                                                     }
-                                                 });
-                         });
+        var nodeId = disconnectNode.nodeId();
+        var channel = peerLinks.get(nodeId);
+        if (channel == null) {
+            log.debug("DisconnectNode for {} ignored: no channel in peerLinks", nodeId);
+            return;
+        }
+        // Protect fresh channels from SWIM's delayed FAULTY detection.
+        // After a partition heals, ReadTimeoutHandler (10s) clears the zombie and reconcile
+        // establishes a new connection. SWIM's FAULTY arrives ~11.5s after partition start,
+        // which may overlap with the fresh connection. Channels younger than the protection
+        // window are guaranteed to be post-partition reconnections, not zombies.
+        var establishedAt = channelEstablishedAt.getOrDefault(nodeId, 0L);
+        var channelAge = System.nanoTime() - establishedAt;
+        if (channelAge < CHANNEL_PROTECTION_NANOS) {
+            log.debug("DisconnectNode for {} ignored: channel is {}ms old (protection window={}ms)",
+                      nodeId,
+                      java.time.Duration.ofNanos(channelAge).toMillis(),
+                      java.time.Duration.ofNanos(CHANNEL_PROTECTION_NANOS).toMillis());
+            return;
+        }
+        if (!peerLinks.remove(nodeId, channel)) {
+            log.debug("DisconnectNode for {} ignored: channel already replaced", nodeId);
+            return;
+        }
+        channelToNodeId.remove(channel);
+        channelEstablishedAt.remove(nodeId);
+        passivePeers.remove(nodeId);
+        processViewChange(REMOVE, nodeId);
+        channel.close()
+               .addListener(future -> {
+                                if (future.isSuccess()) {
+                                    log.info("Node {} disconnected from node {}",
+                                             self.id(), nodeId);
+                                } else {
+                                    log.warn("Node {} failed to disconnect from node {}: ",
+                                             self.id(), nodeId, future.cause());
+                                }
+                            });
     }
 
     @Override
@@ -414,7 +439,6 @@ public class NettyClusterNetwork implements ClusterNetwork {
                 yield TopologyChangeNotification.nodeAdded(peerId, currentView());
             }
             case REMOVE -> {
-                // Only notify on transition from at/above quorum to below
                 if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
                     router.route(QuorumStateNotification.disappeared());
                 }

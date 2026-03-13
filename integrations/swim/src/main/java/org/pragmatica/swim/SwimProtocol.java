@@ -130,6 +130,29 @@ public final class SwimProtocol implements SwimMessageHandler {
         return Collections.unmodifiableMap(members);
     }
 
+    /// Mark a member as ALIVE, resetting SUSPECT or FAULTY state.
+    /// Called when external evidence (e.g. TCP connection) confirms the node is reachable.
+    /// This enables SWIM to detect future departures of previously-FAULTY members.
+    public void markAlive(NodeId nodeId) {
+        if (selfId.equals(nodeId)) {
+            return;
+        }
+
+        var member = members.get(nodeId);
+
+        if (member == null || member.state() == MemberState.ALIVE) {
+            return;
+        }
+
+        var alive = member.withState(MemberState.ALIVE)
+                          .withIncarnation(member.incarnation() + 1);
+        members.put(nodeId, alive);
+        suspectTimestamps.remove(nodeId);
+        listener.onMemberJoined(alive);
+        addMemberUpdate(alive);
+        LOG.info("Member {} externally marked ALIVE (was {})", nodeId.id(), member.state());
+    }
+
     // -- SwimMessageHandler --
 
     @Override

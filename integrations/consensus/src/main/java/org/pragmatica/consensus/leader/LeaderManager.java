@@ -261,11 +261,10 @@ public interface LeaderManager {
             }
 
             private void scheduleElectionRetryIfNeeded() {
-                if (!hasEverHadLeader.get() && currentLeader.get()
-                                                            .isEmpty()) {
+                if (currentLeader.get().isEmpty()) {
                     var retries = electionRetryCount.incrementAndGet();
                     var jitteredDelay = timeSpan((long) (PROPOSAL_RETRY_DELAY.millis() * (1.0 + Math.random() * 0.5))).millis();
-                    log.debug("No leader elected yet, scheduling election retry #{} in {}ms",
+                    log.debug("No leader yet, scheduling election retry #{} in {}ms",
                               retries,
                               jitteredDelay.millis());
                     SharedScheduler.schedule(this::triggerElection, jitteredDelay);
@@ -293,8 +292,12 @@ public interface LeaderManager {
                 // until consensus completes. If it's truly stuck, re-election via quorum flap
                 // will eventually resolve it.
                 var candidate = sortedCandidates.getFirst();
-                if (!self.equals(candidate)) {
-                    log.debug("Skipping election: self={} is not designated candidate {}",
+                // During initial election, only min-rank node submits to prevent livelock.
+                // During re-election, any node can submit — consensus deduplicates, and
+                // the min-rank node may be in the majority partition (never lost quorum)
+                // and won't re-propose since it already has a leader.
+                if (!hasEverHadLeader.get() && !self.equals(candidate)) {
+                    log.debug("Skipping initial election: self={} is not designated candidate {}",
                               self,
                               candidate);
                     return;

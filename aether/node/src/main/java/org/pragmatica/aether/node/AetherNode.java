@@ -870,6 +870,9 @@ public interface AetherNode {
         // Defer SWIM start until quorum is established — peers are not ready before quorum
         allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
                                                  notification -> startSwimOnQuorum(notification, swimHealthDetector)));
+        // Wire TCP connection events to SWIM: reset FAULTY members when TCP proves they're alive
+        allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
+                                                 connection -> swimHealthDetector.onNodeConnected(connection.nodeId())));
         // Create the node first (without management server reference)
         var startTimeMs = System.currentTimeMillis();
         var node = new aetherNode(config,
