@@ -49,6 +49,9 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 ### Async Postgres Driver (v0.19.x)
 - **Full async PostgreSQL module** — Resurrected native async driver from pragmatica-lite. Built on Netty — non-blocking, zero-copy, no reactor overhead. 14 test classes, production-ready. Eliminates HikariCP thread pool and reactor-core from the hot path. Available as alternative `SqlConnector` SPI implementation bypassing both JDBC and R2DBC
 
+### Raw HTTP Client Cleanup (v0.20.0)
+- **Codebase-wide HttpOperations migration** — Replaced all raw `java.net.http.HttpClient` usage with `HttpOperations` / `JdkHttpOperations` from `integrations/net/http-client`. 30 files across 7 modules: production code (`AetherCli`, `RemoteRepository`, `AlertForwarder`), Forge infrastructure (`ForgeServer`, `ConfigurableLoadRunner`), test infrastructure (`ForgeTestBase`, 18 forge tests, `CloudNode`, `AetherNodeContainer`). JBCT tools already clean via `HttpClients.httpOperations()`. Raw `HttpClient` now only exists in integration modules and factory methods that wrap into `JdkHttpOperations`. Full codebase audit confirmed no other direct-instead-of-integrations violations (Jackson, Netty, JDBC, crypto all used legitimately in integration adapters).
+
 ### Core Infrastructure
 - **Request ID Propagation** - ScopedValue-based context with ServiceLoader propagation hook in Promise
 - **SliceInvoker Immediate Retry** - Event-driven retry on node departure (matches AppHttpServer pattern)
@@ -183,17 +186,6 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 ---
 
 ## Next Up
-
-### TOP PRIORITY - Cleanup
-
-0. **Eliminate Raw JDK HTTP Client Usage**
-   - All HTTP operations must go through `integrations/net/http-client` (`HttpOperations` / `JdkHttpOperations`)
-   - Raw `java.net.http.HttpClient` instantiation and `.send()` calls are forbidden outside the integration module
-   - **Main code:** `AetherCli.java`, `RemoteRepository.java`, `AlertForwarder.java`
-   - **Test code:** `CloudNode.java`, `ConfigurableLoadRunner.java`, `ForgeTestBase.java`, `ChaosTest.java`
-   - **JBCT tools:** `JarInstaller.java`, `GitHubReleaseChecker.java`, `GitHubVersionResolver.java`
-   - **Already migrated:** `AetherNodeContainer.java` (E2E tests)
-   - **Why:** Raw usage leaks null exception messages, duplicates error handling, and creates inconsistent failure modes across the codebase. Single integration point ensures typed errors (`HttpError`), consistent timeouts, and uniform retry behavior.
 
 ### HIGH PRIORITY - Core & Operations
 
