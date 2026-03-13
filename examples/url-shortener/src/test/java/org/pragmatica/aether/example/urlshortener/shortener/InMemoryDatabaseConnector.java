@@ -37,12 +37,12 @@ public final class InMemoryDatabaseConnector implements SqlConnector {
 
     @Override
     public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
-        return Promise.lift(() -> executeQueryOne(sql, mapper, params));
+        return Promise.resolved(Result.lift(() -> executeQueryOne(sql, mapper, params)));
     }
 
     @Override
     public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
-        return Promise.lift(() -> executeQueryOptional(sql, mapper, params));
+        return Promise.resolved(Result.lift(() -> executeQueryOptional(sql, mapper, params)));
     }
 
     @Override
@@ -52,7 +52,7 @@ public final class InMemoryDatabaseConnector implements SqlConnector {
 
     @Override
     public Promise<Integer> update(String sql, Object... params) {
-        return Promise.lift(() -> executeUpdate(sql, params));
+        return Promise.resolved(Result.lift(() -> executeUpdate(sql, params)));
     }
 
     @Override
