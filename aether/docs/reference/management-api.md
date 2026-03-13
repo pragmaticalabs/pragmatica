@@ -1687,6 +1687,10 @@ List all worker-hosted slice endpoints across all groups.
 | POST | `/api/node/shutdown/{nodeId}` | Node Lifecycle |
 | GET | `/api/scheduled-tasks` | Scheduled Tasks |
 | GET | `/api/scheduled-tasks/{configSection}` | Scheduled Tasks |
+| POST | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/pause` | Scheduled Tasks |
+| POST | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/resume` | Scheduled Tasks |
+| POST | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/trigger` | Scheduled Tasks |
+| GET | `/api/scheduled-tasks/{configSection}/{artifact}/{method}/state` | Scheduled Tasks |
 | GET | `/api/workers` | Worker Pools |
 | GET | `/api/workers/health` | Worker Pools |
 | GET | `/api/workers/endpoints` | Worker Pools |
@@ -1787,7 +1791,7 @@ Transition a node from any state to `SHUTTING_DOWN`.
 
 ### GET /api/scheduled-tasks
 
-List all registered scheduled tasks and active timer count.
+List all registered scheduled tasks with active timer count and execution state.
 
 **Response:**
 ```json
@@ -1800,7 +1804,12 @@ List all registered scheduled tasks and active timer count.
       "interval": "5m",
       "cron": "",
       "leaderOnly": true,
-      "registeredBy": "node-1"
+      "paused": false,
+      "registeredBy": "node-1",
+      "lastExecutionAt": 1710345600000,
+      "nextFireAt": 1710345900000,
+      "consecutiveFailures": 0,
+      "totalExecutions": 42
     }
   ],
   "activeTimers": 1
@@ -1816,6 +1825,70 @@ Get scheduled tasks filtered by config section.
 {
   "tasks": [...],
   "configSection": "scheduling.cleanup"
+}
+```
+
+### POST /api/scheduled-tasks/{configSection}/{artifact}/{method}/pause
+
+Pause a scheduled task. Cancels the active timer; the task remains registered but will not fire until resumed.
+
+**Response:**
+```json
+{
+  "success": true,
+  "configSection": "scheduling.cleanup",
+  "artifact": "com.example:my-slice:1.0.0",
+  "method": "cleanup",
+  "action": "paused"
+}
+```
+
+### POST /api/scheduled-tasks/{configSection}/{artifact}/{method}/resume
+
+Resume a paused scheduled task. Restarts the timer with the configured interval or cron expression.
+
+**Response:**
+```json
+{
+  "success": true,
+  "configSection": "scheduling.cleanup",
+  "artifact": "com.example:my-slice:1.0.0",
+  "method": "cleanup",
+  "action": "resumed"
+}
+```
+
+### POST /api/scheduled-tasks/{configSection}/{artifact}/{method}/trigger
+
+Manually trigger a scheduled task immediately, regardless of its schedule or paused state.
+
+**Response:**
+```json
+{
+  "success": true,
+  "configSection": "scheduling.cleanup",
+  "artifact": "com.example:my-slice:1.0.0",
+  "method": "cleanup",
+  "action": "triggered"
+}
+```
+
+### GET /api/scheduled-tasks/{configSection}/{artifact}/{method}/state
+
+Get detailed execution state for a specific scheduled task.
+
+**Response:**
+```json
+{
+  "configSection": "scheduling.cleanup",
+  "artifact": "com.example:my-slice:1.0.0",
+  "method": "cleanup",
+  "lastExecutionAt": 1710345600000,
+  "nextFireAt": 1710345900000,
+  "consecutiveFailures": 0,
+  "totalExecutions": 42,
+  "lastFailureMessage": "",
+  "updatedAt": 1710345600000
 }
 ```
 

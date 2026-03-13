@@ -239,15 +239,15 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### MEDIUM PRIORITY - Developer Tooling & Deployment
 
-3. **Distributed Scheduler Resource**
+3. **Distributed Scheduler Resource** *(partially complete — v0.20.0)*
     - Distributed task scheduling as a `@ResourceQualifier` resource for user slices
     - Builds on existing `ScheduledTaskManager`/`ScheduledTaskRegistry` (internal Aether scheduling, v0.18.0)
-    - `infra-scheduler` currently in-memory only — needs distributed coordination via KV-Store consensus
-    - **API shape:** `@Scheduled` resource qualifier with interval/cron config, distributed locking to prevent duplicate execution
-    - **Execution modes:** single-node (leader-elected), all-nodes, per-community (worker pools)
-    - **Persistence:** durable task state in KV-Store — survives leader failover and node restarts
-    - **Observability:** task execution history, next-fire tracking, failure counts, dead letter integration (#7)
-    - **Management:** REST API for task listing, pause/resume, manual trigger; CLI commands
+    - ~~`infra-scheduler` currently in-memory only — needs distributed coordination via KV-Store consensus~~ ✅ KV-Store consensus integration complete
+    - ~~**API shape:** `@Scheduled` resource qualifier with interval/cron config, distributed locking to prevent duplicate execution~~ ✅ `@Scheduled` annotation with interval + cron support, including weeks (`w`) unit
+    - **Execution modes:** single-node (leader-elected) ✅, all-nodes, per-community (worker pools) — remaining modes planned
+    - ~~**Persistence:** durable task state in KV-Store — survives leader failover and node restarts~~ ✅ Complete — pause state + execution state persisted via consensus
+    - ~~**Observability:** task execution history, next-fire tracking, failure counts, dead letter integration (#7)~~ ✅ `ScheduledTaskStateRegistry` tracks last execution, next fire, consecutive failures, total executions. Dead letter integration (#7) still planned
+    - ~~**Management:** REST API for task listing, pause/resume, manual trigger; CLI commands~~ ✅ Complete — REST endpoints + CLI commands for pause, resume, trigger, state query
 
 4. **Notification Resource**
     - Unified notification facade with pluggable backends via SPI (same `@ResourceQualifier` pattern)

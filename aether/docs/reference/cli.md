@@ -807,6 +807,15 @@ aether scheduled-tasks list
 
 # Get scheduled tasks filtered by config section
 aether scheduled-tasks get <configSection>
+
+# Pause a scheduled task
+aether scheduled-tasks pause <configSection> <artifact> <method>
+
+# Resume a paused scheduled task
+aether scheduled-tasks resume <configSection> <artifact> <method>
+
+# Manually trigger a scheduled task
+aether scheduled-tasks trigger <configSection> <artifact> <method>
 ```
 
 Example:
@@ -816,6 +825,15 @@ aether scheduled-tasks list
 
 # Get tasks for a specific schedule
 aether scheduled-tasks get scheduling.cleanup
+
+# Pause a task
+aether scheduled-tasks pause scheduling.cleanup com.example:my-slice:1.0.0 cleanup
+
+# Resume a paused task
+aether scheduled-tasks resume scheduling.cleanup com.example:my-slice:1.0.0 cleanup
+
+# Manually trigger a task
+aether scheduled-tasks trigger scheduling.cleanup com.example:my-slice:1.0.0 cleanup
 ```
 
 ---
