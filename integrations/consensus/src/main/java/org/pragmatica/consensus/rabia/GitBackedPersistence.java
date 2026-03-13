@@ -109,7 +109,13 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
 
         return Files.exists(gitDir)
                ? Result.unitResult()
-               : runGit("init").mapToUnit();
+               : runGit("init").flatMap(_ -> configureGitUser())
+                               .mapToUnit();
+    }
+
+    private Result<String> configureGitUser() {
+        return runGit("config", "user.email", "aether@pragmatica.org")
+            .flatMap(_ -> runGit("config", "user.name", "Aether Backup"));
     }
 
     private Result<Unit> gitAdd() {
