@@ -3,7 +3,6 @@ package org.pragmatica.aether.e2e.containers;
 import org.pragmatica.lang.Option;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.Network;
 
 import java.io.ByteArrayInputStream;
@@ -158,9 +157,15 @@ public class AetherCluster implements AutoCloseable {
     /// and see the expected number of connected peers.
     public void awaitClusterConverged() {
         System.out.println("[DEBUG] Waiting for cluster convergence...");
-        await().atMost(QUORUM_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(this::clusterConverged);
+        try {
+            await().atMost(QUORUM_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(this::clusterConverged);
+        } catch (org.awaitility.core.ConditionTimeoutException e) {
+            System.out.println("\n[DEBUG] ===== CONVERGENCE TIMEOUT - DUMPING CONTAINER LOGS =====\n");
+            dumpAllContainerLogs();
+            throw e;
+        }
     }
 
     /// Waits for all nodes to register ON_DUTY lifecycle state.
@@ -341,37 +346,60 @@ public class AetherCluster implements AutoCloseable {
 
     // ===== Network Operations =====
 
-    /// Disconnects a node from the cluster network, simulating a network partition.
-    /// The container keeps running but cannot communicate with other nodes.
+    /// Disconnects a node from cluster traffic using iptables, simulating a network partition.
+    /// The container keeps running and management API remains accessible via port mapping.
+    /// Only cluster port (8090) and SWIM port (8091) traffic is blocked.
     ///
     /// @param nodeId node to disconnect
     public void disconnectNode(String nodeId) {
         var container = node(nodeId);
-        retryDockerOp(() -> {
-            var dockerClient = DockerClientFactory.instance().client();
-            dockerClient.disconnectFromNetworkCmd()
-                        .withContainerId(container.getContainerId())
-                        .withNetworkId(network.getId())
-                        .exec();
-        }, "disconnect " + nodeId);
-        System.out.println("[DEBUG] Disconnected " + nodeId + " from cluster network");
+        var clusterPort = String.valueOf(AetherNodeContainer.CLUSTER_PORT);
+        var swimPort = String.valueOf(AetherNodeContainer.CLUSTER_PORT + 1);
+        // Block all cluster and SWIM traffic (both TCP and UDP) — run as root
+        execAsRoot(container, "iptables", "-A", "INPUT", "-p", "tcp", "--dport", clusterPort, "-j", "DROP");
+        execAsRoot(container, "iptables", "-A", "OUTPUT", "-p", "tcp", "--dport", clusterPort, "-j", "DROP");
+        execAsRoot(container, "iptables", "-A", "INPUT", "-p", "tcp", "--sport", clusterPort, "-j", "DROP");
+        execAsRoot(container, "iptables", "-A", "OUTPUT", "-p", "tcp", "--sport", clusterPort, "-j", "DROP");
+        execAsRoot(container, "iptables", "-A", "INPUT", "-p", "udp", "--dport", swimPort, "-j", "DROP");
+        execAsRoot(container, "iptables", "-A", "OUTPUT", "-p", "udp", "--dport", swimPort, "-j", "DROP");
+        execAsRoot(container, "iptables", "-A", "INPUT", "-p", "udp", "--sport", swimPort, "-j", "DROP");
+        execAsRoot(container, "iptables", "-A", "OUTPUT", "-p", "udp", "--sport", swimPort, "-j", "DROP");
+        System.out.println("[DEBUG] Disconnected " + nodeId + " from cluster network (iptables)");
     }
 
-    /// Reconnects a previously disconnected node to the cluster network.
+    /// Reconnects a previously disconnected node by removing iptables rules.
     ///
     /// @param nodeId node to reconnect
     public void reconnectNode(String nodeId) {
         var container = node(nodeId);
-        retryDockerOp(() -> {
-            var dockerClient = DockerClientFactory.instance().client();
-            dockerClient.connectToNetworkCmd()
-                        .withContainerId(container.getContainerId())
-                        .withNetworkId(network.getId())
-                        .withContainerNetwork(new com.github.dockerjava.api.model.ContainerNetwork()
-                            .withAliases(List.of(nodeId)))
-                        .exec();
-        }, "reconnect " + nodeId);
-        System.out.println("[DEBUG] Reconnected " + nodeId + " to cluster network");
+        execAsRoot(container, "iptables", "-F");
+        System.out.println("[DEBUG] Reconnected " + nodeId + " to cluster network (iptables)");
+    }
+
+    /// Executes a command inside a container as root user via Docker API.
+    private static void execAsRoot(AetherNodeContainer container, String... command) {
+        try {
+            var dockerClient = org.testcontainers.DockerClientFactory.instance().client();
+            var execCreate = dockerClient.execCreateCmd(container.getContainerId())
+                                         .withCmd(command)
+                                         .withUser("root")
+                                         .withAttachStdout(true)
+                                         .withAttachStderr(true)
+                                         .exec();
+            var result = dockerClient.execStartCmd(execCreate.getId())
+                                     .start()
+                                     .awaitCompletion();
+            var inspectResult = dockerClient.inspectExecCmd(execCreate.getId()).exec();
+            var exitCode = inspectResult.getExitCodeLong();
+            if (exitCode != null && exitCode != 0) {
+                throw new RuntimeException("Command failed with exit code " + exitCode +
+                                           ": " + String.join(" ", command));
+            }
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to exec as root: " + String.join(" ", command), e);
+        }
     }
 
     /// Adds a new node to the running cluster.
@@ -557,43 +585,43 @@ public class AetherCluster implements AutoCloseable {
         var leaderPattern = java.util.regex.Pattern.compile("\"leader\":\"([^\"]+)\"");
         var peersPattern = java.util.regex.Pattern.compile("\"connectedPeers\":(\\d+)");
 
+        var converged = true;
         String consensusLeader = null;
+        var summary = new StringBuilder("[DEBUG] Convergence:");
         for (var node : runningNodes) {
             try {
                 var status = node.getStatus();
                 var health = node.getHealth();
 
                 var leaderMatcher = leaderPattern.matcher(status);
-                if (!leaderMatcher.find()) {
-                    System.out.println("[DEBUG] Convergence: " + node.nodeId() + " has no leader in status");
-                    return false;
-                }
-                var nodeLeader = leaderMatcher.group(1);
-                if (consensusLeader == null) {
+                String nodeLeader = leaderMatcher.find() ? leaderMatcher.group(1) : "NONE";
+                var peersMatcher = peersPattern.matcher(health);
+                int peers = peersMatcher.find() ? Integer.parseInt(peersMatcher.group(1)) : -1;
+
+                summary.append(" ").append(node.nodeId()).append("(leader=").append(nodeLeader)
+                       .append(",peers=").append(peers).append(")");
+
+                if ("NONE".equals(nodeLeader)) {
+                    converged = false;
+                } else if (consensusLeader == null) {
                     consensusLeader = nodeLeader;
                 } else if (!consensusLeader.equals(nodeLeader)) {
-                    System.out.println("[DEBUG] Convergence: leader disagreement - " +
-                        consensusLeader + " vs " + nodeLeader + " (from " + node.nodeId() + ")");
-                    return false;
+                    converged = false;
                 }
-
-                var peersMatcher = peersPattern.matcher(health);
-                if (peersMatcher.find()) {
-                    var peers = Integer.parseInt(peersMatcher.group(1));
-                    if (peers < expectedPeers) {
-                        System.out.println("[DEBUG] Convergence: " + node.nodeId() +
-                            " sees " + peers + " peers, expected " + expectedPeers);
-                        return false;
-                    }
+                if (peers < expectedPeers) {
+                    converged = false;
                 }
             } catch (Exception e) {
-                System.out.println("[DEBUG] Convergence check error for " + node.nodeId() + ": " + e.getMessage());
-                return false;
+                summary.append(" ").append(node.nodeId()).append("(ERROR=").append(e.getMessage()).append(")");
+                converged = false;
             }
         }
-        System.out.println("[DEBUG] Cluster converged: leader=" + consensusLeader +
-            ", all " + runningNodes.size() + " nodes agree, " + expectedPeers + " peers each");
-        return true;
+        System.out.println(summary);
+        if (converged) {
+            System.out.println("[DEBUG] Cluster converged: leader=" + consensusLeader +
+                ", all " + runningNodes.size() + " nodes agree, " + expectedPeers + " peers each");
+        }
+        return converged;
     }
 
     private boolean allNodesHealthy() {
@@ -817,27 +845,7 @@ public class AetherCluster implements AutoCloseable {
         }
     }
 
-    private static void retryDockerOp(Runnable op, String description) {
-        RuntimeException lastException = null;
-        for (int attempt = 1; attempt <= 3; attempt++) {
-            try {
-                op.run();
-                return;
-            } catch (RuntimeException e) {
-                lastException = e;
-                System.out.println("[WARN] Docker operation '" + description + "' failed (attempt " + attempt + "/3): " + e.getMessage());
-                if (attempt < 3) {
-                    try {
-                        Thread.sleep(2000L * attempt);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        throw e;
-                    }
-                }
-            }
-        }
-        throw lastException;
-    }
+
 
     private static byte[] repackageJarWithVersion(Path originalJar, String targetVersion) throws Exception {
         var jarBytes = Files.readAllBytes(originalJar);

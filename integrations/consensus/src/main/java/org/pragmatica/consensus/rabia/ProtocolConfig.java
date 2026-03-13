@@ -55,8 +55,11 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
     }
 
     /// Creates a default (production) configuration.
+    /// Supports `SYNC_RETRY_INTERVAL_MS` environment variable override for E2E testing.
     public static ProtocolConfig defaultConfig() {
-        return new ProtocolConfig(timeSpan(60).seconds(), timeSpan(5).seconds(), 100);
+        var syncRetryMs = System.getenv("SYNC_RETRY_INTERVAL_MS");
+        var syncRetry = syncRetryMs != null ? timeSpan(Long.parseLong(syncRetryMs)).millis() : timeSpan(5).seconds();
+        return new ProtocolConfig(timeSpan(60).seconds(), syncRetry, 100);
     }
 
     /// Creates a test configuration with faster intervals.

@@ -8,10 +8,13 @@ import org.testcontainers.images.builder.ImageFromDockerfile;
 import org.testcontainers.utility.DockerImageName;
 import org.testcontainers.containers.BindMode;
 
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.lang.io.TimeSpan;
+
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -37,23 +40,26 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // Cached image - built once, reused across all containers
     private static volatile Future<String> cachedImage;
     private static volatile Path cachedProjectRoot;
+    private static final TimeSpan REQUEST_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     private final String nodeId;
-    private final HttpClient httpClient;
+    private final HttpOperations http;
 
     private AetherNodeContainer(Future<String> image, String nodeId) {
         super(image);
         this.nodeId = nodeId;
-        this.httpClient = HttpClient.newBuilder()
-                                    .connectTimeout(Duration.ofSeconds(5))
-                                    .build();
+        this.http = JdkHttpOperations.jdkHttpOperations(
+            HttpClient.newBuilder()
+                       .connectTimeout(Duration.ofSeconds(5))
+                       .build());
     }
 
     private AetherNodeContainer(DockerImageName imageName, String nodeId) {
         super(imageName);
         this.nodeId = nodeId;
-        this.httpClient = HttpClient.newBuilder()
-                                    .connectTimeout(Duration.ofSeconds(5))
-                                    .build();
+        this.http = JdkHttpOperations.jdkHttpOperations(
+            HttpClient.newBuilder()
+                       .connectTimeout(Duration.ofSeconds(5))
+                       .build());
     }
 
     // Local Maven repository path - mounted into containers for artifact resolution
@@ -82,9 +88,12 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
                  .withEnv("CLUSTER_PORT", String.valueOf(CLUSTER_PORT))
                  .withEnv("MANAGEMENT_PORT", String.valueOf(MANAGEMENT_PORT))
                  .withEnv("CLUSTER_PEERS", peers)
+                 .withEnv("SYNC_RETRY_INTERVAL_MS", "500")
                  .withEnv("JAVA_OPTS", "-Xmx256m -XX:+UseZGC")
                  .withNetwork(network)
                  .withNetworkAliases(nodeId)
+                 .withCreateContainerCmdModifier(cmd ->
+                     cmd.getHostConfig().withCapAdd(com.github.dockerjava.api.model.Capability.NET_ADMIN))
                  .waitingFor(Wait.forHttp("/api/health")
                                  .forPort(MANAGEMENT_PORT)
                                  .forStatusCode(200)
@@ -312,36 +321,29 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
 
     /// Performs a PUT request with binary body.
     public String putBinary(String path, byte[] body) {
-        try {
-            var request = HttpRequest.newBuilder()
-                                     .uri(URI.create(managementUrl() + path))
-                                     .header("Content-Type", "application/octet-stream")
-                                     .PUT(HttpRequest.BodyPublishers.ofByteArray(body))
-                                     .timeout(Duration.ofSeconds(60))
-                                     .build();
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (Exception e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create(managementUrl() + path))
+                                 .header("Content-Type", "application/octet-stream")
+                                 .PUT(HttpRequest.BodyPublishers.ofByteArray(body))
+                                 .timeout(Duration.ofSeconds(60))
+                                 .build();
+        return http.sendString(request)
+                   .await(TimeSpan.timeSpan(60).seconds())
+                   .fold(cause -> "{\"error\":\"" + cause.message().replace("\"", "'") + "\"}",
+                         result -> result.body());
     }
 
     /// Performs a GET request returning binary content.
     public byte[] getBinary(String path) {
-        try {
-            var request = HttpRequest.newBuilder()
-                                     .uri(URI.create(managementUrl() + path))
-                                     .GET()
-                                     .timeout(Duration.ofSeconds(60))
-                                     .build();
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
-            if (response.statusCode() >= 400) {
-                return new byte[0];
-            }
-            return response.body();
-        } catch (Exception e) {
-            return new byte[0];
-        }
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create(managementUrl() + path))
+                                 .GET()
+                                 .timeout(Duration.ofSeconds(60))
+                                 .build();
+        return http.sendBytes(request)
+                   .await(TimeSpan.timeSpan(60).seconds())
+                   .fold(cause -> new byte[0],
+                         result -> result.statusCode() >= 400 ? new byte[0] : result.body());
     }
 
     /// Fetches artifact metadata from the repository.
@@ -360,48 +362,42 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
 
     /// Performs a GET request to the management API.
     public String get(String path) {
-        try {
-            var request = HttpRequest.newBuilder()
-                                     .uri(URI.create(managementUrl() + path))
-                                     .GET()
-                                     .timeout(Duration.ofSeconds(10))
-                                     .build();
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (Exception e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create(managementUrl() + path))
+                                 .GET()
+                                 .timeout(Duration.ofSeconds(10))
+                                 .build();
+        return http.sendString(request)
+                   .await(REQUEST_TIMEOUT)
+                   .fold(cause -> "{\"error\":\"" + cause.message().replace("\"", "'") + "\"}",
+                         result -> result.body());
     }
 
     /// Performs a POST request to the management API.
     public String post(String path, String body) {
-        try {
-            var request = HttpRequest.newBuilder()
-                                     .uri(URI.create(managementUrl() + path))
-                                     .header("Content-Type", "application/json")
-                                     .POST(HttpRequest.BodyPublishers.ofString(body))
-                                     .timeout(Duration.ofSeconds(60))
-                                     .build();
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (Exception e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create(managementUrl() + path))
+                                 .header("Content-Type", "application/json")
+                                 .POST(HttpRequest.BodyPublishers.ofString(body))
+                                 .timeout(Duration.ofSeconds(60))
+                                 .build();
+        return http.sendString(request)
+                   .await(TimeSpan.timeSpan(60).seconds())
+                   .fold(cause -> "{\"error\":\"" + cause.message().replace("\"", "'") + "\"}",
+                         result -> result.body());
     }
 
     /// Performs a DELETE request to the management API.
     public String delete(String path) {
-        try {
-            var request = HttpRequest.newBuilder()
-                                     .uri(URI.create(managementUrl() + path))
-                                     .DELETE()
-                                     .timeout(Duration.ofSeconds(10))
-                                     .build();
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (Exception e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create(managementUrl() + path))
+                                 .DELETE()
+                                 .timeout(Duration.ofSeconds(10))
+                                 .build();
+        return http.sendString(request)
+                   .await(REQUEST_TIMEOUT)
+                   .fold(cause -> "{\"error\":\"" + cause.message().replace("\"", "'") + "\"}",
+                         result -> result.body());
     }
 
     // ===== Metrics API =====

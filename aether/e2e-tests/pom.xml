@@ -65,6 +65,11 @@
             <artifactId>core</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>http-client</artifactId>
+            <scope>test</scope>
+        </dependency>
 
         <!-- Logging -->
         <dependency>
