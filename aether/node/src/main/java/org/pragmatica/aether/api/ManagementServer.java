@@ -26,6 +26,8 @@ import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
+import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
+import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.deployment.DeploymentMap.SliceDeploymentInfo;
 import org.pragmatica.aether.deployment.DeploymentMap.SliceInstanceInfo;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
@@ -86,6 +88,8 @@ public interface ManagementServer {
                                              Option<DynamicConfigManager> dynamicConfigManager,
                                              ScheduledTaskRegistry scheduledTaskRegistry,
                                              ScheduledTaskManager scheduledTaskManager,
+                                             SliceInvoker sliceInvoker,
+                                             ScheduledTaskStateRegistry scheduledTaskStateRegistry,
                                              Option<TlsConfig> tls,
                                              SecurityValidator securityValidator,
                                              boolean securityEnabled) {
@@ -98,6 +102,8 @@ public interface ManagementServer {
                                         dynamicConfigManager,
                                         scheduledTaskRegistry,
                                         scheduledTaskManager,
+                                        sliceInvoker,
+                                        scheduledTaskStateRegistry,
                                         tls,
                                         securityValidator,
                                         securityEnabled);
@@ -148,6 +154,8 @@ class ManagementServerImpl implements ManagementServer {
                          Option<DynamicConfigManager> dynamicConfigManager,
                          ScheduledTaskRegistry scheduledTaskRegistry,
                          ScheduledTaskManager scheduledTaskManager,
+                         SliceInvoker sliceInvoker,
+                         ScheduledTaskStateRegistry scheduledTaskStateRegistry,
                          Option<TlsConfig> tls,
                          SecurityValidator securityValidator,
                          boolean securityEnabled) {
@@ -189,7 +197,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(RollingUpdateRoutes.rollingUpdateRoutes(nodeSupplier));
         routeSources.add(NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier));
         routeSources.add(RepositoryRoutes.repositoryRoutes(nodeSupplier));
-        routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry, scheduledTaskManager));
+        routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry, scheduledTaskManager, nodeSupplier, sliceInvoker, scheduledTaskStateRegistry));
         routeSources.add(ClusterTopologyRoutes.clusterTopologyRoutes(nodeSupplier));
         routeSources.add(BackupRoutes.backupRoutes(() -> nodeSupplier.get()
                                                                      .backupService()));

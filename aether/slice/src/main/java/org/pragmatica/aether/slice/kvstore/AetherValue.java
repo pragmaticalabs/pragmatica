@@ -185,15 +185,21 @@ public sealed interface AetherValue {
     record ScheduledTaskValue(NodeId registeredBy,
                               String interval,
                               String cron,
-                              boolean leaderOnly) implements AetherValue {
+                              boolean leaderOnly,
+                              boolean paused) implements AetherValue {
         /// Creates a scheduled task value with interval-based scheduling.
         public static ScheduledTaskValue intervalTask(NodeId registeredBy, String interval, boolean leaderOnly) {
-            return new ScheduledTaskValue(registeredBy, interval, "", leaderOnly);
+            return new ScheduledTaskValue(registeredBy, interval, "", leaderOnly, false);
         }
 
         /// Creates a scheduled task value with cron-based scheduling.
         public static ScheduledTaskValue cronTask(NodeId registeredBy, String cron, boolean leaderOnly) {
-            return new ScheduledTaskValue(registeredBy, "", cron, leaderOnly);
+            return new ScheduledTaskValue(registeredBy, "", cron, leaderOnly, false);
+        }
+
+        /// Returns a copy with the paused state changed.
+        public ScheduledTaskValue withPaused(boolean paused) {
+            return new ScheduledTaskValue(registeredBy, interval, cron, leaderOnly, paused);
         }
 
         /// Returns true if this is an interval-based schedule.
@@ -204,6 +210,45 @@ public sealed interface AetherValue {
         /// Returns true if this is a cron-based schedule.
         public boolean isCron() {
             return ! cron.isEmpty();
+        }
+    }
+
+    /// Execution state for a scheduled task.
+    /// Tracks last execution time, next fire time, and failure statistics.
+    ///
+    /// @param lastExecutionAt epoch millis of last execution (0 if never run)
+    /// @param nextFireAt epoch millis of next scheduled fire (0 if unknown)
+    /// @param consecutiveFailures count of consecutive failures (reset on success)
+    /// @param totalExecutions total number of executions
+    /// @param lastFailureMessage message from the last failure (empty if none)
+    /// @param updatedAt timestamp of last state update
+    record ScheduledTaskStateValue(long lastExecutionAt,
+                                    long nextFireAt,
+                                    int consecutiveFailures,
+                                    int totalExecutions,
+                                    String lastFailureMessage,
+                                    long updatedAt) implements AetherValue {
+        /// Creates a state value for a successful execution.
+        public static ScheduledTaskStateValue successState(long nextFireAt, int totalExecutions) {
+            return new ScheduledTaskStateValue(System.currentTimeMillis(),
+                                                nextFireAt,
+                                                0,
+                                                totalExecutions,
+                                                "",
+                                                System.currentTimeMillis());
+        }
+
+        /// Creates a state value for a failed execution.
+        public static ScheduledTaskStateValue failureState(long nextFireAt,
+                                                            int consecutiveFailures,
+                                                            int totalExecutions,
+                                                            String failureMessage) {
+            return new ScheduledTaskStateValue(System.currentTimeMillis(),
+                                                nextFireAt,
+                                                consecutiveFailures,
+                                                totalExecutions,
+                                                failureMessage != null ? failureMessage : "",
+                                                System.currentTimeMillis());
         }
     }
 

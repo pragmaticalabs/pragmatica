@@ -40,6 +40,7 @@ import org.pragmatica.aether.invoke.ObservabilityInterceptor;
 import org.pragmatica.aether.invoke.InvocationMessage;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
+import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
@@ -647,6 +648,7 @@ public interface AetherNode {
         var topicSubscriptionRegistry = TopicSubscriptionRegistry.topicSubscriptionRegistry();
         // Create scheduled task registry and manager for periodic slice method invocation
         var scheduledTaskRegistry = ScheduledTaskRegistry.scheduledTaskRegistry();
+        var scheduledTaskStateRegistry = ScheduledTaskStateRegistry.scheduledTaskStateRegistry();
         // Create HTTP route registry for application HTTP routing
         var httpRouteRegistry = HttpRouteRegistry.httpRouteRegistry();
         // Create metrics components
@@ -729,7 +731,8 @@ public interface AetherNode {
         // Create scheduled task manager (needs sliceInvoker for method execution)
         var scheduledTaskManager = ScheduledTaskManager.scheduledTaskManager(scheduledTaskRegistry,
                                                                              sliceInvoker,
-                                                                             config.self());
+                                                                             config.self(),
+                                                                             command -> clusterNode.apply(List.of(command)));
         // Register runtime extensions for Publisher provisioning via SPI
         resourceProviderSetup.spiProvider()
                              .onPresent(spi -> registerRuntimeExtensions(spi,
@@ -778,6 +781,7 @@ public interface AetherNode {
                                                 endpointRegistry,
                                                 topicSubscriptionRegistry,
                                                 scheduledTaskRegistry,
+                                                scheduledTaskStateRegistry,
                                                 scheduledTaskManager,
                                                 httpRouteRegistry,
                                                 metricsCollector,
@@ -938,6 +942,8 @@ public interface AetherNode {
                                                                                               dynamicConfigManager,
                                                                                               scheduledTaskRegistry,
                                                                                               scheduledTaskManager,
+                                                                                              sliceInvoker,
+                                                                                              scheduledTaskStateRegistry,
                                                                                               config.tls(),
                                                                                               mgmtSecurityValidator,
                                                                                               mgmtSecurityEnabled);
@@ -1053,6 +1059,7 @@ public interface AetherNode {
                                                                     EndpointRegistry endpointRegistry,
                                                                     TopicSubscriptionRegistry topicSubscriptionRegistry,
                                                                     ScheduledTaskRegistry scheduledTaskRegistry,
+                                                                    ScheduledTaskStateRegistry scheduledTaskStateRegistry,
                                                                     ScheduledTaskManager scheduledTaskManager,
                                                                     HttpRouteRegistry httpRouteRegistry,
                                                                     MetricsCollector metricsCollector,
@@ -1120,6 +1127,10 @@ public interface AetherNode {
                                                          scheduledTaskRegistry::onScheduledTaskPut)
                                                   .onRemove(AetherKey.ScheduledTaskKey.class,
                                                             scheduledTaskRegistry::onScheduledTaskRemove)
+                                                  .onPut(AetherKey.ScheduledTaskStateKey.class,
+                                                         scheduledTaskStateRegistry::onStatePut)
+                                                  .onRemove(AetherKey.ScheduledTaskStateKey.class,
+                                                            scheduledTaskStateRegistry::onStateRemove)
                                                   .onPut(AetherKey.NodeLifecycleKey.class,
                                                          nodeDeploymentManager::onNodeLifecyclePut)
                                                   .onPut(AetherKey.NodeLifecycleKey.class,

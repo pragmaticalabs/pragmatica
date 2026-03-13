@@ -142,6 +142,7 @@ public final class KVStoreSerializer {
             case AlertThresholdKey _ -> "alert-threshold";
             case TopicSubscriptionKey _ -> "topic-sub";
             case ScheduledTaskKey _ -> "scheduled-task";
+            case ScheduledTaskStateKey _ -> "scheduled-task-state";
             case NodeLifecycleKey _ -> "node-lifecycle";
             case ConfigKey _ -> "config";
             case WorkerSliceDirectiveKey _ -> "worker-directive";
@@ -178,6 +179,7 @@ public final class KVStoreSerializer {
             case TopicSubscriptionValue v -> v.nodeId()
                                               .id();
             case ScheduledTaskValue v -> serializeScheduledTask(v);
+            case ScheduledTaskStateValue v -> serializeScheduledTaskState(v);
             case VersionRoutingValue v -> serializeVersionRouting(v);
             case RollingUpdateValue v -> serializeRollingUpdate(v);
             case PreviousVersionValue v -> serializePreviousVersion(v);
@@ -210,7 +212,11 @@ public final class KVStoreSerializer {
 
     private static String serializeScheduledTask(ScheduledTaskValue v) {
         return v.registeredBy()
-                .id() + PIPE + v.interval() + PIPE + v.cron() + PIPE + v.leaderOnly();
+                .id() + PIPE + v.interval() + PIPE + v.cron() + PIPE + v.leaderOnly() + PIPE + v.paused();
+    }
+
+    private static String serializeScheduledTaskState(ScheduledTaskStateValue v) {
+        return v.lastExecutionAt() + PIPE + v.nextFireAt() + PIPE + v.consecutiveFailures() + PIPE + v.totalExecutions() + PIPE + v.lastFailureMessage() + PIPE + v.updatedAt();
     }
 
     private static String serializeVersionRouting(VersionRoutingValue v) {
@@ -306,6 +312,7 @@ public final class KVStoreSerializer {
             case "alert-threshold" -> parseAlertThresholdEntry(identity, rawValue);
             case "topic-sub" -> parseTopicSubEntry(identity, rawValue);
             case "scheduled-task" -> parseScheduledTaskEntry(identity, rawValue);
+            case "scheduled-task-state" -> parseScheduledTaskStateEntry(identity, rawValue);
             case "node-lifecycle" -> parseNodeLifecycleEntry(identity, rawValue);
             case "config" -> parseConfigEntry(identity, rawValue);
             case "worker-directive" -> parseWorkerDirectiveEntry(identity, rawValue);
@@ -500,16 +507,33 @@ public final class KVStoreSerializer {
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseScheduledTaskEntry(String identity, String raw) {
         var parts = raw.split("\\|", - 1);
-        if (parts.length != 4) {
-            return parseFailure("scheduled-task value requires 4 fields, got " + parts.length);
+        if (parts.length != 4 && parts.length != 5) {
+            return parseFailure("scheduled-task value requires 4 or 5 fields, got " + parts.length);
         }
+        var paused = parts.length >= 5 && Boolean.parseBoolean(parts[4]);
         return ScheduledTaskKey.scheduledTaskKey("scheduled-task/" + identity)
                                .flatMap(key -> org.pragmatica.consensus.NodeId.nodeId(parts[0])
                                                   .map(nodeId -> new ScheduledTaskValue(nodeId,
                                                                                         parts[1],
                                                                                         parts[2],
-                                                                                        Boolean.parseBoolean(parts[3])))
+                                                                                        Boolean.parseBoolean(parts[3]),
+                                                                                        paused))
                                                   .map(val -> entry(key, val)));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseScheduledTaskStateEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 6) {
+            return parseFailure("scheduled-task-state value requires 6 fields, got " + parts.length);
+        }
+        return ScheduledTaskStateKey.scheduledTaskStateKey("scheduled-task-state/" + identity)
+                                    .map(key -> entry(key,
+                                                      new ScheduledTaskStateValue(Long.parseLong(parts[0]),
+                                                                                  Long.parseLong(parts[1]),
+                                                                                  Integer.parseInt(parts[2]),
+                                                                                  Integer.parseInt(parts[3]),
+                                                                                  parts[4],
+                                                                                  Long.parseLong(parts[5]))));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseNodeLifecycleEntry(String identity, String raw) {

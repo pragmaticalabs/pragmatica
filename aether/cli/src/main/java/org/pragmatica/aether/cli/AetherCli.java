@@ -1986,7 +1986,10 @@ public class AetherCli implements Runnable {
     @Command(name = "scheduled-tasks",
     description = "Scheduled task management",
     subcommands = {ScheduledTasksCommand.ListCommand.class,
-    ScheduledTasksCommand.GetCommand.class})
+    ScheduledTasksCommand.GetCommand.class,
+    ScheduledTasksCommand.PauseCommand.class,
+    ScheduledTasksCommand.ResumeCommand.class,
+    ScheduledTasksCommand.TriggerCommand.class})
     static class ScheduledTasksCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -2022,6 +2025,75 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var response = tasksParent.parent.fetchFromNode("/api/scheduled-tasks/" + configSection);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "pause", description = "Pause a scheduled task")
+        static class PauseCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ScheduledTasksCommand tasksParent;
+
+            @Parameters(index = "0", description = "Config section")
+            private String configSection;
+
+            @Parameters(index = "1", description = "Artifact coordinates (groupId:artifactId:version)")
+            private String artifact;
+
+            @Parameters(index = "2", description = "Method name")
+            private String method;
+
+            @Override
+            public Integer call() {
+                var response = tasksParent.parent.postToNode(
+                    "/api/scheduled-tasks/" + configSection + "/" + artifact + "/" + method + "/pause", "");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "resume", description = "Resume a paused scheduled task")
+        static class ResumeCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ScheduledTasksCommand tasksParent;
+
+            @Parameters(index = "0", description = "Config section")
+            private String configSection;
+
+            @Parameters(index = "1", description = "Artifact coordinates (groupId:artifactId:version)")
+            private String artifact;
+
+            @Parameters(index = "2", description = "Method name")
+            private String method;
+
+            @Override
+            public Integer call() {
+                var response = tasksParent.parent.postToNode(
+                    "/api/scheduled-tasks/" + configSection + "/" + artifact + "/" + method + "/resume", "");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "trigger", description = "Manually trigger a scheduled task")
+        static class TriggerCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ScheduledTasksCommand tasksParent;
+
+            @Parameters(index = "0", description = "Config section")
+            private String configSection;
+
+            @Parameters(index = "1", description = "Artifact coordinates (groupId:artifactId:version)")
+            private String artifact;
+
+            @Parameters(index = "2", description = "Method name")
+            private String method;
+
+            @Override
+            public Integer call() {
+                var response = tasksParent.parent.postToNode(
+                    "/api/scheduled-tasks/" + configSection + "/" + artifact + "/" + method + "/trigger", "");
                 System.out.println(formatJson(response));
                 return 0;
             }

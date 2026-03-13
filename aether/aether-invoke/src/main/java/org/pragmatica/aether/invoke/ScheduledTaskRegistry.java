@@ -54,7 +54,8 @@ public interface ScheduledTaskRegistry {
                          NodeId registeredBy,
                          String interval,
                          String cron,
-                         boolean leaderOnly) {
+                         boolean leaderOnly,
+                         boolean paused) {
         public boolean isInterval() {
             return ! interval.isEmpty();
         }
@@ -84,7 +85,8 @@ public interface ScheduledTaskRegistry {
                                              value.registeredBy(),
                                              value.interval(),
                                              value.cron(),
-                                             value.leaderOnly());
+                                             value.leaderOnly(),
+                                             value.paused());
                 var previous = tasks.put(key, task);
                 log.debug("Registered scheduled task: {}", task);
                 notifyIfChanged(key, previous, task);
@@ -140,7 +142,7 @@ public interface ScheduledTaskRegistry {
 
             private boolean scheduleChanged(ScheduledTask previous, ScheduledTask current) {
                 return ! Objects.equals(previous.interval(), current.interval()) || !Objects.equals(previous.cron(),
-                                                                                                    current.cron()) || previous.leaderOnly() != current.leaderOnly();
+                                                                                                    current.cron()) || previous.leaderOnly() != current.leaderOnly() || previous.paused() != current.paused();
             }
 
             private void notifyListener(ScheduledTaskKey key, Option<ScheduledTask> task) {

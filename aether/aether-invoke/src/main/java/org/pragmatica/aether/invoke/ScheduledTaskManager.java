@@ -2,6 +2,9 @@ package org.pragmatica.aether.invoke;
 
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
@@ -11,11 +14,14 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,14 +48,16 @@ public interface ScheduledTaskManager {
     /// Create a new scheduled task manager.
     static ScheduledTaskManager scheduledTaskManager(ScheduledTaskRegistry registry,
                                                      SliceInvoker invoker,
-                                                     NodeId self) {
+                                                     NodeId self,
+                                                     Consumer<KVCommand<org.pragmatica.aether.slice.kvstore.AetherKey>> stateWriter) {
         record scheduledTaskManager(ScheduledTaskRegistry registry,
                                     SliceInvoker invoker,
                                     NodeId self,
                                     AtomicBoolean isLeader,
                                     AtomicBoolean hasQuorum,
                                     Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers,
-                                    AtomicLong quorumSequence) implements ScheduledTaskManager {
+                                    AtomicLong quorumSequence,
+                                    Consumer<KVCommand<org.pragmatica.aether.slice.kvstore.AetherKey>> stateWriter) implements ScheduledTaskManager {
             private static final Logger log = LoggerFactory.getLogger(ScheduledTaskManager.class);
 
             @Override
@@ -112,6 +120,9 @@ public interface ScheduledTaskManager {
                 if (!hasQuorum.get()) {
                     return false;
                 }
+                if (task.paused()) {
+                    return false;
+                }
                 return ! task.leaderOnly() || isLeader.get();
             }
 
@@ -119,7 +130,7 @@ public interface ScheduledTaskManager {
                 if (task.isInterval()) {
                     startIntervalTimer(key, task);
                 } else if (task.isCron()) {
-                    log.debug("Cron scheduling not yet supported, skipping task: {}", key);
+                    startCronTimer(key, task);
                 }
             }
 
@@ -137,17 +148,42 @@ public interface ScheduledTaskManager {
                 log.info("Started scheduled task {} with interval {}", key, task.interval());
             }
 
+            private void startCronTimer(ScheduledTaskKey key, ScheduledTask task) {
+                CronExpression.parse(task.cron())
+                              .onSuccess(cron -> scheduleNextCronFire(key, task, cron))
+                              .onFailure(cause -> log.warn("Failed to parse cron '{}' for task {}: {}",
+                                                            task.cron(), key, cause.message()));
+            }
+
+            private void scheduleNextCronFire(ScheduledTaskKey key, ScheduledTask task, CronExpression cron) {
+                cron.delayUntilNext(Instant.now())
+                    .onSuccess(delay -> registerCronFire(key, task, cron, delay))
+                    .onFailure(cause -> log.warn("Failed to compute next cron fire for task {}: {}",
+                                                  key, cause.message()));
+            }
+
+            private void registerCronFire(ScheduledTaskKey key, ScheduledTask task,
+                                           CronExpression cron, TimeSpan delay) {
+                var future = SharedScheduler.schedule(() -> executeCronTask(key, task, cron), delay);
+                activeTimers.put(key, future);
+                log.info("Scheduled cron task {} next fire in {}ms", key, delay.millis());
+            }
+
+            private void executeCronTask(ScheduledTaskKey key, ScheduledTask task, CronExpression cron) {
+                executeTask(task);
+                if (activeTimers.containsKey(key)) {
+                    scheduleNextCronFire(key, task, cron);
+                }
+            }
+
             private void executeTask(ScheduledTask task) {
                 // Scheduler boundary — generic catch prevents scheduler thread death
-                try{
+                try {
                     invoker.invoke(task.artifact(),
                                    task.methodName(),
                                    Unit.unit())
-                           .onFailure(cause -> log.warn("Scheduled task {}.{} failed: {}",
-                                                        task.configSection(),
-                                                        task.methodName()
-                                                            .name(),
-                                                        cause.message()));
+                           .onFailure(cause -> handleTaskFailure(task, cause.message()))
+                           .onSuccess(_ -> writeSuccessState(task));
                 } catch (Exception e) {
                     // Scheduler boundary — generic catch prevents scheduler thread death
                     log.error("Error executing scheduled task {}.{}: {}",
@@ -155,7 +191,30 @@ public interface ScheduledTaskManager {
                               task.methodName()
                                   .name(),
                               e.getMessage());
+                    writeFailureState(task, e.getMessage());
                 }
+            }
+
+            private void handleTaskFailure(ScheduledTask task, String message) {
+                log.warn("Scheduled task {}.{} failed: {}",
+                         task.configSection(),
+                         task.methodName().name(),
+                         message);
+                writeFailureState(task, message);
+            }
+
+            private void writeSuccessState(ScheduledTask task) {
+                var key = ScheduledTaskStateKey.scheduledTaskStateKey(
+                    task.configSection(), task.artifact(), task.methodName());
+                var value = ScheduledTaskStateValue.successState(0, 0);
+                stateWriter.accept(new KVCommand.Put<>(key, value));
+            }
+
+            private void writeFailureState(ScheduledTask task, String message) {
+                var key = ScheduledTaskStateKey.scheduledTaskStateKey(
+                    task.configSection(), task.artifact(), task.methodName());
+                var value = ScheduledTaskStateValue.failureState(0, 1, 0, message);
+                stateWriter.accept(new KVCommand.Put<>(key, value));
             }
 
             private void cancelTimer(ScheduledTaskKey key) {
@@ -216,7 +275,8 @@ public interface ScheduledTaskManager {
                                                new AtomicBoolean(false),
                                                new AtomicBoolean(false),
                                                new ConcurrentHashMap<>(),
-                                               new AtomicLong(0));
+                                               new AtomicLong(0),
+                                               stateWriter);
         registry.setChangeListener(manager::onRegistryChange);
         return manager;
     }
@@ -256,6 +316,8 @@ public interface ScheduledTaskManager {
                                                                        .hours());
                 case 'd' -> org.pragmatica.lang.Result.success(TimeSpan.timeSpan(value)
                                                                        .days());
+                case 'w' -> org.pragmatica.lang.Result.success(TimeSpan.timeSpan(value * 7)
+                                                                       .days());
                 default -> INVALID_INTERVAL.apply(original)
                                            .result();
             };
@@ -263,7 +325,7 @@ public interface ScheduledTaskManager {
 
         org.pragmatica.lang.Cause EMPTY_INTERVAL = () -> "Interval string is empty";
 
-        org.pragmatica.lang.Functions.Fn1<org.pragmatica.lang.Cause, String> INVALID_INTERVAL = org.pragmatica.lang.utils.Causes.forOneValue("Invalid interval format: %s (expected e.g. '30s', '5m', '1h')");
+        org.pragmatica.lang.Functions.Fn1<org.pragmatica.lang.Cause, String> INVALID_INTERVAL = org.pragmatica.lang.utils.Causes.forOneValue("Invalid interval format: %s (expected e.g. '30s', '5m', '1h', '2d', '2w')");
 
         record unused() implements IntervalParser {}
     }
