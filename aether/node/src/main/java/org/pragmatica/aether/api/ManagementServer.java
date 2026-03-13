@@ -197,7 +197,11 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(RollingUpdateRoutes.rollingUpdateRoutes(nodeSupplier));
         routeSources.add(NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier));
         routeSources.add(RepositoryRoutes.repositoryRoutes(nodeSupplier));
-        routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry, scheduledTaskManager, nodeSupplier, sliceInvoker, scheduledTaskStateRegistry));
+        routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry,
+                                                                 scheduledTaskManager,
+                                                                 nodeSupplier,
+                                                                 sliceInvoker,
+                                                                 scheduledTaskStateRegistry));
         routeSources.add(ClusterTopologyRoutes.clusterTopologyRoutes(nodeSupplier));
         routeSources.add(BackupRoutes.backupRoutes(() -> nodeSupplier.get()
                                                                      .backupService()));

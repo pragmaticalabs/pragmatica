@@ -75,29 +75,35 @@ public final class ScheduledTaskRoutes implements RouteSource {
     record TaskActionResult(boolean success, String configSection, String artifact, String method, String action) {}
 
     record TaskStateResponse(String configSection,
-                              String artifact,
-                              String method,
-                              long lastExecutionAt,
-                              long nextFireAt,
-                              int consecutiveFailures,
-                              int totalExecutions,
-                              String lastFailureMessage,
-                              long updatedAt) {}
+                             String artifact,
+                             String method,
+                             long lastExecutionAt,
+                             long nextFireAt,
+                             int consecutiveFailures,
+                             int totalExecutions,
+                             String lastFailureMessage,
+                             long updatedAt) {}
 
     @Override
     public Stream<Route<?>> routes() {
-        return Stream.of(Route.<ScheduledTasksResponse>get("/api/scheduled-tasks")
+        return Stream.of(Route.<ScheduledTasksResponse> get("/api/scheduled-tasks")
                               .toJson(this::buildTasksResponse),
-                         Route.<FilteredTasksResponse>get("/api/scheduled-tasks")
+                         Route.<FilteredTasksResponse> get("/api/scheduled-tasks")
                               .withPath(aString())
                               .to(this::buildFilteredResponse)
                               .asJson(),
-                         Route.<TaskStateResponse>get("/api/scheduled-tasks")
-                              .withPath(aString(), aString(), aString(), aString())
+                         Route.<TaskStateResponse> get("/api/scheduled-tasks")
+                              .withPath(aString(),
+                                        aString(),
+                                        aString(),
+                                        aString())
                               .to(this::getTaskState)
                               .asJson(),
-                         Route.<TaskActionResult>post("/api/scheduled-tasks")
-                              .withPath(aString(), aString(), aString(), aString())
+                         Route.<TaskActionResult> post("/api/scheduled-tasks")
+                              .withPath(aString(),
+                                        aString(),
+                                        aString(),
+                                        aString())
                               .to(this::handleTaskAction)
                               .asJson());
     }
@@ -122,9 +128,9 @@ public final class ScheduledTaskRoutes implements RouteSource {
 
     @SuppressWarnings("JBCT-PAT-01") // Condition: routes action to appropriate handler
     private Promise<TaskActionResult> handleTaskAction(String configSection,
-                                                        String artifactStr,
-                                                        String methodStr,
-                                                        String action) {
+                                                       String artifactStr,
+                                                       String methodStr,
+                                                       String action) {
         return switch (action) {
             case "pause" -> setPaused(configSection, artifactStr, methodStr, true);
             case "resume" -> setPaused(configSection, artifactStr, methodStr, false);
@@ -134,24 +140,20 @@ public final class ScheduledTaskRoutes implements RouteSource {
     }
 
     private Promise<TaskActionResult> setPaused(String configSection,
-                                                 String artifactStr,
-                                                 String methodStr,
-                                                 boolean paused) {
+                                                String artifactStr,
+                                                String methodStr,
+                                                boolean paused) {
         return findTask(configSection, artifactStr, methodStr)
-            .flatMap(task -> submitPausedUpdate(task, configSection, artifactStr, methodStr, paused));
+        .flatMap(task -> submitPausedUpdate(task, configSection, artifactStr, methodStr, paused));
     }
 
     private Promise<TaskActionResult> submitPausedUpdate(ScheduledTask task,
-                                                          String configSection,
-                                                          String artifactStr,
-                                                          String methodStr,
-                                                          boolean paused) {
+                                                         String configSection,
+                                                         String artifactStr,
+                                                         String methodStr,
+                                                         boolean paused) {
         var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(), task.artifact(), task.methodName());
-        var value = new ScheduledTaskValue(task.registeredBy(),
-                                           task.interval(),
-                                           task.cron(),
-                                           task.leaderOnly(),
-                                           paused);
+        var value = new ScheduledTaskValue(task.registeredBy(), task.interval(), task.cron(), task.leaderOnly(), paused);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
         var action = paused
                      ? "paused"
@@ -162,23 +164,25 @@ public final class ScheduledTaskRoutes implements RouteSource {
     }
 
     private Promise<TaskActionResult> triggerTask(String configSection,
-                                                   String artifactStr,
-                                                   String methodStr) {
+                                                  String artifactStr,
+                                                  String methodStr) {
         return findTask(configSection, artifactStr, methodStr)
-            .flatMap(task -> invokeAndBuildResult(task, configSection, artifactStr, methodStr));
+        .flatMap(task -> invokeAndBuildResult(task, configSection, artifactStr, methodStr));
     }
 
     private Promise<TaskActionResult> invokeAndBuildResult(ScheduledTask task,
-                                                            String configSection,
-                                                            String artifactStr,
-                                                            String methodStr) {
-        return invoker.invoke(task.artifact(), task.methodName(), Unit.unit())
+                                                           String configSection,
+                                                           String artifactStr,
+                                                           String methodStr) {
+        return invoker.invoke(task.artifact(),
+                              task.methodName(),
+                              Unit.unit())
                       .map(_ -> new TaskActionResult(true, configSection, artifactStr, methodStr, "triggered"));
     }
 
     private Promise<ScheduledTask> findTask(String configSection,
-                                             String artifactStr,
-                                             String methodStr) {
+                                            String artifactStr,
+                                            String methodStr) {
         return registry.allTasks()
                        .stream()
                        .filter(t -> matchesTask(t, configSection, artifactStr, methodStr))
@@ -188,33 +192,43 @@ public final class ScheduledTaskRoutes implements RouteSource {
     }
 
     private static boolean matchesTask(ScheduledTask task, String configSection, String artifactStr, String methodStr) {
-        return task.configSection().equals(configSection)
-            && task.artifact().asString().equals(artifactStr)
-            && task.methodName().name().equals(methodStr);
+        return task.configSection()
+                   .equals(configSection) && task.artifact()
+                                                 .asString()
+                                                 .equals(artifactStr) && task.methodName()
+                                                                             .name()
+                                                                             .equals(methodStr);
     }
 
     private TaskSummary toSummary(ScheduledTask task) {
-        var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(
-            task.configSection(), task.artifact(), task.methodName());
+        var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
+                                                                   task.artifact(),
+                                                                   task.methodName());
         return stateRegistry.stateFor(stateKey)
                             .fold(() -> buildSummary(task, 0, 0, 0, 0),
-                                  state -> buildSummary(task, state.lastExecutionAt(), state.nextFireAt(),
-                                                        state.consecutiveFailures(), state.totalExecutions()));
+                                  state -> buildSummary(task,
+                                                        state.lastExecutionAt(),
+                                                        state.nextFireAt(),
+                                                        state.consecutiveFailures(),
+                                                        state.totalExecutions()));
     }
 
     private static TaskSummary buildSummary(ScheduledTask task,
-                                             long lastExecutionAt,
-                                             long nextFireAt,
-                                             int consecutiveFailures,
-                                             int totalExecutions) {
+                                            long lastExecutionAt,
+                                            long nextFireAt,
+                                            int consecutiveFailures,
+                                            int totalExecutions) {
         return new TaskSummary(task.configSection(),
-                               task.artifact().asString(),
-                               task.methodName().name(),
+                               task.artifact()
+                                   .asString(),
+                               task.methodName()
+                                   .name(),
                                task.interval(),
                                task.cron(),
                                task.leaderOnly(),
                                task.paused(),
-                               task.registeredBy().id(),
+                               task.registeredBy()
+                                   .id(),
                                lastExecutionAt,
                                nextFireAt,
                                consecutiveFailures,
@@ -223,31 +237,35 @@ public final class ScheduledTaskRoutes implements RouteSource {
 
     @SuppressWarnings("JBCT-PAT-01") // Condition: routes action to state handler
     private Promise<TaskStateResponse> getTaskState(String configSection,
-                                                      String artifactStr,
-                                                      String methodStr,
-                                                      String stateAction) {
+                                                    String artifactStr,
+                                                    String methodStr,
+                                                    String stateAction) {
         if (!"state".equals(stateAction)) {
-            return Causes.cause("Unknown GET action: " + stateAction).promise();
+            return Causes.cause("Unknown GET action: " + stateAction)
+                         .promise();
         }
         return findTask(configSection, artifactStr, methodStr)
-            .flatMap(task -> buildStateResponse(task, configSection, artifactStr, methodStr));
+        .flatMap(task -> buildStateResponse(task, configSection, artifactStr, methodStr));
     }
 
     private Promise<TaskStateResponse> buildStateResponse(ScheduledTask task,
-                                                            String configSection,
-                                                            String artifactStr,
-                                                            String methodStr) {
-        var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(
-            task.configSection(), task.artifact(), task.methodName());
+                                                          String configSection,
+                                                          String artifactStr,
+                                                          String methodStr) {
+        var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
+                                                                   task.artifact(),
+                                                                   task.methodName());
         return stateRegistry.stateFor(stateKey)
                             .fold(() -> Promise.success(emptyStateResponse(configSection, artifactStr, methodStr)),
-                                  state -> Promise.success(new TaskStateResponse(configSection, artifactStr, methodStr,
-                                                                                  state.lastExecutionAt(),
-                                                                                  state.nextFireAt(),
-                                                                                  state.consecutiveFailures(),
-                                                                                  state.totalExecutions(),
-                                                                                  state.lastFailureMessage(),
-                                                                                  state.updatedAt())));
+                                  state -> Promise.success(new TaskStateResponse(configSection,
+                                                                                 artifactStr,
+                                                                                 methodStr,
+                                                                                 state.lastExecutionAt(),
+                                                                                 state.nextFireAt(),
+                                                                                 state.consecutiveFailures(),
+                                                                                 state.totalExecutions(),
+                                                                                 state.lastFailureMessage(),
+                                                                                 state.updatedAt())));
     }
 
     private static TaskStateResponse emptyStateResponse(String configSection, String artifactStr, String methodStr) {

@@ -40,15 +40,18 @@ public interface ScheduledTaskStateRegistry {
 
             @Override
             public void onStatePut(ValuePut<ScheduledTaskStateKey, ScheduledTaskStateValue> valuePut) {
-                var key = valuePut.cause().key();
-                var value = valuePut.cause().value();
+                var key = valuePut.cause()
+                                  .key();
+                var value = valuePut.cause()
+                                    .value();
                 states.put(key, value);
                 log.debug("Updated execution state for task: {}", key);
             }
 
             @Override
             public void onStateRemove(ValueRemove<ScheduledTaskStateKey, ScheduledTaskStateValue> valueRemove) {
-                var key = valueRemove.cause().key();
+                var key = valueRemove.cause()
+                                     .key();
                 states.remove(key);
                 log.debug("Removed execution state for task: {}", key);
             }

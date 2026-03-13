@@ -152,18 +152,23 @@ public interface ScheduledTaskManager {
                 CronExpression.parse(task.cron())
                               .onSuccess(cron -> scheduleNextCronFire(key, task, cron))
                               .onFailure(cause -> log.warn("Failed to parse cron '{}' for task {}: {}",
-                                                            task.cron(), key, cause.message()));
+                                                           task.cron(),
+                                                           key,
+                                                           cause.message()));
             }
 
             private void scheduleNextCronFire(ScheduledTaskKey key, ScheduledTask task, CronExpression cron) {
                 cron.delayUntilNext(Instant.now())
                     .onSuccess(delay -> registerCronFire(key, task, cron, delay))
                     .onFailure(cause -> log.warn("Failed to compute next cron fire for task {}: {}",
-                                                  key, cause.message()));
+                                                 key,
+                                                 cause.message()));
             }
 
-            private void registerCronFire(ScheduledTaskKey key, ScheduledTask task,
-                                           CronExpression cron, TimeSpan delay) {
+            private void registerCronFire(ScheduledTaskKey key,
+                                          ScheduledTask task,
+                                          CronExpression cron,
+                                          TimeSpan delay) {
                 var future = SharedScheduler.schedule(() -> executeCronTask(key, task, cron), delay);
                 activeTimers.put(key, future);
                 log.info("Scheduled cron task {} next fire in {}ms", key, delay.millis());
@@ -178,11 +183,12 @@ public interface ScheduledTaskManager {
 
             private void executeTask(ScheduledTask task) {
                 // Scheduler boundary — generic catch prevents scheduler thread death
-                try {
+                try{
                     invoker.invoke(task.artifact(),
                                    task.methodName(),
                                    Unit.unit())
-                           .onFailure(cause -> handleTaskFailure(task, cause.message()))
+                           .onFailure(cause -> handleTaskFailure(task,
+                                                                 cause.message()))
                            .onSuccess(_ -> writeSuccessState(task));
                 } catch (Exception e) {
                     // Scheduler boundary — generic catch prevents scheduler thread death
@@ -198,21 +204,24 @@ public interface ScheduledTaskManager {
             private void handleTaskFailure(ScheduledTask task, String message) {
                 log.warn("Scheduled task {}.{} failed: {}",
                          task.configSection(),
-                         task.methodName().name(),
+                         task.methodName()
+                             .name(),
                          message);
                 writeFailureState(task, message);
             }
 
             private void writeSuccessState(ScheduledTask task) {
-                var key = ScheduledTaskStateKey.scheduledTaskStateKey(
-                    task.configSection(), task.artifact(), task.methodName());
+                var key = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
+                                                                      task.artifact(),
+                                                                      task.methodName());
                 var value = ScheduledTaskStateValue.successState(0, 0);
                 stateWriter.accept(new KVCommand.Put<>(key, value));
             }
 
             private void writeFailureState(ScheduledTask task, String message) {
-                var key = ScheduledTaskStateKey.scheduledTaskStateKey(
-                    task.configSection(), task.artifact(), task.methodName());
+                var key = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
+                                                                      task.artifact(),
+                                                                      task.methodName());
                 var value = ScheduledTaskStateValue.failureState(0, 1, 0, message);
                 stateWriter.accept(new KVCommand.Put<>(key, value));
             }

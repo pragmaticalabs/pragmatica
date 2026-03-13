@@ -2046,8 +2046,9 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = tasksParent.parent.postToNode(
-                    "/api/scheduled-tasks/" + configSection + "/" + artifact + "/" + method + "/pause", "");
+                var response = tasksParent.parent.postToNode("/api/scheduled-tasks/" + configSection + "/" + artifact
+                                                             + "/" + method + "/pause",
+                                                             "");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -2069,8 +2070,9 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = tasksParent.parent.postToNode(
-                    "/api/scheduled-tasks/" + configSection + "/" + artifact + "/" + method + "/resume", "");
+                var response = tasksParent.parent.postToNode("/api/scheduled-tasks/" + configSection + "/" + artifact
+                                                             + "/" + method + "/resume",
+                                                             "");
                 System.out.println(formatJson(response));
                 return 0;
             }
@@ -2092,8 +2094,9 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var response = tasksParent.parent.postToNode(
-                    "/api/scheduled-tasks/" + configSection + "/" + artifact + "/" + method + "/trigger", "");
+                var response = tasksParent.parent.postToNode("/api/scheduled-tasks/" + configSection + "/" + artifact
+                                                             + "/" + method + "/trigger",
+                                                             "");
                 System.out.println(formatJson(response));
                 return 0;
             }
