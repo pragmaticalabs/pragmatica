@@ -209,7 +209,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 64 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
 | 65 | Spot instance support | Planned | Elastic pool of spot/preemptible instances for cost-optimized scaling. Core (on-demand) + elastic (spot) pools. Prerequisite: Cloud Integration. Deferred from worker pool Phase 2 to Phase 3 |
 | 66 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts. Prerequisite: Cloud Integration |
-| 67 | TLS certificate management | Complete | Mutual TLS between cluster nodes with CertificateProvider SPI, deterministic self-signed CA, certificate renewal, gossip encryption |
+| 67 | ~~TLS certificate management~~ | ~~Complete~~ | ~~Moved to Security section (features 88-91)~~ |
 | 69 | KV-Store state backup | Planned | Periodic KV-Store snapshots to durable storage (filesystem, S3). Disaster recovery when quorum permanently lost |
 | 70 | Aether runtime rolling upgrade | Planned | Upgrade Aether node software across running cluster without downtime. Node-by-node with health verification |
 | 71 | Email messaging resource | Planned | Facade with pluggable backends (SMTP, AWS SES, SendGrid). Sending (plain text + HTML, attachments) and receiving (automated conversations). SPI-based |
@@ -255,4 +255,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-03-11 (v0.19.3)*
+*Last updated: 2026-03-13 (v0.20.0)*

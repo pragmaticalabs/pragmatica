@@ -223,32 +223,32 @@ public sealed interface AetherValue {
     /// @param lastFailureMessage message from the last failure (empty if none)
     /// @param updatedAt timestamp of last state update
     record ScheduledTaskStateValue(long lastExecutionAt,
-                                    long nextFireAt,
-                                    int consecutiveFailures,
-                                    int totalExecutions,
-                                    String lastFailureMessage,
-                                    long updatedAt) implements AetherValue {
+                                   long nextFireAt,
+                                   int consecutiveFailures,
+                                   int totalExecutions,
+                                   String lastFailureMessage,
+                                   long updatedAt) implements AetherValue {
         /// Creates a state value for a successful execution.
         public static ScheduledTaskStateValue successState(long nextFireAt, int totalExecutions) {
             return new ScheduledTaskStateValue(System.currentTimeMillis(),
-                                                nextFireAt,
-                                                0,
-                                                totalExecutions,
-                                                "",
-                                                System.currentTimeMillis());
+                                               nextFireAt,
+                                               0,
+                                               totalExecutions,
+                                               "",
+                                               System.currentTimeMillis());
         }
 
         /// Creates a state value for a failed execution.
         public static ScheduledTaskStateValue failureState(long nextFireAt,
-                                                            int consecutiveFailures,
-                                                            int totalExecutions,
-                                                            String failureMessage) {
+                                                           int consecutiveFailures,
+                                                           int totalExecutions,
+                                                           String failureMessage) {
             return new ScheduledTaskStateValue(System.currentTimeMillis(),
-                                                nextFireAt,
-                                                consecutiveFailures,
-                                                totalExecutions,
-                                                failureMessage != null ? failureMessage : "",
-                                                System.currentTimeMillis());
+                                               nextFireAt,
+                                               consecutiveFailures,
+                                               totalExecutions,
+                                               failureMessage,
+                                               System.currentTimeMillis());
         }
     }
 
