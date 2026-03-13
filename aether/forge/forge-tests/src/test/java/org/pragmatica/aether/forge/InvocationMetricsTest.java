@@ -15,6 +15,7 @@ import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Option;
 
 import java.net.URI;
+import java.net.http.HttpClient.Redirect;
 import java.net.http.HttpRequest;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -74,7 +75,7 @@ class InvocationMetricsTest extends ForgeTestBase {
 
         var configProvider = buildConfigurationProvider(h2Server);
         cluster = emberCluster(5, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "im", Option.some(configProvider));
-        httpOps = jdkHttpOperations(Duration.ofSeconds(5), java.net.http.HttpClient.Redirect.NORMAL, Option.empty());
+        httpOps = jdkHttpOperations(Duration.ofSeconds(5), Redirect.NORMAL, Option.empty());
         cluster.start()
                .await()
                .onFailure(cause -> {
@@ -87,7 +88,7 @@ class InvocationMetricsTest extends ForgeTestBase {
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
-               .until(() -> allNodesHealthy(cluster, httpOps.client()));
+               .until(() -> allNodesHealthy(cluster));
 
         // Wait for all nodes to register ON_DUTY lifecycle state via consensus
         var leaderPortForLifecycle = cluster.getLeaderManagementPort().unwrap();

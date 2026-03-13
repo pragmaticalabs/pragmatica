@@ -8,18 +8,18 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.HttpOperations;
 
-import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import org.pragmatica.aether.ember.EmberCluster;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// Integration tests for EmberCluster startup, blueprint deployment, and shutdown.
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -30,7 +30,7 @@ class EmberClusterIntegrationTest {
     private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
 
     private EmberCluster cluster;
-    private HttpClient httpClient;
+    private final HttpOperations http = jdkHttpOperations();
 
     private static final int BASE_PORT = 12500;
     private static final int BASE_MGMT_PORT = 12600;
@@ -39,9 +39,6 @@ class EmberClusterIntegrationTest {
     @BeforeAll
     void setUp() {
         cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "fci");
-        httpClient = HttpClient.newBuilder()
-                               .connectTimeout(Duration.ofSeconds(5))
-                               .build();
 
         cluster.start()
                .await()
@@ -139,14 +136,15 @@ class EmberClusterIntegrationTest {
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
 
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            assertThat(response.statusCode())
-                .as("Blueprint deployment should succeed. Response: %s", response.body())
-                .isEqualTo(200);
-        } catch (IOException | InterruptedException e) {
-            throw new AssertionError("Blueprint deployment request failed: " + e.getMessage(), e);
-        }
+        http.sendString(request)
+            .await()
+            .onFailure(cause -> {
+                throw new AssertionError("Blueprint deployment request failed: " + cause.message());
+            })
+            .onSuccess(result ->
+                assertThat(result.statusCode())
+                    .as("Blueprint deployment should succeed. Response: %s", result.body())
+                    .isEqualTo(200));
     }
 
     private boolean allNodesHealthy() {
@@ -161,11 +159,9 @@ class EmberClusterIntegrationTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.statusCode() == 200 && response.body().contains("\"quorum\":true");
-        } catch (IOException | InterruptedException e) {
-            return false;
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
+                   .or(false);
     }
 }

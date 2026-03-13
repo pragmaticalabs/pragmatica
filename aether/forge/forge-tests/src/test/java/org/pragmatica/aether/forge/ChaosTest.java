@@ -7,12 +7,11 @@ import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.HttpOperations;
 
-import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -26,6 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import org.pragmatica.aether.ember.EmberCluster;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// Chaos testing for cluster resilience.
 ///
@@ -48,9 +48,10 @@ class ChaosTest {
     private static final Duration RECOVERY_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
+    private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
     private EmberCluster cluster;
-    private HttpClient httpClient;
+    private final HttpOperations http = jdkHttpOperations();
     private Random random;
     private Set<String> killedNodeIds;
 
@@ -58,9 +59,6 @@ class ChaosTest {
     void setUp(TestInfo testInfo) {
         int portOffset = getPortOffset(testInfo);
         cluster = emberCluster(5, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, BASE_APP_HTTP_PORT + portOffset, "ch");
-        httpClient = HttpClient.newBuilder()
-                               .connectTimeout(Duration.ofSeconds(5))
-                               .build();
         random = new Random(42); // Deterministic for reproducibility
         killedNodeIds = new HashSet<>();
 
@@ -280,7 +278,7 @@ class ChaosTest {
         // Remaining nodes (3) should maintain quorum
         awaitQuorum();
 
-        // Kill one more to lose quorum — set target to 2 first
+        // Kill one more to lose quorum -- set target to 2 first
         cluster.setClusterSize(2);
         sleep(Duration.ofSeconds(1));
         var remainingNodes = getRunningNodeIds();
@@ -320,12 +318,10 @@ class ChaosTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private void awaitQuorum() {
@@ -356,12 +352,10 @@ class ChaosTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return null;
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or((String) null);
     }
 
     private void sleep(Duration duration) {

@@ -8,12 +8,11 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.HttpOperations;
 
-import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 
@@ -21,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import org.pragmatica.aether.ember.EmberCluster;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// Tests for cluster bootstrap and recovery scenarios.
 ///
@@ -42,18 +42,16 @@ class BootstrapTest {
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:bootstrap:1.0.0";
+    private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
     private EmberCluster cluster;
-    private HttpClient httpClient;
+    private final HttpOperations http = jdkHttpOperations();
 
     @BeforeEach
     void setUp(TestInfo testInfo) {
         // Use method-specific port offset to avoid port conflicts between tests
         int portOffset = getPortOffset(testInfo);
         cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, BASE_APP_HTTP_PORT + portOffset, "bt");
-        httpClient = HttpClient.newBuilder()
-                               .connectTimeout(Duration.ofSeconds(5))
-                               .build();
 
         cluster.start()
                .await()
@@ -326,17 +324,16 @@ class BootstrapTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(2))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 200) {
-                throw new AssertionError("HTTP server returned status " + response.statusCode() + ": " + response.body());
-            }
-        } catch (IOException e) {
-            throw new AssertionError("HTTP server not reachable on port " + port + ": " + e.getMessage());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new AssertionError("Interrupted while checking HTTP server");
-        }
+        http.sendString(request)
+            .await()
+            .onFailure(cause -> {
+                throw new AssertionError("HTTP server not reachable on port " + port + ": " + cause.message());
+            })
+            .onSuccess(result -> {
+                if (result.statusCode() != 200) {
+                    throw new AssertionError("HTTP server returned status " + result.statusCode() + ": " + result.body());
+                }
+            });
     }
 
     private boolean checkNodeHealth(int port) {
@@ -345,12 +342,10 @@ class BootstrapTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.statusCode() == 200 && response.body().contains("\"quorum\":true");
-        } catch (IOException | InterruptedException e) {
-            return false;
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
+                   .or(false);
     }
 
     private String getNodeHealth(int port) {
@@ -359,12 +354,10 @@ class BootstrapTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private String getSlices(int port) {
@@ -373,12 +366,10 @@ class BootstrapTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private void deploySlice(int port, String artifact, int instances) {
@@ -415,11 +406,9 @@ class BootstrapTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 }

@@ -17,17 +17,21 @@
 
 package org.pragmatica.aether.cloud;
 
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.URI;
-import java.net.http.HttpClient;
+import java.net.http.HttpClient.Redirect;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.time.Duration;
+
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// Wraps one Hetzner cloud server for integration testing.
 /// Provides operations for JAR deployment, node startup, and health checks.
@@ -36,9 +40,9 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
     private static final Logger log = LoggerFactory.getLogger(CloudNode.class);
     private static final int MANAGEMENT_PORT = 8080;
     private static final int CLUSTER_PORT = 8090;
-    private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(10))
-        .build();
+    private static final HttpOperations HTTP = jdkHttpOperations(Duration.ofSeconds(10),
+                                                                  Redirect.NORMAL,
+                                                                  Option.empty());
 
     /// Factory method for creating a CloudNode.
     public static CloudNode cloudNode(String nodeId, String publicIp, long serverId, Path privateKeyPath) {
@@ -88,50 +92,32 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
 
     /// Performs an HTTP POST to the management API.
     public Result<String> httpPost(String path, String body, String contentType) {
-        var url = "http://" + publicIp + ":" + MANAGEMENT_PORT + path;
+        var url = managementUrl(path);
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create(url))
+                                 .header("Content-Type", contentType)
+                                 .POST(HttpRequest.BodyPublishers.ofString(body))
+                                 .timeout(Duration.ofSeconds(30))
+                                 .build();
 
-        try {
-            var request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("Content-Type", contentType)
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .timeout(Duration.ofSeconds(30))
-                .build();
-
-            var response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
-
-            if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                return Result.success(response.body());
-            }
-
-            return new CloudTestError.HttpRequestFailed(url, "HTTP " + response.statusCode() + ": " + response.body()).result();
-        } catch (Exception e) {
-            return new CloudTestError.HttpRequestFailed(url, e.getMessage()).result();
-        }
+        return HTTP.sendString(request)
+                   .await()
+                   .flatMap(result -> toCloudResult(result, url));
     }
 
     /// Performs an HTTP PUT with binary body to the management API.
     public Result<String> httpPut(String path, byte[] body) {
-        var url = "http://" + publicIp + ":" + MANAGEMENT_PORT + path;
+        var url = managementUrl(path);
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create(url))
+                                 .header("Content-Type", "application/octet-stream")
+                                 .PUT(HttpRequest.BodyPublishers.ofByteArray(body))
+                                 .timeout(Duration.ofSeconds(60))
+                                 .build();
 
-        try {
-            var request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("Content-Type", "application/octet-stream")
-                .PUT(HttpRequest.BodyPublishers.ofByteArray(body))
-                .timeout(Duration.ofSeconds(60))
-                .build();
-
-            var response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
-
-            if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                return Result.success(response.body());
-            }
-
-            return new CloudTestError.HttpRequestFailed(url, "HTTP " + response.statusCode() + ": " + response.body()).result();
-        } catch (Exception e) {
-            return new CloudTestError.HttpRequestFailed(url, e.getMessage()).result();
-        }
+        return HTTP.sendString(request)
+                   .await()
+                   .flatMap(result -> toCloudResult(result, url));
     }
 
     /// Deploys a blueprint via TOML to the management API.
@@ -186,48 +172,43 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
     // --- Leaf: perform HTTP GET to management API ---
 
     private Result<String> httpGet(String path) {
-        var url = "http://" + publicIp + ":" + MANAGEMENT_PORT + path;
+        var url = managementUrl(path);
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create(url))
+                                 .timeout(Duration.ofSeconds(10))
+                                 .GET()
+                                 .build();
 
-        try {
-            var request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .timeout(Duration.ofSeconds(10))
-                .GET()
-                .build();
-
-            var response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
-
-            if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                return Result.success(response.body());
-            }
-
-            return new CloudTestError.HttpRequestFailed(url, "HTTP " + response.statusCode()).result();
-        } catch (Exception e) {
-            return new CloudTestError.HttpRequestFailed(url, e.getMessage()).result();
-        }
+        return HTTP.sendString(request)
+                   .await()
+                   .flatMap(result -> toCloudResult(result, url));
     }
 
     // --- Leaf: perform HTTP DELETE to management API ---
 
     private Result<String> httpDelete(String path) {
-        var url = "http://" + publicIp + ":" + MANAGEMENT_PORT + path;
+        var url = managementUrl(path);
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create(url))
+                                 .timeout(Duration.ofSeconds(10))
+                                 .DELETE()
+                                 .build();
 
-        try {
-            var request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .timeout(Duration.ofSeconds(10))
-                .DELETE()
-                .build();
+        return HTTP.sendString(request)
+                   .await()
+                   .flatMap(result -> toCloudResult(result, url));
+    }
 
-            var response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+    // --- Helpers ---
 
-            if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                return Result.success(response.body());
-            }
+    private String managementUrl(String path) {
+        return "http://" + publicIp + ":" + MANAGEMENT_PORT + path;
+    }
 
-            return new CloudTestError.HttpRequestFailed(url, "HTTP " + response.statusCode()).result();
-        } catch (Exception e) {
-            return new CloudTestError.HttpRequestFailed(url, e.getMessage()).result();
+    private static Result<String> toCloudResult(HttpResult<String> result, String url) {
+        if (result.isSuccess()) {
+            return Result.success(result.body());
         }
+        return new CloudTestError.HttpRequestFailed(url, "HTTP " + result.statusCode() + ": " + result.body()).result();
     }
 }

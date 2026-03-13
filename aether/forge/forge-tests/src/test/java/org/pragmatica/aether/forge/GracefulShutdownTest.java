@@ -7,12 +7,11 @@ import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.HttpOperations;
 
-import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Map;
 
@@ -20,6 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import org.pragmatica.aether.ember.EmberCluster;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// Tests for graceful shutdown scenarios.
 ///
@@ -41,6 +41,7 @@ class GracefulShutdownTest {
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:graceful-shutdown:1.0.0";
+    private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
     // Per-method port offsets to avoid TIME_WAIT conflicts between test methods
     private static final Map<String, Integer> METHOD_PORT_OFFSETS = Map.of(
@@ -51,7 +52,7 @@ class GracefulShutdownTest {
     );
 
     private EmberCluster cluster;
-    private HttpClient httpClient;
+    private final HttpOperations http = jdkHttpOperations();
 
     @BeforeEach
     void setUp(TestInfo testInfo) {
@@ -59,9 +60,6 @@ class GracefulShutdownTest {
         var portOffset = METHOD_PORT_OFFSETS.getOrDefault(methodName, 0);
 
         cluster = emberCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, BASE_APP_HTTP_PORT + portOffset, "gs");
-        httpClient = HttpClient.newBuilder()
-                               .connectTimeout(Duration.ofSeconds(5))
-                               .build();
 
         cluster.start()
                .await()
@@ -229,46 +227,34 @@ class GracefulShutdownTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.statusCode() == 200 && response.body()
-                                                           .contains("\"quorum\":true");
-        } catch (IOException | InterruptedException e) {
-            return false;
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
+                   .or(false);
     }
 
     private String getHealthFromAnyNode() {
         var status = cluster.status();
-        if (status.nodes()
-                  .isEmpty()) {
+        if (status.nodes().isEmpty()) {
             return "";
         }
-        var port = status.nodes()
-                         .get(0)
-                         .mgmtPort();
+        var port = status.nodes().get(0).mgmtPort();
         return httpGet(port, "/api/health");
     }
 
     private String getSlicesFromAnyNode() {
         var status = cluster.status();
-        if (status.nodes()
-                  .isEmpty()) {
+        if (status.nodes().isEmpty()) {
             return "";
         }
-        var port = status.nodes()
-                         .get(0)
-                         .mgmtPort();
+        var port = status.nodes().get(0).mgmtPort();
         // Use /api/slices/status for cluster-wide view (reads from KVStore)
         return httpGet(port, "/api/slices/status");
     }
 
     private String deploySlice(String artifact, int instances) {
         var leaderPort = cluster.getLeaderManagementPort()
-                                .or(cluster.status()
-                                           .nodes()
-                                           .get(0)
-                                           .mgmtPort());
+                                .or(cluster.status().nodes().get(0).mgmtPort());
         var blueprint = """
             id = "%s"
 
@@ -311,12 +297,10 @@ class GracefulShutdownTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "";
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or("");
     }
 
     private String httpPostBlueprint(int port, String body) {
@@ -326,11 +310,9 @@ class GracefulShutdownTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 }

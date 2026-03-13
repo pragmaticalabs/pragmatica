@@ -2,18 +2,16 @@ package org.pragmatica.aether.api;
 
 import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AlertConfig.WebhookConfig;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageReceiver;
 
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 
 import org.slf4j.Logger;
@@ -33,7 +31,7 @@ public class AlertForwarder {
     private static final Logger log = LoggerFactory.getLogger(AlertForwarder.class);
 
     private final WebhookConfig config;
-    private final Option<HttpClient> httpClient;
+    private final Option<HttpOperations> httpOps;
     private final boolean enabled;
 
     private AlertForwarder(AlertConfig alertConfig) {
@@ -41,14 +39,14 @@ public class AlertForwarder {
         this.enabled = alertConfig.enabled() && config.enabled();
         if (enabled && !config.urls()
                               .isEmpty()) {
-            this.httpClient = Option.some(HttpClient.newBuilder()
-                                                    .connectTimeout(Duration.ofMillis(config.timeoutMs()))
-                                                    .build());
+            this.httpOps = Option.some(JdkHttpOperations.jdkHttpOperations(Duration.ofMillis(config.timeoutMs()),
+                                                                           java.net.http.HttpClient.Redirect.NORMAL,
+                                                                           Option.none()));
             log.info("AlertForwarder initialized with {} webhook URLs",
                      config.urls()
                            .size());
         } else {
-            this.httpClient = Option.none();
+            this.httpOps = Option.none();
             log.info("AlertForwarder disabled");
         }
     }
@@ -60,7 +58,7 @@ public class AlertForwarder {
 
     /// Forward an alert to all configured webhooks.
     public Promise<Unit> forward(AlertEvent event) {
-        if (!enabled || httpClient.isEmpty()) {
+        if (!enabled || httpOps.isEmpty()) {
             return Promise.success(Unit.unit());
         }
         var payload = toJson(event);
@@ -88,42 +86,43 @@ public class AlertForwarder {
     }
 
     private Promise<Unit> sendToWebhook(String url, String payload) {
-        return httpClient.fold(() -> Promise.success(Unit.unit()),
-                               client -> sendWithRetry(client, url, payload, 0));
+        return httpOps.fold(() -> Promise.success(Unit.unit()),
+                            ops -> sendWithRetry(ops, url, payload, 0));
     }
 
-    private Promise<Unit> sendWithRetry(HttpClient client, String url, String payload, int attempt) {
-        return doSend(client, url, payload)
-        .flatMap(statusCode -> handleStatusCode(client, url, payload, attempt, statusCode));
+    private Promise<Unit> sendWithRetry(HttpOperations ops, String url, String payload, int attempt) {
+        return doSend(ops, url, payload)
+        .flatMap(statusCode -> handleStatusCode(ops, url, payload, attempt, statusCode));
     }
 
-    private Promise<Integer> doSend(HttpClient client, String url, String payload) {
+    private Promise<Integer> doSend(HttpOperations ops, String url, String payload) {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create(url))
                                  .timeout(Duration.ofMillis(config.timeoutMs()))
                                  .header("Content-Type", "application/json")
                                  .POST(HttpRequest.BodyPublishers.ofString(payload))
                                  .build();
-        return Result.lift(Causes::fromThrowable,
-                           () -> client.send(request,
-                                             HttpResponse.BodyHandlers.ofString()))
-                     .map(HttpResponse::statusCode)
-                     .async();
+        return ops.sendString(request)
+                  .map(org.pragmatica.http.HttpResult::statusCode);
     }
 
-    private Promise<Unit> handleStatusCode(HttpClient client, String url, String payload, int attempt, int statusCode) {
+    private Promise<Unit> handleStatusCode(HttpOperations ops,
+                                           String url,
+                                           String payload,
+                                           int attempt,
+                                           int statusCode) {
         if (statusCode >= 200 && statusCode < 300) {
             log.debug("Alert forwarded to {}", url);
             return Promise.success(Unit.unit());
         }
         log.warn("Webhook {} returned status {}", url, statusCode);
-        return retryOrFail(client, url, payload, attempt, "HTTP " + statusCode);
+        return retryOrFail(ops, url, payload, attempt, "HTTP " + statusCode);
     }
 
-    private Promise<Unit> retryOrFail(HttpClient client, String url, String payload, int attempt, String error) {
+    private Promise<Unit> retryOrFail(HttpOperations ops, String url, String payload, int attempt, String error) {
         if (attempt < config.retryCount()) {
             log.debug("Retrying webhook {} (attempt {}/{})", url, attempt + 1, config.retryCount());
-            return sendWithRetry(client, url, payload, attempt + 1);
+            return sendWithRetry(ops, url, payload, attempt + 1);
         }
         log.error("Failed to send to webhook {} after {} attempts: {}", url, config.retryCount(), error);
         return AlertForwarderError.WebhookError.webhookError(url, error)

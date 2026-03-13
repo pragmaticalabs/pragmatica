@@ -6,12 +6,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.HttpOperations;
 
-import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 
 import org.junit.jupiter.api.Tag;
@@ -22,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import org.pragmatica.aether.ember.EmberCluster;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// Tests for multi-blueprint lifecycle in an in-process cluster.
 ///
@@ -47,16 +47,14 @@ class MultiBlueprintForgeTest {
     private static final String BLUEPRINT_B_ID = "forge.test.b:multi-bp:1.0.0";
     private static final String ARTIFACT_A = TestArtifacts.ECHO_SLICE;
     private static final String ARTIFACT_B = TestArtifacts.URL_SHORTENER;
+    private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
     private EmberCluster cluster;
-    private HttpClient httpClient;
+    private final HttpOperations http = jdkHttpOperations();
 
     @BeforeAll
     void setUp() {
         cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "mb");
-        httpClient = HttpClient.newBuilder()
-                               .connectTimeout(Duration.ofSeconds(5))
-                               .build();
 
         cluster.start()
                .await()
@@ -130,7 +128,7 @@ class MultiBlueprintForgeTest {
                .pollInterval(POLL_INTERVAL)
                .until(() -> sliceIsActive(ARTIFACT_A));
 
-        // Deploy blueprint B with the SAME artifact — should be rejected
+        // Deploy blueprint B with the SAME artifact -- should be rejected
         var responseB = postBlueprint(leaderPort, buildBlueprint(BLUEPRINT_B_ID, ARTIFACT_A, 1));
 
         // Verify rejection: response contains error OR the second blueprint's slice is not deployed
@@ -250,12 +248,10 @@ class MultiBlueprintForgeTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private String delete(int port, String path) {
@@ -264,12 +260,10 @@ class MultiBlueprintForgeTest {
                                  .DELETE()
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "{\"error\": \"" + e.getMessage() + "\"}";
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private String post(int port, String path, String body, String contentType) {
@@ -279,12 +273,10 @@ class MultiBlueprintForgeTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "{\"error\": \"" + e.getMessage() + "\"}";
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private boolean sliceIsActive(String artifact) {
@@ -310,11 +302,9 @@ class MultiBlueprintForgeTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.statusCode() == 200 && response.body().contains("\"quorum\":true");
-        } catch (IOException | InterruptedException e) {
-            return false;
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
+                   .or(false);
     }
 }

@@ -39,6 +39,13 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- HTTP Client -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>http-client</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <!-- JUnit 5 -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

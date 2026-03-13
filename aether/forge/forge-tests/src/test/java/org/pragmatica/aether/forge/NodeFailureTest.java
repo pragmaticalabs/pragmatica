@@ -6,17 +6,18 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.HttpOperations;
 
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import org.pragmatica.aether.ember.EmberCluster;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// Tests for node failure and recovery scenarios.
 ///
@@ -39,15 +40,12 @@ class NodeFailureTest {
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
     private EmberCluster cluster;
-    private HttpClient httpClient;
+    private final HttpOperations http = jdkHttpOperations();
 
     @BeforeEach
     void setUp(TestInfo testInfo) {
         int portOffset = getPortOffset(testInfo);
         cluster = emberCluster(5, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, BASE_APP_HTTP_PORT + portOffset, "nf");
-        httpClient = HttpClient.newBuilder()
-                               .connectTimeout(Duration.ofSeconds(5))
-                               .build();
 
         cluster.start()
                .await()
@@ -248,11 +246,9 @@ class NodeFailureTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (Exception e) {
-            return "";
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or("");
     }
 }

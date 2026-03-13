@@ -26,15 +26,15 @@ import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.websocket.WebSocketEndpoint;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.awt.Desktop;
 import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -98,6 +98,7 @@ public final class ForgeServer {
                                                                                                                                        false));
     private final StatusWebSocketHandler eventWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.noOpValidator(),
                                                                                                                                    false));
+    private final HttpOperations http = JdkHttpOperations.jdkHttpOperations();
     private final long startTime = System.currentTimeMillis();
     private volatile String lastEventTimestamp = "";
 
@@ -356,17 +357,16 @@ public final class ForgeServer {
                 uriStr += "?since=" + java.net.URLEncoder.encode(lastEventTimestamp,
                                                                  java.nio.charset.StandardCharsets.UTF_8);
             }
-            try (var client = HttpClient.newHttpClient()) {
-                var request = HttpRequest.newBuilder()
-                                         .uri(URI.create(uriStr))
-                                         .GET()
-                                         .timeout(java.time.Duration.ofSeconds(2))
-                                         .build();
-                var response = client.send(request, HttpResponse.BodyHandlers.ofString());
-                if (response.statusCode() == 200) {
-                    parseAndMergeEvents(response.body());
-                }
-            }
+            var request = HttpRequest.newBuilder()
+                                     .uri(URI.create(uriStr))
+                                     .GET()
+                                     .timeout(java.time.Duration.ofSeconds(2))
+                                     .build();
+            http.sendString(request)
+                .await(TimeSpan.timeSpan(3)
+                               .seconds())
+                .flatMap(org.pragmatica.http.HttpResult::toResult)
+                .onSuccess(this::parseAndMergeEvents);
         } catch (Exception e) {
             log.trace("Event polling failed: {}", e.getMessage());
         }
@@ -460,29 +460,37 @@ public final class ForgeServer {
 
     private void deployBlueprint(Path blueprintPath) {
         log.info("Deploying blueprint from {}...", blueprintPath);
-        try (var client = HttpClient.newHttpClient()) {
+        try{
             var content = Files.readString(blueprintPath);
-            var leaderPort = cluster.flatMap(c -> c.getLeaderManagementPort())
+            var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort)
                                     .or(forgeConfig.managementPort());
             var request = HttpRequest.newBuilder()
                                      .uri(URI.create("http://localhost:" + leaderPort + "/api/blueprint"))
                                      .header("Content-Type", "application/toml")
                                      .POST(HttpRequest.BodyPublishers.ofString(content))
                                      .build();
-            var response = client.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                log.info("Blueprint deployed");
-                apiHandler.onPresent(h -> h.addEvent("BLUEPRINT_DEPLOYED",
-                                                     "Blueprint deployed from " + blueprintPath.getFileName()));
-                // Wait for deployment to propagate
-                TimeSpan.timeSpan(1)
-                        .seconds()
-                        .sleep();
-            } else {
-                log.error("Failed to deploy blueprint: {} - {}", response.statusCode(), response.body());
-            }
-        } catch (IOException | InterruptedException e) {
+            http.sendString(request)
+                .await(TimeSpan.timeSpan(10)
+                               .seconds())
+                .onSuccess(result -> handleBlueprintResponse(result, blueprintPath))
+                .onFailure(cause -> log.error("Failed to deploy blueprint: {}",
+                                              cause.message()));
+        } catch (IOException e) {
             log.error("Failed to deploy blueprint: {}", e.getMessage());
+        }
+    }
+
+    private void handleBlueprintResponse(org.pragmatica.http.HttpResult<String> result, Path blueprintPath) {
+        if (result.isSuccess()) {
+            log.info("Blueprint deployed");
+            apiHandler.onPresent(h -> h.addEvent("BLUEPRINT_DEPLOYED",
+                                                 "Blueprint deployed from " + blueprintPath.getFileName()));
+            // Wait for deployment to propagate
+            TimeSpan.timeSpan(1)
+                    .seconds()
+                    .sleep();
+        } else {
+            log.error("Failed to deploy blueprint: {} - {}", result.statusCode(), result.body());
         }
     }
 
