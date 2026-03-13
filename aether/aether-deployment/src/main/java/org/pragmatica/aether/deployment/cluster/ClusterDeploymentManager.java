@@ -55,6 +55,7 @@ import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -251,7 +252,8 @@ public interface ClusterDeploymentManager {
                       Set<NodeId> workerNodes,
                       Map<String, GovernorAnnouncementValue> communityGovernors,
                       Map<SliceNodeKey, Long> transitionalStateTimestamps,
-                      ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap) implements ClusterDeploymentState {
+                      ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap,
+                      AtomicReference<ScheduledFuture<?>> reconcileTimer) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
             private static final int MAX_RETRIES = 5;
             private static final long MAX_RETRY_DELAY_SECONDS = 30;
@@ -275,11 +277,32 @@ public interface ClusterDeploymentManager {
 
             /// Mark this Active state as deactivated, preventing stale scheduled callbacks
             /// from executing after the node has transitioned to Dormant.
+            private static final TimeSpan RECONCILE_INTERVAL = timeSpan(30).seconds();
+
             void deactivate() {
                 deactivated.set(true);
                 cooldownActive.set(false);
                 cancelAutoHeal();
+                cancelReconcileTimer();
                 log.trace("Active state deactivated, stale callbacks will be suppressed");
+            }
+
+            /// Start periodic reconciliation to detect and remediate stuck transitional states.
+            void startReconcileTimer() {
+                var future = SharedScheduler.scheduleAtFixedRate(() -> {
+                                                                     if (!deactivated.get()) {
+                                                                         reconcile();
+                                                                     }
+                                                                 },
+                                                                 RECONCILE_INTERVAL);
+                reconcileTimer.set(future);
+            }
+
+            private void cancelReconcileTimer() {
+                var future = reconcileTimer.getAndSet(null);
+                if (future != null) {
+                    future.cancel(false);
+                }
             }
 
             /// Start auto-heal cooldown for initial cluster formation.
@@ -2088,7 +2111,8 @@ public interface ClusterDeploymentManager {
                                                                         ConcurrentHashMap.newKeySet(),
                                                                         new ConcurrentHashMap<>(),
                                                                         new ConcurrentHashMap<>(),
-                                                                        sliceNodeMap);
+                                                                        sliceNodeMap,
+                                                                        new AtomicReference<>());
                     // Swap to Active FIRST — ensures topology changes arriving on other threads
                     // are dispatched to Active.onTopologyChange() instead of being lost in Dormant.
                     state.set(activeState);
@@ -2104,6 +2128,7 @@ public interface ClusterDeploymentManager {
                     // Rebuild state from KVStore and reconcile
                     activeState.rebuildStateFromKVStore();
                     activeState.reconcile();
+                    activeState.startReconcileTimer();
                     // Use startup cooldown for initial formation (no blueprints yet),
                     // immediate auto-heal for leader failover (blueprints restored from KVStore)
                     if (activeState.blueprints()
