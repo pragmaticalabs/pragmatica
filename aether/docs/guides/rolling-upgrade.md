@@ -63,8 +63,8 @@ For container deployments, use `--skip-download` and restart containers with the
 When prompted to restart a node, use your container runtime:
 
 ```bash
-# Podman/Docker
-podman stop aether-node-1 && podman run -d --name aether-node-1 ghcr.io/pragmaticalabs/aether-node:0.20.0 ...
+# Docker/Docker
+docker stop aether-node-1 && docker run -d --name aether-node-1 ghcr.io/pragmaticalabs/aether-node:0.20.0 ...
 
 # Kubernetes
 kubectl set image deployment/aether-node aether-node=ghcr.io/pragmaticalabs/aether-node:0.20.0

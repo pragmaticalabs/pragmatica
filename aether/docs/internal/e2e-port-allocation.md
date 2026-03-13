@@ -48,7 +48,7 @@ Bridge networking had reliability issues with failure detection:
 
 - **Docker bridge NAT** adds latency and complexity to port mapping
 - **IP-based peer discovery** was non-deterministic with `parallelStream()` startup
-- **Network alias DNS** resolution was fragile across container runtimes (Docker vs Podman)
+- **Network alias DNS** resolution was fragile across container runtimes (Docker vs Docker)
 - **Host networking** provides direct localhost connectivity, matching production behavior more closely
 
 ## Peer Configuration
@@ -75,7 +75,7 @@ Look for log lines like:
 
 If you see `Address already in use` errors in container logs:
 1. Check if another test run is using the same PID-derived ports
-2. Kill orphaned containers: `podman ps -a | grep aether`
+2. Kill orphaned containers: `docker ps -a | grep aether`
 3. The counter mechanism should prevent same-JVM conflicts, but cross-JVM collisions are possible (statistically unlikely)
 
 ### Manual health check

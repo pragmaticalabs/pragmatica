@@ -23,9 +23,9 @@ Node container based on `eclipse-temurin:25-alpine`:
 
 Forge simulator container for load testing and chaos experiments.
 
-### Podman Compose
+### Docker Compose
 
-#### `docker/docker-compose.yml`
+#### `docker/docker compose.yml`
 
 3-node cluster configuration:
 
@@ -58,14 +58,14 @@ services:
 
 ```bash
 cd docker
-podman-compose up --build
+docker compose up --build
 ```
 
 ### Start with Forge Simulator
 
 ```bash
 cd docker
-podman-compose --profile forge up --build
+docker compose --profile forge up --build
 ```
 
 ### Access Points
@@ -103,7 +103,7 @@ Output: Shell scripts for single-machine deployment
 ### DockerGenerator
 
 Output:
-- `docker-compose.yml` - Service definitions
+- `docker compose.yml` - Service definitions
 - `.env` - Environment variables
 - `start.sh` - Cluster start script
 - `stop.sh` - Cluster stop script

@@ -817,17 +817,15 @@ public final class SliceProjectInitializer {
         PG_PASSWORD="${PG_PASSWORD:-postgres}"
 
         # Auto-detect container runtime
-        if command -v podman >/dev/null 2>&1; then
-            RUNTIME="podman"
-        elif command -v docker >/dev/null 2>&1; then
+        if command -v docker >/dev/null 2>&1; then
             RUNTIME="docker"
+        elif command -v podman >/dev/null 2>&1; then
+            RUNTIME="podman"
         else
-            echo "ERROR: Neither podman nor docker found."
-            echo "Install podman: https://podman.io/getting-started/installation"
+            echo "ERROR: Neither docker nor podman found."
             exit 1
         fi
 
-        # Check if already running
         # Check if already running
         if $RUNTIME ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
             echo "PostgreSQL is already running (container: $CONTAINER_NAME)"
@@ -882,12 +880,12 @@ public final class SliceProjectInitializer {
         VOLUME_NAME="{{artifactId}}-pgdata"
 
         # Auto-detect container runtime
-        if command -v podman >/dev/null 2>&1; then
-            RUNTIME="podman"
-        elif command -v docker >/dev/null 2>&1; then
+        if command -v docker >/dev/null 2>&1; then
             RUNTIME="docker"
+        elif command -v podman >/dev/null 2>&1; then
+            RUNTIME="podman"
         else
-            echo "ERROR: Neither podman nor docker found."
+            echo "ERROR: Neither docker nor podman found."
             exit 1
         fi
 

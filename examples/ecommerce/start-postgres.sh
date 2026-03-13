@@ -1,10 +1,20 @@
 #!/bin/bash
-# Start PostgreSQL for Forge benchmarking via Podman.
+# Start PostgreSQL for local development.
 #
 # Usage:
 #   ./start-postgres.sh          # start and init schema
 #   ./start-postgres.sh --reset  # drop existing, recreate from scratch
 set -e
+
+# Auto-detect container runtime
+if command -v docker >/dev/null 2>&1; then
+    RUNTIME="docker"
+elif command -v podman >/dev/null 2>&1; then
+    RUNTIME="podman"
+else
+    echo "ERROR: Neither docker nor podman found."
+    exit 1
+fi
 
 CONTAINER_NAME="forge-postgres"
 PG_USER="forge"
@@ -16,19 +26,19 @@ SCHEMA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/schema"
 
 if [ "$1" = "--reset" ]; then
     echo "Resetting PostgreSQL container..."
-    podman rm -f "$CONTAINER_NAME" 2>/dev/null || true
-    podman volume rm forge-pgdata 2>/dev/null || true
+    $RUNTIME rm -f "$CONTAINER_NAME" 2>/dev/null || true
+    $RUNTIME volume rm forge-pgdata 2>/dev/null || true
 fi
 
 # Start container if not running
-if podman ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+if $RUNTIME ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     echo "PostgreSQL already running on port $PG_PORT"
 else
     # Remove stopped container if exists
-    podman rm -f "$CONTAINER_NAME" 2>/dev/null || true
+    $RUNTIME rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
     echo "Starting PostgreSQL $PG_IMAGE on port $PG_PORT..."
-    podman run -d \
+    $RUNTIME run -d \
         --name "$CONTAINER_NAME" \
         -e POSTGRES_USER="$PG_USER" \
         -e POSTGRES_PASSWORD="$PG_PASSWORD" \
@@ -41,7 +51,7 @@ else
     # Wait for PostgreSQL to be ready
     echo -n "Waiting for PostgreSQL..."
     for i in $(seq 1 30); do
-        if podman exec "$CONTAINER_NAME" pg_isready -U "$PG_USER" -d "$PG_DB" > /dev/null 2>&1; then
+        if $RUNTIME exec "$CONTAINER_NAME" pg_isready -U "$PG_USER" -d "$PG_DB" > /dev/null 2>&1; then
             echo " ready."
             break
         fi
@@ -53,7 +63,7 @@ fi
 # Run schema init
 if [ -f "$SCHEMA_DIR/ecommerce.sql" ]; then
     echo "Initializing schema..."
-    podman exec -i "$CONTAINER_NAME" psql -U "$PG_USER" -d "$PG_DB" < "$SCHEMA_DIR/ecommerce.sql"
+    $RUNTIME exec -i "$CONTAINER_NAME" psql -U "$PG_USER" -d "$PG_DB" < "$SCHEMA_DIR/ecommerce.sql"
     echo "Schema initialized."
 fi
 

@@ -52,7 +52,7 @@ Metrics Collectors ──> ComprehensiveSnapshotCollector (1s)
 
 ## Prerequisites
 
-- Podman + Podman Compose (for deployment)
+- Docker + Docker Compose (for deployment)
 - Python 3.11+ (for training only)
 - NVIDIA GPU (optional, speeds up training)
 - At least 4GB RAM for training
@@ -189,7 +189,7 @@ cp models/ttm-aether.onnx /app/models/
 
 Memory considerations:
 - ONNX Runtime allocates native memory outside the JVM heap
-- Set Podman `--memory` limit to at least `JVM heap + 512MB`
+- Set Docker `--memory` limit to at least `JVM heap + 512MB`
 - Monitor RSS vs heap in container metrics
 
 ---
@@ -202,9 +202,9 @@ Memory considerations:
 cd aether/aether-ttm-onnx/training/
 ```
 
-**Option A — Podman (recommended):**
+**Option A — Docker (recommended):**
 ```bash
-podman build -t ttm-training -f Dockerfile.training .
+docker build -t ttm-training -f Dockerfile.training .
 ```
 
 **Option B — Local Python:**
@@ -353,7 +353,7 @@ make train DATA=data.csv  # Train model
 make export             # Export to ONNX
 make validate           # Validate ONNX model
 make all DATA=data.csv  # Full pipeline
-make podman-train DATA=data.csv  # Train in Podman
+make docker-train DATA=data.csv  # Train in Docker
 make clean              # Remove generated files
 ```
 
@@ -459,7 +459,7 @@ Timeline from startup:
 ### High Memory Usage
 
 - ONNX Runtime uses native memory outside JVM heap
-- Set `-XX:MaxDirectMemorySize` or Podman `--memory` limit
+- Set `-XX:MaxDirectMemorySize` or Docker `--memory` limit
 - Monitor: RSS vs heap in container metrics
 - Typical overhead: ~200MB for ONNX Runtime + model
 

@@ -3,7 +3,7 @@
 ## Container Command
 
 ```bash
-podman run -it --rm \
+docker run -it --rm \
   --name aether-dx-test \
   -p 8070:8070 \
   -p 8888:8888 \
@@ -19,7 +19,7 @@ podman run -it --rm \
 > - `5150` — Management API / CLI
 >
 > **Reaching host services** (e.g., PostgreSQL in Part 7): use `host.containers.internal`
-> as the hostname. Podman on macOS/Windows resolves this automatically to the host machine.
+> as the hostname. Docker on macOS/Windows resolves this automatically to the host machine.
 > On Linux, add `--add-host=host.containers.internal:host-gateway` to the command above,
 > or use `--network=host` instead of `-p` flags.
 >
@@ -332,14 +332,14 @@ CREATE TABLE IF NOT EXISTS greetings (
 );
 ```
 
-On the **host machine** (outside the container, where podman is available):
+On the **host machine** (outside the container, where docker is available):
 
 ```bash
 cd /tmp/my-slice
 ./start-postgres.sh
 ```
 
-The script auto-detects podman/docker, starts PostgreSQL, and applies `schema/init.sql` automatically.
+The script auto-detects docker/docker, starts PostgreSQL, and applies `schema/init.sql` automatically.
 
 ### 7b. Uncomment database config
 
@@ -460,9 +460,9 @@ mvn clean install
 |---|-------|---------|----------|
 | 7.1 | Build succeeds | `mvn clean install` | `BUILD SUCCESS` |
 | 7.2 | Greeting with DB | `curl -s http://localhost:8070/api/hello/World` | `{"greeting":"Hello, World!"}` |
-| 7.3 | DB has record | `podman exec my-slice-postgres psql -U postgres -d forge -c "SELECT * FROM greetings"` | Row with "World" |
+| 7.3 | DB has record | `docker exec my-slice-postgres psql -U postgres -d forge -c "SELECT * FROM greetings"` | Row with "World" |
 | 7.4 | Multiple calls | `curl -s http://localhost:8070/api/hello/Alice && curl -s http://localhost:8070/api/hello/Bob` | Both succeed |
-| 7.5 | DB count | `podman exec my-slice-postgres psql -U postgres -d forge -c "SELECT COUNT(*) FROM greetings"` | 3 rows |
+| 7.5 | DB count | `docker exec my-slice-postgres psql -U postgres -d forge -c "SELECT COUNT(*) FROM greetings"` | 3 rows |
 
 ---
 
@@ -791,8 +791,8 @@ cat target/blueprint.toml
 
 | # | Check | Command | Expected |
 |---|-------|---------|----------|
-| 18.1 | Postgres stopped | `podman ps` | No my-slice-postgres container |
-| 18.2 | Volume removed (purge) | `podman volume ls` | No my-slice-pgdata volume |
+| 18.1 | Postgres stopped | `docker ps` | No my-slice-postgres container |
+| 18.2 | Volume removed (purge) | `docker volume ls` | No my-slice-pgdata volume |
 
 ---
 

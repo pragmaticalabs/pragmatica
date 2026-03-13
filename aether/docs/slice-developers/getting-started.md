@@ -51,7 +51,7 @@ my-first-slice/
 ├── CLAUDE.md                                      # AI agent instructions
 ├── .gitignore
 ├── run-forge.sh                                   # Start local Forge server
-├── start-postgres.sh                              # Start PostgreSQL container (podman)
+├── start-postgres.sh                              # Start PostgreSQL container (docker)
 ├── stop-postgres.sh                               # Stop PostgreSQL container
 ├── deploy-forge.sh                                # Deploy to local Forge
 ├── deploy-test.sh                                 # Deploy to test environment
