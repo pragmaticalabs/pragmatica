@@ -184,6 +184,17 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 
 ## Next Up
 
+### TOP PRIORITY - Cleanup
+
+0. **Eliminate Raw JDK HTTP Client Usage**
+   - All HTTP operations must go through `integrations/net/http-client` (`HttpOperations` / `JdkHttpOperations`)
+   - Raw `java.net.http.HttpClient` instantiation and `.send()` calls are forbidden outside the integration module
+   - **Main code:** `AetherCli.java`, `RemoteRepository.java`, `AlertForwarder.java`
+   - **Test code:** `CloudNode.java`, `ConfigurableLoadRunner.java`, `ForgeTestBase.java`, `ChaosTest.java`
+   - **JBCT tools:** `JarInstaller.java`, `GitHubReleaseChecker.java`, `GitHubVersionResolver.java`
+   - **Already migrated:** `AetherNodeContainer.java` (E2E tests)
+   - **Why:** Raw usage leaks null exception messages, duplicates error handling, and creates inconsistent failure modes across the codebase. Single integration point ensures typed errors (`HttpError`), consistent timeouts, and uniform retry behavior.
+
 ### HIGH PRIORITY - Core & Operations
 
 1. **Cloud Integration**
