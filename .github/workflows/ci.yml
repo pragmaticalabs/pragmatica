@@ -27,6 +27,7 @@ jobs:
 
       - name: Build and test all modules
         run: mvn install -B
+        timeout-minutes: 30
 
       - name: Run postgres-async integration tests
         run: mvn test -B -pl integrations/db/postgres-async -Dpostgres-async.skipTests=false

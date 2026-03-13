@@ -7,6 +7,8 @@ import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.Resolve
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.ShortenRequest;
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.UrlError;
 
+import org.pragmatica.lang.io.TimeSpan;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -116,7 +118,7 @@ class UrlShortenerTest {
             var request = ShortenRequest.shortenRequest("https://example.com/long/path").unwrap();
 
             urlShortener.shorten(request)
-                        .await()
+                        .await(TimeSpan.timeSpan(10).seconds())
                         .onFailureRun(() -> fail("Expected success"))
                         .onSuccess(response -> {
                             assertThat(response.shortCode()).hasSize(7);
@@ -130,12 +132,12 @@ class UrlShortenerTest {
             var request = ShortenRequest.shortenRequest("https://example.com/duplicate").unwrap();
 
             var firstCode = urlShortener.shorten(request)
-                                        .await()
+                                        .await(TimeSpan.timeSpan(10).seconds())
                                         .unwrap()
                                         .shortCode();
 
             urlShortener.shorten(request)
-                        .await()
+                        .await(TimeSpan.timeSpan(10).seconds())
                         .onFailureRun(() -> fail("Expected success"))
                         .onSuccess(response -> assertThat(response.shortCode()).isEqualTo(firstCode));
         }
@@ -146,12 +148,12 @@ class UrlShortenerTest {
             var request2 = ShortenRequest.shortenRequest("https://example.com/path2").unwrap();
 
             var code1 = urlShortener.shorten(request1)
-                                    .await()
+                                    .await(TimeSpan.timeSpan(10).seconds())
                                     .unwrap()
                                     .shortCode();
 
             var code2 = urlShortener.shorten(request2)
-                                    .await()
+                                    .await(TimeSpan.timeSpan(10).seconds())
                                     .unwrap()
                                     .shortCode();
 
@@ -165,12 +167,12 @@ class UrlShortenerTest {
         void resolve_succeeds_forExistingCode() {
             var url = "https://example.com/to-resolve";
             var shortenedCode = urlShortener.shorten(ShortenRequest.shortenRequest(url).unwrap())
-                                            .await()
+                                            .await(TimeSpan.timeSpan(10).seconds())
                                             .unwrap()
                                             .shortCode();
 
             urlShortener.resolve(ResolveRequest.resolveRequest(shortenedCode).unwrap())
-                        .await()
+                        .await(TimeSpan.timeSpan(10).seconds())
                         .onFailureRun(() -> fail("Expected success"))
                         .onSuccess(response -> {
                             assertThat(response.shortCode()).isEqualTo(shortenedCode);
@@ -181,7 +183,7 @@ class UrlShortenerTest {
         @Test
         void resolve_fails_forNonexistentCode() {
             urlShortener.resolve(ResolveRequest.resolveRequest("NoExist1").unwrap())
-                        .await()
+                        .await(TimeSpan.timeSpan(10).seconds())
                         .onSuccessRun(() -> fail("Expected failure"))
                         .onFailure(cause -> assertThat(cause).isInstanceOf(UrlError.NotFound.class));
         }
@@ -194,12 +196,12 @@ class UrlShortenerTest {
             var originalUrl = "https://github.com/pragmatica-lite/aether";
 
             var shortCode = urlShortener.shorten(ShortenRequest.shortenRequest(originalUrl).unwrap())
-                                        .await()
+                                        .await(TimeSpan.timeSpan(10).seconds())
                                         .unwrap()
                                         .shortCode();
 
             urlShortener.resolve(ResolveRequest.resolveRequest(shortCode).unwrap())
-                        .await()
+                        .await(TimeSpan.timeSpan(10).seconds())
                         .onFailureRun(() -> fail("Expected success"))
                         .onSuccess(response -> assertThat(response.originalUrl()).isEqualTo(originalUrl));
         }

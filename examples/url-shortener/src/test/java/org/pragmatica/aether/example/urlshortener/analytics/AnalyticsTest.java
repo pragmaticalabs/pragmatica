@@ -7,6 +7,8 @@ import org.pragmatica.aether.example.urlshortener.analytics.Analytics.GetStatsRe
 import org.pragmatica.aether.example.urlshortener.analytics.Analytics.RecordClickRequest;
 import org.pragmatica.aether.example.urlshortener.shortener.InMemoryDatabaseConnector;
 
+import org.pragmatica.lang.io.TimeSpan;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -77,7 +79,7 @@ class AnalyticsTest {
             var request = new RecordClickRequest("Test123");
 
             analytics.recordClick(request)
-                     .await()
+                     .await(TimeSpan.timeSpan(10).seconds())
                      .onFailureRun(() -> fail("Expected success"))
                      .onSuccess(response -> {
                          assertThat(response.shortCode()).isEqualTo("Test123");
@@ -89,11 +91,11 @@ class AnalyticsTest {
         void recordClick_incrementsCounter_onMultipleCalls() {
             var request = new RecordClickRequest("Multi12");
 
-            analytics.recordClick(request).await();
-            analytics.recordClick(request).await();
+            analytics.recordClick(request).await(TimeSpan.timeSpan(10).seconds());
+            analytics.recordClick(request).await(TimeSpan.timeSpan(10).seconds());
 
             analytics.recordClick(request)
-                     .await()
+                     .await(TimeSpan.timeSpan(10).seconds())
                      .onFailureRun(() -> fail("Expected success"))
                      .onSuccess(response -> assertThat(response.totalClicks()).isEqualTo(3));
         }
@@ -104,7 +106,7 @@ class AnalyticsTest {
         @Test
         void getStats_returnsZero_forNonexistentCode() {
             analytics.getStats(new GetStatsRequest("NoClck1"))
-                     .await()
+                     .await(TimeSpan.timeSpan(10).seconds())
                      .onFailureRun(() -> fail("Expected success"))
                      .onSuccess(stats -> {
                          assertThat(stats.shortCode()).isEqualTo("NoClck1");
@@ -115,14 +117,14 @@ class AnalyticsTest {
         @Test
         void getStats_returnsCorrectCount_afterClicks() {
             var shortCode = "Stats12";
-            analytics.recordClick(new RecordClickRequest(shortCode)).await();
-            analytics.recordClick(new RecordClickRequest(shortCode)).await();
-            analytics.recordClick(new RecordClickRequest(shortCode)).await();
-            analytics.recordClick(new RecordClickRequest(shortCode)).await();
-            analytics.recordClick(new RecordClickRequest(shortCode)).await();
+            analytics.recordClick(new RecordClickRequest(shortCode)).await(TimeSpan.timeSpan(10).seconds());
+            analytics.recordClick(new RecordClickRequest(shortCode)).await(TimeSpan.timeSpan(10).seconds());
+            analytics.recordClick(new RecordClickRequest(shortCode)).await(TimeSpan.timeSpan(10).seconds());
+            analytics.recordClick(new RecordClickRequest(shortCode)).await(TimeSpan.timeSpan(10).seconds());
+            analytics.recordClick(new RecordClickRequest(shortCode)).await(TimeSpan.timeSpan(10).seconds());
 
             analytics.getStats(new GetStatsRequest(shortCode))
-                     .await()
+                     .await(TimeSpan.timeSpan(10).seconds())
                      .onFailureRun(() -> fail("Expected success"))
                      .onSuccess(stats -> assertThat(stats.clickCount()).isEqualTo(5));
         }
@@ -135,7 +137,7 @@ class AnalyticsTest {
             var noop = Analytics.noopAnalytics();
 
             noop.recordClick(new RecordClickRequest("abc1234"))
-                .await()
+                .await(TimeSpan.timeSpan(10).seconds())
                 .onFailureRun(() -> fail("Expected success"))
                 .onSuccess(response -> assertThat(response.totalClicks()).isZero());
         }
@@ -145,7 +147,7 @@ class AnalyticsTest {
             var noop = Analytics.noopAnalytics();
 
             noop.getStats(new GetStatsRequest("abc1234"))
-                .await()
+                .await(TimeSpan.timeSpan(10).seconds())
                 .onFailureRun(() -> fail("Expected success"))
                 .onSuccess(stats -> assertThat(stats.clickCount()).isZero());
         }
