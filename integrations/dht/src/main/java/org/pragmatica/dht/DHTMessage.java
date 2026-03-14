@@ -67,8 +67,8 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// Response to exists request.
     record ExistsResponse(String requestId, NodeId sender, boolean exists) implements DHTMessage {}
 
-    /// A key-value pair used in migration data transfers.
-    record KeyValue(byte[] key, byte[] value) {
+    /// A key-value pair with version used in migration data transfers.
+    record KeyValue(byte[] key, byte[] value, long version) {
         public KeyValue {
             key = key.clone();
             value = value.clone();

@@ -25,6 +25,7 @@ import org.pragmatica.lang.Unit;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -50,7 +51,7 @@ public final class MemoryStorageEngine implements StorageEngine {
 
     @Override
     public Promise<Unit> put(byte[] key, byte[] value) {
-        data.put(new ByteArrayKey(key), new VersionedEntry(value.clone(), Long.MAX_VALUE));
+        data.put(new ByteArrayKey(key), new VersionedEntry(value.clone(), 0L));
         return Promise.success(Unit.unit());
     }
 
@@ -114,10 +115,7 @@ public final class MemoryStorageEngine implements StorageEngine {
     public Promise<List<DHTMessage.KeyValue>> entries() {
         return Promise.success(data.entrySet()
                                    .stream()
-                                   .map(e -> new DHTMessage.KeyValue(e.getKey()
-                                                                      .data(),
-                                                                     e.getValue()
-                                                                      .value()))
+                                   .map(MemoryStorageEngine::toKeyValue)
                                    .toList());
     }
 
@@ -128,11 +126,12 @@ public final class MemoryStorageEngine implements StorageEngine {
                                    .filter(e -> ring.partitionFor(e.getKey()
                                                                    .data())
                                                     .equals(partition))
-                                   .map(e -> new DHTMessage.KeyValue(e.getKey()
-                                                                      .data(),
-                                                                     e.getValue()
-                                                                      .value()))
+                                   .map(MemoryStorageEngine::toKeyValue)
                                    .toList());
+    }
+
+    private static DHTMessage.KeyValue toKeyValue(Map.Entry<ByteArrayKey, VersionedEntry> e) {
+        return new DHTMessage.KeyValue(e.getKey().data(), e.getValue().value(), e.getValue().version());
     }
 
     /// Wrapper for byte[] to use as HashMap key with proper equals/hashCode.

@@ -234,9 +234,9 @@ public final class DHTNode {
                                                                                             java.util.List.of())));
     }
 
-    /// Apply migration data by merging received entries into local storage.
+    /// Apply migration data by merging received entries into local storage using versioned puts.
     public void applyMigrationData(java.util.List<DHTMessage.KeyValue> entries) {
-        entries.forEach(kv -> storage.put(kv.key(), kv.value()));
+        entries.forEach(kv -> storage.putVersioned(kv.key(), kv.value(), kv.version()));
     }
 
     /// Compute a CRC32 digest over sorted key-value entries.
