@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **DHT notification broadcasting** — active nodes broadcast DHT route mutations to passive peers (load balancers) via `DHTNotification` protocol messages
 
 ### Fixed
+- **Anti-entropy migration HLC poisoning** — migration data now carries HLC versions and uses `putVersioned()` instead of unversioned `put()` which was storing with `Long.MAX_VALUE`, permanently blocking all subsequent versioned writes to affected keys
 - **GitBackedPersistence** — configure git user email/name after `git init` to prevent commit failures on CI runners without global git config
 - **ReadTimeoutHandler removed** — Netty `ReadTimeoutHandler` removed from cluster network; SWIM health detection handles peer liveness instead
 - **Route eviction on node departure** — removed redundant `routeRegistry.evictNode()` call from `HttpForwarder`; DHT cleanup handles route removal
