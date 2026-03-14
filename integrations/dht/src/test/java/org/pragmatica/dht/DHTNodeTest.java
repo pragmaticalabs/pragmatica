@@ -161,7 +161,7 @@ class DHTNodeTest {
         @Test
         void handlePutRequest_validData_storesAndSendsSuccessResponse() {
             var captured = new AtomicReference<PutResponse>();
-            var request = new PutRequest("req-2", NODE_ID, key("k1"), value("v1"));
+            var request = new PutRequest("req-2", NODE_ID, key("k1"), value("v1"), 0L);
 
             node.handlePutRequest(request, captured::set);
 

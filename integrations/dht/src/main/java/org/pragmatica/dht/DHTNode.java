@@ -18,6 +18,7 @@ package org.pragmatica.dht;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.storage.StorageEngine;
+import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -34,15 +35,32 @@ public final class DHTNode {
     private final StorageEngine storage;
     private final ConsistentHashRing<NodeId> ring;
     private final DHTConfig config;
+    private final HlcClock hlcClock;
 
-    private DHTNode(NodeId nodeId, StorageEngine storage, ConsistentHashRing<NodeId> ring, DHTConfig config) {
+    private DHTNode(NodeId nodeId, StorageEngine storage, ConsistentHashRing<NodeId> ring, DHTConfig config, HlcClock hlcClock) {
         this.nodeId = nodeId;
         this.storage = storage;
         this.ring = ring;
         this.config = config;
+        this.hlcClock = hlcClock;
     }
 
-    /// Create a new DHT node.
+    /// Create a new DHT node with an externally provided HLC clock.
+    ///
+    /// @param nodeId   this node's identifier
+    /// @param storage  storage engine for local data
+    /// @param ring     consistent hash ring for routing
+    /// @param config   DHT configuration
+    /// @param hlcClock hybrid logical clock for version tracking
+    public static DHTNode dhtNode(NodeId nodeId,
+                                  StorageEngine storage,
+                                  ConsistentHashRing<NodeId> ring,
+                                  DHTConfig config,
+                                  HlcClock hlcClock) {
+        return new DHTNode(nodeId, storage, ring, config, hlcClock);
+    }
+
+    /// Create a new DHT node with an internally created HLC clock.
     ///
     /// @param nodeId  this node's identifier
     /// @param storage storage engine for local data
@@ -52,7 +70,8 @@ public final class DHTNode {
                                   StorageEngine storage,
                                   ConsistentHashRing<NodeId> ring,
                                   DHTConfig config) {
-        return new DHTNode(nodeId, storage, ring, config);
+        var clock = HlcClock.hlcClock(nodeId.id()).unwrap();
+        return new DHTNode(nodeId, storage, ring, config, clock);
     }
 
     /// Get the node's identifier.
@@ -75,6 +94,11 @@ public final class DHTNode {
         return ring;
     }
 
+    /// Get the HLC clock.
+    public HlcClock hlcClock() {
+        return hlcClock;
+    }
+
     /// Get a value from local storage.
     public Promise<Option<byte[]>> getLocal(byte[] key) {
         return storage.get(key);
@@ -83,6 +107,11 @@ public final class DHTNode {
     /// Put a value to local storage.
     public Promise<Unit> putLocal(byte[] key, byte[] value) {
         return storage.put(key, value);
+    }
+
+    /// Put a value to local storage with version tracking.
+    public Promise<Boolean> putLocalVersioned(byte[] key, byte[] value, long version) {
+        return storage.putVersioned(key, value, version);
     }
 
     /// Remove a value from local storage.
@@ -144,14 +173,15 @@ public final class DHTNode {
     /// Handle a put request (for message routing integration).
     public void handlePutRequest(DHTMessage.PutRequest request,
                                  Consumer<DHTMessage.PutResponse> responseHandler) {
-        storage.put(request.key(),
-                    request.value())
-               .onSuccess(_ -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
-                                                                                 nodeId,
-                                                                                 true)))
+        storage.putVersioned(request.key(), request.value(), request.version())
+               .onSuccess(written -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
+                                                                                        nodeId,
+                                                                                        true,
+                                                                                        !written)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
-                                                                                 nodeId,
-                                                                                 false)));
+                                                                                  nodeId,
+                                                                                  false,
+                                                                                  false)));
     }
 
     /// Handle a remove request (for message routing integration).

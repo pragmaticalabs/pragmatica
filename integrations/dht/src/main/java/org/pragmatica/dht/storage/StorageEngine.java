@@ -53,6 +53,12 @@ public interface StorageEngine {
     /// @return true if key exists
     Promise<Boolean> exists(byte[] key);
 
+    /// Store a value only if the given version is newer than the current stored version.
+    /// Returns true if written (version is newer), false if superseded (stale version).
+    default Promise<Boolean> putVersioned(byte[] key, byte[] value, long version) {
+        return put(key, value).map(_ -> true);
+    }
+
     /// Get approximate number of entries.
     long size();
 
