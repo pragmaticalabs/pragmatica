@@ -25,6 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Anti-entropy migration HLC poisoning** — migration data now carries HLC versions and uses `putVersioned()` instead of unversioned `put()` which was storing with `Long.MAX_VALUE`, permanently blocking all subsequent versioned writes to affected keys
 - **GitBackedPersistence** — configure git user email/name after `git init` to prevent commit failures on CI runners without global git config
 - **ReadTimeoutHandler removed** — Netty `ReadTimeoutHandler` removed from cluster network; SWIM health detection handles peer liveness instead
+- **ReplicatedMap async notification race** — `NamespacedReplicatedMap` used `.onSuccess()` (async dispatch) for cache updates and subscriber notifications, causing rapid state transitions (LOADED→ACTIVE) to arrive out of order at CDM. Changed to `.withSuccess()` (synchronous dispatch) to preserve causal write ordering
+- **Full DHT replication for control plane** — AetherMaps now uses `DHTConfig.FULL` replication so all nodes receive all control plane notifications (slice-nodes, endpoints, routes), fixing notification delivery gaps on non-replica nodes
 - **Route eviction on node departure** — removed redundant `routeRegistry.evictNode()` call from `HttpForwarder`; DHT cleanup handles route removal
 - **RemoteRepositoryTest** — assertion updated to accept both "Download failed" and "HTTP operation failed" error messages after HttpOperations refactor
 - **Virtual thread starvation in example tests** — `InMemoryDatabaseConnector` now uses synchronous `Promise.resolved()` instead of async `Promise.lift()` for in-memory operations, preventing carrier thread starvation on low-vCPU CI runners
