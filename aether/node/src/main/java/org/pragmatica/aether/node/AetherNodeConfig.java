@@ -176,6 +176,7 @@ public record AetherNodeConfig(TopologyConfig topology,
 
     /// Create a test configuration for Forge simulation environment.
     /// Uses ForgeDefaults scaling config which disables CPU-based scaling.
+    /// Uses production DHT config (3 replicas, quorum=2) to match real cluster behavior.
     public static AetherNodeConfig forgeConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
         var topology = new TopologyConfig(self,
                                           coreNodes.size(),
@@ -187,7 +188,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     defaultSliceActionConfig(),
                                     SliceConfig.sliceConfig(),
                                     MANAGEMENT_DISABLED,
-                                    DHTConfig.FULL,
+                                    DHTConfig.DEFAULT,
                                     DHTConfig.CACHE_DEFAULT,
                                     Option.empty(),
                                     TtmConfig.ttmConfig(),

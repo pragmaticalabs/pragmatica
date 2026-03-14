@@ -328,10 +328,10 @@ public interface ClusterDeploymentManager {
             void rebuildStateFromKVStore() {
                 log.info("Rebuilding cluster deployment state from KVStore");
                 kvStore.forEach(AetherKey.class, AetherValue.class, this::processKVEntry);
-                log.info("Restored {} blueprints, {} slice states, and {} worker nodes from KVStore",
+                log.info("Restored {} blueprints and {} worker nodes from KVStore",
                          blueprints.size(),
-                         sliceStates.size(),
                          workerNodes.size());
+                rebuildSliceStateFromDHT();
                 // Trigger activation for any slices stuck in LOADED state
                 triggerLoadedSliceActivation();
                 // Clean up stale entries pointing to nodes not in topology
@@ -374,8 +374,7 @@ public interface ClusterDeploymentManager {
                     restoreAppBlueprint(appBlueprintValue);
                     case SliceTargetKey sliceTargetKey when value instanceof SliceTargetValue sliceTargetValue ->
                     restoreSliceTarget(sliceTargetKey, sliceTargetValue);
-                    case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue sliceNodeValue ->
-                    restoreSliceState(sliceNodeKey, sliceNodeValue);
+                    case SliceNodeKey _ -> {}
                     case AetherKey.VersionRoutingKey routingKey -> activeRoutings.add(routingKey.artifactBase());
                     case NodeLifecycleKey lifecycleKey when value instanceof NodeLifecycleValue lifecycleValue ->
                     restoreDrainingNode(lifecycleKey, lifecycleValue);
@@ -432,6 +431,11 @@ public interface ClusterDeploymentManager {
                 sliceStates.put(sliceNodeKey, sliceNodeValue.state());
                 updateTransitionalTimestamp(sliceNodeKey, sliceNodeValue.state());
                 log.trace("Restored slice state: {} = {}", sliceNodeKey, sliceNodeValue.state());
+            }
+
+            private void rebuildSliceStateFromDHT() {
+                sliceNodeMap.forEach(this::restoreSliceState);
+                log.info("Restored {} slice states from DHT", sliceStates.size());
             }
 
             @Override

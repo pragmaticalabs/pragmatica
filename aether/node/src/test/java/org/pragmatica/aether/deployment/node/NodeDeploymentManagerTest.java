@@ -588,6 +588,9 @@ class NodeDeploymentManagerTest {
         }
 
         @Override
+        public void forEach(java.util.function.BiConsumer<EndpointKey, EndpointValue> consumer) {}
+
+        @Override
         public String name() {
             return "test-endpoints";
         }
@@ -620,6 +623,9 @@ class NodeDeploymentManagerTest {
         public ReplicatedMap<SliceNodeKey, SliceNodeValue> subscribe(MapSubscription<SliceNodeKey, SliceNodeValue> subscription) {
             return this;
         }
+
+        @Override
+        public void forEach(java.util.function.BiConsumer<SliceNodeKey, SliceNodeValue> consumer) {}
 
         @Override
         public String name() {

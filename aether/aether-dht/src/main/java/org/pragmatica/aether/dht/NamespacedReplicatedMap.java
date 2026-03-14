@@ -8,7 +8,9 @@ import org.pragmatica.lang.Unit;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 
 import org.slf4j.Logger;
@@ -25,6 +27,7 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     private final Function<byte[], K> keyDeserializer;
     private final Function<V, byte[]> valueSerializer;
     private final Function<byte[], V> valueDeserializer;
+    private final ConcurrentHashMap<K, V> localCache = new ConcurrentHashMap<>();
     private final List<MapSubscription<K, V>> subscriptions = new CopyOnWriteArrayList<>();
 
     NamespacedReplicatedMap(String name,
@@ -46,7 +49,7 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     public Promise<Unit> put(K key, V value) {
         return client.put(prefixKey(keySerializer.apply(key)),
                           valueSerializer.apply(value))
-                     .onSuccess(_ -> notifyPut(key, value));
+                     .onSuccess(_ -> cacheAndNotifyPut(key, value));
     }
 
     @Override
@@ -58,13 +61,19 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     @Override
     public Promise<Boolean> remove(K key) {
         return client.remove(prefixKey(keySerializer.apply(key)))
-                     .onSuccess(removed -> notifyRemoveIfTrue(key, removed));
+                     .onSuccess(removed -> cacheRemoveAndNotify(key, removed));
     }
 
     @Override
     public ReplicatedMap<K, V> subscribe(MapSubscription<K, V> subscription) {
         subscriptions.add(subscription);
         return this;
+    }
+
+    @Override
+    @SuppressWarnings("JBCT-RET-01") // Side-effect iteration over local cache
+    public void forEach(BiConsumer<K, V> consumer) {
+        localCache.forEach(consumer);
     }
 
     @Override
@@ -80,7 +89,7 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
         }
         var key = keyDeserializer.apply(Arrays.copyOfRange(rawKey, namespacePrefix.length, rawKey.length));
         var value = valueDeserializer.apply(rawValue);
-        notifyPut(key, value);
+        cacheAndNotifyPut(key, value);
         return true;
     }
 
@@ -90,6 +99,7 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
             return false;
         }
         var key = keyDeserializer.apply(Arrays.copyOfRange(rawKey, namespacePrefix.length, rawKey.length));
+        localCache.remove(key);
         subscriptions.forEach(sub -> safeOnRemove(sub, key));
         return true;
     }
@@ -114,13 +124,15 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     }
 
     @SuppressWarnings("JBCT-RET-01") // Notification side-effect - void required
-    private void notifyPut(K key, V value) {
+    private void cacheAndNotifyPut(K key, V value) {
+        localCache.put(key, value);
         subscriptions.forEach(sub -> safeOnPut(sub, key, value));
     }
 
     @SuppressWarnings("JBCT-RET-01") // Notification side-effect - void required
-    private void notifyRemoveIfTrue(K key, boolean removed) {
+    private void cacheRemoveAndNotify(K key, boolean removed) {
         if (removed) {
+            localCache.remove(key);
             subscriptions.forEach(sub -> safeOnRemove(sub, key));
         }
     }

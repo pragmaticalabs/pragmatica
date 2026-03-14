@@ -22,6 +22,8 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.dht.AetherMaps;
+import org.pragmatica.aether.dht.DHTNotification;
+import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
@@ -60,7 +62,9 @@ import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
 import org.pragmatica.aether.ttm.TTMManager;
@@ -76,6 +80,7 @@ import org.pragmatica.cluster.state.kvstore.*;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
@@ -767,6 +772,8 @@ public interface AetherNode {
         httpRouteMap.subscribe(httpRouteRegistry.asHttpRouteSubscription());
         httpRouteMap.subscribe(appHttpServer.asHttpRouteSubscription());
         loadBalancerManager.onPresent(lbm -> httpRouteMap.subscribe(lbm.asHttpRouteSubscription()));
+        // Broadcast DHT route notifications to passive peers (load balancers)
+        httpRouteMap.subscribe(dhtNotificationBroadcaster(config.self(), clusterNode.network()));
         // Wire DHT subscriptions for slice-node events
         sliceNodeMap.subscribe(nodeDeploymentManager.asSliceNodeSubscription());
         sliceNodeMap.subscribe(clusterDeploymentManager.asSliceNodeSubscription());
@@ -849,6 +856,12 @@ public interface AetherNode {
                                                     dhtTopologyListener::onNodeAdded));
         aetherEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
                                                     dhtTopologyListener::onNodeRemoved));
+        // DHT notification routes — active nodes ignore these (they use DHT subscriptions directly);
+        // passive peers (load balancers) handle them in their own router
+        aetherEntries.add(MessageRouter.Entry.route(DHTNotification.Put.class,
+                                                    _ -> {}));
+        aetherEntries.add(MessageRouter.Entry.route(DHTNotification.Removed.class,
+                                                    _ -> {}));
         // Activation directive KV handler — CDM submits activation through consensus,
         // so all nodes see committed directives. Each node checks if the directive targets itself.
         var growthLog = LoggerFactory.getLogger(AetherNode.class);
@@ -1037,7 +1050,7 @@ public interface AetherNode {
                                                 DHTMessage.PutRequest request,
                                                 DHTMessage.PutResponse response) {
         dhtNetwork.send(request.sender(), response);
-        if (response.success()) {
+        if (response.success() && !response.superseded()) {
             aetherMaps.dispatchRemotePut(request.key(), request.value());
         }
     }
@@ -1051,6 +1064,26 @@ public interface AetherNode {
         if (response.found()) {
             aetherMaps.dispatchRemoteRemove(request.key());
         }
+    }
+
+    /// Creates a MapSubscription that broadcasts DHT route mutations to passive peers.
+    private static MapSubscription<HttpNodeRouteKey, HttpNodeRouteValue> dhtNotificationBroadcaster(NodeId self,
+                                                                                                    ClusterNetwork network) {
+        return new MapSubscription<>() {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onPut(HttpNodeRouteKey key, HttpNodeRouteValue value) {
+                network.broadcast(new DHTNotification.Put(self,
+                                                          AetherMaps.serializeHttpRouteKey(key),
+                                                          AetherMaps.serializeHttpRouteValue(value)));
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onRemove(HttpNodeRouteKey key) {
+                network.broadcast(new DHTNotification.Removed(self, AetherMaps.serializeHttpRouteKey(key)));
+            }
+        };
     }
 
     private static List<MessageRouter.Entry<?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,

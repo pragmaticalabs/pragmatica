@@ -1164,6 +1164,9 @@ class ClusterDeploymentManagerTest {
         }
 
         @Override
+        public void forEach(java.util.function.BiConsumer<SliceNodeKey, SliceNodeValue> consumer) {}
+
+        @Override
         public String name() {
             return "test-slice-nodes";
         }

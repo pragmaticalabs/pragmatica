@@ -153,24 +153,24 @@ public interface AetherMaps {
     }
 
     // --- HttpRoute serializers ---
-    private static byte[] serializeHttpRouteKey(HttpNodeRouteKey key) {
+    public static byte[] serializeHttpRouteKey(HttpNodeRouteKey key) {
         return key.asString()
                   .getBytes(StandardCharsets.UTF_8);
     }
 
-    private static HttpNodeRouteKey deserializeHttpRouteKey(byte[] bytes) {
+    public static HttpNodeRouteKey deserializeHttpRouteKey(byte[] bytes) {
         return HttpNodeRouteKey.httpNodeRouteKey(new String(bytes, StandardCharsets.UTF_8))
                                .unwrap();
     }
 
-    private static byte[] serializeHttpRouteValue(HttpNodeRouteValue value) {
+    public static byte[] serializeHttpRouteValue(HttpNodeRouteValue value) {
         var encoded = value.artifactCoord() + "|" + value.sliceMethod() + "|" + value.state() + "|" + value.weight()
                       + "|" + value.registeredAt();
         return encoded.getBytes(StandardCharsets.UTF_8);
     }
 
     @SuppressWarnings("JBCT-EX-01") // Adapter boundary — deserializing DHT bytes
-    private static HttpNodeRouteValue deserializeHttpRouteValue(byte[] bytes) {
+    public static HttpNodeRouteValue deserializeHttpRouteValue(byte[] bytes) {
         var parts = new String(bytes, StandardCharsets.UTF_8).split("\\|", 5);
         return new HttpNodeRouteValue(parts[0], parts[1], parts[2], Integer.parseInt(parts[3]), Long.parseLong(parts[4]));
     }

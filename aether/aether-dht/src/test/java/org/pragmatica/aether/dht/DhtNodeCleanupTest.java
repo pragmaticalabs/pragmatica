@@ -90,6 +90,9 @@ class DhtNodeCleanupTest {
         }
 
         @Override
+        public void forEach(java.util.function.BiConsumer<EndpointKey, EndpointValue> consumer) {}
+
+        @Override
         public String name() {
             return "test-endpoints";
         }
