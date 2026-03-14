@@ -31,5 +31,6 @@
         <module>cloud</module>
         <module>statemachine</module>
         <module>swim</module>
+        <module>hlc</module>
     </modules>
 </project>
