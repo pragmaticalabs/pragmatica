@@ -88,6 +88,7 @@ import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTAntiEntropy;
+import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.DHTNetwork;
@@ -327,8 +328,9 @@ public interface AetherNode {
                                                             .send(target, msg);
         // Create distributed DHT client with quorum-based reads/writes via DHTNetwork
         var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode, dhtNetwork, config.artifactRepo());
-        // Create AetherMaps for DHT-backed runtime data
-        var aetherMaps = AetherMaps.aetherMaps(dhtClient);
+        // Create AetherMaps with full replication — control plane data (slice-nodes, endpoints, routes)
+        // must be visible on ALL nodes for subscription notifications to reach CDM/NDM/routing.
+        var aetherMaps = AetherMaps.aetherMaps(dhtClient.scoped(DHTConfig.FULL));
         // Create scoped DHT client for cache operations (lower replication, single-replica default)
         var cacheDhtClient = dhtClient.scoped(config.cache());
         var artifactStore = ArtifactStore.artifactStore(dhtClient);

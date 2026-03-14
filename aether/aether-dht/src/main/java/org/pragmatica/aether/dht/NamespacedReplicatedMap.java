@@ -49,7 +49,7 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     public Promise<Unit> put(K key, V value) {
         return client.put(prefixKey(keySerializer.apply(key)),
                           valueSerializer.apply(value))
-                     .onSuccess(_ -> cacheAndNotifyPut(key, value));
+                     .withSuccess(_ -> cacheAndNotifyPut(key, value));
     }
 
     @Override
@@ -61,7 +61,7 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     @Override
     public Promise<Boolean> remove(K key) {
         return client.remove(prefixKey(keySerializer.apply(key)))
-                     .onSuccess(removed -> cacheRemoveAndNotify(key, removed));
+                     .withSuccess(removed -> cacheRemoveAndNotify(key, removed));
     }
 
     @Override
