@@ -222,6 +222,86 @@ class NamespacedReplicatedMapTest {
         }
 
         @Test
+        void put_reentrantWrites_allStatesDeliveredInOrder() {
+            var reentrantSubscription = new MapSubscription<String, String>() {
+                @Override
+                public void onPut(String key, String value) {
+                    switch (value) {
+                        case "LOADED" -> map.put(key, "ACTIVATE").await();
+                        case "ACTIVATE" -> map.put(key, "ACTIVATING").await();
+                        case "ACTIVATING" -> map.put(key, "ACTIVE").await();
+                        default -> { }
+                    }
+                }
+
+                @Override
+                public void onRemove(String key) { }
+            };
+
+            // Re-entrant handler first (simulates CDM at subscriber[1])
+            map.subscribe(reentrantSubscription);
+
+            // Recorder after (simulates DeploymentMap at subscriber[3])
+            var recorder = new RecordingSubscription();
+            map.subscribe(recorder);
+
+            // Trigger the chain: LOADED -> ACTIVATE -> ACTIVATING -> ACTIVE
+            map.put("state", "LOADED").await();
+
+            // Cache must reflect the final state
+            var entries = collectEntries();
+            assertThat(entries).containsExactly("state=ACTIVE");
+
+            // Drain loop delivers ALL states in order to ALL subscribers
+            assertThat(recorder.puts).containsExactly(
+                "state=LOADED",
+                "state=ACTIVATE",
+                "state=ACTIVATING",
+                "state=ACTIVE"
+            );
+
+            // Last notification is the final state
+            assertThat(recorder.puts).last().isEqualTo("state=ACTIVE");
+        }
+
+        @Test
+        void put_reentrantWrites_allSubscribersSeeAllStatesInOrder() {
+            var reentrantSubscription = new MapSubscription<String, String>() {
+                @Override
+                public void onPut(String key, String value) {
+                    switch (value) {
+                        case "LOADED" -> map.put(key, "ACTIVATE").await();
+                        case "ACTIVATE" -> map.put(key, "ACTIVATING").await();
+                        case "ACTIVATING" -> map.put(key, "ACTIVE").await();
+                        default -> { }
+                    }
+                }
+
+                @Override
+                public void onRemove(String key) { }
+            };
+
+            map.subscribe(reentrantSubscription);
+
+            var recorder1 = new RecordingSubscription();
+            var recorder2 = new RecordingSubscription();
+            map.subscribe(recorder1);
+            map.subscribe(recorder2);
+
+            map.put("state", "LOADED").await();
+
+            var expectedSequence = List.of(
+                "state=LOADED",
+                "state=ACTIVATE",
+                "state=ACTIVATING",
+                "state=ACTIVE"
+            );
+
+            assertThat(recorder1.puts).containsExactlyElementsOf(expectedSequence);
+            assertThat(recorder2.puts).containsExactlyElementsOf(expectedSequence);
+        }
+
+        @Test
         void put_chainedWrites_notificationsInCausalOrder() {
             var recorder = new RecordingSubscription();
             map.subscribe(recorder);

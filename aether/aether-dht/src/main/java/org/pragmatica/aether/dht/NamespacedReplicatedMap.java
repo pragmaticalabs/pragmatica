@@ -6,7 +6,9 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -29,6 +31,10 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     private final Function<byte[], V> valueDeserializer;
     private final ConcurrentHashMap<K, V> localCache = new ConcurrentHashMap<>();
     private final List<MapSubscription<K, V>> subscriptions = new CopyOnWriteArrayList<>();
+    private final Deque<PendingNotification<K, V>> pendingNotifications = new ArrayDeque<>();
+    private boolean draining;
+
+    private record PendingNotification<K, V>(K key, V value) {}
 
     NamespacedReplicatedMap(String name,
                             DHTClient client,
@@ -49,7 +55,7 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     public Promise<Unit> put(K key, V value) {
         return client.put(prefixKey(keySerializer.apply(key)),
                           valueSerializer.apply(value))
-                     .withSuccess(_ -> cacheAndNotifyPut(key, value));
+                     .withSuccess(_ -> cacheAndNotify(key, value));
     }
 
     @Override
@@ -89,7 +95,7 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
         }
         var key = keyDeserializer.apply(Arrays.copyOfRange(rawKey, namespacePrefix.length, rawKey.length));
         var value = valueDeserializer.apply(rawValue);
-        cacheAndNotifyPut(key, value);
+        cacheAndNotify(key, value);
         return true;
     }
 
@@ -123,9 +129,31 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
         return result;
     }
 
+    @SuppressWarnings("JBCT-RET-01") // Notification side-effect drain loop
+    private void cacheAndNotify(K key, V value) {
+        pendingNotifications.addLast(new PendingNotification<>(key, value));
+        if (draining) {
+            return;
+        }
+        draining = true;
+        try{
+            drainPendingNotifications();
+        } finally{
+            draining = false;
+        }
+    }
+
+    @SuppressWarnings("JBCT-RET-01") // Notification side-effect drain loop
+    private void drainPendingNotifications() {
+        PendingNotification<K, V> pending;
+        while ((pending = pendingNotifications.pollFirst()) != null) {
+            localCache.put(pending.key(), pending.value());
+            notifySubscribers(pending.key(), pending.value());
+        }
+    }
+
     @SuppressWarnings("JBCT-RET-01") // Notification side-effect - void required
-    private void cacheAndNotifyPut(K key, V value) {
-        localCache.put(key, value);
+    private void notifySubscribers(K key, V value) {
         subscriptions.forEach(sub -> safeOnPut(sub, key, value));
     }
 
