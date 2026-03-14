@@ -83,6 +83,8 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 |---|---------|--------|-------------|
 | 32 | Artifact repository | Battle-tested | Maven-compatible, chunked storage, checksum verification (MD5/SHA1), 64MB upload limit, metadata XML generation |
 | 33 | Distributed hash table | Battle-tested | Consistent hash ring (150 vnodes, 1024 partitions), quorum R/W, anti-entropy repair (CRC32 digest exchange, migration on mismatch), re-replication on node departure (DHTRebalancer), per-use-case config via `scoped()` |
+| 105 | Hybrid Logical Clock | Complete | `integrations/hlc/` module. HlcTimestamp (48-bit microseconds + 16-bit counter packed into long), HlcClock (thread-safe, ReentrantLock), drift detection, counter overflow protection. Foundation for causal ordering |
+| 106 | DHT versioned writes | Complete | HLC-stamped puts with atomic version comparison in storage. Rejects stale writes (version ≤ current). Fixes out-of-order write bugs (e.g., LOADED overwriting ACTIVE). Superseded flag in PutResponse skips stale notifications |
 | 34 | Configuration service | Complete | TOML-based config with runtime overrides via KV-Store, environment variable interpolation, system property fallback |
 
 ## Observability & Metrics
@@ -223,10 +225,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 24 |
-| Complete | 77 |
+| Complete | 79 |
 | Partial | 1 |
 | Planned | 13 |
-| Total | 115 |
+| Total | 117 |
 
 **Battle-tested features (24):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), E2E test framework, Forge integration tests
 
