@@ -43,7 +43,6 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.LengthFieldPrepender;
-import io.netty.handler.timeout.ReadTimeoutHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -55,18 +54,13 @@ import static org.pragmatica.consensus.net.netty.NettyClusterNetwork.ViewChangeO
 public class NettyClusterNetwork implements ClusterNetwork {
     private static final Logger log = LoggerFactory.getLogger(NettyClusterNetwork.class);
     private static final double SCALE = 0.3d;
-    /// Read timeout for detecting zombie TCP channels. If no data is received within this period,
-    /// the channel is closed. All peers are pinged every ~1 second, so 10 seconds provides ample margin
-    /// while enabling fast recovery after network partitions.
-    private static final int READ_TIMEOUT_SECONDS = 10;
-
     private static final int LENGTH_FIELD_LEN = 4;
     private static final int INITIAL_BYTES_TO_STRIP = LENGTH_FIELD_LEN;
 
     /// Minimum age (in nanos) a channel must have before DisconnectNode can remove it.
     /// Channels younger than this are considered fresh reconnections that should survive
-    /// SWIM's delayed FAULTY detection. Set to ReadTimeout + SWIM probe interval margin.
-    private static final long CHANNEL_PROTECTION_NANOS = java.time.Duration.ofSeconds(READ_TIMEOUT_SECONDS + 5).toNanos();
+    /// SWIM's delayed FAULTY detection.
+    private static final long CHANNEL_PROTECTION_NANOS = java.time.Duration.ofSeconds(15).toNanos();
 
     private final NodeInfo self;
     private final Map<NodeId, Channel> peerLinks = new ConcurrentHashMap<>();
@@ -105,7 +99,6 @@ public class NettyClusterNetwork implements ClusterNetwork {
         this.router = router;
         this.handlers = () -> {
             var result = new ArrayList<ChannelHandler>();
-            result.add(new ReadTimeoutHandler(READ_TIMEOUT_SECONDS));
             result.add(new LengthFieldBasedFrameDecoder(1048576, 0, LENGTH_FIELD_LEN, 0, INITIAL_BYTES_TO_STRIP));
             result.add(new LengthFieldPrepender(LENGTH_FIELD_LEN));
             result.add(new Decoder(deserializer));
@@ -349,9 +342,8 @@ public class NettyClusterNetwork implements ClusterNetwork {
             return;
         }
         // Protect fresh channels from SWIM's delayed FAULTY detection.
-        // After a partition heals, ReadTimeoutHandler (10s) clears the zombie and reconcile
-        // establishes a new connection. SWIM's FAULTY arrives ~11.5s after partition start,
-        // which may overlap with the fresh connection. Channels younger than the protection
+        // After a partition heals, the node reconnects. SWIM's FAULTY detection may arrive
+        // after the fresh connection is established. Channels younger than the protection
         // window are guaranteed to be post-partition reconnections, not zombies.
         var establishedAt = channelEstablishedAt.getOrDefault(nodeId, 0L);
         var channelAge = System.nanoTime() - establishedAt;
