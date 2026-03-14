@@ -184,6 +184,61 @@ class NamespacedReplicatedMapTest {
         }
     }
 
+    @Nested
+    class NotificationOrdering {
+        @Test
+        void put_rapidSequentialWrites_notificationsPreserveWriteOrder() {
+            var recorder = new RecordingSubscription();
+            map.subscribe(recorder);
+
+            map.put("state", "LOAD").await();
+            map.put("state", "LOADING").await();
+            map.put("state", "LOADED").await();
+            map.put("state", "ACTIVATE").await();
+            map.put("state", "ACTIVATING").await();
+            map.put("state", "ACTIVE").await();
+
+            assertThat(recorder.puts).containsExactly(
+                "state=LOAD",
+                "state=LOADING",
+                "state=LOADED",
+                "state=ACTIVATE",
+                "state=ACTIVATING",
+                "state=ACTIVE"
+            );
+        }
+
+        @Test
+        void put_rapidSequentialWrites_cacheReflectsFinalValue() {
+            map.put("state", "LOAD").await();
+            map.put("state", "LOADING").await();
+            map.put("state", "LOADED").await();
+            map.put("state", "ACTIVATE").await();
+            map.put("state", "ACTIVE").await();
+
+            var entries = collectEntries();
+
+            assertThat(entries).containsExactly("state=ACTIVE");
+        }
+
+        @Test
+        void put_chainedWrites_notificationsInCausalOrder() {
+            var recorder = new RecordingSubscription();
+            map.subscribe(recorder);
+
+            map.put("key", "first")
+               .flatMap(_ -> map.put("key", "second"))
+               .flatMap(_ -> map.put("key", "third"))
+               .await();
+
+            assertThat(recorder.puts).containsExactly(
+                "key=first",
+                "key=second",
+                "key=third"
+            );
+        }
+    }
+
     // --- Helpers ---
 
     private List<String> collectEntries() {
