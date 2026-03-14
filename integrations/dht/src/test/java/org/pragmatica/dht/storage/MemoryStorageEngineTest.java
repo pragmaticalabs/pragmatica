@@ -19,8 +19,12 @@ package org.pragmatica.dht.storage;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.dht.ConsistentHashRing;
+import org.pragmatica.dht.DHTMessage;
 
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -87,10 +91,13 @@ class MemoryStorageEngineTest {
         }
 
         @Test
-        void put_unversioned_alwaysWins() {
-            engine.putVersioned(key("k1"), value("v1"), Long.MAX_VALUE - 1).await();
+        void put_unversioned_usesVersionZero_canBeOverwrittenByVersionedWrite() {
+            engine.put(key("k1"), value("v1")).await();
 
-            engine.put(key("k1"), value("v2")).await();
+            engine.putVersioned(key("k1"), value("v2"), 1L)
+                  .await()
+                  .onFailure(c -> fail("Expected success: " + c.message()))
+                  .onSuccess(written -> assertThat(written).isTrue());
 
             engine.get(key("k1"))
                   .await()
@@ -109,6 +116,101 @@ class MemoryStorageEngineTest {
                   .await()
                   .onFailure(c -> fail("Expected success: " + c.message()))
                   .onSuccess(opt -> opt.onPresent(v -> assertThat(v).isEqualTo(value("v2")))
+                                       .onEmpty(() -> fail("Expected value to be present")));
+        }
+    }
+
+    @Nested
+    class MigrationVersionAwareness {
+        @Test
+        void putVersioned_afterUnversionedPut_canOverwrite() {
+            engine.put(key("mk1"), value("original")).await();
+
+            engine.putVersioned(key("mk1"), value("updated"), 5L)
+                  .await()
+                  .onFailure(c -> fail("Expected success: " + c.message()))
+                  .onSuccess(written -> assertThat(written).isTrue());
+
+            engine.get(key("mk1"))
+                  .await()
+                  .onFailure(c -> fail("Expected success: " + c.message()))
+                  .onSuccess(opt -> opt.onPresent(v -> assertThat(v).isEqualTo(value("updated")))
+                                       .onEmpty(() -> fail("Expected value to be present")));
+        }
+
+        @Test
+        void putVersioned_afterMigrationData_notPoisoned() {
+            // Simulate migration: unversioned put (uses version 0 internally)
+            engine.put(key("migrated-key"), value("migrated-value")).await();
+
+            // Subsequent versioned write with version > 0 must succeed
+            engine.putVersioned(key("migrated-key"), value("new-value"), 1L)
+                  .await()
+                  .onFailure(c -> fail("Expected success: " + c.message()))
+                  .onSuccess(written -> assertThat(written).isTrue());
+
+            engine.get(key("migrated-key"))
+                  .await()
+                  .onFailure(c -> fail("Expected success: " + c.message()))
+                  .onSuccess(opt -> opt.onPresent(v -> assertThat(v).isEqualTo(value("new-value")))
+                                       .onEmpty(() -> fail("Expected value to be present")));
+        }
+
+        @Test
+        void entriesForPartition_includesVersionInKeyValue() {
+            var ring = ConsistentHashRing.<NodeId>consistentHashRing();
+            var nodeId = new NodeId("test-node");
+            ring.addNode(nodeId);
+
+            engine.putVersioned(key("partition-key"), value("pv1"), 42L).await();
+
+            var partition = ring.partitionFor(key("partition-key"));
+
+            engine.entriesForPartition(ring, partition)
+                  .await()
+                  .onFailure(c -> fail("Expected success: " + c.message()))
+                  .onSuccess(entries -> assertThat(entries).isNotEmpty()
+                                                           .first()
+                                                           .extracting(DHTMessage.KeyValue::version)
+                                                           .isEqualTo(42L));
+        }
+
+        @Test
+        void entries_includesVersionInKeyValue() {
+            engine.putVersioned(key("versioned-entry"), value("ve1"), 99L).await();
+
+            engine.entries()
+                  .await()
+                  .onFailure(c -> fail("Expected success: " + c.message()))
+                  .onSuccess(entries -> assertThat(entries).hasSize(1)
+                                                           .first()
+                                                           .extracting(DHTMessage.KeyValue::version)
+                                                           .isEqualTo(99L));
+        }
+    }
+
+    @Nested
+    class ConcurrentVersionedWrites {
+        @Test
+        void putVersioned_concurrentWritesDifferentVersions_highestVersionWins() throws InterruptedException {
+            var threads = new CopyOnWriteArrayList<Thread>();
+
+            for (int i = 0; i < 8; i++) {
+                var version = (long) (i + 1) * 100;
+                var val = value("value-" + version);
+                threads.add(Thread.ofVirtual().start(() ->
+                    engine.putVersioned(key("concurrent-key"), val, version).await()
+                ));
+            }
+
+            for (var thread : threads) {
+                thread.join();
+            }
+
+            engine.get(key("concurrent-key"))
+                  .await()
+                  .onFailure(c -> fail("Expected success: " + c.message()))
+                  .onSuccess(opt -> opt.onPresent(v -> assertThat(v).isEqualTo(value("value-800")))
                                        .onEmpty(() -> fail("Expected value to be present")));
         }
     }
