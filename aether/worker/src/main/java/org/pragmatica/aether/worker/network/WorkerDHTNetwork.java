@@ -48,8 +48,12 @@ public final class WorkerDHTNetwork implements DHTNetwork {
     /// Create a simple intra-community-only DHT network (backward compat).
     public static WorkerDHTNetwork workerDHTNetwork(DelegateRouter delegateRouter,
                                                     Supplier<Set<NodeId>> connectedPeersSupplier) {
-        return new WorkerDHTNetwork(delegateRouter, connectedPeersSupplier,
-                                    Option.empty(), Map.of(), Option.empty(), () -> "");
+        return new WorkerDHTNetwork(delegateRouter,
+                                    connectedPeersSupplier,
+                                    Option.empty(),
+                                    Map.of(),
+                                    Option.empty(),
+                                    () -> "");
     }
 
     /// Create a cross-community-aware DHT network with governor mesh relay.

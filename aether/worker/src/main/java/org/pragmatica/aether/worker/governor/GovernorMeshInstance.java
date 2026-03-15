@@ -76,7 +76,7 @@ final class GovernorMeshInstance implements GovernorMesh {
             return;
         }
         delegateRouter.onPresent(router -> parseTcpAddress(tcpAddress)
-            .onPresent(addr -> registerInTopology(router, governorId, addr)));
+        .onPresent(addr -> registerInTopology(router, governorId, addr)));
     }
 
     private static void registerInTopology(DelegateRouter router, NodeId governorId, NodeAddress addr) {

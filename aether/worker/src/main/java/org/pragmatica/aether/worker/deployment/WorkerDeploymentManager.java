@@ -1,16 +1,17 @@
 package org.pragmatica.aether.worker.deployment;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.dht.AetherMaps;
-import org.pragmatica.aether.dht.ReplicatedMap;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
-import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue;
+import org.pragmatica.aether.worker.mutation.MutationForwarder;
+import org.pragmatica.aether.worker.mutation.WorkerMutation;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -19,7 +20,7 @@ import org.pragmatica.lang.Unit;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -67,25 +68,25 @@ public sealed interface WorkerDeploymentManager {
     /// Create an active WorkerDeploymentManager with community identity supplier.
     static WorkerDeploymentManager workerDeploymentManager(NodeId self,
                                                            SliceStore sliceStore,
-                                                           AetherMaps aetherMaps,
+                                                           MutationForwarder mutationForwarder,
                                                            List<NodeId> initialMembers,
                                                            Supplier<String> communityIdSupplier) {
         return new ActiveWorkerDeploymentManager(self,
                                                  sliceStore,
-                                                 aetherMaps.endpoints(),
-                                                 aetherMaps.sliceNodes(),
+                                                 mutationForwarder,
                                                  new ConcurrentHashMap<>(),
                                                  new ConcurrentHashMap<>(),
                                                  new AtomicReference<>(List.copyOf(initialMembers)),
+                                                 new AtomicLong(0),
                                                  communityIdSupplier);
     }
 
     /// Create an active WorkerDeploymentManager with default community identity.
     static WorkerDeploymentManager workerDeploymentManager(NodeId self,
                                                            SliceStore sliceStore,
-                                                           AetherMaps aetherMaps,
+                                                           MutationForwarder mutationForwarder,
                                                            List<NodeId> initialMembers) {
-        return workerDeploymentManager(self, sliceStore, aetherMaps, initialMembers, () -> "default:local");
+        return workerDeploymentManager(self, sliceStore, mutationForwarder, initialMembers, () -> "default:local");
     }
 }
 
@@ -96,28 +97,28 @@ final class ActiveWorkerDeploymentManager implements WorkerDeploymentManager {
 
     private final NodeId self;
     private final SliceStore sliceStore;
-    private final ReplicatedMap<EndpointKey, EndpointValue> endpointMap;
-    private final ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap;
+    private final MutationForwarder mutationForwarder;
     private final ConcurrentHashMap<Artifact, WorkerSliceDeployment> deployments;
     private final ConcurrentHashMap<Artifact, WorkerSliceDirectiveValue> directives;
     private final AtomicReference<List<NodeId>> aliveMembers;
+    private final AtomicLong correlationCounter;
     private final Supplier<String> communityIdSupplier;
 
     ActiveWorkerDeploymentManager(NodeId self,
                                   SliceStore sliceStore,
-                                  ReplicatedMap<EndpointKey, EndpointValue> endpointMap,
-                                  ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap,
+                                  MutationForwarder mutationForwarder,
                                   ConcurrentHashMap<Artifact, WorkerSliceDeployment> deployments,
                                   ConcurrentHashMap<Artifact, WorkerSliceDirectiveValue> directives,
                                   AtomicReference<List<NodeId>> aliveMembers,
+                                  AtomicLong correlationCounter,
                                   Supplier<String> communityIdSupplier) {
         this.self = self;
         this.sliceStore = sliceStore;
-        this.endpointMap = endpointMap;
-        this.sliceNodeMap = sliceNodeMap;
+        this.mutationForwarder = mutationForwarder;
         this.deployments = deployments;
         this.directives = directives;
         this.aliveMembers = aliveMembers;
+        this.correlationCounter = correlationCounter;
         this.communityIdSupplier = communityIdSupplier;
     }
 
@@ -192,36 +193,40 @@ final class ActiveWorkerDeploymentManager implements WorkerDeploymentManager {
 
     private void loadAndActivateSlice(Artifact artifact) {
         var sliceKey = new SliceNodeKey(artifact, self);
-        updateSliceState(sliceKey, SliceState.LOADING).flatMap(_ -> sliceStore.loadSlice(artifact))
-                        .flatMap(_ -> transitionToLoaded(artifact, sliceKey))
-                        .flatMap(_ -> sliceStore.activateSlice(artifact))
-                        .flatMap(_ -> transitionToActive(artifact, sliceKey))
-                        .flatMap(_ -> publishEndpoints(artifact))
-                        .onSuccess(_ -> log.info("Slice {} fully deployed and active on worker {}",
-                                                 artifact,
-                                                 self.id()))
-                        .onFailure(cause -> handleDeploymentFailure(artifact, sliceKey, cause));
+        forwardSliceStateUpdate(sliceKey, SliceState.LOADING);
+        sliceStore.loadSlice(artifact)
+                  .flatMap(_ -> transitionToLoaded(artifact, sliceKey))
+                  .flatMap(_ -> sliceStore.activateSlice(artifact))
+                  .flatMap(_ -> transitionToActive(artifact, sliceKey))
+                  .flatMap(_ -> publishEndpoints(artifact))
+                  .onSuccess(_ -> log.info("Slice {} fully deployed and active on worker {}",
+                                           artifact,
+                                           self.id()))
+                  .onFailure(cause -> handleDeploymentFailure(artifact, sliceKey, cause));
     }
 
     private Promise<Unit> transitionToLoaded(Artifact artifact, SliceNodeKey sliceKey) {
         updateDeploymentState(artifact, DeploymentState.LOADED);
-        return updateSliceState(sliceKey, SliceState.LOADED).flatMap(_ -> transitionToActivating(artifact, sliceKey));
+        forwardSliceStateUpdate(sliceKey, SliceState.LOADED);
+        return transitionToActivating(artifact, sliceKey);
     }
 
     private Promise<Unit> transitionToActivating(Artifact artifact, SliceNodeKey sliceKey) {
         updateDeploymentState(artifact, DeploymentState.ACTIVATING);
-        return updateSliceState(sliceKey, SliceState.ACTIVATING);
+        forwardSliceStateUpdate(sliceKey, SliceState.ACTIVATING);
+        return Promise.unitPromise();
     }
 
     private Promise<Unit> transitionToActive(Artifact artifact, SliceNodeKey sliceKey) {
         updateDeploymentState(artifact, DeploymentState.ACTIVE);
-        return updateSliceState(sliceKey, SliceState.ACTIVE);
+        forwardSliceStateUpdate(sliceKey, SliceState.ACTIVE);
+        return Promise.unitPromise();
     }
 
     private void handleDeploymentFailure(Artifact artifact, SliceNodeKey sliceKey, Cause cause) {
         log.error("Failed to deploy slice {} on worker {}: {}", artifact, self.id(), cause.message());
         updateDeploymentState(artifact, DeploymentState.FAILED);
-        updateSliceState(sliceKey, SliceState.FAILED);
+        forwardSliceStateUpdate(sliceKey, SliceState.FAILED);
     }
 
     private void teardownSlice(Artifact artifact) {
@@ -229,9 +234,7 @@ final class ActiveWorkerDeploymentManager implements WorkerDeploymentManager {
         log.info("Tearing down slice {} on worker {}", artifact, self.id());
         unpublishEndpoints(artifact).flatMap(_ -> sliceStore.deactivateSlice(artifact))
                           .flatMap(_ -> sliceStore.unloadSlice(artifact))
-                          .flatMap(_ -> updateSliceState(sliceKey, SliceState.UNLOAD))
-                          .flatMap(_ -> sliceNodeMap.remove(sliceKey)
-                                                    .mapToUnit())
+                          .onSuccess(_ -> forwardSliceRemoval(sliceKey))
                           .onSuccess(_ -> log.info("Slice {} torn down on worker {}",
                                                    artifact,
                                                    self.id()))
@@ -249,25 +252,20 @@ final class ActiveWorkerDeploymentManager implements WorkerDeploymentManager {
 
     private Promise<Unit> publishEndpointsForSlice(Artifact artifact, Slice slice) {
         var methods = slice.methods();
-        int instanceNumber = Math.abs(self.id()
-                                          .hashCode());
-        var puts = methods.stream()
-                          .map(method -> endpointMap.put(new EndpointKey(artifact,
-                                                                         method.name(),
-                                                                         instanceNumber),
-                                                         new EndpointValue(self)))
-                          .toList();
-        if (puts.isEmpty()) {
+        if (methods.isEmpty()) {
             return Promise.unitPromise();
         }
-        return Promise.allOf(puts)
-                      .mapToUnit()
-                      .onSuccess(_ -> log.debug("Published {} endpoints for slice {} on worker",
-                                                methods.size(),
-                                                artifact))
-                      .onFailure(cause -> log.error("Failed to publish endpoints for {} on worker: {}",
-                                                    artifact,
-                                                    cause.message()));
+        int instanceNumber = Math.abs(self.id()
+                                          .hashCode());
+        var methodNames = methods.stream()
+                                 .map(m -> m.name()
+                                            .name())
+                                 .toList();
+        var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, artifact);
+        var nodeArtifactValue = NodeArtifactValue.activeNodeArtifactValue(instanceNumber, methodNames);
+        forwardPut(nodeArtifactKey, nodeArtifactValue, "publish-endpoints-" + artifact);
+        log.debug("Published {} endpoints for slice {} on worker", methods.size(), artifact);
+        return Promise.unitPromise();
     }
 
     private Promise<Unit> unpublishEndpoints(Artifact artifact) {
@@ -278,27 +276,46 @@ final class ActiveWorkerDeploymentManager implements WorkerDeploymentManager {
 
     private Promise<Unit> unpublishEndpointsForSlice(Artifact artifact, Slice slice) {
         var methods = slice.methods();
-        int instanceNumber = Math.abs(self.id()
-                                          .hashCode());
-        var removes = methods.stream()
-                             .map(method -> endpointMap.remove(new EndpointKey(artifact,
-                                                                               method.name(),
-                                                                               instanceNumber))
-                                                       .mapToUnit())
-                             .toList();
-        if (removes.isEmpty()) {
+        if (methods.isEmpty()) {
             return Promise.unitPromise();
         }
-        return Promise.allOf(removes)
-                      .mapToUnit();
+        // Write NodeArtifactKey with empty methods to clear endpoint info
+        var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, artifact);
+        var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
+        forwardPut(nodeArtifactKey, nodeArtifactValue, "unpublish-endpoints-" + artifact);
+        return Promise.unitPromise();
     }
 
-    private Promise<Unit> updateSliceState(SliceNodeKey sliceKey, SliceState state) {
-        var value = SliceNodeValue.sliceNodeValue(state);
-        return sliceNodeMap.put(sliceKey, value)
-                           .onFailure(cause -> log.error("Failed to update slice state for {}: {}",
-                                                         sliceKey,
-                                                         cause.message()));
+    /// Forward NodeArtifactKey state update via MutationForwarder.
+    private void forwardSliceStateUpdate(SliceNodeKey sliceKey, SliceState state) {
+        var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, sliceKey.artifact());
+        var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(state);
+        var correlationId = nextCorrelationId("state-" + state.name()
+                                                             .toLowerCase());
+        forwardPut(nodeArtifactKey, nodeArtifactValue, correlationId);
+    }
+
+    /// Forward removal of NodeArtifactKey via MutationForwarder.
+    private void forwardSliceRemoval(SliceNodeKey sliceKey) {
+        var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, sliceKey.artifact());
+        var correlationId = nextCorrelationId("remove");
+        forwardRemove(nodeArtifactKey, correlationId);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <K extends AetherKey> void forwardPut(K key, Object value, String correlationId) {
+        KVCommand<AetherKey> command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
+        mutationForwarder.forward(WorkerMutation.workerMutation(self, correlationId, command));
+    }
+
+    @SuppressWarnings("unchecked")
+    private <K extends AetherKey> void forwardRemove(K key, String correlationId) {
+        KVCommand<AetherKey> command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
+        mutationForwarder.forward(WorkerMutation.workerMutation(self, correlationId, command));
+    }
+
+    private String nextCorrelationId(String context) {
+        return "wdm-" + self.id() + "-" + correlationCounter.incrementAndGet() + "-" + context;
     }
 
     private void updateDeploymentState(Artifact artifact, DeploymentState state) {

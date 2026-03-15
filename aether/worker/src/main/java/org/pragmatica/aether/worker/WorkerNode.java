@@ -150,11 +150,7 @@ public interface WorkerNode {
         var coreNodes = parseCoreNodes(config, nodeId);
         var topologyConfig = createTopologyConfig(nodeId, coreNodes);
         return PassiveNode.<AetherKey, AetherValue> passiveNode(topologyConfig, serializer, deserializer)
-                          .map(passiveNode -> assembleNode(config,
-                                                           nodeId,
-                                                           passiveNode,
-                                                           serializer,
-                                                           deserializer));
+                          .map(passiveNode -> assembleNode(config, nodeId, passiveNode, serializer, deserializer));
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -681,7 +677,8 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
         if (!isGovernor()) {
             var pong = collectLocalMetrics();
             passiveNode.delegateRouter()
-                       .route(new NetworkServiceMessage.Send(ping.sender(), pong));
+                       .route(new NetworkServiceMessage.Send(ping.sender(),
+                                                             pong));
         }
     }
 
@@ -700,9 +697,11 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
     }
 
     private void handleDHTRelay(DHTRelayMessage relay) {
-        if (!relay.actualTarget().equals(nodeId)) {
+        if (!relay.actualTarget()
+                  .equals(nodeId)) {
             passiveNode.delegateRouter()
-                       .route(new NetworkServiceMessage.Send(relay.actualTarget(), relay));
+                       .route(new NetworkServiceMessage.Send(relay.actualTarget(),
+                                                             relay));
             return;
         }
         Object dhtMessage = deserializer.decode(relay.serializedPayload());

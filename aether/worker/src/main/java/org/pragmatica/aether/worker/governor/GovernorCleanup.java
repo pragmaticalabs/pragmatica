@@ -1,10 +1,11 @@
 package org.pragmatica.aether.worker.governor;
 
-import org.pragmatica.aether.dht.AetherMaps;
-import org.pragmatica.aether.dht.ReplicatedMap;
-import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
+import org.pragmatica.aether.worker.mutation.MutationForwarder;
+import org.pragmatica.aether.worker.mutation.WorkerMutation;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.DHTNode;
@@ -17,89 +18,74 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/// Cleans up DHT entries for departed worker nodes.
+/// Cleans up KV-Store entries for departed worker nodes.
 /// Called by the governor when SWIM detects FAULTY or LEFT members.
 ///
 /// Maintains an index of node-to-key mappings for efficient cleanup.
+/// Tracks NodeArtifactKey and NodeRoutesKey for forwarding removes via consensus.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-STY-05"})
 public final class GovernorCleanup {
     private static final Logger log = LoggerFactory.getLogger(GovernorCleanup.class);
 
-    private static final String ENDPOINTS_PREFIX = "endpoints/";
-    private static final String SLICE_NODES_PREFIX = "slice-nodes/";
-    private static final String HTTP_ROUTES_PREFIX = "http-routes/";
+    private static final String NODE_ARTIFACT_PREFIX = "node-artifact/";
+    private static final String NODE_ROUTES_PREFIX = "node-routes/";
 
-    private final AetherMaps aetherMaps;
-    private final Map<NodeId, Set<EndpointKey>> endpointIndex;
-    private final Map<NodeId, Set<SliceNodeKey>> sliceNodeIndex;
-    private final Map<NodeId, Set<HttpNodeRouteKey>> httpRouteIndex;
+    private final MutationForwarder mutationForwarder;
+    private final Map<NodeId, Set<NodeArtifactKey>> nodeArtifactIndex;
+    private final Map<NodeId, Set<NodeRoutesKey>> nodeRoutesIndex;
+    private final AtomicLong correlationCounter;
 
-    private GovernorCleanup(AetherMaps aetherMaps) {
-        this.aetherMaps = aetherMaps;
-        this.endpointIndex = new ConcurrentHashMap<>();
-        this.sliceNodeIndex = new ConcurrentHashMap<>();
-        this.httpRouteIndex = new ConcurrentHashMap<>();
+    private GovernorCleanup(MutationForwarder mutationForwarder) {
+        this.mutationForwarder = mutationForwarder;
+        this.nodeArtifactIndex = new ConcurrentHashMap<>();
+        this.nodeRoutesIndex = new ConcurrentHashMap<>();
+        this.correlationCounter = new AtomicLong(0);
     }
 
-    public static GovernorCleanup governorCleanup(AetherMaps aetherMaps) {
-        return new GovernorCleanup(aetherMaps);
+    public static GovernorCleanup governorCleanup(MutationForwarder mutationForwarder) {
+        return new GovernorCleanup(mutationForwarder);
     }
 
-    /// Track an endpoint published by a node.
-    public void trackEndpoint(NodeId nodeId, EndpointKey key) {
-        endpointIndex.computeIfAbsent(nodeId,
-                                      _ -> ConcurrentHashMap.newKeySet())
-                     .add(key);
+    /// Track a node-artifact entry for a node.
+    public void trackNodeArtifact(NodeId nodeId, NodeArtifactKey key) {
+        nodeArtifactIndex.computeIfAbsent(nodeId,
+                                          _ -> ConcurrentHashMap.newKeySet())
+                         .add(key);
     }
 
-    /// Track a slice-node entry for a node.
-    public void trackSliceNode(NodeId nodeId, SliceNodeKey key) {
-        sliceNodeIndex.computeIfAbsent(nodeId,
-                                       _ -> ConcurrentHashMap.newKeySet())
-                      .add(key);
+    /// Track a node-routes entry for a node.
+    public void trackNodeRoutes(NodeId nodeId, NodeRoutesKey key) {
+        nodeRoutesIndex.computeIfAbsent(nodeId,
+                                        _ -> ConcurrentHashMap.newKeySet())
+                       .add(key);
     }
 
-    /// Track an HTTP route entry for a node.
-    public void trackHttpRoute(NodeId nodeId, HttpNodeRouteKey key) {
-        httpRouteIndex.computeIfAbsent(nodeId,
-                                       _ -> ConcurrentHashMap.newKeySet())
-                      .add(key);
-    }
-
-    /// Untrack an endpoint (e.g., on explicit removal).
-    public void untrackEndpoint(NodeId nodeId, EndpointKey key) {
-        var keys = endpointIndex.get(nodeId);
+    /// Untrack a node-artifact entry.
+    public void untrackNodeArtifact(NodeId nodeId, NodeArtifactKey key) {
+        var keys = nodeArtifactIndex.get(nodeId);
         if (keys != null) {
             keys.remove(key);
         }
     }
 
-    /// Untrack a slice-node entry.
-    public void untrackSliceNode(NodeId nodeId, SliceNodeKey key) {
-        var keys = sliceNodeIndex.get(nodeId);
+    /// Untrack a node-routes entry.
+    public void untrackNodeRoutes(NodeId nodeId, NodeRoutesKey key) {
+        var keys = nodeRoutesIndex.get(nodeId);
         if (keys != null) {
             keys.remove(key);
         }
     }
 
-    /// Untrack an HTTP route entry.
-    public void untrackHttpRoute(NodeId nodeId, HttpNodeRouteKey key) {
-        var keys = httpRouteIndex.get(nodeId);
-        if (keys != null) {
-            keys.remove(key);
-        }
-    }
-
-    /// Clean up DHT entries for all nodes not in the alive set.
+    /// Clean up KV entries for all nodes not in the alive set.
     public Promise<Unit> cleanupDeadNodes(Set<NodeId> aliveNodes) {
         var deadNodes = new HashSet<NodeId>();
-        deadNodes.addAll(endpointIndex.keySet());
-        deadNodes.addAll(sliceNodeIndex.keySet());
-        deadNodes.addAll(httpRouteIndex.keySet());
+        deadNodes.addAll(nodeArtifactIndex.keySet());
+        deadNodes.addAll(nodeRoutesIndex.keySet());
         deadNodes.removeAll(aliveNodes);
         if (deadNodes.isEmpty()) {
             log.info("No dead nodes found during reconciliation");
@@ -113,27 +99,23 @@ public final class GovernorCleanup {
         return result;
     }
 
-    /// Clean up all DHT entries for a dead node.
-    /// Removes endpoints, slice-node entries, and HTTP routes.
+    /// Clean up all KV entries for a dead node.
+    /// Forwards NodeArtifactKey and NodeRoutesKey removes via MutationForwarder.
     public Promise<Unit> cleanupDeadNode(NodeId deadNode) {
-        var endpointKeys = List.copyOf(endpointIndex.getOrDefault(deadNode, Set.of()));
-        var sliceNodeKeys = List.copyOf(sliceNodeIndex.getOrDefault(deadNode, Set.of()));
-        var httpRouteKeys = List.copyOf(httpRouteIndex.getOrDefault(deadNode, Set.of()));
-        if (endpointKeys.isEmpty() && sliceNodeKeys.isEmpty() && httpRouteKeys.isEmpty()) {
-            log.debug("No DHT entries to clean up for dead node {}", deadNode);
+        var nodeArtifactKeys = List.copyOf(nodeArtifactIndex.getOrDefault(deadNode, Set.of()));
+        var nodeRoutesKeys = List.copyOf(nodeRoutesIndex.getOrDefault(deadNode, Set.of()));
+        if (nodeArtifactKeys.isEmpty() && nodeRoutesKeys.isEmpty()) {
+            log.debug("No KV entries to clean up for dead node {}", deadNode);
             return Promise.unitPromise();
         }
-        log.info("Cleaning up {} endpoints, {} slice-nodes, {} http-routes for dead node {}",
-                 endpointKeys.size(),
-                 sliceNodeKeys.size(),
-                 httpRouteKeys.size(),
+        log.info("Cleaning up {} node-artifacts, {} node-routes for dead node {}",
+                 nodeArtifactKeys.size(),
+                 nodeRoutesKeys.size(),
                  deadNode);
-        return removeSequentially(aetherMaps.endpoints(),
-                                  endpointKeys).flatMap(_ -> removeSequentially(aetherMaps.sliceNodes(),
-                                                                                sliceNodeKeys))
-                                 .flatMap(_ -> removeSequentially(aetherMaps.httpRoutes(),
-                                                                  httpRouteKeys))
-                                 .onSuccess(_ -> clearIndices(deadNode));
+        forwardRemoveAll(nodeArtifactKeys, deadNode, "node-artifact");
+        forwardRemoveAll(nodeRoutesKeys, deadNode, "node-routes");
+        clearIndices(deadNode);
+        return Promise.unitPromise();
     }
 
     /// Rebuild the cleanup index from DHT storage entries.
@@ -147,16 +129,15 @@ public final class GovernorCleanup {
     }
 
     private void clearAllIndices() {
-        endpointIndex.clear();
-        sliceNodeIndex.clear();
-        httpRouteIndex.clear();
+        nodeArtifactIndex.clear();
+        nodeRoutesIndex.clear();
     }
 
     private int processEntries(List<DHTMessage.KeyValue> entries) {
         var count = 0;
         for (var entry : entries) {
             var keyStr = new String(entry.key(), StandardCharsets.UTF_8);
-            if (tryProcessEndpoint(keyStr, entry.value()) || tryProcessSliceNode(keyStr) || tryProcessHttpRoute(keyStr)) {
+            if (tryProcessNodeArtifact(keyStr) || tryProcessNodeRoutes(keyStr)) {
                 count++;
             }
         }
@@ -164,63 +145,44 @@ public final class GovernorCleanup {
         return count;
     }
 
-    private boolean tryProcessEndpoint(String keyStr, byte[] value) {
-        if (!keyStr.startsWith(ENDPOINTS_PREFIX)) {
+    private boolean tryProcessNodeArtifact(String keyStr) {
+        if (!keyStr.startsWith(NODE_ARTIFACT_PREFIX)) {
             return false;
         }
-        var innerKey = keyStr.substring(ENDPOINTS_PREFIX.length());
-        return EndpointKey.endpointKey(innerKey)
-                          .flatMap(ek -> NodeId.nodeId(new String(value, StandardCharsets.UTF_8))
-                                               .map(nid -> trackEndpointAndReturn(nid, ek)))
-                          .fold(_ -> false, _ -> true);
+        return NodeArtifactKey.nodeArtifactKey(keyStr)
+                              .fold(_ -> false, this::trackAndReturnNodeArtifact);
     }
 
-    private NodeId trackEndpointAndReturn(NodeId nid, EndpointKey ek) {
-        trackEndpoint(nid, ek);
-        return nid;
-    }
-
-    private boolean tryProcessSliceNode(String keyStr) {
-        if (!keyStr.startsWith(SLICE_NODES_PREFIX)) {
-            return false;
-        }
-        var innerKey = keyStr.substring(SLICE_NODES_PREFIX.length());
-        return SliceNodeKey.sliceNodeKey(innerKey)
-                           .fold(_ -> false, this::trackAndReturnSliceNode);
-    }
-
-    private boolean trackAndReturnSliceNode(SliceNodeKey snk) {
-        trackSliceNode(snk.nodeId(), snk);
+    private boolean trackAndReturnNodeArtifact(NodeArtifactKey nak) {
+        trackNodeArtifact(nak.nodeId(), nak);
         return true;
     }
 
-    private boolean tryProcessHttpRoute(String keyStr) {
-        if (!keyStr.startsWith(HTTP_ROUTES_PREFIX)) {
+    private boolean tryProcessNodeRoutes(String keyStr) {
+        if (!keyStr.startsWith(NODE_ROUTES_PREFIX)) {
             return false;
         }
-        var innerKey = keyStr.substring(HTTP_ROUTES_PREFIX.length());
-        return HttpNodeRouteKey.httpNodeRouteKey(innerKey)
-                               .fold(_ -> false, this::trackAndReturnHttpRoute);
+        return NodeRoutesKey.nodeRoutesKey(keyStr)
+                            .fold(_ -> false, this::trackAndReturnNodeRoutes);
     }
 
-    private boolean trackAndReturnHttpRoute(HttpNodeRouteKey hrk) {
-        trackHttpRoute(hrk.nodeId(), hrk);
+    private boolean trackAndReturnNodeRoutes(NodeRoutesKey nrk) {
+        trackNodeRoutes(nrk.nodeId(), nrk);
         return true;
     }
 
     private void clearIndices(NodeId deadNode) {
-        endpointIndex.remove(deadNode);
-        sliceNodeIndex.remove(deadNode);
-        httpRouteIndex.remove(deadNode);
-        log.info("Completed DHT cleanup for dead node {}", deadNode);
+        nodeArtifactIndex.remove(deadNode);
+        nodeRoutesIndex.remove(deadNode);
+        log.info("Completed KV cleanup for dead node {}", deadNode);
     }
 
-    private static <K> Promise<Unit> removeSequentially(ReplicatedMap<K, ?> map, List<K> keys) {
-        var result = Promise.unitPromise();
+    @SuppressWarnings("unchecked")
+    private <K extends AetherKey> void forwardRemoveAll(List<K> keys, NodeId deadNode, String type) {
         for (var key : keys) {
-            result = result.flatMap(_ -> map.remove(key)
-                                            .mapToUnit());
+            var correlationId = "cleanup-" + deadNode.id() + "-" + type + "-" + correlationCounter.incrementAndGet();
+            KVCommand<AetherKey> command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
+            mutationForwarder.forward(WorkerMutation.workerMutation(deadNode, correlationId, command));
         }
-        return result;
     }
 }
