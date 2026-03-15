@@ -33,6 +33,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
+import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -131,9 +132,19 @@ public final class AetherPassiveLB {
         var serverConfig = HttpServerConfig.httpServerConfig("passive-lb",
                                                              config.httpPort())
                                            .withMaxContentLength(MAX_CONTENT_LENGTH);
-        return HttpServer.httpServer(serverConfig, this::handleRequest)
-                         .onSuccess(server -> httpServer = Option.some(server))
-                         .mapToUnit();
+        var serverBossGroup = passiveNode.network()
+                                         .server()
+                                         .map(org.pragmatica.net.tcp.Server::bossGroup);
+        var serverWorkerGroup = passiveNode.network()
+                                           .server()
+                                           .map(org.pragmatica.net.tcp.Server::workerGroup);
+        var serverPromise = serverBossGroup.flatMap(bg -> serverWorkerGroup.map(wg -> HttpServer.httpServer(serverConfig,
+                                                                                                            this::handleRequest,
+                                                                                                            bg,
+                                                                                                            wg)))
+                                           .or(HttpServer.httpServer(serverConfig, this::handleRequest));
+        return serverPromise.onSuccess(server -> httpServer = Option.some(server))
+                            .mapToUnit();
     }
 
     private Promise<Unit> stopHttpServer() {

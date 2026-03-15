@@ -749,6 +749,13 @@ public interface AetherNode {
                                                                                 nodeCodec,
                                                                                 Option.some(httpRoutePublisher),
                                                                                 Option.some(sliceInvoker));
+        // Extract shared event loop groups from the cluster network's TCP server
+        var serverBossGroup = clusterNode.network()
+                                         .server()
+                                         .map(org.pragmatica.net.tcp.Server::bossGroup);
+        var serverWorkerGroup = clusterNode.network()
+                                           .server()
+                                           .map(org.pragmatica.net.tcp.Server::workerGroup);
         // Create application HTTP server for slice-provided routes (with HTTP forwarding support)
         var appHttpServer = AppHttpServer.appHttpServer(config.appHttp(),
                                                         config.self(),
@@ -758,7 +765,9 @@ public interface AetherNode {
                                                         Option.some(serializer),
                                                         Option.some(deserializer),
                                                         config.tls(),
-                                                        Option.some(invocationMetrics));
+                                                        Option.some(invocationMetrics),
+                                                        serverBossGroup,
+                                                        serverWorkerGroup);
         // DHT subscriptions removed — all control plane state flows through KV-Store notifications
         // Collect all route entries from RabiaNode and AetherNode components
         var aetherEntries = collectRouteEntries(kvStore,
@@ -935,7 +944,9 @@ public interface AetherNode {
                                                                                               scheduledTaskStateRegistry,
                                                                                               config.tls(),
                                                                                               mgmtSecurityValidator,
-                                                                                              mgmtSecurityEnabled);
+                                                                                              mgmtSecurityEnabled,
+                                                                                              serverBossGroup,
+                                                                                              serverWorkerGroup);
                                      return new aetherNode(config,
                                                            delegateRouter,
                                                            kvStore,

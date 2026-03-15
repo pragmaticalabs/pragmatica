@@ -54,6 +54,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
+import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -92,7 +93,9 @@ public interface ManagementServer {
                                              ScheduledTaskStateRegistry scheduledTaskStateRegistry,
                                              Option<TlsConfig> tls,
                                              SecurityValidator securityValidator,
-                                             boolean securityEnabled) {
+                                             boolean securityEnabled,
+                                             Option<EventLoopGroup> bossGroup,
+                                             Option<EventLoopGroup> workerGroup) {
         return new ManagementServerImpl(port,
                                         nodeSupplier,
                                         alertManager,
@@ -106,7 +109,9 @@ public interface ManagementServer {
                                         scheduledTaskStateRegistry,
                                         tls,
                                         securityValidator,
-                                        securityEnabled);
+                                        securityEnabled,
+                                        bossGroup,
+                                        workerGroup);
     }
 }
 
@@ -130,6 +135,8 @@ class ManagementServerImpl implements ManagementServer {
     private final Option<TlsConfig> tls;
     private final SecurityValidator securityValidator;
     private final boolean securityEnabled;
+    private final Option<EventLoopGroup> bossGroup;
+    private final Option<EventLoopGroup> workerGroup;
     private final WebSocketAuthenticator wsAuthenticator;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
 
@@ -158,7 +165,9 @@ class ManagementServerImpl implements ManagementServer {
                          ScheduledTaskStateRegistry scheduledTaskStateRegistry,
                          Option<TlsConfig> tls,
                          SecurityValidator securityValidator,
-                         boolean securityEnabled) {
+                         boolean securityEnabled,
+                         Option<EventLoopGroup> bossGroup,
+                         Option<EventLoopGroup> workerGroup) {
         this.port = port;
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
@@ -167,6 +176,8 @@ class ManagementServerImpl implements ManagementServer {
         this.logLevelRegistry = logLevelRegistry;
         this.securityValidator = securityValidator;
         this.securityEnabled = securityEnabled;
+        this.bossGroup = bossGroup;
+        this.workerGroup = workerGroup;
         this.wsAuthenticator = WebSocketAuthenticator.webSocketAuthenticator(securityValidator, securityEnabled);
         this.metricsPublisher = new DashboardMetricsPublisher(nodeSupplier, alertManager);
         this.statusWsHandler = new StatusWebSocketHandler(wsAuthenticator);
@@ -225,12 +236,16 @@ class ManagementServerImpl implements ManagementServer {
         // Add TLS if configured
         var finalConfig = tls.map(config::withTls)
                              .or(config);
-        return HttpServer.httpServer(finalConfig, this::handleRequest)
-                         .withSuccess(this::onServerStarted)
-                         .mapToUnit()
-                         .onFailure(cause -> log.error("Failed to start management server on port {}: {}",
-                                                       port,
-                                                       cause.message()));
+        var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(finalConfig,
+                                                                                                this::handleRequest,
+                                                                                                bg,
+                                                                                                wg)))
+                                     .or(HttpServer.httpServer(finalConfig, this::handleRequest));
+        return serverPromise.withSuccess(this::onServerStarted)
+                            .mapToUnit()
+                            .onFailure(cause -> log.error("Failed to start management server on port {}: {}",
+                                                          port,
+                                                          cause.message()));
     }
 
     @Override

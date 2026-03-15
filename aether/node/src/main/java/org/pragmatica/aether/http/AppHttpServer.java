@@ -52,6 +52,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -143,7 +144,9 @@ public interface AppHttpServer {
                                        Option<Serializer> serializer,
                                        Option<Deserializer> deserializer,
                                        Option<TlsConfig> tls,
-                                       Option<InvocationMetricsCollector> metricsCollector) {
+                                       Option<InvocationMetricsCollector> metricsCollector,
+                                       Option<EventLoopGroup> bossGroup,
+                                       Option<EventLoopGroup> workerGroup) {
         return new AppHttpServerImpl(config,
                                      selfNodeId,
                                      routeRegistry,
@@ -152,7 +155,9 @@ public interface AppHttpServer {
                                      serializer,
                                      deserializer,
                                      tls,
-                                     metricsCollector);
+                                     metricsCollector,
+                                     bossGroup,
+                                     workerGroup);
     }
 }
 
@@ -171,6 +176,8 @@ class AppHttpServerImpl implements AppHttpServer {
     private final SecurityValidator securityValidator;
     private final Option<TlsConfig> tls;
     private final Option<InvocationMetricsCollector> metricsCollector;
+    private final Option<EventLoopGroup> bossGroup;
+    private final Option<EventLoopGroup> workerGroup;
     private final Option<HttpForwarder> httpForwarder;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
     private final AtomicReference<RouteTable> routeTableRef = new AtomicReference<>(RouteTable.empty());
@@ -184,7 +191,9 @@ class AppHttpServerImpl implements AppHttpServer {
                       Option<Serializer> serializer,
                       Option<Deserializer> deserializer,
                       Option<TlsConfig> tls,
-                      Option<InvocationMetricsCollector> metricsCollector) {
+                      Option<InvocationMetricsCollector> metricsCollector,
+                      Option<EventLoopGroup> bossGroup,
+                      Option<EventLoopGroup> workerGroup) {
         this.config = config;
         this.selfNodeId = selfNodeId;
         this.routeRegistry = routeRegistry;
@@ -197,6 +206,8 @@ class AppHttpServerImpl implements AppHttpServer {
                                  : SecurityValidator.noOpValidator();
         this.tls = tls;
         this.metricsCollector = metricsCollector;
+        this.bossGroup = bossGroup;
+        this.workerGroup = workerGroup;
         this.httpForwarder = buildHttpForwarder(selfNodeId,
                                                 routeRegistry,
                                                 clusterNetwork,
@@ -236,11 +247,15 @@ class AppHttpServerImpl implements AppHttpServer {
         log.info("Starting App HTTP server on port {}", config.port());
         rebuildRouter();
         var serverConfig = buildServerConfig();
-        return HttpServer.httpServer(serverConfig, this::handleRequest)
-                         .map(this::registerStartedServer)
-                         .onFailure(cause -> log.error("Failed to start App HTTP server on port {}: {}",
-                                                       config.port(),
-                                                       cause.message()));
+        var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
+                                                                                                this::handleRequest,
+                                                                                                bg,
+                                                                                                wg)))
+                                     .or(HttpServer.httpServer(serverConfig, this::handleRequest));
+        return serverPromise.map(this::registerStartedServer)
+                            .onFailure(cause -> log.error("Failed to start App HTTP server on port {}: {}",
+                                                          config.port(),
+                                                          cause.message()));
     }
 
     private HttpServerConfig buildServerConfig() {
