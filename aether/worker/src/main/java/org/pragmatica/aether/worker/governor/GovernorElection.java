@@ -12,9 +12,7 @@ import java.util.List;
 ///
 /// Election rule: lowest ALIVE NodeId wins, with sticky incumbent preference.
 /// If the current governor is still ALIVE, it remains governor regardless of ordering.
-public sealed interface GovernorElection {
-    record unused() implements GovernorElection {}
-
+public interface GovernorElection {
     /// Evaluate governor election from the current SWIM membership.
     ///
     /// @param selfId           this node's ID
