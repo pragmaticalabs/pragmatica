@@ -228,7 +228,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
                     completeHead(null, message);
                 }
             }
-            case ReadyForQuery _ -> {
+            case ReadyForQuery readyForQuery -> {
                 seenReadyForQuery = true;
                 if (readyForQueryPendingMessage instanceof ErrorResponse errorResponse) {
                     readyForQueryPendingMessage = null;
