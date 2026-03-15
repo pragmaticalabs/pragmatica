@@ -11,7 +11,6 @@ import static org.pragmatica.lang.Result.success;
 
 /// Raw HTTP response data returned through SliceInvoker.
 ///
-/// Note: The body byte array is defensively copied to ensure immutability.
 ///
 /// @param statusCode HTTP status code (e.g., 200, 404, 500)
 /// @param headers    response headers
@@ -24,20 +23,11 @@ public record HttpResponseData(int statusCode,
     private static final Map<String, String> JSON_HEADERS = Map.of("Content-Type", "application/json; charset=UTF-8");
     private static final Map<String, String> TEXT_HEADERS = Map.of("Content-Type", "text/plain; charset=UTF-8");
 
-    /// Canonical constructor with defensive copy of body.
     public HttpResponseData {
         Objects.requireNonNull(headers, "headers");
-        body = (body == null || body.length == 0)
-               ? EMPTY_BODY
-               : body.clone();
-    }
-
-    /// Defensive copy on access.
-    @Override
-    public byte[] body() {
-        return body.length == 0
-               ? EMPTY_BODY
-               : body.clone();
+        if (body == null || body.length == 0) {
+            body = EMPTY_BODY;
+        }
     }
 
     /// Create validated response with custom headers.
