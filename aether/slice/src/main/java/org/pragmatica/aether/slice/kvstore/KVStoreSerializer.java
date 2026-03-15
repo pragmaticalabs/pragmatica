@@ -1,5 +1,6 @@
 package org.pragmatica.aether.slice.kvstore;
 
+import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
 import org.pragmatica.consensus.NodeId;
@@ -216,7 +217,8 @@ public final class KVStoreSerializer {
 
     private static String serializeScheduledTask(ScheduledTaskValue v) {
         return v.registeredBy()
-                .id() + PIPE + v.interval() + PIPE + v.cron() + PIPE + v.leaderOnly() + PIPE + v.paused();
+                .id() + PIPE + v.interval() + PIPE + v.cron() + PIPE + v.executionMode()
+                                                                       .name() + PIPE + v.paused();
     }
 
     private static String serializeScheduledTaskState(ScheduledTaskStateValue v) {
@@ -540,7 +542,7 @@ public final class KVStoreSerializer {
                                                   .map(nodeId -> new ScheduledTaskValue(nodeId,
                                                                                         parts[1],
                                                                                         parts[2],
-                                                                                        Boolean.parseBoolean(parts[3]),
+                                                                                        ExecutionMode.valueOf(parts[3]),
                                                                                         paused))
                                                   .map(val -> entry(key, val)));
     }

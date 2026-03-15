@@ -635,8 +635,8 @@ public interface NodeDeploymentManager {
                 var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
                 var value = config.interval()
                                   .isEmpty()
-                            ? ScheduledTaskValue.cronTask(self, config.cron(), config.leaderOnly())
-                            : ScheduledTaskValue.intervalTask(self, config.interval(), config.leaderOnly());
+                            ? ScheduledTaskValue.cronTask(self, config.cron(), config.executionMode())
+                            : ScheduledTaskValue.intervalTask(self, config.interval(), config.executionMode());
                 return new KVCommand.Put<>(key, value);
             }
 

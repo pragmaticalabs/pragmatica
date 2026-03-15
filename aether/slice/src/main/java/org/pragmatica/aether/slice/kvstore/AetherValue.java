@@ -3,6 +3,7 @@ package org.pragmatica.aether.slice.kvstore;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -181,25 +182,27 @@ public sealed interface AetherValue {
     /// @param registeredBy the node that registered this scheduled task
     /// @param interval fixed-rate interval in TimeSpan format (e.g., "5m", "30s"); empty string if cron mode
     /// @param cron standard 5-field cron expression; empty string if interval mode
-    /// @param leaderOnly whether only the leader node triggers this task
+    /// @param executionMode how the task fires across the cluster (SINGLE or ALL)
     record ScheduledTaskValue(NodeId registeredBy,
                               String interval,
                               String cron,
-                              boolean leaderOnly,
+                              ExecutionMode executionMode,
                               boolean paused) implements AetherValue {
         /// Creates a scheduled task value with interval-based scheduling.
-        public static ScheduledTaskValue intervalTask(NodeId registeredBy, String interval, boolean leaderOnly) {
-            return new ScheduledTaskValue(registeredBy, interval, "", leaderOnly, false);
+        public static ScheduledTaskValue intervalTask(NodeId registeredBy,
+                                                      String interval,
+                                                      ExecutionMode executionMode) {
+            return new ScheduledTaskValue(registeredBy, interval, "", executionMode, false);
         }
 
         /// Creates a scheduled task value with cron-based scheduling.
-        public static ScheduledTaskValue cronTask(NodeId registeredBy, String cron, boolean leaderOnly) {
-            return new ScheduledTaskValue(registeredBy, "", cron, leaderOnly, false);
+        public static ScheduledTaskValue cronTask(NodeId registeredBy, String cron, ExecutionMode executionMode) {
+            return new ScheduledTaskValue(registeredBy, "", cron, executionMode, false);
         }
 
         /// Returns a copy with the paused state changed.
         public ScheduledTaskValue withPaused(boolean paused) {
-            return new ScheduledTaskValue(registeredBy, interval, cron, leaderOnly, paused);
+            return new ScheduledTaskValue(registeredBy, interval, cron, executionMode, paused);
         }
 
         /// Returns true if this is an interval-based schedule.

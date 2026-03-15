@@ -1,6 +1,7 @@
 package org.pragmatica.aether.invoke;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
@@ -36,8 +37,8 @@ public interface ScheduledTaskRegistry {
     /// All registered scheduled tasks.
     List<ScheduledTask> allTasks();
 
-    /// Tasks that should run only on the leader node.
-    List<ScheduledTask> leaderOnlyTasks();
+    /// Tasks that use SINGLE execution mode (leader-only).
+    List<ScheduledTask> singleModeTasks();
 
     /// Tasks registered by a specific node (for local-only execution).
     List<ScheduledTask> localTasks(NodeId self);
@@ -54,7 +55,7 @@ public interface ScheduledTaskRegistry {
                          NodeId registeredBy,
                          String interval,
                          String cron,
-                         boolean leaderOnly,
+                         ExecutionMode executionMode,
                          boolean paused) {
         public boolean isInterval() {
             return ! interval.isEmpty();
@@ -85,7 +86,7 @@ public interface ScheduledTaskRegistry {
                                              value.registeredBy(),
                                              value.interval(),
                                              value.cron(),
-                                             value.leaderOnly(),
+                                             value.executionMode(),
                                              value.paused());
                 var previous = tasks.put(key, task);
                 log.debug("Registered scheduled task: {}", task);
@@ -112,10 +113,10 @@ public interface ScheduledTaskRegistry {
             }
 
             @Override
-            public List<ScheduledTask> leaderOnlyTasks() {
+            public List<ScheduledTask> singleModeTasks() {
                 return tasks.values()
                             .stream()
-                            .filter(ScheduledTask::leaderOnly)
+                            .filter(task -> task.executionMode() == ExecutionMode.SINGLE)
                             .toList();
             }
 
@@ -142,7 +143,7 @@ public interface ScheduledTaskRegistry {
 
             private boolean scheduleChanged(ScheduledTask previous, ScheduledTask current) {
                 return ! Objects.equals(previous.interval(), current.interval()) || !Objects.equals(previous.cron(),
-                                                                                                    current.cron()) || previous.leaderOnly() != current.leaderOnly() || previous.paused() != current.paused();
+                                                                                                    current.cron()) || previous.executionMode() != current.executionMode() || previous.paused() != current.paused();
             }
 
             private void notifyListener(ScheduledTaskKey key, Option<ScheduledTask> task) {

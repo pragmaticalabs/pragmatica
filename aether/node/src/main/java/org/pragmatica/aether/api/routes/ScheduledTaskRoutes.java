@@ -5,6 +5,7 @@ import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
 import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
 import org.pragmatica.aether.invoke.SliceInvoker;
+import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -60,7 +61,7 @@ public final class ScheduledTaskRoutes implements RouteSource {
                        String method,
                        String interval,
                        String cron,
-                       boolean leaderOnly,
+                       ExecutionMode executionMode,
                        boolean paused,
                        String registeredBy,
                        long lastExecutionAt,
@@ -153,7 +154,11 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                          String methodStr,
                                                          boolean paused) {
         var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(), task.artifact(), task.methodName());
-        var value = new ScheduledTaskValue(task.registeredBy(), task.interval(), task.cron(), task.leaderOnly(), paused);
+        var value = new ScheduledTaskValue(task.registeredBy(),
+                                           task.interval(),
+                                           task.cron(),
+                                           task.executionMode(),
+                                           paused);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
         var action = paused
                      ? "paused"
@@ -225,7 +230,7 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                    .name(),
                                task.interval(),
                                task.cron(),
-                               task.leaderOnly(),
+                               task.executionMode(),
                                task.paused(),
                                task.registeredBy()
                                    .id(),

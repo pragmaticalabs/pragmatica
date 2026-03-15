@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
@@ -54,9 +55,9 @@ class ScheduledTaskManagerTest {
     }
 
     private void putTask(String configSection, Artifact artifact, MethodName method,
-                         NodeId node, String interval, boolean leaderOnly) {
+                         NodeId node, String interval, ExecutionMode executionMode) {
         var key = ScheduledTaskKey.scheduledTaskKey(configSection, artifact, method);
-        var value = ScheduledTaskValue.intervalTask(node, interval, leaderOnly);
+        var value = ScheduledTaskValue.intervalTask(node, interval, executionMode);
         var put = new KVCommand.Put<>(key, value);
         registry.onScheduledTaskPut(new ValuePut<>(put, Option.none()));
     }
@@ -78,10 +79,35 @@ class ScheduledTaskManagerTest {
     }
 
     @Nested
+    class ExecutionModeTests {
+        @Test
+        void allMode_startsOnNonLeaderNode() {
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+
+            // Not a leader, but ALL mode should start
+            assertThat(manager.activeTimerCount()).isEqualTo(1);
+        }
+
+        @Test
+        void singleMode_onlyStartsOnLeader() {
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.SINGLE);
+            establishQuorum();
+
+            // Not a leader — SINGLE mode should NOT start
+            assertThat(manager.activeTimerCount()).isEqualTo(0);
+
+            becomeLeader();
+
+            assertThat(manager.activeTimerCount()).isEqualTo(1);
+        }
+    }
+
+    @Nested
     class LeaderChange {
         @Test
-        void onLeaderChange_becomesLeader_startsLeaderOnlyTasks() {
-            putTask("cache", artifact, method, self, "30s", true);
+        void onLeaderChange_becomesLeader_startsSingleModeTasks() {
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.SINGLE);
             establishQuorum();
 
             becomeLeader();
@@ -90,8 +116,8 @@ class ScheduledTaskManagerTest {
         }
 
         @Test
-        void onLeaderChange_losesLeadership_cancelsLeaderOnlyTimers() {
-            putTask("cache", artifact, method, self, "30s", true);
+        void onLeaderChange_losesLeadership_cancelsSingleModeTimers() {
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.SINGLE);
             establishQuorum();
             becomeLeader();
             assertThat(manager.activeTimerCount()).isEqualTo(1);
@@ -106,7 +132,7 @@ class ScheduledTaskManagerTest {
     class QuorumState {
         @Test
         void onQuorumStateChange_established_enablesExecution() {
-            putTask("cache", artifact, method, self, "30s", false);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
 
             establishQuorum();
 
@@ -115,7 +141,7 @@ class ScheduledTaskManagerTest {
 
         @Test
         void onQuorumStateChange_disappeared_cancelsAllTimers() {
-            putTask("cache", artifact, method, self, "30s", false);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(1);
 
@@ -130,8 +156,8 @@ class ScheduledTaskManagerTest {
         @Test
         void activeTimerCount_reflectsRunningTimers() {
             var method2 = MethodName.methodName("refresh").unwrap();
-            putTask("cache", artifact, method, self, "30s", false);
-            putTask("metrics", artifact, method2, self, "1m", false);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            putTask("metrics", artifact, method2, self, "1m", ExecutionMode.ALL);
             establishQuorum();
 
             assertThat(manager.activeTimerCount()).isEqualTo(2);
@@ -139,7 +165,7 @@ class ScheduledTaskManagerTest {
 
         @Test
         void stop_cancelsAllTimers() {
-            putTask("cache", artifact, method, self, "30s", false);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(1);
 
@@ -155,14 +181,14 @@ class ScheduledTaskManagerTest {
         void registryChange_taskAdded_startsTimer() {
             establishQuorum();
 
-            putTask("cache", artifact, method, self, "30s", false);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
 
             assertThat(manager.activeTimerCount()).isEqualTo(1);
         }
 
         @Test
         void registryChange_taskRemoved_cancelsTimer() {
-            putTask("cache", artifact, method, self, "30s", false);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(1);
 
@@ -215,7 +241,7 @@ class ScheduledTaskManagerTest {
     class PauseResume {
         @Test
         void pausedTask_preventsTimerCreation() {
-            putPausedTask("cache", artifact, method, self, "30s", false);
+            putPausedTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
 
             assertThat(manager.activeTimerCount()).isEqualTo(0);
@@ -223,12 +249,12 @@ class ScheduledTaskManagerTest {
 
         @Test
         void resumeTask_restartsTimer() {
-            putPausedTask("cache", artifact, method, self, "30s", false);
+            putPausedTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(0);
 
             // Resume by putting non-paused task
-            putTask("cache", artifact, method, self, "30s", false);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
 
             assertThat(manager.activeTimerCount()).isEqualTo(1);
         }
@@ -238,7 +264,7 @@ class ScheduledTaskManagerTest {
     class CronScheduling {
         @Test
         void cronTask_registersActiveTimer() {
-            putCronTask("cleanup", artifact, method, self, "0 * * * *", false);
+            putCronTask("cleanup", artifact, method, self, "0 * * * *", ExecutionMode.ALL);
             establishQuorum();
 
             assertThat(manager.activeTimerCount()).isEqualTo(1);
@@ -246,7 +272,7 @@ class ScheduledTaskManagerTest {
 
         @Test
         void cronTask_invalidCron_skipsTimer() {
-            putCronTask("cleanup", artifact, method, self, "invalid cron", false);
+            putCronTask("cleanup", artifact, method, self, "invalid cron", ExecutionMode.ALL);
             establishQuorum();
 
             assertThat(manager.activeTimerCount()).isEqualTo(0);
@@ -254,7 +280,7 @@ class ScheduledTaskManagerTest {
 
         @Test
         void cronTask_cancelledOnQuorumLoss() {
-            putCronTask("cleanup", artifact, method, self, "0 * * * *", false);
+            putCronTask("cleanup", artifact, method, self, "0 * * * *", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(1);
 
@@ -274,17 +300,17 @@ class ScheduledTaskManagerTest {
     }
 
     private void putPausedTask(String configSection, Artifact artifact, MethodName method,
-                               NodeId node, String interval, boolean leaderOnly) {
+                               NodeId node, String interval, ExecutionMode executionMode) {
         var key = ScheduledTaskKey.scheduledTaskKey(configSection, artifact, method);
-        var value = ScheduledTaskValue.intervalTask(node, interval, leaderOnly).withPaused(true);
+        var value = ScheduledTaskValue.intervalTask(node, interval, executionMode).withPaused(true);
         var put = new KVCommand.Put<>(key, value);
         registry.onScheduledTaskPut(new ValuePut<>(put, Option.none()));
     }
 
     private void putCronTask(String configSection, Artifact artifact, MethodName method,
-                             NodeId node, String cron, boolean leaderOnly) {
+                             NodeId node, String cron, ExecutionMode executionMode) {
         var key = ScheduledTaskKey.scheduledTaskKey(configSection, artifact, method);
-        var value = ScheduledTaskValue.cronTask(node, cron, leaderOnly);
+        var value = ScheduledTaskValue.cronTask(node, cron, executionMode);
         var put = new KVCommand.Put<>(key, value);
         registry.onScheduledTaskPut(new ValuePut<>(put, Option.none()));
     }

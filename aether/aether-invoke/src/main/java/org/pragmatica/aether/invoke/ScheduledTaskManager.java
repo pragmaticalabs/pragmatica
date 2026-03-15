@@ -1,6 +1,7 @@
 package org.pragmatica.aether.invoke;
 
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
+import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
@@ -63,13 +64,13 @@ public interface ScheduledTaskManager {
             @Override
             public void onLeaderChange(LeaderChange leaderChange) {
                 if (leaderChange.localNodeIsLeader()) {
-                    log.info("Node {} became leader, starting leader-only scheduled tasks", self);
+                    log.info("Node {} became leader, starting single-mode scheduled tasks", self);
                     isLeader.set(true);
-                    startLeaderOnlyTasks();
+                    startSingleModeTasks();
                 } else {
-                    log.info("Node {} lost leadership, cancelling leader-only scheduled tasks", self);
+                    log.info("Node {} lost leadership, cancelling single-mode scheduled tasks", self);
                     isLeader.set(false);
-                    cancelLeaderOnlyTimers();
+                    cancelSingleModeTimers();
                 }
             }
 
@@ -123,7 +124,10 @@ public interface ScheduledTaskManager {
                 if (task.paused()) {
                     return false;
                 }
-                return ! task.leaderOnly() || isLeader.get();
+                return switch (task.executionMode()) {
+                    case ALL -> true;
+                    case SINGLE -> isLeader.get();
+                };
             }
 
             private void startTimer(ScheduledTaskKey key, ScheduledTask task) {
@@ -236,11 +240,11 @@ public interface ScheduledTaskManager {
                 log.debug("Cancelled scheduled task timer: {}", key);
             }
 
-            private void startLeaderOnlyTasks() {
+            private void startSingleModeTasks() {
                 if (!hasQuorum.get()) {
                     return;
                 }
-                registry.leaderOnlyTasks()
+                registry.singleModeTasks()
                         .forEach(this::startTaskIfNotRunning);
             }
 
@@ -258,8 +262,8 @@ public interface ScheduledTaskManager {
                 }
             }
 
-            private void cancelLeaderOnlyTimers() {
-                registry.leaderOnlyTasks()
+            private void cancelSingleModeTimers() {
+                registry.singleModeTasks()
                         .forEach(task -> cancelTimer(ScheduledTaskKey.scheduledTaskKey(task.configSection(),
                                                                                        task.artifact(),
                                                                                        task.methodName())));
