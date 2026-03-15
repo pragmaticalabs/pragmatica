@@ -100,6 +100,7 @@ public class CodecProcessor extends AbstractProcessor {
                     registerCodec(subtypeElement, packageToCodecNames);
                     note(subtypeElement, "Generated codec: " + subtypeElement.getSimpleName() + "Codec");
                 }
+                processNestedHelperTypes(subtypeElement, packageToCodecNames);
             } else if (subtypeKind == ElementKind.ENUM) {
                 if (generator.generateEnumCodec(subtypeElement, tag)) {
                     registerCodec(subtypeElement, packageToCodecNames);
@@ -111,12 +112,20 @@ public class CodecProcessor extends AbstractProcessor {
         }
 
         // Process nested records/enums that are NOT permitted subclasses (helper types used as fields)
+        processNestedHelperTypes(element, permittedNames, packageToCodecNames);
+    }
+
+    private void processNestedHelperTypes(TypeElement element, Map<String, List<String>> packageToCodecNames) {
+        processNestedHelperTypes(element, Set.of(), packageToCodecNames);
+    }
+
+    private void processNestedHelperTypes(TypeElement element, Set<String> excludeNames, Map<String, List<String>> packageToCodecNames) {
         for (var enclosed : element.getEnclosedElements()) {
             if (!(enclosed instanceof TypeElement nested)) {
                 continue;
             }
 
-            if (permittedNames.contains(nested.getQualifiedName().toString())) {
+            if (excludeNames.contains(nested.getQualifiedName().toString())) {
                 continue;
             }
 
@@ -128,6 +137,7 @@ public class CodecProcessor extends AbstractProcessor {
                     registerCodec(nested, packageToCodecNames);
                     note(nested, "Generated codec for nested type: " + nested.getSimpleName() + "Codec");
                 }
+                processNestedHelperTypes(nested, packageToCodecNames);
             } else if (nestedKind == ElementKind.ENUM) {
                 if (generator.generateEnumCodec(nested, tag)) {
                     registerCodec(nested, packageToCodecNames);
