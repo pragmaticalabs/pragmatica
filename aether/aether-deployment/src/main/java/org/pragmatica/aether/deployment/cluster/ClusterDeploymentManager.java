@@ -3,8 +3,6 @@ package org.pragmatica.aether.deployment.cluster;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
-import org.pragmatica.aether.dht.MapSubscription;
-import org.pragmatica.aether.dht.ReplicatedMap;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
@@ -13,10 +11,10 @@ import org.pragmatica.aether.config.PlacementPolicy;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
@@ -24,9 +22,9 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
@@ -51,6 +49,8 @@ import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -107,9 +107,6 @@ public interface ClusterDeploymentManager {
     void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
 
     @MessageReceiver
-    void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut);
-
-    @MessageReceiver
     void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut);
 
     @MessageReceiver
@@ -117,9 +114,6 @@ public interface ClusterDeploymentManager {
 
     @MessageReceiver
     void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
-
-    @MessageReceiver
-    void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove);
 
     @MessageReceiver
     void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove);
@@ -142,22 +136,13 @@ public interface ClusterDeploymentManager {
     @MessageReceiver
     void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> valueRemove);
 
-    /// Create a MapSubscription adapter for DHT slice-node events.
-    default MapSubscription<SliceNodeKey, SliceNodeValue> asSliceNodeSubscription() {
-        return new MapSubscription<>() {
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onPut(SliceNodeKey key, SliceNodeValue value) {
-                onSliceNodePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
-            }
+    /// Handle NodeArtifactKey put — tracks slice state from compound value.
+    @MessageReceiver
+    void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
 
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onRemove(SliceNodeKey key) {
-                onSliceNodeRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
-            }
-        };
-    }
+    /// Handle NodeArtifactKey remove.
+    @MessageReceiver
+    void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
 
     /// Controls whether multi-slice blueprint deployments are atomic.
     enum DeploymentAtomicity {
@@ -186,15 +171,11 @@ public interface ClusterDeploymentManager {
 
         default void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {}
 
-        default void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {}
-
         default void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {}
 
         default void onAppBlueprintRemove(ValueRemove<AppBlueprintKey, AppBlueprintValue> valueRemove) {}
 
         default void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {}
-
-        default void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {}
 
         default void onVersionRoutingRemove(ValueRemove<VersionRoutingKey, VersionRoutingValue> valueRemove) {}
 
@@ -209,6 +190,10 @@ public interface ClusterDeploymentManager {
         default void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut) {}
 
         default void onGovernorAnnouncementRemove(ValueRemove<GovernorAnnouncementKey, GovernorAnnouncementValue> valueRemove) {}
+
+        default void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {}
+
+        default void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {}
 
         /// Dormant state when node is NOT the leader.
         record Dormant() implements ClusterDeploymentState {}
@@ -252,7 +237,6 @@ public interface ClusterDeploymentManager {
                       Set<NodeId> workerNodes,
                       Map<String, GovernorAnnouncementValue> communityGovernors,
                       Map<SliceNodeKey, Long> transitionalStateTimestamps,
-                      ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap,
                       AtomicReference<ScheduledFuture<?>> reconcileTimer) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
             private static final int MAX_RETRIES = 5;
@@ -331,13 +315,13 @@ public interface ClusterDeploymentManager {
                 log.info("Restored {} blueprints and {} worker nodes from KVStore",
                          blueprints.size(),
                          workerNodes.size());
-                rebuildSliceStateFromDHT();
+                rebuildSliceStateFromKVStoreEntries();
                 // Trigger activation for any slices stuck in LOADED state
                 triggerLoadedSliceActivation();
                 // Clean up stale entries pointing to nodes not in topology
-                cleanupStaleHttpRoutes();
+                cleanupStaleNodeRoutes();
                 cleanupStaleSliceEntries();
-                cleanupStaleEndpointEntries();
+                cleanupStaleNodeArtifactEntries();
                 // Clean up orphaned slice entries with no matching blueprint
                 cleanupOrphanedSliceEntries();
                 // Resume drain evictions for any nodes that were mid-drain
@@ -433,9 +417,15 @@ public interface ClusterDeploymentManager {
                 log.trace("Restored slice state: {} = {}", sliceNodeKey, sliceNodeValue.state());
             }
 
-            private void rebuildSliceStateFromDHT() {
-                sliceNodeMap.forEach(this::restoreSliceState);
-                log.info("Restored {} slice states from DHT", sliceStates.size());
+            private void rebuildSliceStateFromKVStoreEntries() {
+                kvStore.forEach(NodeArtifactKey.class, NodeArtifactValue.class, this::restoreSliceStateFromNodeArtifact);
+                log.info("Restored {} slice states from KV-Store", sliceStates.size());
+            }
+
+            private void restoreSliceStateFromNodeArtifact(NodeArtifactKey key, NodeArtifactValue value) {
+                var sliceKey = new SliceNodeKey(key.artifact(), key.nodeId());
+                sliceStates.put(sliceKey, value.state());
+                updateTransitionalTimestamp(sliceKey, value.state());
             }
 
             @Override
@@ -455,14 +445,6 @@ public interface ClusterDeploymentManager {
             }
 
             @Override
-            public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
-                trackSliceState(valuePut.cause()
-                                        .key(),
-                                valuePut.cause()
-                                        .value());
-            }
-
-            @Override
             public void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {
                 var routingKey = valuePut.cause()
                                          .key();
@@ -477,9 +459,20 @@ public interface ClusterDeploymentManager {
             }
 
             @Override
-            public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
-                handleSliceNodeRemoval(valueRemove.cause()
-                                                  .key());
+            public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+                var key = valuePut.cause()
+                                  .key();
+                var value = valuePut.cause()
+                                    .value();
+                trackSliceState(new SliceNodeKey(key.artifact(), key.nodeId()),
+                                new SliceNodeValue(value.state(), value.failureReason(), value.fatal()));
+            }
+
+            @Override
+            public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+                var key = valueRemove.cause()
+                                     .key();
+                handleSliceNodeRemoval(new SliceNodeKey(key.artifact(), key.nodeId()));
             }
 
             @Override
@@ -1196,40 +1189,41 @@ public interface ClusterDeploymentManager {
 
             private void issueActivateCommand(SliceNodeKey sliceKey) {
                 log.debug("Issuing ACTIVATE command for {}", sliceKey);
-                var value = SliceNodeValue.sliceNodeValue(SliceState.ACTIVATE);
-                sliceNodeMap.put(sliceKey, value)
-                            .onFailure(cause -> log.error("Failed to issue ACTIVATE command for {}: {}",
-                                                          sliceKey,
-                                                          cause.message()));
+                applyStateWrite(sliceKey, SliceState.ACTIVATE)
+                .onFailure(cause -> log.error("Failed to issue ACTIVATE command for {}: {}", sliceKey, cause.message()));
             }
 
-            @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget write
             private void issueLoadCommand(SliceNodeKey sliceKey) {
                 log.debug("Issuing LOAD command for {}", sliceKey);
                 sliceStates.put(sliceKey, SliceState.LOAD);
                 var timestamp = System.currentTimeMillis();
                 router.route(DeploymentStarted.deploymentStarted(sliceKey.artifact(), sliceKey.nodeId(), timestamp));
-                sliceNodeMap.put(sliceKey,
-                                 SliceNodeValue.sliceNodeValue(SliceState.LOAD))
-                            .onFailure(cause -> handleSliceNodeWriteFailure(sliceKey, cause));
+                applyStateWrite(sliceKey, SliceState.LOAD)
+                .onFailure(cause -> handleSliceNodeWriteFailure(sliceKey, cause));
             }
 
-            @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget write
             private void issueUnloadCommand(SliceNodeKey sliceKey) {
                 log.debug("Issuing UNLOAD command for {}", sliceKey);
-                sliceNodeMap.put(sliceKey,
-                                 SliceNodeValue.sliceNodeValue(SliceState.UNLOAD))
-                            .onFailure(cause -> log.error("Failed to issue UNLOAD command for {}: {}",
-                                                          sliceKey,
-                                                          cause.message()));
+                applyStateWrite(sliceKey, SliceState.UNLOAD)
+                .onFailure(cause -> log.error("Failed to issue UNLOAD command for {}: {}", sliceKey, cause.message()));
             }
 
-            @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget write
-            private void removeSliceNodeKey(SliceNodeKey sliceKey) {
-                sliceNodeMap.remove(sliceKey)
-                            .onFailure(cause -> log.error("Failed to remove slice-node-key {}: {}",
-                                                          sliceKey,
-                                                          cause.message()));
+            /// Write a state transition to NodeArtifactKey via consensus.
+            private Promise<Unit> applyStateWrite(SliceNodeKey sliceKey, SliceState state) {
+                KVCommand<AetherKey> putArtifact = new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(),
+                                                                                                       sliceKey.artifact()),
+                                                                       NodeArtifactValue.nodeArtifactValue(state));
+                return cluster.apply(List.of(putArtifact))
+                              .mapToUnit();
+            }
+
+            private void removeNodeArtifactKey(SliceNodeKey sliceKey) {
+                KVCommand<AetherKey> removeArtifact = new KVCommand.Remove<>(NodeArtifactKey.nodeArtifactKey(sliceKey.nodeId(),
+                                                                                                             sliceKey.artifact()));
+                cluster.apply(List.of(removeArtifact))
+                       .onFailure(cause -> log.error("Failed to remove node-artifact-key for {}: {}",
+                                                     sliceKey,
+                                                     cause.message()));
             }
 
             private void submitBatch(List<KVCommand<AetherKey>> commands) {
@@ -1266,17 +1260,17 @@ public interface ClusterDeploymentManager {
                 sliceKeysToRemove.forEach(sliceStates::remove);
                 sliceKeysToRemove.forEach(transitionalStateTimestamps::remove);
                 // Remove slice-node keys via DHT
-                sliceKeysToRemove.forEach(this::removeSliceNodeKey);
-                // Find endpoint keys for the removed node by scanning KVStore snapshot
-                var endpointKeysToRemove = findEndpointKeysForNode(removedNode);
-                // Clean up HTTP routes containing the removed node
-                var httpRouteCommands = cleanupHttpRoutesForNode(removedNode);
-                // Combine consensus-only commands (endpoints, HTTP routes, lifecycle)
+                sliceKeysToRemove.forEach(this::removeNodeArtifactKey);
+                // Find node-artifact keys for the removed node by scanning KVStore snapshot
+                var artifactKeysToRemove = findNodeArtifactKeysForNode(removedNode);
+                // Clean up node-routes entries containing the removed node
+                var nodeRouteCommands = cleanupNodeRoutesForNode(removedNode);
+                // Combine consensus-only commands (node-artifacts, node-routes, lifecycle)
                 List<KVCommand<AetherKey>> consensusCommands = new ArrayList<>();
-                endpointKeysToRemove.stream()
+                artifactKeysToRemove.stream()
                                     .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
                                     .forEach(consensusCommands::add);
-                consensusCommands.addAll(httpRouteCommands);
+                consensusCommands.addAll(nodeRouteCommands);
                 // Remove lifecycle key for departed node
                 consensusCommands.add(new KVCommand.Remove<>(NodeLifecycleKey.nodeLifecycleKey(removedNode)));
                 // Remove from KVStore to prevent stale state after leader changes
@@ -1288,69 +1282,67 @@ public interface ClusterDeploymentManager {
                 }
                 // Remove from worker set if this was a worker
                 workerNodes.remove(removedNode);
-                log.info("Removed {} slice states, {} endpoints, and {} HTTP route updates for departed node {}",
+                log.info("Removed {} slice states, {} node-artifact entries, and {} node-routes updates for departed node {}",
                          sliceKeysToRemove.size(),
-                         endpointKeysToRemove.size(),
-                         httpRouteCommands.size(),
+                         artifactKeysToRemove.size(),
+                         nodeRouteCommands.size(),
                          removedNode);
             }
 
-            private List<EndpointKey> findEndpointKeysForNode(NodeId nodeId) {
-                var result = new ArrayList<EndpointKey>();
-                kvStore.forEach(EndpointKey.class,
-                                EndpointValue.class,
-                                (key, value) -> collectEndpointKeyForNode(result, key, value, nodeId));
+            private List<NodeArtifactKey> findNodeArtifactKeysForNode(NodeId nodeId) {
+                var result = new ArrayList<NodeArtifactKey>();
+                kvStore.forEach(NodeArtifactKey.class,
+                                NodeArtifactValue.class,
+                                (key, _) -> collectNodeArtifactKeyForNode(result, key, nodeId));
                 return result;
             }
 
-            private void collectEndpointKeyForNode(List<EndpointKey> result,
-                                                   EndpointKey endpointKey,
-                                                   EndpointValue endpointValue,
-                                                   NodeId nodeId) {
-                if (endpointValue.nodeId()
-                                 .equals(nodeId)) {
-                    result.add(endpointKey);
+            private void collectNodeArtifactKeyForNode(List<NodeArtifactKey> result,
+                                                       NodeArtifactKey key,
+                                                       NodeId nodeId) {
+                if (key.nodeId()
+                       .equals(nodeId)) {
+                    result.add(key);
                 }
             }
 
-            /// Clean up HTTP routes that reference the removed node.
-            /// Each node has independent route keys — just remove the departed node's keys.
-            private List<KVCommand<AetherKey>> cleanupHttpRoutesForNode(NodeId removedNode) {
-                var commands = new java.util.ArrayList<KVCommand<AetherKey>>();
-                kvStore.forEach(HttpNodeRouteKey.class,
-                                HttpNodeRouteValue.class,
-                                (key, value) -> collectRouteKeyForNode(commands, key, removedNode));
+            /// Clean up node-routes entries that reference the removed node.
+            private List<KVCommand<AetherKey>> cleanupNodeRoutesForNode(NodeId removedNode) {
+                var commands = new ArrayList<KVCommand<AetherKey>>();
+                kvStore.forEach(NodeRoutesKey.class,
+                                NodeRoutesValue.class,
+                                (key, _) -> collectNodeRoutesKeyForNode(commands, key, removedNode));
                 return commands;
             }
 
-            private void collectRouteKeyForNode(List<KVCommand<AetherKey>> commands,
-                                                HttpNodeRouteKey key,
-                                                NodeId removedNode) {
+            private void collectNodeRoutesKeyForNode(List<KVCommand<AetherKey>> commands,
+                                                     NodeRoutesKey key,
+                                                     NodeId removedNode) {
                 if (key.nodeId()
                        .equals(removedNode)) {
                     commands.add(new KVCommand.Remove<>(key));
                 }
             }
 
-            /// Remove HTTP route entries that reference nodes not in the current topology.
+            /// Remove node-routes entries that reference nodes not in the current topology.
             /// This handles cases where nodes died before the leader could clean up their routes.
-            private void cleanupStaleHttpRoutes() {
+            private void cleanupStaleNodeRoutes() {
                 var currentNodes = new HashSet<>(activeNodes.get());
-                var commands = new java.util.ArrayList<KVCommand<AetherKey>>();
-                kvStore.forEach(HttpNodeRouteKey.class,
-                                HttpNodeRouteValue.class,
-                                (key, _) -> collectStaleRouteKey(commands, key, currentNodes));
+                var commands = new ArrayList<KVCommand<AetherKey>>();
+                kvStore.forEach(NodeRoutesKey.class,
+                                NodeRoutesValue.class,
+                                (key, _) -> collectStaleNodeRoutesKey(commands, key, currentNodes));
                 if (!commands.isEmpty()) {
-                    log.debug("Cleaning up {} stale HTTP node route entries", commands.size());
+                    log.debug("Cleaning up {} stale node-routes entries", commands.size());
                     cluster.apply(commands)
-                           .onFailure(cause -> log.error("Failed to clean up stale HTTP routes: {}",
+                           .onFailure(cause -> log.error("Failed to clean up stale node routes: {}",
                                                          cause.message()));
                 }
             }
 
-            private void collectStaleRouteKey(List<KVCommand<AetherKey>> commands,
-                                              HttpNodeRouteKey key,
-                                              Set<NodeId> currentNodes) {
+            private void collectStaleNodeRoutesKey(List<KVCommand<AetherKey>> commands,
+                                                   NodeRoutesKey key,
+                                                   Set<NodeId> currentNodes) {
                 if (!currentNodes.contains(key.nodeId())) {
                     commands.add(new KVCommand.Remove<>(key));
                 }
@@ -1377,32 +1369,31 @@ public interface ClusterDeploymentManager {
                                                      cause.message()));
             }
 
-            /// Remove endpoint entries for nodes not in the current topology.
-            /// This handles cases where nodes died before the leader could clean up their endpoint entries.
-            private void cleanupStaleEndpointEntries() {
+            /// Remove node-artifact entries for nodes not in the current topology.
+            /// This handles cases where nodes died before the leader could clean up their entries.
+            private void cleanupStaleNodeArtifactEntries() {
                 var currentNodes = new HashSet<>(activeNodes.get());
-                var staleKeys = new ArrayList<EndpointKey>();
-                kvStore.forEach(EndpointKey.class,
-                                EndpointValue.class,
-                                (key, value) -> collectStaleEndpointKey(staleKeys, key, value, currentNodes));
+                var staleKeys = new ArrayList<NodeArtifactKey>();
+                kvStore.forEach(NodeArtifactKey.class,
+                                NodeArtifactValue.class,
+                                (key, _) -> collectStaleNodeArtifactKey(staleKeys, key, currentNodes));
                 if (staleKeys.isEmpty()) {
                     return;
                 }
                 List<KVCommand<AetherKey>> commands = staleKeys.stream()
                                                                .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
                                                                .toList();
-                log.info("Cleaning up {} stale endpoint entries", staleKeys.size());
+                log.info("Cleaning up {} stale node-artifact entries", staleKeys.size());
                 cluster.apply(commands)
-                       .onFailure(cause -> log.error("Failed to clean up stale endpoint entries: {}",
+                       .onFailure(cause -> log.error("Failed to clean up stale node-artifact entries: {}",
                                                      cause.message()));
             }
 
-            private void collectStaleEndpointKey(List<EndpointKey> result,
-                                                 EndpointKey endpointKey,
-                                                 EndpointValue endpointValue,
-                                                 Set<NodeId> currentNodes) {
-                if (!currentNodes.contains(endpointValue.nodeId())) {
-                    result.add(endpointKey);
+            private void collectStaleNodeArtifactKey(List<NodeArtifactKey> result,
+                                                     NodeArtifactKey key,
+                                                     Set<NodeId> currentNodes) {
+                if (!currentNodes.contains(key.nodeId())) {
+                    result.add(key);
                 }
             }
 
@@ -1425,7 +1416,7 @@ public interface ClusterDeploymentManager {
                     sliceStates.remove(key);
                     if (state == SliceState.UNLOAD || state == SliceState.UNLOADING) {
                         // Already in teardown, just remove the DHT entry
-                        removeSliceNodeKey(key);
+                        removeNodeArtifactKey(key);
                     } else {
                         // Issue UNLOAD to trigger proper teardown on the node
                         issueUnloadCommand(key);
@@ -1714,7 +1705,7 @@ public interface ClusterDeploymentManager {
                                  sliceKey.artifact(),
                                  sliceKey.nodeId());
                         sliceStates.remove(sliceKey);
-                        removeSliceNodeKey(sliceKey);
+                        removeNodeArtifactKey(sliceKey);
                     }
                     default -> {}
                 }
@@ -2064,8 +2055,7 @@ public interface ClusterDeploymentManager {
                                                              Option<ComputeProvider> computeProvider,
                                                              AutoHealConfig autoHealConfig,
                                                              DeploymentAtomicity atomicity,
-                                                             int coreMax,
-                                                             ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap) {
+                                                             int coreMax) {
         record clusterDeploymentManager(NodeId self,
                                         ClusterNode<KVCommand<AetherKey>> cluster,
                                         KVStore<AetherKey, AetherValue> kvStore,
@@ -2077,8 +2067,7 @@ public interface ClusterDeploymentManager {
                                         int coreMax,
                                         Set<NodeId> seedNodes,
                                         AtomicReference<ClusterDeploymentState> state,
-                                        AtomicReference<List<NodeId>> topologyRef,
-                                        ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap) implements ClusterDeploymentManager {
+                                        AtomicReference<List<NodeId>> topologyRef) implements ClusterDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(clusterDeploymentManager.class);
 
             @Override
@@ -2115,7 +2104,6 @@ public interface ClusterDeploymentManager {
                                                                         ConcurrentHashMap.newKeySet(),
                                                                         new ConcurrentHashMap<>(),
                                                                         new ConcurrentHashMap<>(),
-                                                                        sliceNodeMap,
                                                                         new AtomicReference<>());
                     // Swap to Active FIRST — ensures topology changes arriving on other threads
                     // are dispatched to Active.onTopologyChange() instead of being lost in Dormant.
@@ -2178,12 +2166,6 @@ public interface ClusterDeploymentManager {
             }
 
             @Override
-            public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
-                state.get()
-                     .onSliceNodePut(valuePut);
-            }
-
-            @Override
             public void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {
                 state.get()
                      .onVersionRoutingPut(valuePut);
@@ -2199,12 +2181,6 @@ public interface ClusterDeploymentManager {
             public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
                 state.get()
                      .onSliceTargetRemove(valueRemove);
-            }
-
-            @Override
-            public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
-                state.get()
-                     .onSliceNodeRemove(valueRemove);
             }
 
             @Override
@@ -2244,6 +2220,18 @@ public interface ClusterDeploymentManager {
             }
 
             @Override
+            public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+                state.get()
+                     .onNodeArtifactPut(valuePut);
+            }
+
+            @Override
+            public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+                state.get()
+                     .onNodeArtifactRemove(valueRemove);
+            }
+
+            @Override
             public void onTopologyChange(TopologyChangeNotification topologyChange) {
                 // Always update topology even when dormant, so we have current topology when becoming leader.
                 // Use atomic reference swap instead of non-atomic clear+addAll on CopyOnWriteArrayList.
@@ -2272,7 +2260,6 @@ public interface ClusterDeploymentManager {
                                             coreMax,
                                             new HashSet<>(initialTopology),
                                             new AtomicReference<>(new ClusterDeploymentState.Dormant()),
-                                            new AtomicReference<>(List.copyOf(initialTopology)),
-                                            sliceNodeMap);
+                                            new AtomicReference<>(List.copyOf(initialTopology)));
     }
 }
