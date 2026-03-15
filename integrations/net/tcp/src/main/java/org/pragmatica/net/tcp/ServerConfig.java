@@ -18,28 +18,34 @@ package org.pragmatica.net.tcp;
 
 import org.pragmatica.lang.Option;
 
-/// Configuration for TCP server.
+/// Configuration for TCP server with optional UDP port.
 ///
 /// @param name          server name for logging
 /// @param port          port to bind to
+/// @param udpPort       optional UDP port to bind to
 /// @param tls           optional TLS configuration for incoming connections (server-side TLS)
 /// @param clientTls     optional TLS configuration for outgoing connections (client-side TLS)
 /// @param socketOptions socket-level options
 public record ServerConfig(String name,
                            int port,
+                           Option<Integer> udpPort,
                            Option<TlsConfig> tls,
                            Option<TlsConfig> clientTls,
                            SocketOptions socketOptions) {
     public static ServerConfig serverConfig(String name, int port) {
-        return new ServerConfig(name, port, Option.empty(), Option.empty(), SocketOptions.defaultConfig());
+        return new ServerConfig(name, port, Option.empty(), Option.empty(), Option.empty(), SocketOptions.defaultConfig());
     }
 
     public static ServerConfig serverConfig(String name, int port, TlsConfig tls) {
-        return new ServerConfig(name, port, Option.some(tls), Option.empty(), SocketOptions.defaultConfig());
+        return new ServerConfig(name, port, Option.empty(), Option.some(tls), Option.empty(), SocketOptions.defaultConfig());
+    }
+
+    public ServerConfig withUdpPort(int udpPort) {
+        return new ServerConfig(name, port, Option.some(udpPort), tls, clientTls, socketOptions);
     }
 
     public ServerConfig withTls(TlsConfig tls) {
-        return new ServerConfig(name, port, Option.some(tls), clientTls, socketOptions);
+        return new ServerConfig(name, port, udpPort, Option.some(tls), clientTls, socketOptions);
     }
 
     /// Configure TLS for outgoing connections (when this server connects to other servers).
@@ -47,10 +53,10 @@ public record ServerConfig(String name,
     /// @param clientTls TLS configuration for client-side connections
     /// @return new config with client TLS
     public ServerConfig withClientTls(TlsConfig clientTls) {
-        return new ServerConfig(name, port, tls, Option.some(clientTls), socketOptions);
+        return new ServerConfig(name, port, udpPort, tls, Option.some(clientTls), socketOptions);
     }
 
     public ServerConfig withSocketOptions(SocketOptions socketOptions) {
-        return new ServerConfig(name, port, tls, clientTls, socketOptions);
+        return new ServerConfig(name, port, udpPort, tls, clientTls, socketOptions);
     }
 }
