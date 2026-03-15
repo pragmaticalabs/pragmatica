@@ -5,11 +5,15 @@ import org.pragmatica.aether.slice.blueprint.BlueprintExpander;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
+import org.pragmatica.aether.slice.blueprint.PubSubValidator;
+import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.repository.Repository;
+import org.pragmatica.aether.slice.topology.SliceTopology;
+import org.pragmatica.aether.slice.topology.TopologyParser;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
@@ -88,7 +92,30 @@ public interface BlueprintService {
                 return BlueprintParser.parse(dsl)
                                       .async()
                                       .flatMap(blueprint -> BlueprintExpander.expand(blueprint, repository))
+                                      .flatMap(this::validatePubSub)
                                       .flatMap(this::storeBlueprint);
+            }
+
+            private Promise<ExpandedBlueprint> validatePubSub(ExpandedBlueprint expanded) {
+                return loadAllTopologies(expanded.loadOrder())
+                .flatMap(topologies -> PubSubValidator.validate(topologies)
+                                                      .map(_ -> expanded)
+                                                      .async());
+            }
+
+            private Promise<List<SliceTopology>> loadAllTopologies(List<ResolvedSlice> slices) {
+                return Promise.allOf(slices.stream()
+                                           .map(this::loadTopology)
+                                           .toList())
+                              .map(BlueprintService::flattenTopologyResults);
+            }
+
+            private Promise<List<SliceTopology>> loadTopology(ResolvedSlice slice) {
+                return repository.locate(slice.artifact())
+                                 .map(location -> TopologyParser.parseFromJar(location.url(),
+                                                                              slice.artifact()
+                                                                                   .asString())
+                                                                .or(List.of()));
             }
 
             @Override
@@ -142,5 +169,12 @@ public interface BlueprintService {
             }
         }
         return new blueprintService(cluster, store, repository);
+    }
+
+    private static List<SliceTopology> flattenTopologyResults(List<Result<List<SliceTopology>>> results) {
+        return results.stream()
+                      .flatMap(result -> result.or(List.of())
+                                               .stream())
+                      .toList();
     }
 }

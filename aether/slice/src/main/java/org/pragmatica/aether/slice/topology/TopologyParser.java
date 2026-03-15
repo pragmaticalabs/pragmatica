@@ -2,10 +2,14 @@ package org.pragmatica.aether.slice.topology;
 
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
+import java.util.jar.JarFile;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,6 +67,47 @@ public final class TopologyParser {
                  slice.getClass()
                       .getName());
         return Option.none();
+    }
+
+    /// Parse all topologies from a JAR file URL.
+    ///
+    /// Scans `META-INF/slice/*.manifest` entries in the JAR and parses each one.
+    /// Used for deploy-time validation when no Slice instance is loaded.
+    ///
+    /// @param jarUrl URL pointing to the slice JAR file
+    /// @param artifact artifact identifier for the topology
+    ///
+    /// @return List of parsed topologies, or error if JAR cannot be read
+    public static Result<List<SliceTopology>> parseFromJar(URL jarUrl, String artifact) {
+        return Result.lift(Causes::fromThrowable, () -> readTopologiesFromJar(jarUrl, artifact));
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static List<SliceTopology> readTopologiesFromJar(URL jarUrl, String artifact) throws Exception {
+        var path = jarUrl.getPath();
+        if (path.startsWith("file:")) {
+            path = path.substring(5);
+        }
+        if (path.contains("!")) {
+            path = path.substring(0, path.indexOf("!"));
+        }
+        var topologies = new ArrayList<SliceTopology>();
+        try (var jarFile = new JarFile(path)) {
+            var entries = jarFile.entries();
+            while (entries.hasMoreElements()) {
+                var entry = entries.nextElement();
+                if (entry.getName()
+                         .startsWith("META-INF/slice/") && entry.getName()
+                                                                .endsWith(".manifest")) {
+                    var props = new Properties();
+                    try (var is = jarFile.getInputStream(entry)) {
+                        props.load(is);
+                    }
+                    topologies.add(buildTopology(props, artifact));
+                }
+            }
+        }
+        return topologies;
     }
 
     private static Option<SliceTopology> parseFromManifest(ClassLoader classLoader,
