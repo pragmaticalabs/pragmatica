@@ -2,19 +2,24 @@ package org.pragmatica.aether.http;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue.RouteEntry;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class HttpRouteRegistryTest {
     private static final NodeId NODE_1 = NodeId.nodeId("node-1").unwrap();
     private static final NodeId NODE_2 = NodeId.nodeId("node-2").unwrap();
+    private static final Artifact TEST_ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
 
     private HttpRouteRegistry registry;
 
@@ -111,22 +116,22 @@ class HttpRouteRegistryTest {
     }
 
     @Test
-    void onRouteRemove_removes_node_from_route() {
+    void onNodeRoutesRemove_removes_node_from_route() {
         registerNodeRoute("GET", "/users/", NODE_1);
         registerNodeRoute("GET", "/users/", NODE_2);
         assertThat(registry.findRoute("GET", "/users/").isPresent()).isTrue();
         // Remove NODE_1
-        unregisterNodeRoute("GET", "/users/", NODE_1);
+        unregisterNodeRoute(NODE_1);
         registry.findRoute("GET", "/users/")
                 .onEmpty(() -> { throw new AssertionError("Expected route to still exist"); })
                 .onPresent(route -> assertThat(route.nodes()).containsExactly(NODE_2));
     }
 
     @Test
-    void onRouteRemove_removes_route_when_last_node() {
+    void onNodeRoutesRemove_removes_route_when_last_node() {
         registerNodeRoute("GET", "/users/", NODE_1);
         assertThat(registry.findRoute("GET", "/users/").isPresent()).isTrue();
-        unregisterNodeRoute("GET", "/users/", NODE_1);
+        unregisterNodeRoute(NODE_1);
         assertThat(registry.findRoute("GET", "/users/").isEmpty()).isTrue();
     }
 
@@ -166,17 +171,18 @@ class HttpRouteRegistryTest {
     }
 
     private void registerNodeRoute(String method, String path, NodeId nodeId) {
-        var key = HttpNodeRouteKey.httpNodeRouteKey(method, path, nodeId);
-        var value = HttpNodeRouteValue.httpNodeRouteValue("test:artifact:1.0", "create");
-        var command = new KVCommand.Put<HttpNodeRouteKey, HttpNodeRouteValue>(key, value);
+        var key = NodeRoutesKey.nodeRoutesKey(nodeId, TEST_ARTIFACT);
+        var route = RouteEntry.activeRoute(method, path, "create");
+        var value = NodeRoutesValue.nodeRoutesValue(List.of(route));
+        var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
-        registry.onRoutePut(notification);
+        registry.onNodeRoutesPut(notification);
     }
 
-    private void unregisterNodeRoute(String method, String path, NodeId nodeId) {
-        var key = HttpNodeRouteKey.httpNodeRouteKey(method, path, nodeId);
-        var command = new KVCommand.Remove<HttpNodeRouteKey>(key);
-        var notification = new ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue>(command, Option.none());
-        registry.onRouteRemove(notification);
+    private void unregisterNodeRoute(NodeId nodeId) {
+        var key = NodeRoutesKey.nodeRoutesKey(nodeId, TEST_ARTIFACT);
+        var command = new KVCommand.Remove<NodeRoutesKey>(key);
+        var notification = new ValueRemove<NodeRoutesKey, NodeRoutesValue>(command, Option.none());
+        registry.onNodeRoutesRemove(notification);
     }
 }

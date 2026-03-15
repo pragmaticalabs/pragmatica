@@ -3,9 +3,11 @@ package org.pragmatica.aether.http;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
-import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue.RouteEntry;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
@@ -16,12 +18,14 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class AppHttpServerTest {
     private static final NodeId NODE_1 = NodeId.nodeId("node-1").unwrap();
     private static final NodeId SELF_NODE = NodeId.nodeId("test-node").unwrap();
+    private static final Artifact TEST_ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
 
     private HttpRouteRegistry registry;
     private AppHttpServer server;
@@ -152,10 +156,11 @@ class AppHttpServerTest {
     }
 
     private void registerNodeRoute(String method, String path, NodeId nodeId) {
-        var key = HttpNodeRouteKey.httpNodeRouteKey(method, path, nodeId);
-        var value = HttpNodeRouteValue.httpNodeRouteValue("test:artifact:1.0", "create");
-        var command = new KVCommand.Put<HttpNodeRouteKey, HttpNodeRouteValue>(key, value);
+        var key = NodeRoutesKey.nodeRoutesKey(nodeId, TEST_ARTIFACT);
+        var route = RouteEntry.activeRoute(method, path, "create");
+        var value = NodeRoutesValue.nodeRoutesValue(List.of(route));
+        var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
-        registry.onRoutePut(notification);
+        registry.onNodeRoutesPut(notification);
     }
 }

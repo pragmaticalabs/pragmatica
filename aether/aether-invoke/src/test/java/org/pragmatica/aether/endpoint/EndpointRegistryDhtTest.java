@@ -3,11 +3,18 @@ package org.pragmatica.aether.endpoint;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -50,12 +57,13 @@ class EndpointRegistryDhtTest {
     }
 
     @Test
-    void asMapSubscription_onPut_registersEndpoint() {
-        var subscription = registry.asMapSubscription();
-        var key = new EndpointKey(artifact, method, 0);
-        var value = EndpointValue.endpointValue(nodeId);
+    void onNodeArtifactPut_registersEndpoints() {
+        var naKey = NodeArtifactKey.nodeArtifactKey(nodeId, artifact);
+        var naValue = NodeArtifactValue.activeNodeArtifactValue(0, List.of(method.name()));
+        var command = new KVCommand.Put<>(naKey, naValue);
+        var notification = new ValuePut<>(command, Option.none());
 
-        subscription.onPut(key, value);
+        registry.onNodeArtifactPut(notification);
 
         var selected = registry.selectEndpoint(artifact, method);
         assertThat(selected.isPresent()).isTrue();
@@ -63,22 +71,16 @@ class EndpointRegistryDhtTest {
     }
 
     @Test
-    void asMapSubscription_onRemove_unregistersEndpoint() {
-        var subscription = registry.asMapSubscription();
-        var key = new EndpointKey(artifact, method, 0);
-        var value = EndpointValue.endpointValue(nodeId);
+    void onNodeArtifactRemove_unregistersEndpoints() {
+        var naKey = NodeArtifactKey.nodeArtifactKey(nodeId, artifact);
+        var naValue = NodeArtifactValue.activeNodeArtifactValue(0, List.of(method.name()));
+        var putCommand = new KVCommand.Put<>(naKey, naValue);
+        registry.onNodeArtifactPut(new ValuePut<>(putCommand, Option.none()));
 
-        subscription.onPut(key, value);
-        subscription.onRemove(key);
+        var removeCommand = new KVCommand.Remove<NodeArtifactKey>(naKey);
+        registry.onNodeArtifactRemove(new ValueRemove<>(removeCommand, Option.none()));
 
         var selected = registry.selectEndpoint(artifact, method);
         assertThat(selected.isEmpty()).isTrue();
-    }
-
-    @Test
-    void asMapSubscription_returnsCorrectType() {
-        MapSubscription<EndpointKey, EndpointValue> subscription = registry.asMapSubscription();
-
-        assertThat(subscription).isNotNull();
     }
 }

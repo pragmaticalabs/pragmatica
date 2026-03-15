@@ -3,22 +3,20 @@ package org.pragmatica.aether.worker.deployment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.dht.AetherMaps;
-import org.pragmatica.aether.dht.MapSubscription;
-import org.pragmatica.aether.dht.ReplicatedMap;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.SliceStore.LoadedSlice;
-import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue;
+import org.pragmatica.aether.worker.mutation.MutationForwarder;
+import org.pragmatica.aether.worker.mutation.WorkerMutation;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -31,6 +29,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
 import static org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue.workerSliceDirectiveValue;
 import static org.pragmatica.lang.Unit.unit;
 
@@ -42,19 +42,16 @@ class WorkerDeploymentManagerTest {
     private static final MethodName METHOD_PROCESS = MethodName.methodName("processRequest").unwrap();
     private static final String MY_COMMUNITY = "default:local";
 
-    private StubEndpointMap endpointMap;
-    private StubSliceNodeMap sliceNodeMap;
+    private MutationForwarder mutationForwarder;
     private StubSliceStore sliceStore;
     private WorkerDeploymentManager manager;
 
     @BeforeEach
     void setUp() {
-        endpointMap = new StubEndpointMap();
-        sliceNodeMap = new StubSliceNodeMap();
-        var aetherMaps = new StubAetherMaps(endpointMap, sliceNodeMap, new StubHttpRouteMap());
+        mutationForwarder = mock(MutationForwarder.class);
         sliceStore = new StubSliceStore();
         manager = WorkerDeploymentManager.workerDeploymentManager(
-            SELF, sliceStore, aetherMaps, List.of(SELF, OTHER));
+            SELF, sliceStore, mutationForwarder, List.of(SELF, OTHER));
     }
 
     @Nested
@@ -66,7 +63,8 @@ class WorkerDeploymentManagerTest {
             manager.onDirectivePut(directive);
             waitForAsyncCompletion();
 
-            assertThat(sliceNodeMap.putKeys).isNotEmpty();
+            assertThat(sliceStore.loadCalls).isNotEmpty();
+            verify(mutationForwarder, atLeastOnce()).forward(any(WorkerMutation.class));
         }
 
         @Test
@@ -76,8 +74,8 @@ class WorkerDeploymentManagerTest {
             manager.onDirectivePut(directive);
             waitForAsyncCompletion();
 
-            assertThat(sliceNodeMap.putKeys).isEmpty();
             assertThat(sliceStore.loadCalls).isEmpty();
+            verify(mutationForwarder, never()).forward(any(WorkerMutation.class));
         }
 
         @Test
@@ -87,7 +85,8 @@ class WorkerDeploymentManagerTest {
             manager.onDirectivePut(directive);
             waitForAsyncCompletion();
 
-            assertThat(sliceNodeMap.putKeys).isNotEmpty();
+            assertThat(sliceStore.loadCalls).isNotEmpty();
+            verify(mutationForwarder, atLeastOnce()).forward(any(WorkerMutation.class));
         }
     }
 
@@ -125,39 +124,41 @@ class WorkerDeploymentManagerTest {
             manager.onDirectivePut(directive);
             waitForAsyncCompletion();
 
-            var initialPutCount = sliceNodeMap.putKeys.size();
+            var initialLoadCount = sliceStore.loadCalls.size();
             var thirdNode = NodeId.nodeId("worker-third").unwrap();
             manager.onMembershipChange(List.of(SELF, OTHER, thirdNode));
             waitForAsyncCompletion();
 
             // Membership change should not trigger additional loading since already active
-            // but the directive is reprocessed
-            assertThat(sliceNodeMap.putKeys.size()).isGreaterThanOrEqualTo(initialPutCount);
+            assertThat(sliceStore.loadCalls.size()).isEqualTo(initialLoadCount);
         }
     }
 
     @Nested
     class DeploymentStateTransitions {
         @Test
-        void loadAndActivate_successPath_transitionsToActive() {
+        void loadAndActivate_successPath_forwardsMutations() {
             var directive = workerSliceDirectiveValue(TEST_ARTIFACT, 2, "WORKER_ONLY");
 
             manager.onDirectivePut(directive);
             waitForAsyncCompletion();
 
-            // Verify sliceNodeMap received state transition puts
-            var sliceKey = new SliceNodeKey(TEST_ARTIFACT, SELF);
-            var statesForKey = sliceNodeMap.putEntries.stream()
-                .filter(e -> e.key().equals(sliceKey))
-                .map(e -> e.value().state())
-                .toList();
+            // Verify state transitions were forwarded via MutationForwarder
+            var captor = ArgumentCaptor.forClass(WorkerMutation.class);
+            verify(mutationForwarder, atLeastOnce()).forward(captor.capture());
 
-            assertThat(statesForKey).containsSubsequence(
-                org.pragmatica.aether.slice.SliceState.LOADING,
-                org.pragmatica.aether.slice.SliceState.LOADED,
-                org.pragmatica.aether.slice.SliceState.ACTIVATING,
-                org.pragmatica.aether.slice.SliceState.ACTIVE
-            );
+            // Should have forwarded mutations for LOADING, LOADED, ACTIVATING, ACTIVE states
+            // plus endpoint publishing (NodeArtifactKey with methods)
+            var forwarded = captor.getAllValues();
+            assertThat(forwarded).hasSizeGreaterThanOrEqualTo(4);
+
+            // Verify NodeArtifactKey mutations were forwarded
+            var nodeArtifactPuts = forwarded.stream()
+                .filter(m -> m.command() instanceof KVCommand.Put<?, ?> put
+                             && put.key() instanceof NodeArtifactKey nak
+                             && nak.artifact().equals(TEST_ARTIFACT))
+                .toList();
+            assertThat(nodeArtifactPuts).isNotEmpty();
         }
 
         @Test
@@ -168,32 +169,48 @@ class WorkerDeploymentManagerTest {
             manager.onDirectivePut(directive);
             waitForAsyncCompletion();
 
-            var sliceKey = new SliceNodeKey(TEST_ARTIFACT, SELF);
-            var statesForKey = sliceNodeMap.putEntries.stream()
-                .filter(e -> e.key().equals(sliceKey))
-                .map(e -> e.value().state())
+            // Verify LOADING and FAILED state mutations were forwarded
+            var captor = ArgumentCaptor.forClass(WorkerMutation.class);
+            verify(mutationForwarder, atLeastOnce()).forward(captor.capture());
+
+            var nodeArtifactStates = captor.getAllValues().stream()
+                .filter(m -> m.command() instanceof KVCommand.Put<?, ?> put
+                             && put.key() instanceof NodeArtifactKey)
+                .map(m -> ((NodeArtifactValue) ((KVCommand.Put<?, ?>) m.command()).value()).state())
                 .toList();
 
-            assertThat(statesForKey).contains(org.pragmatica.aether.slice.SliceState.LOADING);
-            assertThat(statesForKey).contains(org.pragmatica.aether.slice.SliceState.FAILED);
+            assertThat(nodeArtifactStates).contains(
+                org.pragmatica.aether.slice.SliceState.LOADING,
+                org.pragmatica.aether.slice.SliceState.FAILED
+            );
         }
     }
 
     @Nested
     class EndpointPublishing {
         @Test
-        void publishEndpoints_publishesAllMethods() {
+        void publishEndpoints_forwardsNodeArtifactKey() {
             var directive = workerSliceDirectiveValue(TEST_ARTIFACT, 2, "WORKER_ONLY");
 
             manager.onDirectivePut(directive);
             waitForAsyncCompletion();
 
-            // Verify endpoint map received puts for both methods
-            assertThat(endpointMap.putKeys).hasSizeGreaterThanOrEqualTo(2);
-            var artifactEndpoints = endpointMap.putKeys.stream()
-                .filter(k -> k.artifact().equals(TEST_ARTIFACT))
+            // Verify NodeArtifactKey with methods was forwarded
+            var captor = ArgumentCaptor.forClass(WorkerMutation.class);
+            verify(mutationForwarder, atLeastOnce()).forward(captor.capture());
+
+            var nodeArtifactPuts = captor.getAllValues().stream()
+                .filter(m -> m.command() instanceof KVCommand.Put<?, ?> put
+                             && put.key() instanceof NodeArtifactKey nak
+                             && nak.artifact().equals(TEST_ARTIFACT)
+                             && put.value() instanceof NodeArtifactValue nav
+                             && !nav.methods().isEmpty())
                 .toList();
-            assertThat(artifactEndpoints).hasSize(2);
+            assertThat(nodeArtifactPuts).hasSize(1);
+
+            // Verify it contains both method names
+            var nav = (NodeArtifactValue) ((KVCommand.Put<?, ?>) nodeArtifactPuts.getFirst().command()).value();
+            assertThat(nav.methods()).containsExactlyInAnyOrder("doWork", "processRequest");
         }
     }
 
@@ -258,8 +275,6 @@ class WorkerDeploymentManagerTest {
 
     // -- Stubs --
 
-    record PutEntry<K, V>(K key, V value) {}
-
     static class StubSliceStore implements SliceStore {
         final CopyOnWriteArrayList<Artifact> loadCalls = new CopyOnWriteArrayList<>();
         final CopyOnWriteArrayList<Artifact> activateCalls = new CopyOnWriteArrayList<>();
@@ -323,133 +338,6 @@ class WorkerDeploymentManagerTest {
                 new SliceMethod<>(METHOD_PROCESS, _ -> Promise.success("ok"),
                                   new TypeToken<>() {}, new TypeToken<>() {})
             );
-        }
-    }
-
-    record StubAetherMaps(StubEndpointMap endpointMap,
-                          StubSliceNodeMap sliceNodeMap,
-                          StubHttpRouteMap httpRouteMap) implements AetherMaps {
-        @Override
-        public ReplicatedMap<EndpointKey, EndpointValue> endpoints() {
-            return endpointMap;
-        }
-
-        @Override
-        public ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodes() {
-            return sliceNodeMap;
-        }
-
-        @Override
-        public ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRoutes() {
-            return httpRouteMap;
-        }
-
-        @Override
-        public void dispatchRemotePut(byte[] rawKey, byte[] rawValue) {}
-
-        @Override
-        public void dispatchRemoteRemove(byte[] rawKey) {}
-    }
-
-    static class StubEndpointMap implements ReplicatedMap<EndpointKey, EndpointValue> {
-        final CopyOnWriteArrayList<EndpointKey> putKeys = new CopyOnWriteArrayList<>();
-        final CopyOnWriteArrayList<EndpointKey> removedKeys = new CopyOnWriteArrayList<>();
-
-        @Override
-        public Promise<Unit> put(EndpointKey key, EndpointValue value) {
-            putKeys.add(key);
-            return Promise.success(unit());
-        }
-
-        @Override
-        public Promise<Option<EndpointValue>> get(EndpointKey key) {
-            return Promise.success(Option.none());
-        }
-
-        @Override
-        public Promise<Boolean> remove(EndpointKey key) {
-            removedKeys.add(key);
-            return Promise.success(true);
-        }
-
-        @Override
-        public ReplicatedMap<EndpointKey, EndpointValue> subscribe(MapSubscription<EndpointKey, EndpointValue> subscription) {
-            return this;
-        }
-
-        @Override
-        public void forEach(java.util.function.BiConsumer<EndpointKey, EndpointValue> consumer) {}
-
-        @Override
-        public String name() {
-            return "test-endpoints";
-        }
-    }
-
-    static class StubSliceNodeMap implements ReplicatedMap<SliceNodeKey, SliceNodeValue> {
-        final CopyOnWriteArrayList<SliceNodeKey> putKeys = new CopyOnWriteArrayList<>();
-        final CopyOnWriteArrayList<PutEntry<SliceNodeKey, SliceNodeValue>> putEntries = new CopyOnWriteArrayList<>();
-        final CopyOnWriteArrayList<SliceNodeKey> removedKeys = new CopyOnWriteArrayList<>();
-
-        @Override
-        public Promise<Unit> put(SliceNodeKey key, SliceNodeValue value) {
-            putKeys.add(key);
-            putEntries.add(new PutEntry<>(key, value));
-            return Promise.success(unit());
-        }
-
-        @Override
-        public Promise<Option<SliceNodeValue>> get(SliceNodeKey key) {
-            return Promise.success(Option.none());
-        }
-
-        @Override
-        public Promise<Boolean> remove(SliceNodeKey key) {
-            removedKeys.add(key);
-            return Promise.success(true);
-        }
-
-        @Override
-        public ReplicatedMap<SliceNodeKey, SliceNodeValue> subscribe(MapSubscription<SliceNodeKey, SliceNodeValue> subscription) {
-            return this;
-        }
-
-        @Override
-        public void forEach(java.util.function.BiConsumer<SliceNodeKey, SliceNodeValue> consumer) {}
-
-        @Override
-        public String name() {
-            return "test-slice-nodes";
-        }
-    }
-
-    static class StubHttpRouteMap implements ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> {
-        @Override
-        public Promise<Unit> put(HttpNodeRouteKey key, HttpNodeRouteValue value) {
-            return Promise.success(unit());
-        }
-
-        @Override
-        public Promise<Option<HttpNodeRouteValue>> get(HttpNodeRouteKey key) {
-            return Promise.success(Option.none());
-        }
-
-        @Override
-        public Promise<Boolean> remove(HttpNodeRouteKey key) {
-            return Promise.success(true);
-        }
-
-        @Override
-        public ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> subscribe(MapSubscription<HttpNodeRouteKey, HttpNodeRouteValue> subscription) {
-            return this;
-        }
-
-        @Override
-        public void forEach(java.util.function.BiConsumer<HttpNodeRouteKey, HttpNodeRouteValue> consumer) {}
-
-        @Override
-        public String name() {
-            return "test-http-routes";
         }
     }
 }
