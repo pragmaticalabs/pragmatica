@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [0.20.0] - Unreleased
 
 ### Added
+- **Transaction-mode connection pooling** — postgres-async driver now supports `PoolMode.TRANSACTION` which multiplexes N logical connections over M physical connections. Borrows per-query/transaction, returns on completion. Includes prepared statement migration across physical backends, LISTEN/NOTIFY pinning, nested transaction (savepoint) support, and `ReadyForQuery` transaction status parsing. Eliminates need for external PgBouncer
 - **Compound KV-Store key types** — `NodeArtifactKey` (replaces per-method EndpointKey + SliceNodeKey) and `NodeRoutesKey` (replaces per-route HttpNodeRouteKey) with compound values. Single writer per node per artifact, ~10x reduction in entry count and consensus commits
 - **Hybrid Logical Clock** — new `integrations/hlc` module providing `HlcTimestamp` (packed 48-bit micros + 16-bit counter) and thread-safe `HlcClock` with drift detection, used for DHT versioned writes
 - **Cron scheduling** — wired existing `CronExpression` parser into `ScheduledTaskManager` with one-shot+re-schedule pattern. Cron tasks fire at the next matching time, then re-schedule automatically
