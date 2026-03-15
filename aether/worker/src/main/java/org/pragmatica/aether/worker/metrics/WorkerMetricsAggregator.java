@@ -1,12 +1,12 @@
 package org.pragmatica.aether.worker.metrics;
 
-import org.pragmatica.aether.worker.network.WorkerNetwork;
 import org.pragmatica.cluster.node.passive.PassiveNode;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.messaging.MessageRouter.DelegateRouter;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
@@ -25,7 +25,7 @@ import org.slf4j.LoggerFactory;
 /// Created on governor election, destroyed on demotion.
 ///
 /// Cycle:
-///   1. Send WorkerMetricsPing to all group followers via WorkerNetwork
+///   1. Send WorkerMetricsPing to all group followers via NCN
 ///   2. Collect own CPU/heap via ManagementFactory
 ///   3. Aggregate stored follower pongs + own metrics
 ///   4. Feed snapshot to CommunityScalingEvaluator
@@ -45,13 +45,13 @@ public sealed interface WorkerMetricsAggregator permits ActiveWorkerMetricsAggre
     void onSnapshotRequest(CommunityMetricsSnapshotRequest request);
 
     static WorkerMetricsAggregator workerMetricsAggregator(NodeId self,
-                                                           WorkerNetwork workerNetwork,
+                                                           DelegateRouter delegateRouter,
                                                            PassiveNode<?, ?> passiveNode,
                                                            Supplier<String> communityIdSupplier,
                                                            Supplier<List<NodeId>> followerSupplier,
                                                            long aggregationIntervalMs) {
         return new ActiveWorkerMetricsAggregator(self,
-                                                 workerNetwork,
+                                                 delegateRouter,
                                                  passiveNode,
                                                  communityIdSupplier,
                                                  followerSupplier,
@@ -68,7 +68,7 @@ final class ActiveWorkerMetricsAggregator implements WorkerMetricsAggregator {
     private static final int STALE_MULTIPLIER = 2;
 
     private final NodeId self;
-    private final WorkerNetwork workerNetwork;
+    private final DelegateRouter delegateRouter;
     private final PassiveNode<?, ?> passiveNode;
     private final Supplier<String> communityIdSupplier;
     private final Supplier<List<NodeId>> followerSupplier;
@@ -78,7 +78,7 @@ final class ActiveWorkerMetricsAggregator implements WorkerMetricsAggregator {
     private final AtomicReference<ScheduledFuture<?>> task;
 
     ActiveWorkerMetricsAggregator(NodeId self,
-                                  WorkerNetwork workerNetwork,
+                                  DelegateRouter delegateRouter,
                                   PassiveNode<?, ?> passiveNode,
                                   Supplier<String> communityIdSupplier,
                                   Supplier<List<NodeId>> followerSupplier,
@@ -87,7 +87,7 @@ final class ActiveWorkerMetricsAggregator implements WorkerMetricsAggregator {
                                   CommunityScalingEvaluator scalingEvaluator,
                                   AtomicReference<ScheduledFuture<?>> task) {
         this.self = self;
-        this.workerNetwork = workerNetwork;
+        this.delegateRouter = delegateRouter;
         this.passiveNode = passiveNode;
         this.communityIdSupplier = communityIdSupplier;
         this.followerSupplier = followerSupplier;
@@ -155,7 +155,7 @@ final class ActiveWorkerMetricsAggregator implements WorkerMetricsAggregator {
     private void sendPingToFollowers() {
         var ping = WorkerMetricsPing.workerMetricsPing(self);
         followerSupplier.get()
-                        .forEach(followerId -> workerNetwork.send(followerId, ping));
+                        .forEach(followerId -> delegateRouter.route(new NetworkServiceMessage.Send(followerId, ping)));
     }
 
     private WorkerMetricsPong collectOwnMetrics() {

@@ -3,36 +3,42 @@ package org.pragmatica.aether.worker.network;
 import org.pragmatica.aether.worker.governor.GovernorMesh;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.dht.DHTNetwork;
 import org.pragmatica.lang.Option;
+import org.pragmatica.messaging.MessageRouter.DelegateRouter;
 import org.pragmatica.serialization.Serializer;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /// DHT network adapter for workers.
-/// Phase 2b.5a: routes DHT messages directly via WorkerNetwork (intra-community).
+/// Phase 2b.5a: routes DHT messages directly via NCN (intra-community).
 /// Phase 2b.5b: adds cross-community routing through governor mesh relay.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
 public final class WorkerDHTNetwork implements DHTNetwork {
     private static final Logger LOG = LoggerFactory.getLogger(WorkerDHTNetwork.class);
 
-    private final WorkerNetwork workerNetwork;
+    private final DelegateRouter delegateRouter;
+    private final Supplier<Set<NodeId>> connectedPeersSupplier;
     private final Option<GovernorMesh> governorMesh;
     private final Map<String, List<NodeId>> communityMembers;
     private final Option<Serializer> serializer;
     private final Supplier<String> selfCommunityId;
 
-    private WorkerDHTNetwork(WorkerNetwork workerNetwork,
+    private WorkerDHTNetwork(DelegateRouter delegateRouter,
+                             Supplier<Set<NodeId>> connectedPeersSupplier,
                              Option<GovernorMesh> governorMesh,
                              Map<String, List<NodeId>> communityMembers,
                              Option<Serializer> serializer,
                              Supplier<String> selfCommunityId) {
-        this.workerNetwork = workerNetwork;
+        this.delegateRouter = delegateRouter;
+        this.connectedPeersSupplier = connectedPeersSupplier;
         this.governorMesh = governorMesh;
         this.communityMembers = communityMembers;
         this.serializer = serializer;
@@ -40,17 +46,21 @@ public final class WorkerDHTNetwork implements DHTNetwork {
     }
 
     /// Create a simple intra-community-only DHT network (backward compat).
-    public static WorkerDHTNetwork workerDHTNetwork(WorkerNetwork workerNetwork) {
-        return new WorkerDHTNetwork(workerNetwork, Option.empty(), Map.of(), Option.empty(), () -> "");
+    public static WorkerDHTNetwork workerDHTNetwork(DelegateRouter delegateRouter,
+                                                    Supplier<Set<NodeId>> connectedPeersSupplier) {
+        return new WorkerDHTNetwork(delegateRouter, connectedPeersSupplier,
+                                    Option.empty(), Map.of(), Option.empty(), () -> "");
     }
 
     /// Create a cross-community-aware DHT network with governor mesh relay.
-    public static WorkerDHTNetwork workerDHTNetwork(WorkerNetwork workerNetwork,
+    public static WorkerDHTNetwork workerDHTNetwork(DelegateRouter delegateRouter,
+                                                    Supplier<Set<NodeId>> connectedPeersSupplier,
                                                     GovernorMesh governorMesh,
                                                     Map<String, List<NodeId>> communityMembers,
                                                     Serializer serializer,
                                                     Supplier<String> selfCommunityId) {
-        return new WorkerDHTNetwork(workerNetwork,
+        return new WorkerDHTNetwork(delegateRouter,
+                                    connectedPeersSupplier,
                                     Option.option(governorMesh),
                                     communityMembers,
                                     Option.option(serializer),
@@ -60,7 +70,7 @@ public final class WorkerDHTNetwork implements DHTNetwork {
     @Override
     public void send(NodeId target, ProtocolMessage message) {
         if (isLocalPeer(target)) {
-            workerNetwork.send(target, message);
+            delegateRouter.route(new NetworkServiceMessage.Send(target, message));
             return;
         }
         if (tryCrossCommunityRelay(target, message)) {
@@ -70,7 +80,7 @@ public final class WorkerDHTNetwork implements DHTNetwork {
             LOG.warn("DHT target {} not found in any known community — falling back to direct send (may fail)",
                      target.id());
         }
-        workerNetwork.send(target, message);
+        delegateRouter.route(new NetworkServiceMessage.Send(target, message));
     }
 
     private boolean isKnownInAnyCommunity(NodeId target) {
@@ -78,8 +88,8 @@ public final class WorkerDHTNetwork implements DHTNetwork {
     }
 
     private boolean isLocalPeer(NodeId target) {
-        return workerNetwork.connectedPeers()
-                            .contains(target);
+        return connectedPeersSupplier.get()
+                                     .contains(target);
     }
 
     private boolean tryCrossCommunityRelay(NodeId target, ProtocolMessage message) {
@@ -103,7 +113,7 @@ public final class WorkerDHTNetwork implements DHTNetwork {
         }
         var payload = ser.encode(message);
         var relay = DHTRelayMessage.dhtRelayMessage(target, payload);
-        workerNetwork.send(governor.unwrap(), relay);
+        delegateRouter.route(new NetworkServiceMessage.Send(governor.unwrap(), relay));
         LOG.debug("Relayed DHT message to {} via governor {} in community '{}'",
                   target.id(),
                   governor.unwrap()

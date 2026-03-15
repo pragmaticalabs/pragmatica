@@ -1,6 +1,5 @@
 package org.pragmatica.aether.worker.mutation;
 
-import org.pragmatica.aether.worker.network.WorkerNetwork;
 import org.pragmatica.cluster.node.passive.PassiveNode;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -19,21 +18,18 @@ public final class MutationForwarder {
     private static final Logger LOG = LoggerFactory.getLogger(MutationForwarder.class);
 
     private final NodeId selfId;
-    private final WorkerNetwork workerNetwork;
     private final PassiveNode<?, ?> passiveNode;
     private volatile Option<NodeId> currentGovernor = Option.empty();
 
-    private MutationForwarder(NodeId selfId, WorkerNetwork workerNetwork, PassiveNode<?, ?> passiveNode) {
+    private MutationForwarder(NodeId selfId, PassiveNode<?, ?> passiveNode) {
         this.selfId = selfId;
-        this.workerNetwork = workerNetwork;
         this.passiveNode = passiveNode;
     }
 
     /// Factory method.
     public static MutationForwarder mutationForwarder(NodeId selfId,
-                                                      WorkerNetwork workerNetwork,
                                                       PassiveNode<?, ?> passiveNode) {
-        return new MutationForwarder(selfId, workerNetwork, passiveNode);
+        return new MutationForwarder(selfId, passiveNode);
     }
 
     /// Update the known governor.
@@ -70,7 +66,8 @@ public final class MutationForwarder {
     }
 
     private void forwardToGovernor(WorkerMutation mutation, NodeId governorId) {
-        workerNetwork.send(governorId, mutation);
+        passiveNode.delegateRouter()
+                   .route(new NetworkServiceMessage.Send(governorId, mutation));
         LOG.trace("Forwarded mutation {} to governor {}", mutation.correlationId(), governorId.id());
     }
 }

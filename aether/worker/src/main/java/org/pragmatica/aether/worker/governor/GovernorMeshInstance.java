@@ -1,11 +1,15 @@
 package org.pragmatica.aether.worker.governor;
 
-import org.pragmatica.aether.worker.network.WorkerNetwork;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.net.NodeRole;
+import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.parse.Number;
+import org.pragmatica.messaging.MessageRouter.DelegateRouter;
+import org.pragmatica.net.tcp.NodeAddress;
 
-import java.net.InetSocketAddress;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -13,20 +17,20 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /// Default implementation of the governor mesh registry.
-/// Optionally registers peer addresses in WorkerNetwork for TCP connectivity.
+/// Optionally registers peer addresses in NCN for TCP connectivity.
 @SuppressWarnings("JBCT-RET-01")
 final class GovernorMeshInstance implements GovernorMesh {
     private static final Logger LOG = LoggerFactory.getLogger(GovernorMeshInstance.class);
 
     private final Map<String, NodeId> governors = new ConcurrentHashMap<>();
-    private final Option<WorkerNetwork> workerNetwork;
+    private final Option<DelegateRouter> delegateRouter;
 
     GovernorMeshInstance() {
-        this.workerNetwork = Option.empty();
+        this.delegateRouter = Option.empty();
     }
 
-    GovernorMeshInstance(WorkerNetwork workerNetwork) {
-        this.workerNetwork = Option.option(workerNetwork);
+    GovernorMeshInstance(DelegateRouter delegateRouter) {
+        this.delegateRouter = Option.option(delegateRouter);
     }
 
     @Override
@@ -48,7 +52,7 @@ final class GovernorMeshInstance implements GovernorMesh {
     }
 
     private void handleGovernorRemoval(NodeId removed, String communityId) {
-        workerNetwork.onPresent(net -> net.removePeer(removed));
+        delegateRouter.onPresent(router -> router.route(new NetworkServiceMessage.DisconnectNode(removed)));
         LOG.debug("Unregistered governor {} for community '{}'", removed, communityId);
     }
 
@@ -71,17 +75,23 @@ final class GovernorMeshInstance implements GovernorMesh {
         if (tcpAddress == null || tcpAddress.isEmpty()) {
             return;
         }
-        workerNetwork.onPresent(net -> parseTcpAddress(tcpAddress)
-        .onPresent(addr -> net.registerPeer(governorId, addr)));
+        delegateRouter.onPresent(router -> parseTcpAddress(tcpAddress)
+            .onPresent(addr -> registerInTopology(router, governorId, addr)));
     }
 
-    private static Option<InetSocketAddress> parseTcpAddress(String tcpAddress) {
+    private static void registerInTopology(DelegateRouter router, NodeId governorId, NodeAddress addr) {
+        router.route(new TopologyManagementMessage.AddNode(NodeInfo.nodeInfo(governorId, addr, NodeRole.PASSIVE)));
+        router.route(new NetworkServiceMessage.ConnectNode(governorId));
+    }
+
+    private static Option<NodeAddress> parseTcpAddress(String tcpAddress) {
         var parts = tcpAddress.split(":");
         if (parts.length != 2) {
             return Option.empty();
         }
         return Number.parseInt(parts[1])
                      .option()
-                     .map(port -> new InetSocketAddress(parts[0], port));
+                     .flatMap(port -> NodeAddress.nodeAddress(parts[0], port)
+                                                 .option());
     }
 }

@@ -4,21 +4,24 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.pragmatica.aether.worker.governor.GovernorMesh;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.messaging.MessageRouter.DelegateRouter;
 import org.pragmatica.serialization.Serializer;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.pragmatica.aether.worker.network.WorkerDHTNetwork.workerDHTNetwork;
 
@@ -33,11 +36,10 @@ class WorkerDHTNetworkTest {
     private static final String REMOTE_COMMUNITY = "community-remote";
 
     @Mock
-    private WorkerNetwork workerNetwork;
-
-    @Mock
     private Serializer serializer;
 
+    private DelegateRouter delegateRouter;
+    private List<Message> routedMessages;
     private ProtocolMessage testMessage;
 
     record TestMessage(NodeId sender) implements ProtocolMessage {}
@@ -49,19 +51,26 @@ class WorkerDHTNetworkTest {
     @BeforeEach
     void setUp() {
         testMessage = new TestMessage(id("sender"));
-        when(workerNetwork.connectedPeers()).thenReturn(List.of(LOCAL_PEER));
+        routedMessages = new ArrayList<>();
+        delegateRouter = DelegateRouter.delegate();
+        var mutableRouter = MessageRouter.mutable();
+        mutableRouter.addRoute(NetworkServiceMessage.Send.class, routedMessages::add);
+        delegateRouter.replaceDelegate(mutableRouter);
     }
 
     @Nested
     class LocalPeerRouting {
 
         @Test
-        void send_localPeer_routesDirectly() {
-            var dhtNetwork = workerDHTNetwork(workerNetwork);
+        void send_localPeer_routesDirectlyViaSend() {
+            var dhtNetwork = workerDHTNetwork(delegateRouter, () -> Set.of(LOCAL_PEER));
 
             dhtNetwork.send(LOCAL_PEER, testMessage);
 
-            verify(workerNetwork).send(LOCAL_PEER, testMessage);
+            assertThat(routedMessages).hasSize(1);
+            assertThat(routedMessages.getFirst()).isInstanceOf(NetworkServiceMessage.Send.class);
+            var send = (NetworkServiceMessage.Send) routedMessages.getFirst();
+            assertThat(send.target()).isEqualTo(LOCAL_PEER);
         }
     }
 
@@ -79,16 +88,17 @@ class WorkerDHTNetworkTest {
             when(serializer.encode(any())).thenReturn(STUB_PAYLOAD);
             mesh.registerGovernor(REMOTE_COMMUNITY, GOVERNOR);
             var communityMembers = Map.of(REMOTE_COMMUNITY, List.of(REMOTE_PEER));
-            var dhtNetwork = workerDHTNetwork(workerNetwork, mesh, communityMembers,
+            var dhtNetwork = workerDHTNetwork(delegateRouter, Set::of, mesh, communityMembers,
                                               serializer, () -> "community-local");
 
             dhtNetwork.send(REMOTE_PEER, testMessage);
 
-            var messageCaptor = ArgumentCaptor.forClass(Object.class);
-            verify(workerNetwork).send(eq(GOVERNOR), messageCaptor.capture());
-
-            assertThat(messageCaptor.getValue()).isInstanceOf(DHTRelayMessage.class);
-            var relay = (DHTRelayMessage) messageCaptor.getValue();
+            assertThat(routedMessages).hasSize(1);
+            assertThat(routedMessages.getFirst()).isInstanceOf(NetworkServiceMessage.Send.class);
+            var send = (NetworkServiceMessage.Send) routedMessages.getFirst();
+            assertThat(send.target()).isEqualTo(GOVERNOR);
+            assertThat(send.payload()).isInstanceOf(DHTRelayMessage.class);
+            var relay = (DHTRelayMessage) send.payload();
             assertThat(relay.actualTarget()).isEqualTo(REMOTE_PEER);
             assertThat(relay.serializedPayload()).isEqualTo(STUB_PAYLOAD);
         }
@@ -96,23 +106,27 @@ class WorkerDHTNetworkTest {
         @Test
         void send_remotePeerNoKnownCommunity_fallsBackToDirectSend() {
             var communityMembers = Map.<String, List<NodeId>>of();
-            var dhtNetwork = workerDHTNetwork(workerNetwork, mesh, communityMembers,
+            var dhtNetwork = workerDHTNetwork(delegateRouter, Set::of, mesh, communityMembers,
                                               serializer, () -> "community-local");
 
             dhtNetwork.send(UNKNOWN_PEER, testMessage);
 
-            verify(workerNetwork).send(UNKNOWN_PEER, testMessage);
+            assertThat(routedMessages).hasSize(1);
+            var send = (NetworkServiceMessage.Send) routedMessages.getFirst();
+            assertThat(send.target()).isEqualTo(UNKNOWN_PEER);
         }
 
         @Test
         void send_remotePeerNoGovernor_fallsBackToDirectSend() {
             var communityMembers = Map.of(REMOTE_COMMUNITY, List.of(REMOTE_PEER));
-            var dhtNetwork = workerDHTNetwork(workerNetwork, mesh, communityMembers,
+            var dhtNetwork = workerDHTNetwork(delegateRouter, Set::of, mesh, communityMembers,
                                               serializer, () -> "community-local");
 
             dhtNetwork.send(REMOTE_PEER, testMessage);
 
-            verify(workerNetwork).send(REMOTE_PEER, testMessage);
+            assertThat(routedMessages).hasSize(1);
+            var send = (NetworkServiceMessage.Send) routedMessages.getFirst();
+            assertThat(send.target()).isEqualTo(REMOTE_PEER);
         }
     }
 
@@ -121,11 +135,13 @@ class WorkerDHTNetworkTest {
 
         @Test
         void send_noMeshConfigured_routesDirectly() {
-            var dhtNetwork = workerDHTNetwork(workerNetwork);
+            var dhtNetwork = workerDHTNetwork(delegateRouter, Set::of);
 
             dhtNetwork.send(REMOTE_PEER, testMessage);
 
-            verify(workerNetwork).send(REMOTE_PEER, testMessage);
+            assertThat(routedMessages).hasSize(1);
+            var send = (NetworkServiceMessage.Send) routedMessages.getFirst();
+            assertThat(send.target()).isEqualTo(REMOTE_PEER);
         }
     }
 }

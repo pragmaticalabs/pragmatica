@@ -4,21 +4,23 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.pragmatica.aether.worker.network.WorkerNetwork;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
+import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.messaging.MessageRouter.DelegateRouter;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.pragmatica.lang.Unit.unit;
 
@@ -28,8 +30,8 @@ class WorkerBootstrapTest {
     private static final NodeId SELF = NodeId.nodeId("worker-1").unwrap();
     private static final NodeId GOVERNOR = NodeId.nodeId("governor-1").unwrap();
 
-    @Mock
-    private WorkerNetwork network;
+    private DelegateRouter delegateRouter;
+    private List<Message> routedMessages;
 
     @Mock
     private KVStore<?, ?> kvStore;
@@ -38,7 +40,12 @@ class WorkerBootstrapTest {
 
     @BeforeEach
     void setUp() {
-        bootstrap = WorkerBootstrap.workerBootstrap(SELF, network, kvStore);
+        routedMessages = new ArrayList<>();
+        delegateRouter = DelegateRouter.delegate();
+        var mutableRouter = MessageRouter.mutable();
+        mutableRouter.addRoute(NetworkServiceMessage.Send.class, routedMessages::add);
+        delegateRouter.replaceDelegate(mutableRouter);
+        bootstrap = WorkerBootstrap.workerBootstrap(SELF, delegateRouter, kvStore);
     }
 
     @Nested
@@ -64,19 +71,21 @@ class WorkerBootstrapTest {
         }
 
         @Test
-        void requestSnapshot_withSource_sendsRequest() {
+        void requestSnapshot_withSource_sendsSendMessage() {
             bootstrap.requestSnapshot(Option.some(GOVERNOR));
 
-            var captor = ArgumentCaptor.forClass(Object.class);
-            verify(network).send(any(NodeId.class), captor.capture());
-            assertThat(captor.getValue()).isInstanceOf(SnapshotRequest.class);
+            assertThat(routedMessages).hasSize(1);
+            assertThat(routedMessages.getFirst()).isInstanceOf(NetworkServiceMessage.Send.class);
+            var send = (NetworkServiceMessage.Send) routedMessages.getFirst();
+            assertThat(send.target()).isEqualTo(GOVERNOR);
+            assertThat(send.payload()).isInstanceOf(SnapshotRequest.class);
         }
 
         @Test
         void requestSnapshot_withoutSource_doesNotSend() {
             bootstrap.requestSnapshot(Option.empty());
 
-            verifyNoInteractions(network);
+            assertThat(routedMessages).isEmpty();
         }
 
         @Test

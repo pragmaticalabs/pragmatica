@@ -1,12 +1,13 @@
 package org.pragmatica.aether.worker.bootstrap;
 
 import org.pragmatica.aether.worker.WorkerError;
-import org.pragmatica.aether.worker.network.WorkerNetwork;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.messaging.MessageRouter.DelegateRouter;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,28 +19,28 @@ import org.slf4j.LoggerFactory;
 /// 2. Apply the snapshot to the local KVStore
 /// 3. Start the Decision stream from the snapshot's sequence number
 ///
-/// The snapshot is requested via the WorkerNetwork TCP connection.
+/// The snapshot is requested via the NCN (NettyClusterNetwork) connection.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
 public final class WorkerBootstrap {
     private static final Logger LOG = LoggerFactory.getLogger(WorkerBootstrap.class);
 
     private final NodeId selfId;
-    private final WorkerNetwork network;
+    private final DelegateRouter delegateRouter;
     private final KVStore<?, ?> kvStore;
     private volatile boolean bootstrapped;
     private volatile long snapshotSequence = - 1;
     private volatile int retryCount = 0;
 
-    private WorkerBootstrap(NodeId selfId, WorkerNetwork network, KVStore<?, ?> kvStore) {
+    private WorkerBootstrap(NodeId selfId, DelegateRouter delegateRouter, KVStore<?, ?> kvStore) {
         this.selfId = selfId;
-        this.network = network;
+        this.delegateRouter = delegateRouter;
         this.kvStore = kvStore;
         this.bootstrapped = false;
     }
 
     /// Factory method.
-    public static WorkerBootstrap workerBootstrap(NodeId selfId, WorkerNetwork network, KVStore<?, ?> kvStore) {
-        return new WorkerBootstrap(selfId, network, kvStore);
+    public static WorkerBootstrap workerBootstrap(NodeId selfId, DelegateRouter delegateRouter, KVStore<?, ?> kvStore) {
+        return new WorkerBootstrap(selfId, delegateRouter, kvStore);
     }
 
     /// The sequence number at which the snapshot was taken, or -1 if no snapshot applied.
@@ -61,7 +62,7 @@ public final class WorkerBootstrap {
     /// Handle incoming snapshot requests (governor responds with snapshot).
     public void onSnapshotRequest(SnapshotRequest request, byte[] kvState, long sequenceNumber) {
         var response = SnapshotResponse.snapshotResponse(kvState, sequenceNumber);
-        network.send(request.requester(), response);
+        delegateRouter.route(new NetworkServiceMessage.Send(request.requester(), response));
         LOG.info("Sent snapshot to {} at sequence {}",
                  request.requester()
                         .id(),
@@ -85,7 +86,7 @@ public final class WorkerBootstrap {
 
     private void sendSnapshotRequest(NodeId source) {
         var request = SnapshotRequest.snapshotRequest(selfId);
-        network.send(source, request);
+        delegateRouter.route(new NetworkServiceMessage.Send(source, request));
         LOG.info("Requested snapshot from {}", source.id());
     }
 

@@ -1,9 +1,10 @@
 package org.pragmatica.aether.worker.governor;
 
-import org.pragmatica.aether.worker.network.WorkerNetwork;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.lang.Option;
+import org.pragmatica.messaging.MessageRouter.DelegateRouter;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
@@ -15,10 +16,10 @@ import org.slf4j.LoggerFactory;
 ///
 /// When this node IS the governor:
 /// - Receives Decisions from core via PassiveNode
-/// - Fans them out to all group followers via WorkerNetwork
+/// - Fans them out to all group followers via NCN
 ///
 /// When this node IS a follower:
-/// - Receives relayed Decisions from the governor via WorkerNetwork
+/// - Receives relayed Decisions from the governor via NCN
 ///
 /// Maintains a bounded buffer for gap recovery (configurable size).
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
@@ -27,32 +28,32 @@ public final class DecisionRelay {
     private static final int DEFAULT_BUFFER_SIZE = 1000;
 
     private final NodeId selfId;
-    private final WorkerNetwork network;
+    private final DelegateRouter delegateRouter;
     private final int bufferSize;
     private final ConcurrentLinkedDeque<Decision<?>> decisionBuffer = new ConcurrentLinkedDeque<>();
     private volatile long lastSequence = - 1;
 
-    private DecisionRelay(NodeId selfId, WorkerNetwork network, int bufferSize) {
+    private DecisionRelay(NodeId selfId, DelegateRouter delegateRouter, int bufferSize) {
         this.selfId = selfId;
-        this.network = network;
+        this.delegateRouter = delegateRouter;
         this.bufferSize = bufferSize;
     }
 
     /// Factory method.
-    public static DecisionRelay decisionRelay(NodeId selfId, WorkerNetwork network) {
-        return new DecisionRelay(selfId, network, DEFAULT_BUFFER_SIZE);
+    public static DecisionRelay decisionRelay(NodeId selfId, DelegateRouter delegateRouter) {
+        return new DecisionRelay(selfId, delegateRouter, DEFAULT_BUFFER_SIZE);
     }
 
     /// Factory method with custom buffer size.
-    public static DecisionRelay decisionRelay(NodeId selfId, WorkerNetwork network, int bufferSize) {
-        return new DecisionRelay(selfId, network, bufferSize);
+    public static DecisionRelay decisionRelay(NodeId selfId, DelegateRouter delegateRouter, int bufferSize) {
+        return new DecisionRelay(selfId, delegateRouter, bufferSize);
     }
 
     /// Called when a Decision is received from the core cluster (governor path).
     /// Buffers the decision and broadcasts to followers.
     public void onDecisionFromCore(Decision<?> decision, List<NodeId> followers) {
         bufferDecision(decision);
-        followers.forEach(followerId -> network.send(followerId, decision));
+        followers.forEach(followerId -> delegateRouter.route(new NetworkServiceMessage.Send(followerId, decision)));
         LOG.trace("Relayed decision seq={} to {} followers",
                   decision.phase()
                           .value(),

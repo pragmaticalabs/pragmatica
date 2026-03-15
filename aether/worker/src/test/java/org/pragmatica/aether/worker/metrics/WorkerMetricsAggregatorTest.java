@@ -1,5 +1,6 @@
 package org.pragmatica.aether.worker.metrics;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -8,16 +9,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.pragmatica.aether.worker.network.WorkerNetwork;
 import org.pragmatica.cluster.node.passive.PassiveNode;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.MessageRouter.DelegateRouter;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.lenient;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01", "unchecked", "rawtypes"})
@@ -29,23 +29,34 @@ class WorkerMetricsAggregatorTest {
     private static final long INTERVAL_MS = 5000L;
 
     @Mock
-    private WorkerNetwork workerNetwork;
-
-    @Mock
     private PassiveNode passiveNode;
 
     private DelegateRouter delegateRouter;
+    private DelegateRouter passiveNodeRouter;
+    private List<Message> routedMessages;
+    private List<Message> passiveNodeRoutedMessages;
     private WorkerMetricsAggregator aggregator;
     private ActiveWorkerMetricsAggregator activeAggregator;
 
     @BeforeEach
     void setUp() {
+        routedMessages = new ArrayList<>();
+        passiveNodeRoutedMessages = new ArrayList<>();
+
         delegateRouter = DelegateRouter.delegate();
-        delegateRouter.quiesce();
-        lenient().when(passiveNode.delegateRouter()).thenReturn(delegateRouter);
+        var mutableRouter = MessageRouter.mutable();
+        mutableRouter.addRoute(NetworkServiceMessage.Send.class, routedMessages::add);
+        delegateRouter.replaceDelegate(mutableRouter);
+
+        passiveNodeRouter = DelegateRouter.delegate();
+        var passiveRouter = MessageRouter.mutable();
+        passiveRouter.addRoute(NetworkServiceMessage.Broadcast.class, passiveNodeRoutedMessages::add);
+        passiveNodeRouter.replaceDelegate(passiveRouter);
+
+        lenient().when(passiveNode.delegateRouter()).thenReturn(passiveNodeRouter);
         aggregator = WorkerMetricsAggregator.workerMetricsAggregator(
             SELF,
-            workerNetwork,
+            delegateRouter,
             passiveNode,
             () -> COMMUNITY_ID,
             () -> List.of(FOLLOWER_1, FOLLOWER_2),
@@ -123,7 +134,7 @@ class WorkerMetricsAggregatorTest {
 
             aggregator.onSnapshotRequest(request);
 
-            verify(passiveNode, never()).delegateRouter();
+            assertThat(passiveNodeRoutedMessages).isEmpty();
         }
 
         @Test
@@ -134,7 +145,8 @@ class WorkerMetricsAggregatorTest {
 
             aggregator.onSnapshotRequest(request);
 
-            verify(passiveNode, times(1)).delegateRouter();
+            assertThat(passiveNodeRoutedMessages).hasSize(1);
+            assertThat(passiveNodeRoutedMessages.getFirst()).isInstanceOf(NetworkServiceMessage.Broadcast.class);
         }
     }
 }
