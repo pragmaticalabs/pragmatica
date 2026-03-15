@@ -157,13 +157,13 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     @Override
     public void onMemberFaulty(SwimMember member) {
         log.error("SWIM member faulty: {}, routing DisconnectNode", member.nodeId());
-        router.route(new NetworkServiceMessage.DisconnectNode(member.nodeId()));
+        router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(member.nodeId()));
     }
 
     @Override
     public void onMemberLeft(NodeId leftNodeId) {
         log.warn("SWIM member left: {}, routing DisconnectNode", leftNodeId);
-        router.route(new NetworkServiceMessage.DisconnectNode(leftNodeId));
+        router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(leftNodeId));
     }
 
     // ---- Internal ----

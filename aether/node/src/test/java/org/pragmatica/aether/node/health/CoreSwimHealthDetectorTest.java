@@ -51,11 +51,12 @@ class CoreSwimHealthDetectorTest {
     @Nested
     class FaultyMember {
         @Test
-        void onMemberFaulty_routesDisconnectNode() {
+        void onMemberFaulty_routesDisconnectNode() throws InterruptedException {
             var faultyMember = SwimMember.swimMember(PEER_A, MemberState.FAULTY, 0,
                                                       new InetSocketAddress("127.0.0.2", 9002));
 
             detector.onMemberFaulty(faultyMember);
+            Thread.sleep(100); // Allow async dispatch to complete
 
             assertThat(disconnectNotifications).hasSize(1);
             assertThat(disconnectNotifications.getFirst().nodeId()).isEqualTo(PEER_A);
@@ -65,8 +66,9 @@ class CoreSwimHealthDetectorTest {
     @Nested
     class MemberLeft {
         @Test
-        void onMemberLeft_routesDisconnectNode() {
+        void onMemberLeft_routesDisconnectNode() throws InterruptedException {
             detector.onMemberLeft(PEER_B);
+            Thread.sleep(100); // Allow async dispatch to complete
 
             assertThat(disconnectNotifications).hasSize(1);
             assertThat(disconnectNotifications.getFirst().nodeId()).isEqualTo(PEER_B);

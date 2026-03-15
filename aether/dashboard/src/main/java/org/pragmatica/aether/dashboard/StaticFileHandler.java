@@ -12,6 +12,7 @@ import java.io.InputStream;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,6 +58,7 @@ public final class StaticFileHandler {
                                                                                           CommonContentType.APPLICATION_OCTET_STREAM));
 
     private final String classpathPrefix;
+    private final Map<String, Option<byte[]>> resourceCache = new ConcurrentHashMap<>();
 
     private StaticFileHandler(String classpathPrefix) {
         this.classpathPrefix = classpathPrefix;
@@ -103,6 +105,10 @@ public final class StaticFileHandler {
     }
 
     private Option<byte[]> loadResource(String path) {
+        return resourceCache.computeIfAbsent(path, this::doLoadResource);
+    }
+
+    private Option<byte[]> doLoadResource(String path) {
         try (InputStream is = getClass().getClassLoader()
                                       .getResourceAsStream(path)) {
             if (is == null) {
