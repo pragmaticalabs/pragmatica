@@ -1,25 +1,26 @@
 package org.pragmatica.aether.worker.metrics;
 
-import java.util.ArrayList;
-import java.util.List;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
 import org.pragmatica.cluster.node.passive.PassiveNode;
+import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.consensus.net.netty.NettyClusterNetwork;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.MessageRouter.DelegateRouter;
+import org.pragmatica.messaging.MessageRouter.Entry;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.lenient;
 
-@ExtendWith(MockitoExtension.class)
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01", "unchecked", "rawtypes"})
 class WorkerMetricsAggregatorTest {
     private static final NodeId SELF = NodeId.nodeId("governor-1").unwrap();
@@ -28,15 +29,10 @@ class WorkerMetricsAggregatorTest {
     private static final String COMMUNITY_ID = "test-community";
     private static final long INTERVAL_MS = 5000L;
 
-    @Mock
-    private PassiveNode passiveNode;
-
     private DelegateRouter delegateRouter;
-    private DelegateRouter passiveNodeRouter;
     private List<Message> routedMessages;
     private List<Message> passiveNodeRoutedMessages;
     private WorkerMetricsAggregator aggregator;
-    private ActiveWorkerMetricsAggregator activeAggregator;
 
     @BeforeEach
     void setUp() {
@@ -48,12 +44,12 @@ class WorkerMetricsAggregatorTest {
         mutableRouter.addRoute(NetworkServiceMessage.Send.class, routedMessages::add);
         delegateRouter.replaceDelegate(mutableRouter);
 
-        passiveNodeRouter = DelegateRouter.delegate();
+        var passiveNodeRouter = DelegateRouter.delegate();
         var passiveRouter = MessageRouter.mutable();
         passiveRouter.addRoute(NetworkServiceMessage.Broadcast.class, passiveNodeRoutedMessages::add);
         passiveNodeRouter.replaceDelegate(passiveRouter);
 
-        lenient().when(passiveNode.delegateRouter()).thenReturn(passiveNodeRouter);
+        var passiveNode = new StubPassiveNode(passiveNodeRouter);
         aggregator = WorkerMetricsAggregator.workerMetricsAggregator(
             SELF,
             delegateRouter,
@@ -62,7 +58,6 @@ class WorkerMetricsAggregatorTest {
             () -> List.of(FOLLOWER_1, FOLLOWER_2),
             INTERVAL_MS
         );
-        activeAggregator = (ActiveWorkerMetricsAggregator) aggregator;
     }
 
     @Nested
@@ -73,8 +68,8 @@ class WorkerMetricsAggregatorTest {
 
             aggregator.onMetricsPong(pong);
 
-            assertThat(activeAggregator.pongStore()).containsKey(FOLLOWER_1);
-            assertThat(activeAggregator.pongStore().get(FOLLOWER_1).cpuUsage()).isEqualTo(0.5);
+            assertThat(aggregator.pongStore()).containsKey(FOLLOWER_1);
+            assertThat(aggregator.pongStore().get(FOLLOWER_1).cpuUsage()).isEqualTo(0.5);
         }
 
         @Test
@@ -85,8 +80,8 @@ class WorkerMetricsAggregatorTest {
             aggregator.onMetricsPong(pong1);
             aggregator.onMetricsPong(pong2);
 
-            assertThat(activeAggregator.pongStore()).hasSize(1);
-            assertThat(activeAggregator.pongStore().get(FOLLOWER_1).cpuUsage()).isEqualTo(0.9);
+            assertThat(aggregator.pongStore()).hasSize(1);
+            assertThat(aggregator.pongStore().get(FOLLOWER_1).cpuUsage()).isEqualTo(0.9);
         }
 
         @Test
@@ -97,9 +92,9 @@ class WorkerMetricsAggregatorTest {
             aggregator.onMetricsPong(pong1);
             aggregator.onMetricsPong(pong2);
 
-            assertThat(activeAggregator.pongStore()).hasSize(2);
-            assertThat(activeAggregator.pongStore()).containsKey(FOLLOWER_1);
-            assertThat(activeAggregator.pongStore()).containsKey(FOLLOWER_2);
+            assertThat(aggregator.pongStore()).hasSize(2);
+            assertThat(aggregator.pongStore()).containsKey(FOLLOWER_1);
+            assertThat(aggregator.pongStore()).containsKey(FOLLOWER_2);
         }
     }
 
@@ -112,15 +107,15 @@ class WorkerMetricsAggregatorTest {
 
             aggregator.stop();
 
-            assertThat(activeAggregator.pongStore()).isEmpty();
-            assertThat(activeAggregator.evaluator().slidingWindow()).isEmpty();
+            assertThat(aggregator.pongStore()).isEmpty();
+            assertThat(aggregator.evaluator().slidingWindow()).isEmpty();
         }
 
         @Test
         void stop_withoutStart_doesNotThrow() {
             aggregator.stop();
 
-            assertThat(activeAggregator.pongStore()).isEmpty();
+            assertThat(aggregator.pongStore()).isEmpty();
         }
     }
 
@@ -148,5 +143,23 @@ class WorkerMetricsAggregatorTest {
             assertThat(passiveNodeRoutedMessages).hasSize(1);
             assertThat(passiveNodeRoutedMessages.getFirst()).isInstanceOf(NetworkServiceMessage.Broadcast.class);
         }
+    }
+
+    @SuppressWarnings({"JBCT-STY-05"})
+    record StubPassiveNode(DelegateRouter delegateRouter) implements PassiveNode<StructuredKey, Object> {
+        @Override
+        public NettyClusterNetwork network() { return null; }
+
+        @Override
+        public KVStore<StructuredKey, Object> kvStore() { return null; }
+
+        @Override
+        public List<Entry<?>> routeEntries() { return List.of(); }
+
+        @Override
+        public Promise<Unit> start() { return Promise.success(Unit.unit()); }
+
+        @Override
+        public Promise<Unit> stop() { return Promise.success(Unit.unit()); }
     }
 }

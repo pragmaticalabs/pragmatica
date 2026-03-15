@@ -1,11 +1,9 @@
 package org.pragmatica.aether.worker.network;
 
+import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
 import org.pragmatica.aether.worker.governor.GovernorMesh;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
@@ -21,11 +19,8 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.when;
 import static org.pragmatica.aether.worker.network.WorkerDHTNetwork.workerDHTNetwork;
 
-@ExtendWith(MockitoExtension.class)
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
 class WorkerDHTNetworkTest {
     private static final byte[] STUB_PAYLOAD = new byte[]{1, 2, 3};
@@ -35,9 +30,7 @@ class WorkerDHTNetworkTest {
     private static final NodeId GOVERNOR = id("governor-1");
     private static final String REMOTE_COMMUNITY = "community-remote";
 
-    @Mock
-    private Serializer serializer;
-
+    private final Serializer serializer = new StubSerializer();
     private DelegateRouter delegateRouter;
     private List<Message> routedMessages;
     private ProtocolMessage testMessage;
@@ -85,7 +78,6 @@ class WorkerDHTNetworkTest {
 
         @Test
         void send_remotePeerInKnownCommunity_relaysViaGovernor() {
-            when(serializer.encode(any())).thenReturn(STUB_PAYLOAD);
             mesh.registerGovernor(REMOTE_COMMUNITY, GOVERNOR);
             var communityMembers = Map.of(REMOTE_COMMUNITY, List.of(REMOTE_PEER));
             var dhtNetwork = workerDHTNetwork(delegateRouter, Set::of, mesh, communityMembers,
@@ -143,5 +135,14 @@ class WorkerDHTNetworkTest {
             var send = (NetworkServiceMessage.Send) routedMessages.getFirst();
             assertThat(send.target()).isEqualTo(REMOTE_PEER);
         }
+    }
+
+    @SuppressWarnings("JBCT-STY-05")
+    static class StubSerializer implements Serializer {
+        @Override
+        public <T> byte[] encode(T object) { return STUB_PAYLOAD; }
+
+        @Override
+        public <T> void write(ByteBuf byteBuf, T object) {}
     }
 }

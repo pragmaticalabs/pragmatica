@@ -3,17 +3,14 @@ package org.pragmatica.aether.worker.deployment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.SliceStore.LoadedSlice;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue;
 import org.pragmatica.aether.worker.mutation.MutationForwarder;
 import org.pragmatica.aether.worker.mutation.WorkerMutation;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -24,13 +21,12 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
 import static org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue.workerSliceDirectiveValue;
 import static org.pragmatica.lang.Unit.unit;
 
@@ -42,13 +38,13 @@ class WorkerDeploymentManagerTest {
     private static final MethodName METHOD_PROCESS = MethodName.methodName("processRequest").unwrap();
     private static final String MY_COMMUNITY = "default:local";
 
-    private MutationForwarder mutationForwarder;
+    private CapturingMutationForwarder mutationForwarder;
     private StubSliceStore sliceStore;
     private WorkerDeploymentManager manager;
 
     @BeforeEach
     void setUp() {
-        mutationForwarder = mock(MutationForwarder.class);
+        mutationForwarder = new CapturingMutationForwarder();
         sliceStore = new StubSliceStore();
         manager = WorkerDeploymentManager.workerDeploymentManager(
             SELF, sliceStore, mutationForwarder, List.of(SELF, OTHER));
@@ -64,7 +60,7 @@ class WorkerDeploymentManagerTest {
             waitForAsyncCompletion();
 
             assertThat(sliceStore.loadCalls).isNotEmpty();
-            verify(mutationForwarder, atLeastOnce()).forward(any(WorkerMutation.class));
+            assertThat(mutationForwarder.forwarded).isNotEmpty();
         }
 
         @Test
@@ -75,7 +71,7 @@ class WorkerDeploymentManagerTest {
             waitForAsyncCompletion();
 
             assertThat(sliceStore.loadCalls).isEmpty();
-            verify(mutationForwarder, never()).forward(any(WorkerMutation.class));
+            assertThat(mutationForwarder.forwarded).isEmpty();
         }
 
         @Test
@@ -86,7 +82,7 @@ class WorkerDeploymentManagerTest {
             waitForAsyncCompletion();
 
             assertThat(sliceStore.loadCalls).isNotEmpty();
-            verify(mutationForwarder, atLeastOnce()).forward(any(WorkerMutation.class));
+            assertThat(mutationForwarder.forwarded).isNotEmpty();
         }
     }
 
@@ -143,17 +139,12 @@ class WorkerDeploymentManagerTest {
             manager.onDirectivePut(directive);
             waitForAsyncCompletion();
 
-            // Verify state transitions were forwarded via MutationForwarder
-            var captor = ArgumentCaptor.forClass(WorkerMutation.class);
-            verify(mutationForwarder, atLeastOnce()).forward(captor.capture());
-
             // Should have forwarded mutations for LOADING, LOADED, ACTIVATING, ACTIVE states
             // plus endpoint publishing (NodeArtifactKey with methods)
-            var forwarded = captor.getAllValues();
-            assertThat(forwarded).hasSizeGreaterThanOrEqualTo(4);
+            assertThat(mutationForwarder.forwarded).hasSizeGreaterThanOrEqualTo(4);
 
             // Verify NodeArtifactKey mutations were forwarded
-            var nodeArtifactPuts = forwarded.stream()
+            var nodeArtifactPuts = mutationForwarder.forwarded.stream()
                 .filter(m -> m.command() instanceof KVCommand.Put<?, ?> put
                              && put.key() instanceof NodeArtifactKey nak
                              && nak.artifact().equals(TEST_ARTIFACT))
@@ -170,10 +161,9 @@ class WorkerDeploymentManagerTest {
             waitForAsyncCompletion();
 
             // Verify LOADING and FAILED state mutations were forwarded
-            var captor = ArgumentCaptor.forClass(WorkerMutation.class);
-            verify(mutationForwarder, atLeastOnce()).forward(captor.capture());
+            assertThat(mutationForwarder.forwarded).isNotEmpty();
 
-            var nodeArtifactStates = captor.getAllValues().stream()
+            var nodeArtifactStates = mutationForwarder.forwarded.stream()
                 .filter(m -> m.command() instanceof KVCommand.Put<?, ?> put
                              && put.key() instanceof NodeArtifactKey)
                 .map(m -> ((NodeArtifactValue) ((KVCommand.Put<?, ?>) m.command()).value()).state())
@@ -196,10 +186,7 @@ class WorkerDeploymentManagerTest {
             waitForAsyncCompletion();
 
             // Verify NodeArtifactKey with methods was forwarded
-            var captor = ArgumentCaptor.forClass(WorkerMutation.class);
-            verify(mutationForwarder, atLeastOnce()).forward(captor.capture());
-
-            var nodeArtifactPuts = captor.getAllValues().stream()
+            var nodeArtifactPuts = mutationForwarder.forwarded.stream()
                 .filter(m -> m.command() instanceof KVCommand.Put<?, ?> put
                              && put.key() instanceof NodeArtifactKey nak
                              && nak.artifact().equals(TEST_ARTIFACT)
@@ -274,6 +261,20 @@ class WorkerDeploymentManagerTest {
     }
 
     // -- Stubs --
+
+    @SuppressWarnings("JBCT-STY-05")
+    static class CapturingMutationForwarder implements MutationForwarder {
+        final CopyOnWriteArrayList<WorkerMutation> forwarded = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void forward(WorkerMutation mutation) { forwarded.add(mutation); }
+
+        @Override
+        public void onMutationFromFollower(WorkerMutation mutation) {}
+
+        @Override
+        public void updateGovernor(Option<NodeId> governor) {}
+    }
 
     static class StubSliceStore implements SliceStore {
         final CopyOnWriteArrayList<Artifact> loadCalls = new CopyOnWriteArrayList<>();

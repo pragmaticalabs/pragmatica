@@ -12,28 +12,26 @@ import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTNode;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
+import org.pragmatica.lang.Option;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 
 class GovernorCleanupTest {
     private static final NodeId DEAD_NODE = NodeId.nodeId("dead-worker-1").unwrap();
     private static final NodeId ALIVE_NODE = NodeId.nodeId("alive-worker-1").unwrap();
 
-    private MutationForwarder forwarder;
+    private CapturingMutationForwarder forwarder;
     private GovernorCleanup cleanup;
 
     @BeforeEach
     void setUp() {
-        forwarder = mock(MutationForwarder.class);
+        forwarder = new CapturingMutationForwarder();
         cleanup = GovernorCleanup.governorCleanup(forwarder);
     }
 
@@ -48,7 +46,7 @@ class GovernorCleanupTest {
             var result = cleanup.cleanupDeadNode(DEAD_NODE).await();
 
             result.onFailure(_ -> fail("Expected success"));
-            verify(forwarder, times(1)).forward(any(WorkerMutation.class));
+            assertThat(forwarder.forwarded).hasSize(1);
         }
 
         @Test
@@ -60,7 +58,7 @@ class GovernorCleanupTest {
             var result = cleanup.cleanupDeadNode(DEAD_NODE).await();
 
             result.onFailure(_ -> fail("Expected success"));
-            verify(forwarder, times(1)).forward(any(WorkerMutation.class));
+            assertThat(forwarder.forwarded).hasSize(1);
         }
 
         @Test
@@ -68,7 +66,7 @@ class GovernorCleanupTest {
             var result = cleanup.cleanupDeadNode(DEAD_NODE).await();
 
             result.onFailure(_ -> fail("Expected success"));
-            verify(forwarder, never()).forward(any());
+            assertThat(forwarder.forwarded).isEmpty();
         }
 
         @Test
@@ -82,7 +80,7 @@ class GovernorCleanupTest {
 
             cleanup.cleanupDeadNode(DEAD_NODE).await();
 
-            verify(forwarder, times(1)).forward(any(WorkerMutation.class));
+            assertThat(forwarder.forwarded).hasSize(1);
         }
 
         @Test
@@ -97,7 +95,7 @@ class GovernorCleanupTest {
             var result = cleanup.cleanupDeadNode(DEAD_NODE).await();
 
             result.onFailure(_ -> fail("Expected success"));
-            verify(forwarder, times(2)).forward(any(WorkerMutation.class));
+            assertThat(forwarder.forwarded).hasSize(2);
         }
     }
 
@@ -115,7 +113,7 @@ class GovernorCleanupTest {
             var result = cleanup.cleanupDeadNodes(Set.of(ALIVE_NODE)).await();
 
             result.onFailure(_ -> fail("Expected success"));
-            verify(forwarder, times(1)).forward(any(WorkerMutation.class));
+            assertThat(forwarder.forwarded).hasSize(1);
         }
 
         @Test
@@ -127,7 +125,7 @@ class GovernorCleanupTest {
             var result = cleanup.cleanupDeadNodes(Set.of(ALIVE_NODE)).await();
 
             result.onFailure(_ -> fail("Expected success"));
-            verify(forwarder, never()).forward(any());
+            assertThat(forwarder.forwarded).isEmpty();
         }
 
         @Test
@@ -135,7 +133,7 @@ class GovernorCleanupTest {
             var result = cleanup.cleanupDeadNodes(Set.of(ALIVE_NODE)).await();
 
             result.onFailure(_ -> fail("Expected success"));
-            verify(forwarder, never()).forward(any());
+            assertThat(forwarder.forwarded).isEmpty();
         }
     }
 
@@ -150,7 +148,7 @@ class GovernorCleanupTest {
 
             cleanup.cleanupDeadNode(DEAD_NODE).await();
 
-            verify(forwarder, never()).forward(any());
+            assertThat(forwarder.forwarded).isEmpty();
         }
 
         @Test
@@ -162,7 +160,7 @@ class GovernorCleanupTest {
 
             cleanup.cleanupDeadNode(DEAD_NODE).await();
 
-            verify(forwarder, never()).forward(any());
+            assertThat(forwarder.forwarded).isEmpty();
         }
     }
 
@@ -188,7 +186,7 @@ class GovernorCleanupTest {
 
             result.onFailure(_ -> fail("Expected success"));
             cleanup.cleanupDeadNode(DEAD_NODE).await();
-            verify(forwarder, times(1)).forward(any(WorkerMutation.class));
+            assertThat(forwarder.forwarded).hasSize(1);
         }
 
         @Test
@@ -200,7 +198,7 @@ class GovernorCleanupTest {
 
             result.onFailure(_ -> fail("Expected success"));
             cleanup.cleanupDeadNode(DEAD_NODE).await();
-            verify(forwarder, times(1)).forward(any(WorkerMutation.class));
+            assertThat(forwarder.forwarded).hasSize(1);
         }
 
         @Test
@@ -212,7 +210,7 @@ class GovernorCleanupTest {
             cleanup.rebuildIndex(dhtNode).await();
 
             cleanup.cleanupDeadNode(DEAD_NODE).await();
-            verify(forwarder, never()).forward(any());
+            assertThat(forwarder.forwarded).isEmpty();
         }
 
         private void putStorageEntry(String key, String value) {
@@ -220,5 +218,19 @@ class GovernorCleanupTest {
                         value.getBytes(StandardCharsets.UTF_8))
                    .await();
         }
+    }
+
+    @SuppressWarnings("JBCT-STY-05")
+    static class CapturingMutationForwarder implements MutationForwarder {
+        final List<WorkerMutation> forwarded = new ArrayList<>();
+
+        @Override
+        public void forward(WorkerMutation mutation) { forwarded.add(mutation); }
+
+        @Override
+        public void onMutationFromFollower(WorkerMutation mutation) {}
+
+        @Override
+        public void updateGovernor(Option<NodeId> governor) {}
     }
 }

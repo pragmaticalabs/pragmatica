@@ -3,14 +3,14 @@ package org.pragmatica.aether.worker.bootstrap;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.MessageRouter.DelegateRouter;
@@ -20,11 +20,8 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.when;
 import static org.pragmatica.lang.Unit.unit;
 
-@ExtendWith(MockitoExtension.class)
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
 class WorkerBootstrapTest {
     private static final NodeId SELF = NodeId.nodeId("worker-1").unwrap();
@@ -32,10 +29,6 @@ class WorkerBootstrapTest {
 
     private DelegateRouter delegateRouter;
     private List<Message> routedMessages;
-
-    @Mock
-    private KVStore<?, ?> kvStore;
-
     private WorkerBootstrap bootstrap;
 
     @BeforeEach
@@ -45,6 +38,7 @@ class WorkerBootstrapTest {
         var mutableRouter = MessageRouter.mutable();
         mutableRouter.addRoute(NetworkServiceMessage.Send.class, routedMessages::add);
         delegateRouter.replaceDelegate(mutableRouter);
+        var kvStore = new StubKVStore();
         bootstrap = WorkerBootstrap.workerBootstrap(SELF, delegateRouter, kvStore);
     }
 
@@ -90,7 +84,6 @@ class WorkerBootstrapTest {
 
         @Test
         void onSnapshotReceived_appliesSnapshot_marksBootstrapped() {
-            when(kvStore.restoreSnapshot(any())).thenReturn(Result.success(unit()));
             var snapshotData = new byte[]{1, 2, 3};
             var response = SnapshotResponse.snapshotResponse(snapshotData, 42);
 
@@ -109,6 +102,23 @@ class WorkerBootstrapTest {
             assertThat(bootstrap.incrementRetry()).isEqualTo(1);
             assertThat(bootstrap.incrementRetry()).isEqualTo(2);
             assertThat(bootstrap.incrementRetry()).isEqualTo(3);
+        }
+    }
+
+    @SuppressWarnings({"JBCT-STY-05", "JBCT-ZONE-02"})
+    static class StubKVStore extends KVStore<StructuredKey, Object> {
+        StubKVStore() {
+            super(MessageRouter.mutable(), null, null);
+        }
+
+        @Override
+        public Result<Unit> restoreSnapshot(byte[] snapshot) {
+            return Result.success(unit());
+        }
+
+        @Override
+        public Option<Object> process(KVCommand command) {
+            return Option.none();
         }
     }
 }

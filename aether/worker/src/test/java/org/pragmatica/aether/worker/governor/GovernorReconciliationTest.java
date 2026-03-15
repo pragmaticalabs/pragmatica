@@ -6,26 +6,25 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.worker.mutation.MutationForwarder;
 import org.pragmatica.aether.worker.mutation.WorkerMutation;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 
 class GovernorReconciliationTest {
     private static final NodeId DEAD_NODE = NodeId.nodeId("dead-worker-1").unwrap();
     private static final NodeId ALIVE_NODE = NodeId.nodeId("alive-worker-1").unwrap();
 
-    private MutationForwarder forwarder;
+    private CapturingMutationForwarder forwarder;
     private GovernorCleanup cleanup;
 
     @BeforeEach
     void setUp() {
-        forwarder = mock(MutationForwarder.class);
+        forwarder = new CapturingMutationForwarder();
         cleanup = GovernorCleanup.governorCleanup(forwarder);
     }
 
@@ -38,7 +37,7 @@ class GovernorReconciliationTest {
         var result = GovernorReconciliation.reconcile(Set.of(ALIVE_NODE), cleanup).await();
 
         result.onFailure(_ -> fail("Expected success"));
-        verify(forwarder, times(1)).forward(any(WorkerMutation.class));
+        assertThat(forwarder.forwarded).hasSize(1);
     }
 
     @Test
@@ -46,7 +45,7 @@ class GovernorReconciliationTest {
         var result = GovernorReconciliation.reconcile(Set.of(ALIVE_NODE), cleanup).await();
 
         result.onFailure(_ -> fail("Expected success"));
-        verify(forwarder, never()).forward(any());
+        assertThat(forwarder.forwarded).isEmpty();
     }
 
     @Test
@@ -58,6 +57,20 @@ class GovernorReconciliationTest {
         var result = GovernorReconciliation.reconcile(Set.of(ALIVE_NODE), cleanup).await();
 
         result.onFailure(_ -> fail("Expected success"));
-        verify(forwarder, never()).forward(any());
+        assertThat(forwarder.forwarded).isEmpty();
+    }
+
+    @SuppressWarnings("JBCT-STY-05")
+    static class CapturingMutationForwarder implements MutationForwarder {
+        final List<WorkerMutation> forwarded = new ArrayList<>();
+
+        @Override
+        public void forward(WorkerMutation mutation) { forwarded.add(mutation); }
+
+        @Override
+        public void onMutationFromFollower(WorkerMutation mutation) {}
+
+        @Override
+        public void updateGovernor(Option<NodeId> governor) {}
     }
 }

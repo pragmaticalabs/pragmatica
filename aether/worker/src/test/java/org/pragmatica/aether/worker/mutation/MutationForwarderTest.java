@@ -3,33 +3,31 @@ package org.pragmatica.aether.worker.mutation;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.cluster.node.passive.PassiveNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.consensus.net.netty.NettyClusterNetwork;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.MessageRouter.DelegateRouter;
+import org.pragmatica.messaging.MessageRouter.Entry;
 
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.lenient;
 
-@ExtendWith(MockitoExtension.class)
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01", "unchecked", "rawtypes"})
 class MutationForwarderTest {
     private static final NodeId SELF = NodeId.nodeId("worker-1").unwrap();
     private static final NodeId GOVERNOR = NodeId.nodeId("governor-1").unwrap();
-
-    @Mock
-    private PassiveNode passiveNode;
 
     private DelegateRouter delegateRouter;
     private List<Message> routedMessages;
@@ -43,7 +41,7 @@ class MutationForwarderTest {
         mutableRouter.addRoute(NetworkServiceMessage.Send.class, routedMessages::add);
         mutableRouter.addRoute(NetworkServiceMessage.Broadcast.class, routedMessages::add);
         delegateRouter.replaceDelegate(mutableRouter);
-        lenient().when(passiveNode.delegateRouter()).thenReturn(delegateRouter);
+        var passiveNode = new StubPassiveNode(delegateRouter);
         forwarder = MutationForwarder.mutationForwarder(SELF, passiveNode);
     }
 
@@ -122,5 +120,23 @@ class MutationForwarderTest {
             assertThat(routedMessages).hasSize(2);
             assertThat(routedMessages.get(1)).isInstanceOf(NetworkServiceMessage.Send.class);
         }
+    }
+
+    @SuppressWarnings({"JBCT-STY-05"})
+    record StubPassiveNode(DelegateRouter delegateRouter) implements PassiveNode<StructuredKey, Object> {
+        @Override
+        public NettyClusterNetwork network() { return null; }
+
+        @Override
+        public KVStore<StructuredKey, Object> kvStore() { return null; }
+
+        @Override
+        public List<Entry<?>> routeEntries() { return List.of(); }
+
+        @Override
+        public Promise<Unit> start() { return Promise.success(Unit.unit()); }
+
+        @Override
+        public Promise<Unit> stop() { return Promise.success(Unit.unit()); }
     }
 }
