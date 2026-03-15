@@ -13,7 +13,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 
 import org.pragmatica.consensus.net.NetworkServiceMessage;
-import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -398,12 +397,6 @@ class DeploymentMetricsCollectorTest {
 
         @Override
         public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
-
-        @Override
-        public void handlePing(NetworkMessage.Ping ping) {}
-
-        @Override
-        public void handlePong(NetworkMessage.Pong pong) {}
 
         @Override
         public Promise<Unit> start() {

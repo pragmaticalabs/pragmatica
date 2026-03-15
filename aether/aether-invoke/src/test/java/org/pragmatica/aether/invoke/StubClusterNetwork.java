@@ -3,7 +3,6 @@ package org.pragmatica.aether.invoke;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.ClusterNetwork;
-import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -36,12 +35,6 @@ class StubClusterNetwork implements ClusterNetwork {
 
     @Override
     public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
-
-    @Override
-    public void handlePing(NetworkMessage.Ping ping) {}
-
-    @Override
-    public void handlePong(NetworkMessage.Pong pong) {}
 
     @Override
     public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {

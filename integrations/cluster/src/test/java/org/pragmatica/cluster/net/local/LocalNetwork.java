@@ -4,7 +4,6 @@ import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
-import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
@@ -93,16 +92,6 @@ public class LocalNetwork implements ClusterNetwork {
 
     @Override
     public void handleSend(NetworkServiceMessage.Send send) {
-
-    }
-
-    @Override
-    public void handlePing(NetworkMessage.Ping ping) {
-
-    }
-
-    @Override
-    public void handlePong(NetworkMessage.Pong pong) {
 
     }
 

@@ -58,12 +58,6 @@ public interface ClusterNetwork {
     @MessageReceiver
     void handleBroadcast(Broadcast broadcast);
 
-    @MessageReceiver
-    void handlePing(NetworkMessage.Ping ping);
-
-    @MessageReceiver
-    void handlePong(NetworkMessage.Pong pong);
-
     /// Send a message to a specific node.
     ///
     /// Implementations must not throw exceptions. Failed sends should be

@@ -9,7 +9,6 @@ import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsPing;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
-import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.lang.Option;
@@ -250,12 +249,6 @@ class DeploymentMetricsSchedulerTest {
 
         @Override
         public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
-
-        @Override
-        public void handlePing(NetworkMessage.Ping ping) {}
-
-        @Override
-        public void handlePong(NetworkMessage.Pong pong) {}
 
         @Override
         public Promise<Unit> start() {

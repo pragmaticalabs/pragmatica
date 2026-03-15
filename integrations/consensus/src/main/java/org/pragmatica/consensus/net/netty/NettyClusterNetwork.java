@@ -7,8 +7,6 @@ import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkMessage.Hello;
-import org.pragmatica.consensus.net.NetworkMessage.Ping;
-import org.pragmatica.consensus.net.NetworkMessage.Pong;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
@@ -107,34 +105,6 @@ public class NettyClusterNetwork implements ClusterNetwork {
             result.add(new Handler(this::peerConnected, this::peerDisconnected, this::handleHello, router::route));
             return result;
         };
-        schedulePing();
-    }
-
-    private void schedulePing() {
-        SharedScheduler.schedule(this::pingNodes,
-                                 topologyManager.pingInterval()
-                                                .randomize(SCALE));
-    }
-
-    private void pingNodes() {
-        if (isRunning.get()) {
-            var ping = new Ping(self.id());
-            peerLinks.forEach((peerId, channel) -> sendToChannel(peerId, ping, channel));
-        }
-        schedulePing();
-    }
-
-    @Override
-    public void handlePing(Ping ping) {
-        log.debug("Node {} received ping from {}", self.id(), ping.sender());
-        sendToChannel(ping.sender(),
-                      new Pong(self.id()),
-                      peerLinks.get(ping.sender()));
-    }
-
-    @Override
-    public void handlePong(Pong pong) {
-        log.debug("Node {} received pong from {}", self, pong.sender());
     }
 
     @Override

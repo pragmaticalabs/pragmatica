@@ -16,8 +16,6 @@ import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoverNodes;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
 import org.pragmatica.consensus.net.NetworkMessage.Hello;
-import org.pragmatica.consensus.net.NetworkMessage.Ping;
-import org.pragmatica.consensus.net.NetworkMessage.Pong;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Broadcast;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectedNodesList;
@@ -278,9 +276,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                             .route(route(DiscoverNodes.class, topologyManager::handleDiscoverNodes),
                                                    route(DiscoveredNodes.class, topologyManager::handleDiscoveredNodes),
                                                    route(Hello.class,
-                                                         _ -> {}),
-                                                   route(Ping.class, network::handlePing),
-                                                   route(Pong.class, network::handlePong));
+                                                         _ -> {}));
         var networkServiceRoutes = SealedBuilder.from(NetworkServiceMessage.class)
                                                 .route(route(ConnectedNodesList.class, topologyManager::reconcile),
                                                        route(ConnectNode.class, network::connect),
