@@ -186,7 +186,15 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 
 ### HIGH PRIORITY - Core & Operations
 
-1. **Cloud Integration**
+1. **Transaction-Mode Connection Pooling (postgres-async)** — [design spec](../../../../integrations/db/postgres-async/docs/transaction-mode-pooling-spec.md)
+    - PgBouncer-like transaction-mode multiplexing built into the async driver
+    - Logical/physical connection split: backend connection borrowed per transaction, returned on `ReadyForQuery(Idle)`
+    - Transparent prepared statement re-preparation on backend switch (solves PgBouncer's #1 limitation)
+    - LISTEN/NOTIFY connections pinned (bypass multiplexing)
+    - Multi-threaded via Netty EventLoop (vs PgBouncer single-threaded), zero extra network hop
+    - Session mode remains default; transaction mode opt-in via configuration
+
+2. **Cloud Integration**
    - Implement `NodeLifecycleManager.executeAction(NodeAction)`
    - Cloud provider adapters: Hetzner (primary), AWS, GCP, Azure
    - Execute `StartNode`, `StopNode`, `MigrateSlices` decisions from controller
@@ -204,7 +212,7 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
    - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
    - **Enables:** Expense Tracking in FUTURE section
 
-2. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
+3. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
     - Cluster-level schema migration managed by Aether runtime, not individual nodes
     - Per-datasource lifecycle with independent history tables (`aether_schema_history`)
     - Leader-driven execution via Rabia consensus; exactly one node runs migrations
@@ -215,7 +223,7 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 
 ### Cloud Provider Support
 
-Part of Cloud Integration (#1). Per-provider status:
+Part of Cloud Integration (#2). Per-provider status:
 
 | Provider | Tier | Compute | Load Balancer | Discovery | Secrets | Status |
 |----------|------|---------|---------------|-----------|---------|--------|
@@ -239,17 +247,17 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### MEDIUM PRIORITY - Developer Tooling & Deployment
 
-3. **Distributed Scheduler Resource** *(partially complete — v0.20.0)*
+4. **Distributed Scheduler Resource** *(partially complete — v0.20.0)*
     - Distributed task scheduling as a `@ResourceQualifier` resource for user slices
     - Builds on existing `ScheduledTaskManager`/`ScheduledTaskRegistry` (internal Aether scheduling, v0.18.0)
     - ~~`infra-scheduler` currently in-memory only — needs distributed coordination via KV-Store consensus~~ ✅ KV-Store consensus integration complete
     - ~~**API shape:** `@Scheduled` resource qualifier with interval/cron config, distributed locking to prevent duplicate execution~~ ✅ `@Scheduled` annotation with interval + cron support, including weeks (`w`) unit
     - **Execution modes:** single-node (leader-elected) ✅, all-nodes, per-community (worker pools) — remaining modes planned
     - ~~**Persistence:** durable task state in KV-Store — survives leader failover and node restarts~~ ✅ Complete — pause state + execution state persisted via consensus
-    - ~~**Observability:** task execution history, next-fire tracking, failure counts, dead letter integration (#7)~~ ✅ `ScheduledTaskStateRegistry` tracks last execution, next fire, consecutive failures, total executions. Dead letter integration (#7) still planned
+    - ~~**Observability:** task execution history, next-fire tracking, failure counts, dead letter integration (#8)~~ ✅ `ScheduledTaskStateRegistry` tracks last execution, next fire, consecutive failures, total executions. Dead letter integration (#7) still planned
     - ~~**Management:** REST API for task listing, pause/resume, manual trigger; CLI commands~~ ✅ Complete — REST endpoints + CLI commands for pause, resume, trigger, state query
 
-4. **Notification Resource**
+5. **Notification Resource**
     - Unified notification facade with pluggable backends via SPI (same `@ResourceQualifier` pattern)
     - **Channels:** Email, SMS, push notifications
     - **Email backends (SPI):** SMTP, AWS SES, SendGrid, Mailgun
@@ -258,28 +266,28 @@ Part of Cloud Integration (#1). Per-provider status:
     - **API shape:** `NotificationSender` resource type with channel-specific configuration
     - **Config:** per-backend TOML section (`[notifications.smtp]`, `[notifications.ses]`, `[notifications.twilio]`, etc.)
     - **Scope exclusions:** no template engine (slices own their content), no mailing list management
-    - **Depends on:** Cloud Integration (#1) for SES/SNS/cloud-based backends; SMTP backend standalone
+    - **Depends on:** Cloud Integration (#2) for SES/SNS/cloud-based backends; SMTP backend standalone
 
-5. **Canary & Blue-Green Deployment Strategies**
+6. **Canary & Blue-Green Deployment Strategies**
      - Current: Rolling updates with weighted routing exist
      - Add explicit canary deployment with automatic rollback on error threshold
      - Add blue-green deployment with instant switchover
      - A/B testing support with traffic splitting by criteria
 
-6. **RBAC Tier 2 — Per-Endpoint Role Authorization**
+7. **RBAC Tier 2 — Per-Endpoint Role Authorization**
      - Per-endpoint role-based authorization rules (admin, operator, viewer)
      - Route-level security policy from KV-Store
      - Auth failure rate limiting
      - Currently all authenticated keys have equivalent access; Tier 2 differentiates by role
 
-7. **Dead Letter Handling**
+8. **Dead Letter Handling**
     - Failed pub-sub messages and failed scheduled task invocations currently logged and lost
     - DLQ storage: KV-Store backed dead letter queue per topic/task
     - Retry policy: configurable max attempts with exponential backoff before dead-lettering
     - Inspection: Management API endpoints to list, inspect, replay, or purge dead letters
     - CLI: `aether dead-letters list`, `aether dead-letters replay <id>`
 
-8. **Slice Development IDE Plugins**
+9. **Slice Development IDE Plugins**
     - IDE plugins for Aether slice development, providing deep integration with the JBCT toolchain
     - **Recommended approach:** build a shared **Language Server (LSP)** backend first, then thin IDE-specific clients. IntelliJ IDEA gets a native plugin for features that LSP cannot express (refactoring, inspections, run configs). VS Code, Eclipse, and NetBeans consume the LSP directly.
 
@@ -323,7 +331,7 @@ Part of Cloud Integration (#1). Per-provider status:
     **Complexity:** Medium-high for LSP + IntelliJ; low for VS Code/Eclipse/NetBeans LSP clients
     **Prerequisite:** Stable JBCT CLI and annotation processor APIs
 
-9. **Forge Modular Rework**
+10. **Forge Modular Rework**
     - ~80% done: modules separated (`forge-simulator`, `forge-load`, `forge-cluster`), Ember works
     - **Remaining scope:**
       - Remote cluster support in load generator (target remote clusters, not just embedded)
@@ -335,7 +343,7 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### LOWER PRIORITY
 
-10. **Configurable Rate Limiting per HTTP Route**
+11. **Configurable Rate Limiting per HTTP Route**
      - Per-route rate limiting configuration in blueprint or management API
      - Token bucket or sliding window algorithm
      - Configurable limits: requests/second, burst size
@@ -343,21 +351,21 @@ Part of Cloud Integration (#1). Per-provider status:
      - Cluster-aware: distributed counters via consensus or per-node local limits
      - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
 
-11. **Per-Blueprint Artifact Scoping (Tier 2)** — When artifact exclusivity (Tier 1) becomes too restrictive for multi-tenant clusters, add per-blueprint SliceTargetKey scoping. Changes: `SliceTargetKey(BlueprintId, ArtifactBase)`, CDM `Map<BlueprintId, Map<Artifact, Blueprint>>`, SliceNodeValue `owningBlueprint` field, WorkerSliceDirectiveKey blueprint scoping, Management API `blueprintId` parameter on `/api/scale`. Instance count = sum of all blueprints' allocations. Rolling update guard: reject if artifact has multiple blueprint owners. Prerequisite: Tier 1 (multi-blueprint correctness).
+12. **Per-Blueprint Artifact Scoping (Tier 2)** — When artifact exclusivity (Tier 1) becomes too restrictive for multi-tenant clusters, add per-blueprint SliceTargetKey scoping. Changes: `SliceTargetKey(BlueprintId, ArtifactBase)`, CDM `Map<BlueprintId, Map<Artifact, Blueprint>>`, SliceNodeValue `owningBlueprint` field, WorkerSliceDirectiveKey blueprint scoping, Management API `blueprintId` parameter on `/api/scale`. Instance count = sum of all blueprints' allocations. Rolling update guard: reject if artifact has multiple blueprint owners. Prerequisite: Tier 1 (multi-blueprint correctness).
 
-12. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
+13. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
     - Phases 1, 2a, 2b, 2b.5 complete in v0.19.3. Remaining work driven by real demand:
       - Phase 2c: Spot pool, spot-node exclusion from DHT ring
       - Phase 3: Multi-region, cross-region governors
     - **Architecture:** Small consensus core (5-7-9 active nodes) + self-organizing worker pools with elected governors. SWIM gossip for O(1) membership. Zone-aware grouping. Event-based community scaling.
     - **Research:** [10-system comparative analysis](../../internal/passive-worker-pool-research.md)
 
-13. **Observability Dashboard UI**
+14. **Observability Dashboard UI**
    - Wire `ObservabilityDepthRegistry` data to dashboard with UI for configuring per-method depth thresholds
    - Backend REST API (`/api/observability/depth`) and KV-store sync already implemented
    - Current state is functional; production value but no customers yet
 
-14. **Invocation Observability Dashboard Tab**
+15. **Invocation Observability Dashboard Tab**
    - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
    - Click-to-expand tree view showing invocation depth with input/output at each level
    - Waterfall view for multi-hop request visualization
@@ -370,7 +378,7 @@ Part of Cloud Integration (#1). Per-provider status:
 
 - **Official Installation Binaries** — Pre-built distribution archives (`aether-node`, `aether-cli`, `aether-forge`). Formats: `.tar.gz`, `.zip`, `.deb`, `.rpm`, Homebrew. Self-contained via jlink/jpackage. Java audience already has JDK — low priority.
 
-- **Cluster Expense Tracking** — Real-time cost visibility for cluster operations. Cloud billing API integration (AWS Cost Explorer, GCP Billing, Azure Cost Management). Cost per node/slice/request. Spot savings tracking. Budget alerts. **Prerequisite:** Cloud Integration (#1)
+- **Cluster Expense Tracking** — Real-time cost visibility for cluster operations. Cloud billing API integration (AWS Cost Explorer, GCP Billing, Azure Cost Management). Cost per node/slice/request. Spot savings tracking. Budget alerts. **Prerequisite:** Cloud Integration (#2)
 
 - **LLM Integration (Layer 3)** — Claude/GPT API integration. Complex reasoning workflows. Multi-cloud decision support.
 
@@ -415,7 +423,7 @@ All infrastructure modules transition to unified `@ResourceQualifier(type, confi
 
 | Module | Target | Status |
 |--------|--------|--------|
-| infra-notifications | `@ResourceQualifier(type=NotificationSender.class)` | **Planned** — email + SMS + push (#8) |
+| infra-notifications | `@ResourceQualifier(type=NotificationSender.class)` | **Planned** — email + SMS + push (#5) |
 | infra-config | Superseded by Dynamic Configuration via KV store | **Remove** |
 | infra-aspect | Fn1 composition utilities (`Aspects.withCaching()`, `@Key`, etc.) | **Keep** |
 
