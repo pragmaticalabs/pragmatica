@@ -19,12 +19,13 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 - **Resource Lifecycle** - Reference-counted `releaseAll()`, generated `stop()` cleanup, SliceId auto-injected into ProvisioningContext
 - **Pub-Sub Code Generation** - Subscription metadata in manifest, envelope v2
 
-### Scheduled Invocation (v0.18.0)
-- **Scheduled.java marker interface** - `@ResourceQualifier(type=Scheduled.class)` on zero-arg `Promise<Unit>` methods
-- **Interval and cron scheduling** - Fixed-rate (`"5m"`, `"30s"`) and 5-field cron (`"0 0 * * *"`) modes
-- **Leader-only and all-node execution** - Quorum-gated timer lifecycle
-- **KV-Store backed registry** - Runtime reconfiguration via Management API
-- **Full stack** - Annotation processor, manifest generation (envelope v3), deployment wiring, CronExpression parser, ScheduledTaskRegistry, ScheduledTaskManager, REST API, CLI, 29 unit tests
+### Distributed Scheduler Resource (v0.18.0–v0.20.0)
+- **`@Scheduled` resource qualifier** — `@ResourceQualifier(type=Scheduled.class)` on zero-arg `Promise<Unit>` methods with interval + cron + weeks support
+- **Execution modes** — `SINGLE` (leader-only) and `ALL` (every node with the slice fires independently) via `ExecutionMode` enum
+- **KV-Store consensus integration** — pause state + execution state persisted, survives leader failover and restarts
+- **Observability** — `ScheduledTaskStateRegistry` tracks last execution, next fire, consecutive failures, total executions
+- **Management** — REST endpoints + CLI commands for pause, resume, trigger, state query
+- **Full stack** — Annotation processor, manifest generation (envelope v3), deployment wiring, CronExpression parser, ScheduledTaskRegistry, ScheduledTaskManager, REST API, CLI
 
 ### Security & Health Probes (v0.18.0)
 - **Readiness vs Liveness Probes** — `/health/live` (always 200) and `/health/ready` (200/503 with component checks: consensus, routes, quorum). Container orchestrator compatible. App HTTP `/health` endpoint also added
@@ -240,16 +241,7 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### MEDIUM PRIORITY - Developer Tooling & Deployment
 
-3. ~~**Distributed Scheduler Resource**~~ ✅ Complete (v0.20.0)
-    - Distributed task scheduling as a `@ResourceQualifier` resource for user slices
-    - KV-Store consensus integration, `@Scheduled` annotation with interval + cron + weeks
-    - Execution modes: `SINGLE` (leader-only) and `ALL` (every node with the slice fires independently)
-    - Persistence: pause state + execution state via consensus, survives leader failover
-    - Observability: `ScheduledTaskStateRegistry` tracks last execution, next fire, consecutive failures, total executions
-    - Management: REST endpoints + CLI commands for pause, resume, trigger, state query
-    - Per-community mode deferred — will be implemented as a separate feature if demand arises
-
-4. **Notification Resource**
+3. **Notification Resource**
     - Unified notification facade with pluggable backends via SPI (same `@ResourceQualifier` pattern)
     - **Channels:** Email, SMS, push notifications
     - **Email backends (SPI):** SMTP, AWS SES, SendGrid, Mailgun
@@ -260,19 +252,19 @@ Part of Cloud Integration (#1). Per-provider status:
     - **Scope exclusions:** no template engine (slices own their content), no mailing list management
     - **Depends on:** Cloud Integration (#1) for SES/SNS/cloud-based backends; SMTP backend standalone
 
-5. **Canary & Blue-Green Deployment Strategies**
+4. **Canary & Blue-Green Deployment Strategies**
      - Current: Rolling updates with weighted routing exist
      - Add explicit canary deployment with automatic rollback on error threshold
      - Add blue-green deployment with instant switchover
      - A/B testing support with traffic splitting by criteria
 
-6. **RBAC Tier 2 — Per-Endpoint Role Authorization**
+5. **RBAC Tier 2 — Per-Endpoint Role Authorization**
      - Per-endpoint role-based authorization rules (admin, operator, viewer)
      - Route-level security policy from KV-Store
      - Auth failure rate limiting
      - Currently all authenticated keys have equivalent access; Tier 2 differentiates by role
 
-7. **Slice Development IDE Plugins**
+6. **Slice Development IDE Plugins**
     - IDE plugins for Aether slice development, providing deep integration with the JBCT toolchain
     - **Recommended approach:** build a shared **Language Server (LSP)** backend first, then thin IDE-specific clients. IntelliJ IDEA gets a native plugin for features that LSP cannot express (refactoring, inspections, run configs). VS Code, Eclipse, and NetBeans consume the LSP directly.
 
@@ -316,7 +308,7 @@ Part of Cloud Integration (#1). Per-provider status:
     **Complexity:** Medium-high for LSP + IntelliJ; low for VS Code/Eclipse/NetBeans LSP clients
     **Prerequisite:** Stable JBCT CLI and annotation processor APIs
 
-8. **Forge Modular Rework**
+7. **Forge Modular Rework**
     - ~80% done: modules separated (`forge-simulator`, `forge-load`, `forge-cluster`), Ember works
     - **Remaining scope:**
       - Remote cluster support in load generator (target remote clusters, not just embedded)
@@ -328,7 +320,7 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### LOWER PRIORITY
 
-9. **Configurable Rate Limiting per HTTP Route**
+8. **Configurable Rate Limiting per HTTP Route**
      - Per-route rate limiting configuration in blueprint or management API
      - Token bucket or sliding window algorithm
      - Configurable limits: requests/second, burst size
@@ -336,21 +328,21 @@ Part of Cloud Integration (#1). Per-provider status:
      - Cluster-aware: distributed counters via consensus or per-node local limits
      - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
 
-10. **Per-Blueprint Artifact Scoping (Tier 2)** — When artifact exclusivity (Tier 1) becomes too restrictive for multi-tenant clusters, add per-blueprint SliceTargetKey scoping. Changes: `SliceTargetKey(BlueprintId, ArtifactBase)`, CDM `Map<BlueprintId, Map<Artifact, Blueprint>>`, SliceNodeValue `owningBlueprint` field, WorkerSliceDirectiveKey blueprint scoping, Management API `blueprintId` parameter on `/api/scale`. Instance count = sum of all blueprints' allocations. Rolling update guard: reject if artifact has multiple blueprint owners. Prerequisite: Tier 1 (multi-blueprint correctness).
+9. **Per-Blueprint Artifact Scoping (Tier 2)** — When artifact exclusivity (Tier 1) becomes too restrictive for multi-tenant clusters, add per-blueprint SliceTargetKey scoping. Changes: `SliceTargetKey(BlueprintId, ArtifactBase)`, CDM `Map<BlueprintId, Map<Artifact, Blueprint>>`, SliceNodeValue `owningBlueprint` field, WorkerSliceDirectiveKey blueprint scoping, Management API `blueprintId` parameter on `/api/scale`. Instance count = sum of all blueprints' allocations. Rolling update guard: reject if artifact has multiple blueprint owners. Prerequisite: Tier 1 (multi-blueprint correctness).
 
-11. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
+10. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
     - Phases 1, 2a, 2b, 2b.5 complete in v0.19.3. Remaining work driven by real demand:
       - Phase 2c: Spot pool, spot-node exclusion from DHT ring
       - Phase 3: Multi-region, cross-region governors
     - **Architecture:** Small consensus core (5-7-9 active nodes) + self-organizing worker pools with elected governors. SWIM gossip for O(1) membership. Zone-aware grouping. Event-based community scaling.
     - **Research:** [10-system comparative analysis](../../internal/passive-worker-pool-research.md)
 
-12. **Observability Dashboard UI**
+11. **Observability Dashboard UI**
    - Wire `ObservabilityDepthRegistry` data to dashboard with UI for configuring per-method depth thresholds
    - Backend REST API (`/api/observability/depth`) and KV-store sync already implemented
    - Current state is functional; production value but no customers yet
 
-13. **Invocation Observability Dashboard Tab**
+12. **Invocation Observability Dashboard Tab**
    - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
    - Click-to-expand tree view showing invocation depth with input/output at each level
    - Waterfall view for multi-hop request visualization
