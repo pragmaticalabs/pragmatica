@@ -240,15 +240,14 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### MEDIUM PRIORITY - Developer Tooling & Deployment
 
-3. **Distributed Scheduler Resource** *(partially complete — v0.20.0)*
+3. ~~**Distributed Scheduler Resource**~~ ✅ Complete (v0.20.0)
     - Distributed task scheduling as a `@ResourceQualifier` resource for user slices
-    - Builds on existing `ScheduledTaskManager`/`ScheduledTaskRegistry` (internal Aether scheduling, v0.18.0)
-    - ~~`infra-scheduler` currently in-memory only — needs distributed coordination via KV-Store consensus~~ ✅ KV-Store consensus integration complete
-    - ~~**API shape:** `@Scheduled` resource qualifier with interval/cron config, distributed locking to prevent duplicate execution~~ ✅ `@Scheduled` annotation with interval + cron support, including weeks (`w`) unit
-    - **Execution modes:** single-node (leader-elected) ✅, all-nodes ✅ (`ExecutionMode.ALL` — every node with the slice fires independently), per-community (worker pools) — remaining mode planned
-    - ~~**Persistence:** durable task state in KV-Store — survives leader failover and node restarts~~ ✅ Complete — pause state + execution state persisted via consensus
-    - ~~**Observability:** task execution history, next-fire tracking, failure counts, dead letter integration (#8)~~ ✅ `ScheduledTaskStateRegistry` tracks last execution, next fire, consecutive failures, total executions. Dead letter integration (#7) planned
-    - ~~**Management:** REST API for task listing, pause/resume, manual trigger; CLI commands~~ ✅ Complete — REST endpoints + CLI commands for pause, resume, trigger, state query
+    - KV-Store consensus integration, `@Scheduled` annotation with interval + cron + weeks
+    - Execution modes: `SINGLE` (leader-only) and `ALL` (every node with the slice fires independently)
+    - Persistence: pause state + execution state via consensus, survives leader failover
+    - Observability: `ScheduledTaskStateRegistry` tracks last execution, next fire, consecutive failures, total executions
+    - Management: REST endpoints + CLI commands for pause, resume, trigger, state query
+    - Per-community mode deferred — will be implemented as a separate feature if demand arises
 
 4. **Notification Resource**
     - Unified notification facade with pluggable backends via SPI (same `@ResourceQualifier` pattern)
@@ -273,14 +272,7 @@ Part of Cloud Integration (#1). Per-provider status:
      - Auth failure rate limiting
      - Currently all authenticated keys have equivalent access; Tier 2 differentiates by role
 
-7. **Dead Letter Handling**
-    - Failed pub-sub messages and failed scheduled task invocations currently logged and lost
-    - DLQ storage: KV-Store backed dead letter queue per topic/task
-    - Retry policy: configurable max attempts with exponential backoff before dead-lettering
-    - Inspection: Management API endpoints to list, inspect, replay, or purge dead letters
-    - CLI: `aether dead-letters list`, `aether dead-letters replay <id>`
-
-8. **Slice Development IDE Plugins**
+7. **Slice Development IDE Plugins**
     - IDE plugins for Aether slice development, providing deep integration with the JBCT toolchain
     - **Recommended approach:** build a shared **Language Server (LSP)** backend first, then thin IDE-specific clients. IntelliJ IDEA gets a native plugin for features that LSP cannot express (refactoring, inspections, run configs). VS Code, Eclipse, and NetBeans consume the LSP directly.
 
@@ -324,7 +316,7 @@ Part of Cloud Integration (#1). Per-provider status:
     **Complexity:** Medium-high for LSP + IntelliJ; low for VS Code/Eclipse/NetBeans LSP clients
     **Prerequisite:** Stable JBCT CLI and annotation processor APIs
 
-9. **Forge Modular Rework**
+8. **Forge Modular Rework**
     - ~80% done: modules separated (`forge-simulator`, `forge-load`, `forge-cluster`), Ember works
     - **Remaining scope:**
       - Remote cluster support in load generator (target remote clusters, not just embedded)
@@ -336,7 +328,7 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### LOWER PRIORITY
 
-10. **Configurable Rate Limiting per HTTP Route**
+9. **Configurable Rate Limiting per HTTP Route**
      - Per-route rate limiting configuration in blueprint or management API
      - Token bucket or sliding window algorithm
      - Configurable limits: requests/second, burst size
@@ -344,21 +336,21 @@ Part of Cloud Integration (#1). Per-provider status:
      - Cluster-aware: distributed counters via consensus or per-node local limits
      - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
 
-11. **Per-Blueprint Artifact Scoping (Tier 2)** — When artifact exclusivity (Tier 1) becomes too restrictive for multi-tenant clusters, add per-blueprint SliceTargetKey scoping. Changes: `SliceTargetKey(BlueprintId, ArtifactBase)`, CDM `Map<BlueprintId, Map<Artifact, Blueprint>>`, SliceNodeValue `owningBlueprint` field, WorkerSliceDirectiveKey blueprint scoping, Management API `blueprintId` parameter on `/api/scale`. Instance count = sum of all blueprints' allocations. Rolling update guard: reject if artifact has multiple blueprint owners. Prerequisite: Tier 1 (multi-blueprint correctness).
+10. **Per-Blueprint Artifact Scoping (Tier 2)** — When artifact exclusivity (Tier 1) becomes too restrictive for multi-tenant clusters, add per-blueprint SliceTargetKey scoping. Changes: `SliceTargetKey(BlueprintId, ArtifactBase)`, CDM `Map<BlueprintId, Map<Artifact, Blueprint>>`, SliceNodeValue `owningBlueprint` field, WorkerSliceDirectiveKey blueprint scoping, Management API `blueprintId` parameter on `/api/scale`. Instance count = sum of all blueprints' allocations. Rolling update guard: reject if artifact has multiple blueprint owners. Prerequisite: Tier 1 (multi-blueprint correctness).
 
-12. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
+11. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
     - Phases 1, 2a, 2b, 2b.5 complete in v0.19.3. Remaining work driven by real demand:
       - Phase 2c: Spot pool, spot-node exclusion from DHT ring
       - Phase 3: Multi-region, cross-region governors
     - **Architecture:** Small consensus core (5-7-9 active nodes) + self-organizing worker pools with elected governors. SWIM gossip for O(1) membership. Zone-aware grouping. Event-based community scaling.
     - **Research:** [10-system comparative analysis](../../internal/passive-worker-pool-research.md)
 
-13. **Observability Dashboard UI**
+12. **Observability Dashboard UI**
    - Wire `ObservabilityDepthRegistry` data to dashboard with UI for configuring per-method depth thresholds
    - Backend REST API (`/api/observability/depth`) and KV-store sync already implemented
    - Current state is functional; production value but no customers yet
 
-14. **Invocation Observability Dashboard Tab**
+13. **Invocation Observability Dashboard Tab**
    - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
    - Click-to-expand tree view showing invocation depth with input/output at each level
    - Waterfall view for multi-hop request visualization
