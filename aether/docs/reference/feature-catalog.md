@@ -14,7 +14,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 1 | Blueprint management | Battle-tested | Declarative TOML-based deployment specs with dependency ordering, validation, and status tracking |
+| 1 | Blueprint management | Battle-tested | Declarative TOML-based deployment specs with dependency ordering, validation, pub-sub orphan detection, and status tracking |
 | 2 | Slice lifecycle | Battle-tested | Full state machine: DOWNLOADING, LOADING, STARTING, ACTIVE, UNLOADING, UNLOADED, FAILED. Per-node tracking via KV-Store |
 | 3 | Rolling updates | Battle-tested | Zero-downtime version deployments with traffic shifting (new:old ratio), health thresholds, auto-progression, rollback, and cleanup policies |
 | 4 | Auto-healing | Battle-tested | Automatic reconciliation of desired vs. actual state on node departure. Leader-only with failover |
@@ -72,7 +72,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
 | 26 | Scheduled task registry | Complete | KV-Store backed registry tracking periodic task registrations with change listener pattern. Includes `paused` field for operational control. 8 unit tests |
-| 27 | Scheduled task manager | Complete | Timer lifecycle manager with leader-only semantics, quorum gating, interval parsing (s/m/h/d/w), cron scheduling, pause/resume support, execution state tracking. 15 unit tests |
+| 27 | Scheduled task manager | Complete | Timer lifecycle manager with ExecutionMode (SINGLE/ALL), quorum gating, interval parsing (s/m/h/d/w), cron scheduling, pause/resume support, execution state tracking. `ALL` mode fires independently on every node with the slice deployed. 15 unit tests |
 | 28 | Cron expression parser | Complete | 5-field cron syntax (minute hour day-of-month month day-of-week) with ranges, steps, lists. Wired into ScheduledTaskManager for one-shot+re-schedule pattern. 11 unit tests |
 | 29 | Scheduled task KV types | Complete | `ScheduledTaskKey`/`ScheduledTaskValue` (with `paused` field), `ScheduledTaskStateKey`/`ScheduledTaskStateValue` (execution metrics) |
 | 30 | Deployment lifecycle wiring | Complete | Publish/unpublish scheduled tasks during slice activation, deactivation, reactivation, and failure cleanup |
