@@ -19,7 +19,9 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -81,6 +83,14 @@ public interface AppHttpServer {
     /// Handle KV-Store removals to rebuild router when routes change.
     @MessageReceiver
     void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove);
+
+    /// Handle compound NodeRoutesKey put — triggers router rebuild.
+    @SuppressWarnings("JBCT-RET-01") // Event callback
+    void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
+
+    /// Handle compound NodeRoutesKey remove — triggers router rebuild.
+    @SuppressWarnings("JBCT-RET-01") // Event callback
+    void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
 
     /// Handle incoming HTTP forward request from another node.
     @MessageReceiver
@@ -293,6 +303,20 @@ class AppHttpServerImpl implements AppHttpServer {
     public void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove) {
         routeSyncReceived.set(true);
         log.debug("HttpNodeRouteKey removed, rebuilding router");
+        rebuildRouter();
+    }
+
+    @Override
+    public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+        routeSyncReceived.set(true);
+        log.debug("NodeRoutesKey added, rebuilding router");
+        rebuildRouter();
+    }
+
+    @Override
+    public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
+        routeSyncReceived.set(true);
+        log.debug("NodeRoutesKey removed, rebuilding router");
         rebuildRouter();
     }
 

@@ -2,16 +2,13 @@ package org.pragmatica.aether.deployment.loadbalancer;
 
 import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.RouteChange;
-import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
-import org.pragmatica.lang.Option;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -45,37 +42,22 @@ public interface LoadBalancerManager {
     void onLeaderChange(LeaderChange leaderChange);
 
     @MessageReceiver
-    void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut);
-
-    @MessageReceiver
-    void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove);
-
-    @MessageReceiver
     void onTopologyChange(TopologyChangeNotification topologyChange);
 
-    /// Create a MapSubscription adapter for DHT events.
-    default MapSubscription<HttpNodeRouteKey, HttpNodeRouteValue> asHttpRouteSubscription() {
-        return new MapSubscription<>() {
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onPut(HttpNodeRouteKey key, HttpNodeRouteValue value) {
-                onRoutePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
-            }
+    /// Handle compound NodeRoutesKey put — extracts individual routes and processes each.
+    @MessageReceiver
+    void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
 
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onRemove(HttpNodeRouteKey key) {
-                onRouteRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
-            }
-        };
-    }
+    /// Handle compound NodeRoutesKey remove.
+    @MessageReceiver
+    void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
 
     sealed interface LoadBalancerManagerState {
-        default void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut) {}
-
-        default void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove) {}
-
         default void onTopologyChange(TopologyChangeNotification topologyChange) {}
+
+        default void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {}
+
+        default void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {}
 
         record Dormant() implements LoadBalancerManagerState {}
 
@@ -88,35 +70,6 @@ public interface LoadBalancerManager {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
 
             @Override
-            public void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut) {
-                var key = valuePut.cause()
-                                  .key();
-                var routeIdentity = routeIdentity(key);
-                routeNodes.computeIfAbsent(routeIdentity,
-                                           _ -> new HashSet<>())
-                          .add(key.nodeId());
-                handleRouteChange(key.httpMethod(), key.pathPrefix(), routeNodes.get(routeIdentity));
-            }
-
-            @Override
-            public void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove) {
-                var key = valueRemove.cause()
-                                     .key();
-                var routeIdentity = routeIdentity(key);
-                var nodes = routeNodes.get(routeIdentity);
-                if (nodes == null) {
-                    return;
-                }
-                nodes.remove(key.nodeId());
-                if (nodes.isEmpty()) {
-                    routeNodes.remove(routeIdentity);
-                    handleRouteRemoval(key.httpMethod(), key.pathPrefix());
-                } else {
-                    handleRouteChange(key.httpMethod(), key.pathPrefix(), nodes);
-                }
-            }
-
-            @Override
             public void onTopologyChange(TopologyChangeNotification topologyChange) {
                 switch (topologyChange) {
                     case NodeRemoved(NodeId removedNode, _) -> handleNodeDeparture(removedNode);
@@ -125,15 +78,57 @@ public interface LoadBalancerManager {
                 }
             }
 
+            @Override
+            public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+                var key = valuePut.cause()
+                                  .key();
+                var value = valuePut.cause()
+                                    .value();
+                var nodeId = key.nodeId();
+                for (var route : value.routes()) {
+                    if (!route.isRoutable()) {
+                        continue;
+                    }
+                    var routeIdentity = route.httpMethod() + ":" + route.pathPrefix();
+                    routeNodes.computeIfAbsent(routeIdentity,
+                                               _ -> new HashSet<>())
+                              .add(nodeId);
+                    handleRouteChange(route.httpMethod(), route.pathPrefix(), routeNodes.get(routeIdentity));
+                }
+            }
+
+            @Override
+            public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
+                var key = valueRemove.cause()
+                                     .key();
+                var nodeId = key.nodeId();
+                // Remove this node from all routes
+                var affectedRoutes = routeNodes.entrySet()
+                                               .stream()
+                                               .filter(e -> e.getValue()
+                                                             .contains(nodeId))
+                                               .map(Map.Entry::getKey)
+                                               .toList();
+                for (var routeIdentity : affectedRoutes) {
+                    var nodes = routeNodes.get(routeIdentity);
+                    nodes.remove(nodeId);
+                    var parts = routeIdentity.split(":", 2);
+                    if (nodes.isEmpty()) {
+                        routeNodes.remove(routeIdentity);
+                        handleRouteRemoval(parts[0], parts[1]);
+                    } else {
+                        handleRouteChange(parts[0], parts[1], nodes);
+                    }
+                }
+            }
+
             void reconcile() {
                 var allNodeIps = new HashSet<String>();
                 var routes = new ArrayList<RouteChange>();
                 var aggregated = new HashMap<String, Set<NodeId>>();
-                kvStore.forEach(HttpNodeRouteKey.class,
-                                HttpNodeRouteValue.class,
-                                (key, _) -> aggregated.computeIfAbsent(routeIdentity(key),
-                                                                       _ -> new HashSet<>())
-                                                      .add(key.nodeId()));
+                kvStore.forEach(NodeRoutesKey.class,
+                                NodeRoutesValue.class,
+                                (key, value) -> aggregateNodeRoutes(key, value, aggregated));
                 routeNodes.clear();
                 routeNodes.putAll(aggregated);
                 aggregated.forEach((identity, nodeIds) -> collectRouteForReconciliation(identity,
@@ -228,8 +223,18 @@ public interface LoadBalancerManager {
                               .collect(Collectors.toSet());
             }
 
-            private static String routeIdentity(HttpNodeRouteKey key) {
-                return key.httpMethod() + ":" + key.pathPrefix();
+            private static void aggregateNodeRoutes(NodeRoutesKey key,
+                                                    NodeRoutesValue value,
+                                                    Map<String, Set<NodeId>> aggregated) {
+                for (var route : value.routes()) {
+                    if (!route.isRoutable()) {
+                        continue;
+                    }
+                    var routeIdentity = route.httpMethod() + ":" + route.pathPrefix();
+                    aggregated.computeIfAbsent(routeIdentity,
+                                               _ -> new HashSet<>())
+                              .add(key.nodeId());
+                }
             }
         }
     }
@@ -266,21 +271,21 @@ public interface LoadBalancerManager {
             }
 
             @Override
-            public void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut) {
-                state.get()
-                     .onRoutePut(valuePut);
-            }
-
-            @Override
-            public void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove) {
-                state.get()
-                     .onRouteRemove(valueRemove);
-            }
-
-            @Override
             public void onTopologyChange(TopologyChangeNotification topologyChange) {
                 state.get()
                      .onTopologyChange(topologyChange);
+            }
+
+            @Override
+            public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+                state.get()
+                     .onNodeRoutesPut(valuePut);
+            }
+
+            @Override
+            public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
+                state.get()
+                     .onNodeRoutesRemove(valueRemove);
             }
         }
         return new loadBalancerManager(self,

@@ -4,14 +4,14 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.ClusterController.BlueprintChange;
 import org.pragmatica.aether.controller.ClusterController.ControlContext;
 import org.pragmatica.aether.controller.CompositeLoadFactor.LoadFactorResult;
-import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.metrics.MetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -19,7 +19,6 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.node.ClusterNode;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
@@ -66,38 +65,23 @@ public interface ControlLoop {
     @MessageReceiver
     void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
 
-    /// Handle slice node state change from KVStore.
-    @MessageReceiver
-    void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut);
-
     /// Handle slice target removal from KVStore.
     @MessageReceiver
     void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove);
 
-    /// Handle slice node removal from KVStore.
+    /// Handle NodeArtifactKey put — tracks slice state from compound value.
     @MessageReceiver
-    void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove);
+    @SuppressWarnings("JBCT-RET-01") // Event callback
+    void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
+
+    /// Handle NodeArtifactKey remove.
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01") // Event callback
+    void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
 
     /// Handle quorum state changes (stop evaluation when quorum disappears).
     @MessageReceiver
     void onQuorumStateChange(QuorumStateNotification notification);
-
-    /// Create a MapSubscription adapter for DHT slice-node events.
-    default MapSubscription<SliceNodeKey, SliceNodeValue> asSliceNodeSubscription() {
-        return new MapSubscription<>() {
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onPut(SliceNodeKey key, SliceNodeValue value) {
-                onSliceNodePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
-            }
-
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onRemove(SliceNodeKey key) {
-                onSliceNodeRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
-            }
-        };
-    }
 
     /// Register a blueprint for controller management.
     void registerBlueprint(Artifact artifact, int instances, int minInstances);
@@ -198,15 +182,6 @@ public interface ControlLoop {
             }
 
             @Override
-            public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
-                handleSliceStateChange(valuePut.cause()
-                                               .key(),
-                                       valuePut.cause()
-                                               .value()
-                                               .state());
-            }
-
-            @Override
             public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
                 var artifactBase = valueRemove.cause()
                                               .key()
@@ -219,11 +194,22 @@ public interface ControlLoop {
             }
 
             @Override
-            public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
-                var sliceNodeKey = valueRemove.cause()
-                                              .key();
+            public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+                var key = valuePut.cause()
+                                  .key();
+                var value = valuePut.cause()
+                                    .value();
+                var sliceNodeKey = new SliceNodeKey(key.artifact(), key.nodeId());
+                handleSliceStateChange(sliceNodeKey, value.state());
+            }
+
+            @Override
+            public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+                var key = valueRemove.cause()
+                                     .key();
+                var sliceNodeKey = new SliceNodeKey(key.artifact(), key.nodeId());
                 sliceStates.remove(sliceNodeKey);
-                log.debug("Removed slice state tracking for {}", sliceNodeKey);
+                log.debug("Removed slice state tracking for NodeArtifactKey {}", key);
             }
 
             @Override

@@ -1,8 +1,6 @@
 package org.pragmatica.aether.deployment.node;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.dht.MapSubscription;
-import org.pragmatica.aether.dht.ReplicatedMap;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.*;
@@ -16,12 +14,14 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
@@ -65,47 +65,32 @@ public interface NodeDeploymentManager {
     record SliceDeployment(SliceNodeKey key, SliceState state, long timestamp) {}
 
     @MessageReceiver
-    void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut);
-
-    @MessageReceiver
-    void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove);
-
-    @MessageReceiver
     void onQuorumStateChange(QuorumStateNotification quorumStateNotification);
 
     @MessageReceiver
     void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut);
+
+    /// Handle NodeArtifactKey put — converts to SliceNodeKey-based handling.
+    @MessageReceiver
+    void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
+
+    /// Handle NodeArtifactKey remove — converts to SliceNodeKey-based handling.
+    @MessageReceiver
+    void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
 
     /// Set a shutdown callback to be invoked when SHUTTING_DOWN lifecycle state is received.
     void setShutdownCallback(Runnable callback);
 
     boolean isActive();
 
-    /// Create a MapSubscription adapter for DHT slice-node events.
-    default MapSubscription<SliceNodeKey, SliceNodeValue> asSliceNodeSubscription() {
-        return new MapSubscription<>() {
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onPut(SliceNodeKey key, SliceNodeValue value) {
-                onSliceNodePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
-            }
-
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onRemove(SliceNodeKey key) {
-                onSliceNodeRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
-            }
-        };
-    }
-
     /// Information about a suspended slice that can be reactivated.
     /// Tracks the slice key and the original deployment state.
     record SuspendedSlice(SliceNodeKey key, SliceDeployment deployment) {}
 
     sealed interface NodeDeploymentState {
-        default void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {}
+        default void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {}
 
-        default void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {}
+        default void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {}
 
         default void onNodeLifecyclePut(ValuePut<NodeLifecycleKey, NodeLifecycleValue> valuePut) {}
 
@@ -126,9 +111,7 @@ public interface NodeDeploymentManager {
                                          MessageRouter router,
                                          ConcurrentHashMap<SliceNodeKey, SliceDeployment> deployments,
                                          Option<HttpRoutePublisher> httpRoutePublisher,
-                                         Option<SliceInvokerFacade> sliceInvokerFacade,
-                                         ReplicatedMap<EndpointKey, EndpointValue> endpointMap,
-                                         ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap) implements NodeDeploymentState {
+                                         Option<SliceInvokerFacade> sliceInvokerFacade) implements NodeDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(ActiveNodeDeploymentState.class);
 
             private static final Fn1<Cause, SliceNodeKey> CLEANUP_FAILED = Causes.forOneValue("Failed to cleanup slice %s during abrupt removal");
@@ -146,23 +129,26 @@ public interface NodeDeploymentManager {
             }
 
             @Override
-            public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
-                var sliceKey = valuePut.cause()
-                                       .key();
-                if (sliceKey.isForNode(self)) {
-                    var sliceNodeValue = valuePut.cause()
-                                                 .value();
-                    log.debug("ValuePut received for key: {}, state: {}", sliceKey, sliceNodeValue.state());
+            public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+                var key = valuePut.cause()
+                                  .key();
+                if (key.isForNode(self)) {
+                    var value = valuePut.cause()
+                                        .value();
+                    var sliceKey = new SliceNodeKey(key.artifact(), key.nodeId());
+                    var sliceNodeValue = SliceNodeValue.sliceNodeValue(value.state());
+                    log.debug("NodeArtifactKey put received for key: {}, state: {}", key, value.state());
                     recordDeployment(sliceKey, sliceNodeValue);
-                    processStateTransition(sliceKey, sliceNodeValue.state());
+                    processStateTransition(sliceKey, value.state());
                 }
             }
 
             @Override
-            public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
-                var sliceKey = valueRemove.cause()
-                                          .key();
-                if (sliceKey.isForNode(self)) {
+            public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+                var key = valueRemove.cause()
+                                     .key();
+                if (key.isForNode(self)) {
+                    var sliceKey = new SliceNodeKey(key.artifact(), key.nodeId());
                     handleSliceValueRemove(sliceKey);
                 }
             }
@@ -399,17 +385,19 @@ public interface NodeDeploymentManager {
 
             private Promise<Unit> publishEndpointsForSlice(Artifact artifact, Slice slice) {
                 var methods = slice.methods();
-                int instanceNumber = Math.abs(self.id()
-                                                  .hashCode());
-                var puts = methods.stream()
-                                  .map(method -> putEndpointToDht(artifact,
-                                                                  method.name(),
-                                                                  instanceNumber))
-                                  .toList();
-                if (puts.isEmpty()) {
+                if (methods.isEmpty()) {
                     return Promise.unitPromise();
                 }
-                return Promise.allOf(puts)
+                int instanceNumber = Math.abs(self.id()
+                                                  .hashCode());
+                var methodNames = methods.stream()
+                                         .map(m -> m.name()
+                                                    .name())
+                                         .toList();
+                var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, artifact);
+                var nodeArtifactValue = NodeArtifactValue.activeNodeArtifactValue(instanceNumber, methodNames);
+                KVCommand<AetherKey> command = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
+                return cluster.apply(List.of(command))
                               .mapToUnit()
                               .onSuccess(_ -> log.debug("Published {} endpoints for slice {}",
                                                         methods.size(),
@@ -417,14 +405,6 @@ public interface NodeDeploymentManager {
                               .onFailure(cause -> log.error("Failed to publish endpoints for {}: {}",
                                                             artifact,
                                                             cause.message()));
-            }
-
-            private Promise<Unit> putEndpointToDht(Artifact artifact,
-                                                   MethodName methodName,
-                                                   int instanceNumber) {
-                var key = new EndpointKey(artifact, methodName, instanceNumber);
-                var value = new EndpointValue(self);
-                return endpointMap.put(key, value);
             }
 
             private void handleDeactivating(SliceNodeKey sliceKey) {
@@ -477,17 +457,14 @@ public interface NodeDeploymentManager {
 
             private Promise<Unit> unpublishEndpointsForSlice(Artifact artifact, Slice slice) {
                 var methods = slice.methods();
-                int instanceNumber = Math.abs(self.id()
-                                                  .hashCode());
-                var removes = methods.stream()
-                                     .map(method -> removeEndpointFromDht(artifact,
-                                                                          method.name(),
-                                                                          instanceNumber))
-                                     .toList();
-                if (removes.isEmpty()) {
+                if (methods.isEmpty()) {
                     return Promise.unitPromise();
                 }
-                return Promise.allOf(removes)
+                // Write NodeArtifactKey with empty methods to clear endpoint info
+                var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, artifact);
+                var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
+                KVCommand<AetherKey> command = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
+                return cluster.apply(List.of(command))
                               .mapToUnit()
                               .onSuccess(_ -> log.debug("Unpublished {} endpoints for slice {}",
                                                         methods.size(),
@@ -495,13 +472,6 @@ public interface NodeDeploymentManager {
                               .onFailure(cause -> log.error("Failed to unpublish endpoints for {}: {}",
                                                             artifact,
                                                             cause.message()));
-            }
-
-            private Promise<Boolean> removeEndpointFromDht(Artifact artifact,
-                                                           MethodName methodName,
-                                                           int instanceNumber) {
-                var key = new EndpointKey(artifact, methodName, instanceNumber);
-                return endpointMap.remove(key);
             }
 
             // --- Topic subscription publish/unpublish ---
@@ -791,9 +761,11 @@ public interface NodeDeploymentManager {
             }
 
             private Promise<Unit> deleteSliceNodeKey(SliceNodeKey sliceKey) {
-                return sliceNodeMap.remove(sliceKey)
-                                   .mapToUnit()
-                                   .onSuccess(_ -> log.debug("Deleted slice-node-key {} from DHT", sliceKey));
+                var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, sliceKey.artifact());
+                KVCommand<AetherKey> removeArtifact = new KVCommand.Remove<>(nodeArtifactKey);
+                return cluster.apply(List.of(removeArtifact))
+                              .mapToUnit()
+                              .onSuccess(_ -> log.debug("Deleted node-artifact-key {} from KV-Store", nodeArtifactKey));
             }
 
             private void executeWithStateTransition(SliceNodeKey sliceKey,
@@ -875,11 +847,18 @@ public interface NodeDeploymentManager {
                 log.debug("updateSliceState: {} -> {}",
                           sliceKey,
                           value.state());
-                return sliceNodeMap.put(sliceKey, value)
-                                   .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
-                                                             sliceKey.artifact(),
-                                                             value.state()))
-                                   .onFailure(cause -> logStateUpdateFailure(sliceKey, cause));
+                var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, sliceKey.artifact());
+                var nodeArtifactValue = value.state() == SliceState.FAILED
+                                        ? NodeArtifactValue.failedNodeArtifactValue(Causes.cause(value.failureReason()
+                                                                                                      .or("Unknown failure")))
+                                        : NodeArtifactValue.nodeArtifactValue(value.state());
+                KVCommand<AetherKey> putArtifact = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
+                return cluster.apply(List.of(putArtifact))
+                              .mapToUnit()
+                              .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
+                                                        sliceKey.artifact(),
+                                                        value.state()))
+                              .onFailure(cause -> logStateUpdateFailure(sliceKey, cause));
             }
 
             private void logStateUpdateFailure(SliceNodeKey sliceKey, Cause cause) {
@@ -1014,9 +993,7 @@ public interface NodeDeploymentManager {
                                                        SliceStore sliceStore,
                                                        ClusterNode<KVCommand<AetherKey>> cluster,
                                                        KVStore<AetherKey, AetherValue> kvStore,
-                                                       InvocationHandler invocationHandler,
-                                                       ReplicatedMap<EndpointKey, EndpointValue> endpointMap,
-                                                       ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap) {
+                                                       InvocationHandler invocationHandler) {
         return nodeDeploymentManager(self,
                                      router,
                                      sliceStore,
@@ -1026,9 +1003,7 @@ public interface NodeDeploymentManager {
                                      SliceActionConfig.sliceActionConfig(),
                                      SliceCodec.sliceCodec(List.of()),
                                      Option.none(),
-                                     Option.none(),
-                                     endpointMap,
-                                     sliceNodeMap);
+                                     Option.none());
     }
 
     static NodeDeploymentManager nodeDeploymentManager(NodeId self,
@@ -1040,9 +1015,7 @@ public interface NodeDeploymentManager {
                                                        SliceActionConfig configuration,
                                                        SliceCodec nodeCodec,
                                                        Option<HttpRoutePublisher> httpRoutePublisher,
-                                                       Option<SliceInvokerFacade> sliceInvokerFacade,
-                                                       ReplicatedMap<EndpointKey, EndpointValue> endpointMap,
-                                                       ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap) {
+                                                       Option<SliceInvokerFacade> sliceInvokerFacade) {
         record deploymentManager(NodeId self,
                                  SliceStore sliceStore,
                                  ClusterNode<KVCommand<AetherKey>> cluster,
@@ -1055,21 +1028,19 @@ public interface NodeDeploymentManager {
                                  AtomicLong quorumSequence,
                                  Option<HttpRoutePublisher> httpRoutePublisher,
                                  Option<SliceInvokerFacade> sliceInvokerFacade,
-                                 ReplicatedMap<EndpointKey, EndpointValue> endpointMap,
-                                 ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodeMap,
                                  AtomicReference<Runnable> shutdownCallback) implements NodeDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(NodeDeploymentManager.class);
 
             @Override
-            public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
+            public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
                 state.get()
-                     .onSliceNodePut(valuePut);
+                     .onNodeArtifactPut(valuePut);
             }
 
             @Override
-            public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
+            public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
                 state.get()
-                     .onSliceNodeRemove(valueRemove);
+                     .onNodeArtifactRemove(valueRemove);
             }
 
             @Override
@@ -1095,9 +1066,7 @@ public interface NodeDeploymentManager {
                                                                                                 router(),
                                                                                                 new ConcurrentHashMap<>(),
                                                                                                 httpRoutePublisher(),
-                                                                                                sliceInvokerFacade(),
-                                                                                                endpointMap(),
-                                                                                                sliceNodeMap());
+                                                                                                sliceInvokerFacade());
                             state().set(activeState);
                             log.info("Node {} NodeDeploymentManager activated", self().id());
                             // Register ON_DUTY lifecycle state (only if key doesn't exist — preserve DECOMMISSIONED on restart)
@@ -1203,8 +1172,6 @@ public interface NodeDeploymentManager {
                                      new AtomicLong(0),
                                      httpRoutePublisher,
                                      sliceInvokerFacade,
-                                     endpointMap,
-                                     sliceNodeMap,
                                      new AtomicReference<>());
     }
 }

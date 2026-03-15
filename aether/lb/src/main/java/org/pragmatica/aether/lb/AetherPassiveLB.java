@@ -1,7 +1,5 @@
 package org.pragmatica.aether.lb;
 
-import org.pragmatica.aether.dht.AetherMaps;
-import org.pragmatica.aether.dht.DHTNotification;
 import org.pragmatica.aether.http.HttpRouteRegistry;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
 import org.pragmatica.aether.http.forward.HttpForwarder;
@@ -9,14 +7,12 @@ import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.cluster.node.passive.PassiveNode;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
-import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.http.HttpStatus;
@@ -225,16 +221,14 @@ public final class AetherPassiveLB {
                                                              httpForwarder::onNodeRemoved),
                                                        route(TopologyChangeNotification.NodeDown.class,
                                                              httpForwarder::onNodeDown));
-        // Handle DHT route notifications broadcast from active nodes
-        var dhtNotificationRoutes = SealedBuilder.from(DHTNotification.class)
-                                                 .route(route(DHTNotification.Put.class,
-                                                              notification -> handleDHTPut(routeRegistry, notification)),
-                                                        route(DHTNotification.Removed.class,
-                                                              notification -> handleDHTRemove(routeRegistry,
-                                                                                              notification)));
+        // KV notification router for NodeRoutesKey — receives committed KV decisions
+        var kvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                           .onPut(NodeRoutesKey.class, routeRegistry::onNodeRoutesPut)
+                                           .onRemove(NodeRoutesKey.class, routeRegistry::onNodeRoutesRemove)
+                                           .build();
         var allEntries = new ArrayList<>(passiveNode.routeEntries());
         allEntries.add(topologyChangeRoutes);
-        allEntries.add(dhtNotificationRoutes);
+        allEntries.addAll(kvRouter.asRouteEntries());
         allEntries.add(route(HttpForwardResponse.class, httpForwarder::onHttpForwardResponse));
         RabiaNode.buildAndWireRouter(passiveNode.delegateRouter(),
                                      allEntries)
@@ -242,18 +236,5 @@ public final class AetherPassiveLB {
                                                cause.message()))
                  .onSuccess(_ -> log.info("Passive LB routes wired successfully ({} entries)",
                                           allEntries.size()));
-    }
-
-    @SuppressWarnings("JBCT-RET-01") // Event callback
-    private static void handleDHTPut(HttpRouteRegistry routeRegistry, DHTNotification.Put notification) {
-        var key = AetherMaps.deserializeHttpRouteKey(notification.key());
-        var value = AetherMaps.deserializeHttpRouteValue(notification.value());
-        routeRegistry.onRoutePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
-    }
-
-    @SuppressWarnings("JBCT-RET-01") // Event callback
-    private static void handleDHTRemove(HttpRouteRegistry routeRegistry, DHTNotification.Removed notification) {
-        var key = AetherMaps.deserializeHttpRouteKey(notification.key());
-        routeRegistry.onRouteRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
     }
 }
