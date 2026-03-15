@@ -669,4 +669,92 @@ public sealed interface AetherValue {
             return new NodeLifecycleValue(newState, System.currentTimeMillis());
         }
     }
+
+    /// Compound deployment state and endpoint registration for a single node-artifact pair.
+    /// Carries both deployment state (from SliceNodeValue) and endpoint info (from EndpointValue).
+    ///
+    /// @param state the current deployment state
+    /// @param failureReason when state is FAILED, carries the cause message; otherwise none
+    /// @param fatal whether the failure is fatal (non-retryable)
+    /// @param instanceNumber hash-based instance number for endpoint routing (0 when not ACTIVE)
+    /// @param methods list of method names available on this slice (empty when not ACTIVE)
+    record NodeArtifactValue(SliceState state,
+                             Option<String> failureReason,
+                             boolean fatal,
+                             int instanceNumber,
+                             List<String> methods) implements AetherValue {
+        /// Creates a state-only value (no endpoints — used during LOAD/LOADING/LOADED transitions).
+        public static NodeArtifactValue nodeArtifactValue(SliceState state) {
+            return new NodeArtifactValue(state, Option.none(), false, 0, List.of());
+        }
+
+        /// Creates a FAILED state value by classifying the cause.
+        public static NodeArtifactValue failedNodeArtifactValue(Cause cause) {
+            var classified = SliceLoadingFailure.classify(cause);
+            return new NodeArtifactValue(SliceState.FAILED,
+                                         Option.option(classified.message()),
+                                         classified.isFatal(),
+                                         0,
+                                         List.of());
+        }
+
+        /// Creates an ACTIVE value with endpoint information.
+        public static NodeArtifactValue activeNodeArtifactValue(int instanceNumber, List<String> methods) {
+            return new NodeArtifactValue(SliceState.ACTIVE, Option.none(), false, instanceNumber, List.copyOf(methods));
+        }
+
+        /// Returns a new value with updated state, preserving endpoint info if transitioning to ACTIVE.
+        public NodeArtifactValue withState(SliceState newState) {
+            if (newState == SliceState.ACTIVE) {
+                return new NodeArtifactValue(newState, Option.none(), false, instanceNumber, methods);
+            }
+            return new NodeArtifactValue(newState, Option.none(), false, 0, List.of());
+        }
+
+        /// Returns true if this entry has active endpoints.
+        public boolean hasEndpoints() {
+            return state == SliceState.ACTIVE && !methods.isEmpty();
+        }
+    }
+
+    /// Compound HTTP routes for one artifact on one node.
+    /// One entry per artifact per node replaces N individual route entries.
+    ///
+    /// @param routes list of route registrations
+    record NodeRoutesValue(List<RouteEntry> routes) implements AetherValue {
+        /// Single HTTP route entry within the compound value.
+        ///
+        /// @param httpMethod HTTP method (GET, POST, etc.)
+        /// @param pathPrefix path prefix for routing
+        /// @param sliceMethod factory method name on the slice
+        /// @param state route state: ACTIVE, DRAINING, or CANARY
+        /// @param weight relative load factor (100 = normal, 0 = don't route)
+        /// @param registeredAt epoch millis when this route was registered
+        public record RouteEntry(String httpMethod,
+                                 String pathPrefix,
+                                 String sliceMethod,
+                                 String state,
+                                 int weight,
+                                 long registeredAt) {
+            /// Creates an active route entry with default weight.
+            public static RouteEntry activeRoute(String httpMethod, String pathPrefix, String sliceMethod) {
+                return new RouteEntry(httpMethod, pathPrefix, sliceMethod, "ACTIVE", 100, System.currentTimeMillis());
+            }
+
+            /// Returns true if this route is active and routable.
+            public boolean isRoutable() {
+                return "ACTIVE".equals(state) && weight > 0;
+            }
+        }
+
+        /// Creates an empty routes value.
+        public static NodeRoutesValue empty() {
+            return new NodeRoutesValue(List.of());
+        }
+
+        /// Creates a routes value from a list of entries.
+        public static NodeRoutesValue nodeRoutesValue(List<RouteEntry> routes) {
+            return new NodeRoutesValue(List.copyOf(routes));
+        }
+    }
 }

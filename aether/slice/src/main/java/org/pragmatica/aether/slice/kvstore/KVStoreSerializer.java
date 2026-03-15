@@ -149,6 +149,8 @@ public final class KVStoreSerializer {
             case ActivationDirectiveKey _ -> "activation";
             case GossipKeyRotationKey _ -> "gossip-key-rotation";
             case GovernorAnnouncementKey _ -> "governor-announcement";
+            case NodeArtifactKey _ -> "node-artifact";
+            case NodeRoutesKey _ -> "node-routes";
         };
     }
 
@@ -193,6 +195,8 @@ public final class KVStoreSerializer {
             case GossipKeyRotationValue v -> serializeGossipKeyRotation(v);
             case NodeLifecycleValue v -> serializeNodeLifecycle(v);
             case GovernorAnnouncementValue v -> serializeGovernorAnnouncement(v);
+            case NodeArtifactValue v -> serializeNodeArtifact(v);
+            case NodeRoutesValue v -> serializeNodeRoutes(v);
             case AppBlueprintValue _ -> "";
         };
     }
@@ -274,6 +278,24 @@ public final class KVStoreSerializer {
                 .name() + PIPE + v.updatedAt();
     }
 
+    private static String serializeNodeArtifact(NodeArtifactValue v) {
+        var methodsJoined = String.join(",", v.methods());
+        return v.state()
+                .name() + PIPE + v.failureReason()
+                                  .or("") + PIPE + v.fatal() + PIPE + v.instanceNumber() + PIPE + methodsJoined;
+    }
+
+    private static String serializeNodeRoutes(NodeRoutesValue v) {
+        return v.routes()
+                .stream()
+                .map(KVStoreSerializer::serializeRouteEntry)
+                .collect(Collectors.joining(";"));
+    }
+
+    private static String serializeRouteEntry(NodeRoutesValue.RouteEntry r) {
+        return r.httpMethod() + "," + r.pathPrefix() + "," + r.sliceMethod() + "," + r.state() + "," + r.weight() + "," + r.registeredAt();
+    }
+
     private static String serializeGovernorAnnouncement(GovernorAnnouncementValue v) {
         var memberIds = v.members()
                          .stream()
@@ -319,6 +341,8 @@ public final class KVStoreSerializer {
             case "activation" -> parseActivationEntry(identity, rawValue);
             case "gossip-key-rotation" -> parseGossipKeyRotationEntry(identity, rawValue);
             case "governor-announcement" -> parseGovernorAnnouncementEntry(identity, rawValue);
+            case "node-artifact" -> parseNodeArtifactEntry(identity, rawValue);
+            case "node-routes" -> parseNodeRoutesEntry(identity, rawValue);
             default -> new SerializationError.UnknownKeyType(section).result();
         };
     }
@@ -623,6 +647,53 @@ public final class KVStoreSerializer {
                                              members,
                                              parts[3],
                                              Long.parseLong(parts[4]));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseNodeArtifactEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 5) {
+            return parseFailure("node-artifact value requires 5 fields, got " + parts.length);
+        }
+        return NodeArtifactKey.nodeArtifactKey("node-artifact/" + identity)
+                              .flatMap(key -> org.pragmatica.aether.slice.SliceState.sliceState(parts[0])
+                                                 .map(state -> buildNodeArtifactValue(state, parts))
+                                                 .map(val -> entry(key, val)));
+    }
+
+    private static AetherValue buildNodeArtifactValue(org.pragmatica.aether.slice.SliceState state, String[] parts) {
+        var reason = parts[1].isEmpty()
+                     ? Option.<String>none()
+                     : Option.some(parts[1]);
+        var methods = parts[4].isEmpty()
+                      ? List.<String>of()
+                      : Arrays.asList(parts[4].split(","));
+        return new NodeArtifactValue(state, reason, Boolean.parseBoolean(parts[2]), Integer.parseInt(parts[3]), methods);
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseNodeRoutesEntry(String identity, String raw) {
+        return NodeRoutesKey.nodeRoutesKey("node-routes/" + identity)
+                            .map(key -> entry(key,
+                                              buildNodeRoutesValue(raw)));
+    }
+
+    private static AetherValue buildNodeRoutesValue(String raw) {
+        if (raw.isEmpty()) {
+            return NodeRoutesValue.empty();
+        }
+        var routes = Arrays.stream(raw.split(";"))
+                           .map(KVStoreSerializer::parseRouteEntry)
+                           .toList();
+        return new NodeRoutesValue(routes);
+    }
+
+    private static NodeRoutesValue.RouteEntry parseRouteEntry(String entry) {
+        var parts = entry.split(",", - 1);
+        return new NodeRoutesValue.RouteEntry(parts[0],
+                                              parts[1],
+                                              parts[2],
+                                              parts[3],
+                                              Integer.parseInt(parts[4]),
+                                              Long.parseLong(parts[5]));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseGossipKeyRotationEntry(String identity, String raw) {
