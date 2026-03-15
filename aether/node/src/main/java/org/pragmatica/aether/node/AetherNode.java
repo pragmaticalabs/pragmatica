@@ -860,7 +860,9 @@ public interface AetherNode {
                                                                                gossipEncryptor);
         // Defer SWIM start until quorum is established — peers are not ready before quorum
         allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
-                                                 notification -> startSwimOnQuorum(notification, swimHealthDetector)));
+                                                 notification -> startSwimOnQuorum(notification,
+                                                                                   swimHealthDetector,
+                                                                                   clusterNode.network())));
         // Wire TCP connection events to SWIM: reset FAULTY members when TCP proves they're alive
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> swimHealthDetector.onNodeConnected(connection.nodeId())));
@@ -981,9 +983,12 @@ public interface AetherNode {
     }
 
     private static void startSwimOnQuorum(QuorumStateNotification notification,
-                                          CoreSwimHealthDetector swimHealthDetector) {
+                                          CoreSwimHealthDetector swimHealthDetector,
+                                          ClusterNetwork network) {
         if (notification.state() == QuorumStateNotification.State.ESTABLISHED) {
-            swimHealthDetector.start();
+            var workerGroup = network.server()
+                                     .map(org.pragmatica.net.tcp.Server::workerGroup);
+            swimHealthDetector.start(workerGroup);
         }
     }
 

@@ -23,6 +23,7 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
+import io.netty.channel.EventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.DatagramChannel;
@@ -37,19 +38,37 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /// Netty-based UDP transport for SWIM protocol messages.
+///
+/// Currently SWIM binds its own UDP port but can share the Server's EventLoopGroup
+/// (workerGroup) to avoid creating a separate thread pool. The intended next step is
+/// to move UDP binding into Server itself — SWIM would then use Server's pre-bound
+/// UDP channel directly, eliminating the separate Bootstrap. This requires threading
+/// SWIM's handler supplier through PassiveNode/RabiaNode to Server creation, since
+/// Server is created at a lower layer than SWIM.
 public final class NettySwimTransport implements SwimTransport {
     private static final Logger LOG = LoggerFactory.getLogger(NettySwimTransport.class);
 
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final GossipEncryptor encryptor;
+    private final EventLoopGroup externalGroup;
     private volatile Channel channel;
-    private volatile NioEventLoopGroup group;
+    private volatile EventLoopGroup group;
+    private volatile boolean ownsGroup;
 
     private NettySwimTransport(Serializer serializer, Deserializer deserializer, GossipEncryptor encryptor) {
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.encryptor = encryptor;
+        this.externalGroup = null;
+    }
+
+    private NettySwimTransport(Serializer serializer, Deserializer deserializer,
+                                GossipEncryptor encryptor, EventLoopGroup externalGroup) {
+        this.serializer = serializer;
+        this.deserializer = deserializer;
+        this.encryptor = encryptor;
+        this.externalGroup = externalGroup;
     }
 
     /// Factory creating a Netty-based SWIM transport with gossip encryption.
@@ -61,6 +80,13 @@ public final class NettySwimTransport implements SwimTransport {
     /// Factory creating a Netty-based SWIM transport without encryption.
     public static Result<SwimTransport> nettySwimTransport(Serializer serializer, Deserializer deserializer) {
         return nettySwimTransport(serializer, deserializer, GossipEncryptor.none());
+    }
+
+    /// Factory creating a Netty-based SWIM transport using a shared EventLoopGroup.
+    /// The provided group will NOT be shut down when this transport stops.
+    public static Result<SwimTransport> nettySwimTransport(Serializer serializer, Deserializer deserializer,
+                                                            GossipEncryptor encryptor, EventLoopGroup eventLoopGroup) {
+        return Result.success(new NettySwimTransport(serializer, deserializer, encryptor, eventLoopGroup));
     }
 
     @Override
@@ -97,7 +123,13 @@ public final class NettySwimTransport implements SwimTransport {
     }
 
     private void doBind(int port, SwimMessageHandler handler) throws InterruptedException {
-        group = new NioEventLoopGroup(1);
+        if (externalGroup != null) {
+            group = externalGroup;
+            ownsGroup = false;
+        } else {
+            group = new NioEventLoopGroup(1);
+            ownsGroup = true;
+        }
 
         var bootstrap = new Bootstrap()
             .group(group)
@@ -123,7 +155,7 @@ public final class NettySwimTransport implements SwimTransport {
 
         var g = group;
 
-        if (g != null) {
+        if (g != null && ownsGroup) {
             g.shutdownGracefully().sync();
             group = null;
         }

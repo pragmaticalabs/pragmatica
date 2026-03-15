@@ -4,7 +4,9 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -20,16 +22,23 @@ import org.pragmatica.swim.SwimTransport;
 import java.net.InetSocketAddress;
 import java.time.Duration;
 
+import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /// Bridges SWIM failure detection to NCN channel management.
+/// SWIM is the sole failure detector — NCN's Ping/Pong keepalive has been removed.
 ///
 /// Cooperative model with NettyClusterNetwork (NCN):
 /// - **SWIM → NCN:** On member FAULTY/LEFT, routes DisconnectNode to close zombie TCP channels
 /// - **NCN → SWIM:** On TCP Hello handshake, onNodeConnected() resets FAULTY state
-/// - **NCN owns:** quorum tracking, topology notifications
-/// - **SWIM owns:** departure detection via UDP probing
+/// - **NCN owns:** quorum tracking, topology notifications, TCP transport
+/// - **SWIM owns:** failure detection via UDP probing (sole detector)
+///
+/// Thread pool sharing: when started with a shared EventLoopGroup (from Server's workerGroup),
+/// SWIM's UDP channel runs on the same thread pool as NCN's TCP channels. This eliminates
+/// the separate NioEventLoopGroup(1) that SWIM previously created. SWIM still binds its own
+/// UDP port — future work will move the UDP binding into Server itself.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03", "JBCT-EX-01"})
 public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private static final Logger log = LoggerFactory.getLogger(CoreSwimHealthDetector.class);
@@ -82,6 +91,12 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     /// SWIM port = cluster port + 1.
     /// Idempotent: if SWIM is already running, this is a no-op.
     public Promise<Unit> start() {
+        return start(Option.empty());
+    }
+
+    /// Start the SWIM protocol, optionally reusing a shared EventLoopGroup for UDP transport.
+    /// When present, SWIM shares the Server's workerGroup instead of creating its own.
+    public Promise<Unit> start(Option<EventLoopGroup> sharedEventLoopGroup) {
         if (swimProtocol != null) {
             log.debug("SWIM already running, skipping start");
             return Promise.success(Unit.unit());
@@ -97,10 +112,11 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                 .host())
                                      .orElse("localhost");
         var selfAddress = new InetSocketAddress(selfHost, swimPort);
-        return NettySwimTransport.nettySwimTransport(serializer, deserializer, encryptor)
-                                 .flatMap(transport -> createAndStartProtocol(transport, selfAddress, swimPort))
-                                 .async()
-                                 .mapToUnit();
+        return createTransport(sharedEventLoopGroup).flatMap(transport -> createAndStartProtocol(transport,
+                                                                                                 selfAddress,
+                                                                                                 swimPort))
+                              .async()
+                              .mapToUnit();
     }
 
     /// Stop the SWIM protocol and transport.
@@ -151,6 +167,14 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     }
 
     // ---- Internal ----
+    private Result<SwimTransport> createTransport(Option<EventLoopGroup> sharedEventLoopGroup) {
+        return sharedEventLoopGroup.map(group -> NettySwimTransport.nettySwimTransport(serializer,
+                                                                                       deserializer,
+                                                                                       encryptor,
+                                                                                       group))
+                                   .or(NettySwimTransport.nettySwimTransport(serializer, deserializer, encryptor));
+    }
+
     private int findSelfPort() {
         return topologyConfig.coreNodes()
                              .stream()
@@ -163,9 +187,9 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     }
 
     @SuppressWarnings("JBCT-RET-01")
-    private org.pragmatica.lang.Result<SwimProtocol> createAndStartProtocol(SwimTransport transport,
-                                                                            InetSocketAddress selfAddress,
-                                                                            int swimPort) {
+    private Result<SwimProtocol> createAndStartProtocol(SwimTransport transport,
+                                                        InetSocketAddress selfAddress,
+                                                        int swimPort) {
         this.swimTransport = transport;
         // Start transport to bind the UDP port for receiving messages
         transport.start(swimPort,
