@@ -42,7 +42,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 14 | Leader election | Battle-tested | Lightweight leader detection with virtually instant re-election on departure |
 | 15 | Quorum state management | Battle-tested | Monotonic-sequenced quorum notifications, graceful degradation on quorum loss, automatic restoration |
 | 16 | Topology management | Battle-tested | Node discovery, addition/removal events, health tracking, grace period for departures |
-| 17 | Distributed KV-Store | Battle-tested | Consensus-replicated store with typed keys (SliceNode, SliceTarget, HttpRoute, AppBlueprint, VersionRouting, RollingUpdate, Threshold, LogLevel, Config, TopicSubscription) |
+| 17 | Distributed KV-Store | Battle-tested | Consensus-replicated store with typed keys (SliceNode, SliceTarget, HttpRoute, AppBlueprint, VersionRouting, RollingUpdate, Threshold, LogLevel, Config, TopicSubscription, NodeArtifact, NodeRoutes) |
 
 ## Networking & Routing
 
@@ -187,6 +187,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 93 | DHT node cleanup | Complete | `DhtNodeCleanup` removes dead node's endpoints from DHT maps on SWIM DEAD detection |
 | 94 | SliceNodeKey DHT migration | Complete | SliceNodeKey reads/writes moved from consensus to `slice-nodes` ReplicatedMap. CDM and NDM write via DHT. 5 subscribers via `asSliceNodeSubscription()` adapters |
 | 95 | HttpNodeRouteKey DHT migration | Complete | HttpNodeRouteKey reads/writes moved from consensus to `http-routes` ReplicatedMap. HttpRoutePublisher writes via DHT. 3 subscribers via `asHttpRouteSubscription()` adapters |
+| 103 | Compound KV-Store key types | Complete | `NodeArtifactKey` merges EndpointKey + SliceNodeKey into single per-node-per-artifact entry; `NodeRoutesKey` merges HttpNodeRouteKey into compound routes. ~10x entry count reduction. All publishers write only new types. All consumers handle new types via KVNotificationRouter. CDM cleanup migrated to new key types. WorkerNetwork eliminated — inter-worker messaging consolidated into NCN via DelegateRouter |
 | 96 | DHT replication config | Complete | `[dht.replication]` TOML section: `cooldown_delay_ms`, `cooldown_rate`, `target_rf`. Environment-aware defaults |
 | 100 | Event-based community scaling | Complete | Governors monitor follower metrics via `WorkerMetricsPing`/`Pong`, detect sustained threshold breaches (CPU >80%, P95 >500ms, error rate >10%), send `CommunityScalingRequest` to core. Zero baseline bandwidth. `CommunityScalingEvaluator` (sliding window, cooldown), `WorkerMetricsAggregator` (periodic aggregation). Core `ControlLoop` validates and applies scaling. On-demand `CommunityMetricsSnapshot` for diagnostics/dashboard |
 | 101 | Governor advertised address | Complete | Governors announce routable TCP address instead of `0.0.0.0`. Auto-detects via `InetAddress.getLocalHost()` or configurable `worker.advertise_address` in TOML. Required for cross-host governor mesh |

@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [0.20.0] - Unreleased
 
 ### Added
+- **Compound KV-Store key types** — `NodeArtifactKey` (replaces per-method EndpointKey + SliceNodeKey) and `NodeRoutesKey` (replaces per-route HttpNodeRouteKey) with compound values. Single writer per node per artifact, ~10x reduction in entry count and consensus commits
 - **Hybrid Logical Clock** — new `integrations/hlc` module providing `HlcTimestamp` (packed 48-bit micros + 16-bit counter) and thread-safe `HlcClock` with drift detection, used for DHT versioned writes
 - **Cron scheduling** — wired existing `CronExpression` parser into `ScheduledTaskManager` with one-shot+re-schedule pattern. Cron tasks fire at the next matching time, then re-schedule automatically
 - **Weeks interval unit** — `IntervalParser` now supports `w` suffix (e.g., `2w` = 14 days) for schedules that cron can't express naturally
@@ -16,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Execution state endpoint** — `GET /api/scheduled-tasks/{config}/{artifact}/{method}/state` returns detailed execution state including failure messages
 
 ### Changed
+- **Control plane KV-Store migration (complete)** — all control plane data migrated from DHT to KV-Store with compound key types. Publishers write only `NodeArtifactKey`/`NodeRoutesKey` (no dual-write). All consumers (EndpointRegistry, DeploymentMap, HttpRouteRegistry, ControlLoop, ArtifactDeploymentTracker, LoadBalancerManager) handle new types via KVNotificationRouter. CDM cleanup uses new key types for stale entry removal. ~10x reduction in consensus commits per deployment
+- **WorkerNetwork eliminated** — consolidated inter-worker TCP transport into NettyClusterNetwork (NCN) via PassiveNode's DelegateRouter. Workers now use a single Netty TCP stack instead of two. All inter-worker messaging (mutations, decisions, snapshots, metrics, DHT relay) flows through NCN's `Send`/`Broadcast` messages
 - **DHT versioned writes** — every DHT put now carries an HLC version; storage rejects writes with version <= current, fixing out-of-order state overwrites (e.g., LOADED overwriting ACTIVE)
 - **ReplicatedMap local cache** — `NamespacedReplicatedMap` now maintains a `ConcurrentHashMap` local cache with `forEach()` for iteration, enabling CDM to rebuild slice state from DHT
 - **CDM state rebuild** — `ClusterDeploymentManager` rebuilds slice state from DHT `ReplicatedMap` instead of consensus KV-Store
