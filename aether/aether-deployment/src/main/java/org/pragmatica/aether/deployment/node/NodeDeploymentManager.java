@@ -44,6 +44,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
@@ -111,7 +112,9 @@ public interface NodeDeploymentManager {
                                          MessageRouter router,
                                          ConcurrentHashMap<SliceNodeKey, SliceDeployment> deployments,
                                          Option<HttpRoutePublisher> httpRoutePublisher,
-                                         Option<SliceInvokerFacade> sliceInvokerFacade) implements NodeDeploymentState {
+                                         Option<SliceInvokerFacade> sliceInvokerFacade,
+                                         TimeSpan activationChainTimeout,
+                                         TimeSpan transitionRetryDelay) implements NodeDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(ActiveNodeDeploymentState.class);
 
             private static final Fn1<Cause, SliceNodeKey> CLEANUP_FAILED = Causes.forOneValue("Failed to cleanup slice %s during abrupt removal");
@@ -262,9 +265,7 @@ public interface NodeDeploymentManager {
             }
 
             private static final Fn1<Cause, String> SLICE_NOT_FOUND_FOR_ACTIVATION = Causes.forOneValue("Slice %s state is ACTIVATE but not found in SliceStore");
-            private static final long ACTIVATION_CHAIN_TIMEOUT_MS = 120_000;
             private static final int MAX_TRANSITION_RETRIES = 5;
-            private static final long TRANSITION_RETRY_DELAY_MS = 2000;
 
             private void handleSliceNotFoundForActivation(SliceNodeKey sliceKey) {
                 var cause = SLICE_NOT_FOUND_FOR_ACTIVATION.apply(sliceKey.artifact()
@@ -284,7 +285,7 @@ public interface NodeDeploymentManager {
                             .flatMap(_ -> publishScheduledTasks(sliceKey))
                             .flatMap(_ -> transitionTo(sliceKey, SliceState.ACTIVE))
                             .flatMap(_ -> publishEndpointsAndRoutes(sliceKey))
-                            .timeout(timeSpan(ACTIVATION_CHAIN_TIMEOUT_MS).millis())
+                            .timeout(activationChainTimeout)
                             .onFailure(cause -> handleActivationFailure(sliceKey, cause));
             }
 
@@ -828,10 +829,10 @@ public interface NodeDeploymentManager {
                              sliceKey.artifact(),
                              attempt + 1,
                              MAX_TRANSITION_RETRIES,
-                             TRANSITION_RETRY_DELAY_MS,
+                             transitionRetryDelay.millis(),
                              writeCause.message());
                     SharedScheduler.schedule(() -> transitionToFailedWithRetry(sliceKey, originalCause, attempt + 1),
-                                             timeSpan(TRANSITION_RETRY_DELAY_MS).millis());
+                                             transitionRetryDelay);
                 } else {
                     log.error("CRITICAL: Failed to write FAILED state for {} after {} attempts. Slice stuck in transitional state.",
                               sliceKey.artifact(),
@@ -988,6 +989,12 @@ public interface NodeDeploymentManager {
         }
     }
 
+    /// Default activation chain timeout (2 minutes).
+    TimeSpan DEFAULT_ACTIVATION_CHAIN_TIMEOUT = TimeSpan.timeSpan(120_000).millis();
+
+    /// Default transition retry delay (2 seconds).
+    TimeSpan DEFAULT_TRANSITION_RETRY_DELAY = TimeSpan.timeSpan(2000).millis();
+
     static NodeDeploymentManager nodeDeploymentManager(NodeId self,
                                                        MessageRouter router,
                                                        SliceStore sliceStore,
@@ -1003,7 +1010,9 @@ public interface NodeDeploymentManager {
                                      SliceActionConfig.sliceActionConfig(),
                                      SliceCodec.sliceCodec(List.of()),
                                      Option.none(),
-                                     Option.none());
+                                     Option.none(),
+                                     DEFAULT_ACTIVATION_CHAIN_TIMEOUT,
+                                     DEFAULT_TRANSITION_RETRY_DELAY);
     }
 
     static NodeDeploymentManager nodeDeploymentManager(NodeId self,
@@ -1016,6 +1025,32 @@ public interface NodeDeploymentManager {
                                                        SliceCodec nodeCodec,
                                                        Option<HttpRoutePublisher> httpRoutePublisher,
                                                        Option<SliceInvokerFacade> sliceInvokerFacade) {
+        return nodeDeploymentManager(self,
+                                     router,
+                                     sliceStore,
+                                     cluster,
+                                     kvStore,
+                                     invocationHandler,
+                                     configuration,
+                                     nodeCodec,
+                                     httpRoutePublisher,
+                                     sliceInvokerFacade,
+                                     DEFAULT_ACTIVATION_CHAIN_TIMEOUT,
+                                     DEFAULT_TRANSITION_RETRY_DELAY);
+    }
+
+    static NodeDeploymentManager nodeDeploymentManager(NodeId self,
+                                                       MessageRouter router,
+                                                       SliceStore sliceStore,
+                                                       ClusterNode<KVCommand<AetherKey>> cluster,
+                                                       KVStore<AetherKey, AetherValue> kvStore,
+                                                       InvocationHandler invocationHandler,
+                                                       SliceActionConfig configuration,
+                                                       SliceCodec nodeCodec,
+                                                       Option<HttpRoutePublisher> httpRoutePublisher,
+                                                       Option<SliceInvokerFacade> sliceInvokerFacade,
+                                                       TimeSpan activationChainTimeout,
+                                                       TimeSpan transitionRetryDelay) {
         record deploymentManager(NodeId self,
                                  SliceStore sliceStore,
                                  ClusterNode<KVCommand<AetherKey>> cluster,
@@ -1028,6 +1063,8 @@ public interface NodeDeploymentManager {
                                  AtomicLong quorumSequence,
                                  Option<HttpRoutePublisher> httpRoutePublisher,
                                  Option<SliceInvokerFacade> sliceInvokerFacade,
+                                 TimeSpan activationChainTimeout,
+                                 TimeSpan transitionRetryDelay,
                                  AtomicReference<Runnable> shutdownCallback) implements NodeDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(NodeDeploymentManager.class);
 
@@ -1066,7 +1103,9 @@ public interface NodeDeploymentManager {
                                                                                                 router(),
                                                                                                 new ConcurrentHashMap<>(),
                                                                                                 httpRoutePublisher(),
-                                                                                                sliceInvokerFacade());
+                                                                                                sliceInvokerFacade(),
+                                                                                                activationChainTimeout(),
+                                                                                                transitionRetryDelay());
                             state().set(activeState);
                             log.info("Node {} NodeDeploymentManager activated", self().id());
                             // Register ON_DUTY lifecycle state (only if key doesn't exist — preserve DECOMMISSIONED on restart)
@@ -1172,6 +1211,8 @@ public interface NodeDeploymentManager {
                                      new AtomicLong(0),
                                      httpRoutePublisher,
                                      sliceInvokerFacade,
+                                     activationChainTimeout,
+                                     transitionRetryDelay,
                                      new AtomicReference<>());
     }
 }

@@ -150,28 +150,62 @@ public interface LeaderManager {
 
     Logger log = LoggerFactory.getLogger(LeaderManager.class);
 
-    /// Retry delay for leader proposals that fail (e.g., when consensus not ready yet)
-    TimeSpan PROPOSAL_RETRY_DELAY = timeSpan(500).millis();
+    /// Default retry delay for leader proposals that fail (e.g., when consensus not ready yet)
+    TimeSpan DEFAULT_PROPOSAL_RETRY_DELAY = timeSpan(500).millis();
 
-    /// Base delay before the first leader proposal after consensus activation.
+    /// Default base delay before the first leader proposal after consensus activation.
     /// This allows all nodes to complete consensus sync before any proposals are submitted.
     /// Without this, the first node to activate submits proposals that fail because
     /// other nodes are still dormant (syncing), and those proposals time out after 3 seconds.
-    TimeSpan BASE_ELECTION_DELAY = timeSpan(2).seconds();
+    TimeSpan DEFAULT_BASE_ELECTION_DELAY = timeSpan(2).seconds();
 
-    /// Additional delay per rank position for staggered initial election.
+    /// Default additional delay per rank position for staggered initial election.
     /// Rank 0 proposes after BASE_ELECTION_DELAY, rank 1 after BASE + 1s, rank 2 after BASE + 2s.
     /// This ensures only one node proposes at a time.
-    TimeSpan PER_RANK_DELAY = timeSpan(1).seconds();
+    TimeSpan DEFAULT_PER_RANK_DELAY = timeSpan(1).seconds();
+
+    /// Create a leader manager with consensus-based election and configurable timeouts.
+    ///
+    /// @param self this node's ID
+    /// @param router message router for notifications
+    /// @param proposalHandler handler for submitting proposals through consensus
+    /// @param expectedCluster expected cluster members for deterministic min calculation
+    /// @param proposalRetryDelay delay before retrying failed proposals
+    /// @param baseElectionDelay base delay before first election attempt
+    /// @param perRankDelay additional delay per rank position
+    static LeaderManager leaderManager(NodeId self,
+                                       MessageRouter router,
+                                       LeaderProposalHandler proposalHandler,
+                                       List<NodeId> expectedCluster,
+                                       TimeSpan proposalRetryDelay,
+                                       TimeSpan baseElectionDelay,
+                                       TimeSpan perRankDelay) {
+        return leaderManager(self, router, Option.some(proposalHandler), expectedCluster,
+                             proposalRetryDelay, baseElectionDelay, perRankDelay);
+    }
 
     private static LeaderManager leaderManager(NodeId self,
                                                MessageRouter router,
                                                Option<LeaderProposalHandler> proposalHandler,
                                                List<NodeId> expectedCluster) {
+        return leaderManager(self, router, proposalHandler, expectedCluster,
+                             DEFAULT_PROPOSAL_RETRY_DELAY, DEFAULT_BASE_ELECTION_DELAY, DEFAULT_PER_RANK_DELAY);
+    }
+
+    private static LeaderManager leaderManager(NodeId self,
+                                               MessageRouter router,
+                                               Option<LeaderProposalHandler> proposalHandler,
+                                               List<NodeId> expectedCluster,
+                                               TimeSpan proposalRetryDelay,
+                                               TimeSpan baseElectionDelay,
+                                               TimeSpan perRankDelay) {
         record leaderManager(NodeId self,
                              MessageRouter router,
                              Option<LeaderProposalHandler> proposalHandler,
                              List<NodeId> expectedCluster,
+                             TimeSpan proposalRetryDelay,
+                             TimeSpan baseElectionDelay,
+                             TimeSpan perRankDelay,
                              AtomicBoolean active,
                              AtomicLong viewSequence,
                              AtomicReference<Option<NodeId>> currentLeader,
@@ -244,12 +278,12 @@ public interface LeaderManager {
                 // Rank stagger: ensures only one node proposes at a time, preventing livelock.
                 if (!hasEverHadLeader.get() && electionRetryCount.get() == 0) {
                     var rank = computeRank();
-                    var totalDelay = timeSpan(BASE_ELECTION_DELAY.millis() + rank * PER_RANK_DELAY.millis()).millis();
+                    var totalDelay = timeSpan(baseElectionDelay.millis() + rank * perRankDelay.millis()).millis();
                     log.info("Initial election: rank={}, delaying {}ms (base={}ms + rank*{}ms) before first attempt",
                              rank,
                              totalDelay.millis(),
-                             BASE_ELECTION_DELAY.millis(),
-                             PER_RANK_DELAY.millis());
+                             baseElectionDelay.millis(),
+                             perRankDelay.millis());
                     electionRetryCount.incrementAndGet();
                     SharedScheduler.schedule(this::triggerElection, totalDelay);
                     return;
@@ -263,7 +297,7 @@ public interface LeaderManager {
             private void scheduleElectionRetryIfNeeded() {
                 if (currentLeader.get().isEmpty()) {
                     var retries = electionRetryCount.incrementAndGet();
-                    var jitteredDelay = timeSpan((long) (PROPOSAL_RETRY_DELAY.millis() * (1.0 + Math.random() * 0.5))).millis();
+                    var jitteredDelay = timeSpan((long) (proposalRetryDelay.millis() * (1.0 + Math.random() * 0.5))).millis();
                     log.debug("No leader yet, scheduling election retry #{} in {}ms",
                               retries,
                               jitteredDelay.millis());
@@ -428,7 +462,7 @@ public interface LeaderManager {
                 proposalInFlight.set(false);
                                       log.debug("Leader proposal failed ({}), scheduling retry in {}ms",
                                                 cause.message(),
-                                                PROPOSAL_RETRY_DELAY.millis());
+                                                proposalRetryDelay.millis());
                                       scheduleProposalRetry(handler, candidate);
                                   });
             }
@@ -442,7 +476,7 @@ public interface LeaderManager {
                                                  submitProposal(handler, candidate);
                                              }
                                          },
-                                         PROPOSAL_RETRY_DELAY);
+                                         proposalRetryDelay);
             }
 
             private void electLocally(NodeId candidate) {
@@ -501,7 +535,7 @@ public interface LeaderManager {
                     // is already active, no sync delay to worry about.
                     if (hasEverHadLeader.get()) {
                         log.debug("Quorum re-established, triggering re-election immediately");
-                        SharedScheduler.schedule(this::triggerElection, PROPOSAL_RETRY_DELAY);
+                        SharedScheduler.schedule(this::triggerElection, proposalRetryDelay);
                     } else {
                         log.debug("Quorum established, waiting for consensus sync before initial election");
                     }
@@ -540,6 +574,9 @@ public interface LeaderManager {
                                  router,
                                  proposalHandler,
                                  List.copyOf(expectedCluster),
+                                 proposalRetryDelay,
+                                 baseElectionDelay,
+                                 perRankDelay,
                                  new AtomicBoolean(false),
                                  new AtomicLong(0),
                                  new AtomicReference<>(Option.none()),

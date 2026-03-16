@@ -5,6 +5,7 @@ import org.pragmatica.aether.config.TtmConfig;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class TtmConfigTest {
 
@@ -15,7 +16,7 @@ class TtmConfigTest {
         assertThat(config.enabled()).isFalse(); // Disabled by default - requires explicit opt-in
         assertThat(config.inputWindowMinutes()).isEqualTo(60);
         assertThat(config.predictionHorizon()).isEqualTo(1);
-        assertThat(config.evaluationIntervalMs()).isEqualTo(60_000L);
+        assertThat(config.evaluationInterval().millis()).isEqualTo(60_000L);
         assertThat(config.confidenceThreshold()).isEqualTo(0.7);
     }
 
@@ -28,13 +29,13 @@ class TtmConfigTest {
 
     @Test
     void ttmConfig_succeeds_withValidParameters() {
-        TtmConfig.ttmConfig("models/test.onnx", 30, 2, 30_000L, 0.8, true)
+        TtmConfig.ttmConfig("models/test.onnx", 30, 2, timeSpan(30).seconds(), 0.8, true)
                  .onFailureRun(() -> fail("Expected success"))
                  .onSuccess(config -> {
                      assertThat(config.modelPath()).isEqualTo("models/test.onnx");
                      assertThat(config.inputWindowMinutes()).isEqualTo(30);
                      assertThat(config.predictionHorizon()).isEqualTo(2);
-                     assertThat(config.evaluationIntervalMs()).isEqualTo(30_000L);
+                     assertThat(config.evaluationInterval().millis()).isEqualTo(30_000L);
                      assertThat(config.confidenceThreshold()).isEqualTo(0.8);
                      assertThat(config.enabled()).isTrue();
                  });
@@ -42,58 +43,58 @@ class TtmConfigTest {
 
     @Test
     void ttmConfig_fails_withBlankModelPathWhenEnabled() {
-        TtmConfig.ttmConfig("", 60, 1, 60_000L, 0.7, true)
+        TtmConfig.ttmConfig("", 60, 1, timeSpan(60).seconds(), 0.7, true)
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> assertThat(cause.message()).contains("modelPath"));
     }
 
     @Test
     void ttmConfig_succeeds_withBlankModelPathWhenDisabled() {
-        TtmConfig.ttmConfig("", 60, 1, 60_000L, 0.7, false)
+        TtmConfig.ttmConfig("", 60, 1, timeSpan(60).seconds(), 0.7, false)
                  .onFailureRun(() -> fail("Expected success"))
                  .onSuccess(config -> assertThat(config.enabled()).isFalse());
     }
 
     @Test
     void ttmConfig_fails_withInvalidInputWindowMinutes() {
-        TtmConfig.ttmConfig("model.onnx", 0, 1, 60_000L, 0.7, true)
+        TtmConfig.ttmConfig("model.onnx", 0, 1, timeSpan(60).seconds(), 0.7, true)
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> assertThat(cause.message()).contains("inputWindowMinutes"));
 
-        TtmConfig.ttmConfig("model.onnx", 121, 1, 60_000L, 0.7, true)
+        TtmConfig.ttmConfig("model.onnx", 121, 1, timeSpan(60).seconds(), 0.7, true)
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> assertThat(cause.message()).contains("inputWindowMinutes"));
     }
 
     @Test
     void ttmConfig_fails_withInvalidPredictionHorizon() {
-        TtmConfig.ttmConfig("model.onnx", 60, 0, 60_000L, 0.7, true)
+        TtmConfig.ttmConfig("model.onnx", 60, 0, timeSpan(60).seconds(), 0.7, true)
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> assertThat(cause.message()).contains("predictionHorizon"));
 
-        TtmConfig.ttmConfig("model.onnx", 60, 11, 60_000L, 0.7, true)
+        TtmConfig.ttmConfig("model.onnx", 60, 11, timeSpan(60).seconds(), 0.7, true)
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> assertThat(cause.message()).contains("predictionHorizon"));
     }
 
     @Test
     void ttmConfig_fails_withInvalidEvaluationInterval() {
-        TtmConfig.ttmConfig("model.onnx", 60, 1, 5_000L, 0.7, true)
+        TtmConfig.ttmConfig("model.onnx", 60, 1, timeSpan(5).seconds(), 0.7, true)
                  .onSuccessRun(() -> fail("Expected failure"))
-                 .onFailure(cause -> assertThat(cause.message()).contains("evaluationIntervalMs"));
+                 .onFailure(cause -> assertThat(cause.message()).contains("evaluationInterval"));
 
-        TtmConfig.ttmConfig("model.onnx", 60, 1, 400_000L, 0.7, true)
+        TtmConfig.ttmConfig("model.onnx", 60, 1, timeSpan(400).seconds(), 0.7, true)
                  .onSuccessRun(() -> fail("Expected failure"))
-                 .onFailure(cause -> assertThat(cause.message()).contains("evaluationIntervalMs"));
+                 .onFailure(cause -> assertThat(cause.message()).contains("evaluationInterval"));
     }
 
     @Test
     void ttmConfig_fails_withInvalidConfidenceThreshold() {
-        TtmConfig.ttmConfig("model.onnx", 60, 1, 60_000L, -0.1, true)
+        TtmConfig.ttmConfig("model.onnx", 60, 1, timeSpan(60).seconds(), -0.1, true)
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> assertThat(cause.message()).contains("confidenceThreshold"));
 
-        TtmConfig.ttmConfig("model.onnx", 60, 1, 60_000L, 1.1, true)
+        TtmConfig.ttmConfig("model.onnx", 60, 1, timeSpan(60).seconds(), 1.1, true)
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> assertThat(cause.message()).contains("confidenceThreshold"));
     }

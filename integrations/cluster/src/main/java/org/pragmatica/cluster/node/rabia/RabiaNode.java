@@ -255,7 +255,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         if (useConsensusLeaderElection) {
             // Consensus-based leader election: submit proposals through consensus
             LeaderManager.LeaderProposalHandler proposalHandler =
-            (candidate, viewSequence) -> submitLeaderProposal(consensus, candidate);
+            (candidate, viewSequence) -> submitLeaderProposal(consensus, candidate, DEFAULT_PROPOSAL_TIMEOUT);
             leaderManager = LeaderManager.leaderManager(config.topology()
                                                               .self(),
                                                         delegateRouter,
@@ -417,14 +417,19 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
              .add((Consumer) tuple.last());
     }
 
+    /// Default timeout for leader proposals.
+    TimeSpan DEFAULT_PROPOSAL_TIMEOUT = timeSpan(3).seconds();
+
     @SuppressWarnings("unchecked")
-    private static <C extends Command> Promise<Unit> submitLeaderProposal(RabiaEngine<C> consensus, NodeId candidate) {
+    private static <C extends Command> Promise<Unit> submitLeaderProposal(RabiaEngine<C> consensus,
+                                                                          NodeId candidate,
+                                                                          TimeSpan proposalTimeout) {
         log.info("Submitting leader proposal: candidate={}", candidate);
         var command = new KVCommand.Put<>(LeaderKey.INSTANCE, LeaderValue.leaderValue(candidate));
         // Timeout for leader proposals - if consensus doesn't complete in this time, fail and retry.
         // This handles the case where other nodes are still syncing and ignoring proposals.
         return consensus.apply(List.of((C) command))
-                        .timeout(timeSpan(3).seconds())
+                        .timeout(proposalTimeout)
                         .mapToUnit();
     }
 }

@@ -22,6 +22,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+import org.pragmatica.lang.io.TimeSpan;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -37,21 +39,33 @@ import static org.pragmatica.consensus.rabia.RabiaPersistence.SavedState.savedSt
 class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
     private static final String STATE_FILE = "state.toml";
     private static final Pattern PHASE_PATTERN = Pattern.compile("^# Phase: (\\d+)$", Pattern.MULTILINE);
-    private static final long GIT_TIMEOUT_MS = 30_000;
+
+    /// Default git operation timeout.
+    static final TimeSpan DEFAULT_GIT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
 
     private final Path backupDir;
     private final Option<String> remote;
     private final Function<byte[], Result<String>> snapshotToToml;
     private final Function<String, Result<byte[]>> tomlToSnapshot;
+    private final TimeSpan gitTimeout;
 
     GitBackedPersistence(Path backupDir,
                          Option<String> remote,
                          Function<byte[], Result<String>> snapshotToToml,
                          Function<String, Result<byte[]>> tomlToSnapshot) {
+        this(backupDir, remote, snapshotToToml, tomlToSnapshot, DEFAULT_GIT_TIMEOUT);
+    }
+
+    GitBackedPersistence(Path backupDir,
+                         Option<String> remote,
+                         Function<byte[], Result<String>> snapshotToToml,
+                         Function<String, Result<byte[]>> tomlToSnapshot,
+                         TimeSpan gitTimeout) {
         this.backupDir = backupDir;
         this.remote = remote;
         this.snapshotToToml = snapshotToToml;
         this.tomlToSnapshot = tomlToSnapshot;
+        this.gitTimeout = gitTimeout;
     }
 
     @Override
@@ -146,14 +160,15 @@ class GitBackedPersistence<C extends Command> implements RabiaPersistence<C> {
             .redirectErrorStream(false)
             .start();
 
-        var completed = process.waitFor(GIT_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+        var timeoutMs = gitTimeout.millis();
+        var completed = process.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
 
         var stdout = new String(process.getInputStream().readAllBytes());
         var stderr = new String(process.getErrorStream().readAllBytes());
 
         if (!completed) {
             process.destroyForcibly();
-            return new ProcessResult(-1, stdout, "Git command timed out after " + GIT_TIMEOUT_MS + "ms");
+            return new ProcessResult(-1, stdout, "Git command timed out after " + timeoutMs + "ms");
         }
 
         return new ProcessResult(process.exitValue(), stdout, stderr);

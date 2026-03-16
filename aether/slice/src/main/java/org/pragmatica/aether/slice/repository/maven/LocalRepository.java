@@ -33,13 +33,17 @@ public interface LocalRepository extends Repository {
 
     /// Create a LocalRepository at a specific path (useful for testing).
     static LocalRepository localRepository(Path localRepo) {
-        record repository(Path localRepo) implements LocalRepository {
-            private static final TimeSpan LOCATE_TIMEOUT = timeSpan(30).seconds();
+        return localRepository(localRepo, timeSpan(30).seconds());
+    }
+
+    /// Create a LocalRepository at a specific path with custom timeout.
+    static LocalRepository localRepository(Path localRepo, TimeSpan locateTimeout) {
+        record repository(Path localRepo, TimeSpan locateTimeout) implements LocalRepository {
 
             @Override
             public Promise<Location> locate(Artifact artifact) {
                 return resolveLocation(artifact).async()
-                                      .timeout(LOCATE_TIMEOUT);
+                                      .timeout(locateTimeout);
             }
 
             private Result<Location> resolveLocation(Artifact artifact) {
@@ -68,6 +72,6 @@ public interface LocalRepository extends Repository {
 
             private static final Fn1<Cause, String> ARTIFACT_NOT_FOUND = Causes.forOneValue("Artifact not found in local repository: %s");
         }
-        return new repository(localRepo);
+        return new repository(localRepo, locateTimeout);
     }
 }

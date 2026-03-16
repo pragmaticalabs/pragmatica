@@ -2,12 +2,12 @@ package org.pragmatica.aether.config;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-
-import java.time.Duration;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Per-node configuration.
 ///
@@ -18,18 +18,18 @@ import static org.pragmatica.lang.Result.success;
 /// @param resources         Kubernetes resource limits (optional)
 public record NodeConfig(String heap,
                          String gc,
-                         Duration metricsInterval,
-                         Duration reconciliation,
+                         TimeSpan metricsInterval,
+                         TimeSpan reconciliation,
                          Option<ResourcesConfig> resources) {
     public static final String DEFAULT_GC = "zgc";
-    public static final Duration DEFAULT_METRICS_INTERVAL = Duration.ofSeconds(1);
-    public static final Duration DEFAULT_RECONCILIATION = Duration.ofSeconds(5);
+    public static final TimeSpan DEFAULT_METRICS_INTERVAL = timeSpan(1).seconds();
+    public static final TimeSpan DEFAULT_RECONCILIATION = timeSpan(5).seconds();
 
     /// Factory method following JBCT naming convention.
     public static Result<NodeConfig> nodeConfig(String heap,
                                                 String gc,
-                                                Duration metricsInterval,
-                                                Duration reconciliation,
+                                                TimeSpan metricsInterval,
+                                                TimeSpan reconciliation,
                                                 Option<ResourcesConfig> resources) {
         return success(new NodeConfig(heap, gc, metricsInterval, reconciliation, resources));
     }

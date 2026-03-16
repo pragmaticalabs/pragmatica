@@ -18,6 +18,7 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.Message;
@@ -55,12 +56,13 @@ public class NettyClusterNetwork implements ClusterNetwork {
     private static final int LENGTH_FIELD_LEN = 4;
     private static final int INITIAL_BYTES_TO_STRIP = LENGTH_FIELD_LEN;
 
-    /// Minimum age (in nanos) a channel must have before DisconnectNode can remove it.
+    /// Default minimum age a channel must have before DisconnectNode can remove it.
     /// Channels younger than this are considered fresh reconnections that should survive
     /// SWIM's delayed FAULTY detection.
-    private static final long CHANNEL_PROTECTION_NANOS = java.time.Duration.ofSeconds(15).toNanos();
+    public static final TimeSpan DEFAULT_CHANNEL_PROTECTION = TimeSpan.timeSpan(15).seconds();
 
     private final NodeInfo self;
+    private final TimeSpan channelProtection;
     private final Map<NodeId, Channel> peerLinks = new ConcurrentHashMap<>();
     private final Map<NodeId, Long> channelEstablishedAt = new ConcurrentHashMap<>();
     private final Set<NodeId> passivePeers = ConcurrentHashMap.newKeySet();
@@ -84,7 +86,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
                                Serializer serializer,
                                Deserializer deserializer,
                                MessageRouter router) {
-        this(topologyManager, serializer, deserializer, router, List.of());
+        this(topologyManager, serializer, deserializer, router, List.of(), DEFAULT_CHANNEL_PROTECTION);
     }
 
     public NettyClusterNetwork(TopologyManager topologyManager,
@@ -92,9 +94,19 @@ public class NettyClusterNetwork implements ClusterNetwork {
                                Deserializer deserializer,
                                MessageRouter router,
                                List<ChannelHandler> additionalHandlers) {
+        this(topologyManager, serializer, deserializer, router, additionalHandlers, DEFAULT_CHANNEL_PROTECTION);
+    }
+
+    public NettyClusterNetwork(TopologyManager topologyManager,
+                               Serializer serializer,
+                               Deserializer deserializer,
+                               MessageRouter router,
+                               List<ChannelHandler> additionalHandlers,
+                               TimeSpan channelProtection) {
         this.self = topologyManager.self();
         this.topologyManager = topologyManager;
         this.router = router;
+        this.channelProtection = channelProtection;
         this.handlers = () -> {
             var result = new ArrayList<ChannelHandler>();
             result.add(new LengthFieldBasedFrameDecoder(1048576, 0, LENGTH_FIELD_LEN, 0, INITIAL_BYTES_TO_STRIP));
@@ -317,11 +329,12 @@ public class NettyClusterNetwork implements ClusterNetwork {
         // window are guaranteed to be post-partition reconnections, not zombies.
         var establishedAt = channelEstablishedAt.getOrDefault(nodeId, 0L);
         var channelAge = System.nanoTime() - establishedAt;
-        if (channelAge < CHANNEL_PROTECTION_NANOS) {
+        var protectionNanos = channelProtection.nanos();
+        if (channelAge < protectionNanos) {
             log.debug("DisconnectNode for {} ignored: channel is {}ms old (protection window={}ms)",
                       nodeId,
                       java.time.Duration.ofNanos(channelAge).toMillis(),
-                      java.time.Duration.ofNanos(CHANNEL_PROTECTION_NANOS).toMillis());
+                      channelProtection.millis());
             return;
         }
         if (!peerLinks.remove(nodeId, channel)) {

@@ -123,7 +123,7 @@ public final class ControllerRoutes implements RouteSource {
                                         .name(),
                                      config.modelPath(),
                                      config.inputWindowMinutes(),
-                                     config.evaluationIntervalMs(),
+                                     config.evaluationInterval().millis(),
                                      config.confidenceThreshold(),
                                      forecast.isPresent(),
                                      forecast);

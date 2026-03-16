@@ -35,7 +35,7 @@ import static org.pragmatica.aether.slice.repository.Location.location;
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-ZONE-02", "JBCT-RET-03", "JBCT-EX-01"})
 public interface RemoteRepository extends Repository {
     Logger log = LoggerFactory.getLogger(RemoteRepository.class);
-    Duration HTTP_TIMEOUT = Duration.ofSeconds(30);
+    Duration DEFAULT_HTTP_TIMEOUT = Duration.ofSeconds(30);
 
     /// Create a RemoteRepository for the given Maven repository.
     ///
@@ -43,50 +43,59 @@ public interface RemoteRepository extends Repository {
     /// @param baseUrl Base URL of the remote Maven repository
     /// @return RemoteRepository instance
     static RemoteRepository remoteRepository(String repoId, String baseUrl) {
+        return remoteRepository(repoId, baseUrl, DEFAULT_HTTP_TIMEOUT);
+    }
+
+    /// Create a RemoteRepository with custom HTTP timeout.
+    static RemoteRepository remoteRepository(String repoId, String baseUrl, Duration httpTimeout) {
         var normalizedUrl = baseUrl.endsWith("/")
                             ? baseUrl
                             : baseUrl + "/";
         var credentials = MavenSettingsCredentials.forServer(repoId);
         var localRepo = Path.of(MavenLocalRepoLocator.findLocalRepository());
-        return artifact -> resolveArtifact(artifact, normalizedUrl, credentials, localRepo);
+        return artifact -> resolveArtifact(artifact, normalizedUrl, credentials, localRepo, httpTimeout);
     }
 
     private static Promise<Location> resolveArtifact(Artifact artifact,
                                                      String baseUrl,
                                                      Option<MavenSettingsCredentials.Credentials> credentials,
-                                                     Path localRepo) {
+                                                     Path localRepo,
+                                                     Duration httpTimeout) {
         var cachedPath = localPath(artifact, localRepo);
         if (Files.exists(cachedPath)) {
             log.debug("Cache hit for {} at {}", artifact.asString(), cachedPath);
             return toLocation(artifact, cachedPath);
         }
-        return downloadAndCache(artifact, baseUrl, credentials, cachedPath);
+        return downloadAndCache(artifact, baseUrl, credentials, cachedPath, httpTimeout);
     }
 
     private static Promise<Location> downloadAndCache(Artifact artifact,
                                                       String baseUrl,
                                                       Option<MavenSettingsCredentials.Credentials> credentials,
-                                                      Path targetPath) {
-        var httpOps = JdkHttpOperations.jdkHttpOperations(HTTP_TIMEOUT,
+                                                      Path targetPath,
+                                                      Duration httpTimeout) {
+        var httpOps = JdkHttpOperations.jdkHttpOperations(httpTimeout,
                                                           java.net.http.HttpClient.Redirect.NORMAL,
                                                           Option.none());
         var artifactPath = remotePath(artifact);
         var jarUrl = baseUrl + artifactPath;
         var sha1Url = jarUrl + ".sha1";
-        return downloadJar(httpOps, jarUrl, credentials, artifact).flatMap(jarBytes -> verifySha1AndCache(httpOps,
+        return downloadJar(httpOps, jarUrl, credentials, artifact, httpTimeout).flatMap(jarBytes -> verifySha1AndCache(httpOps,
                                                                                                           sha1Url,
                                                                                                           credentials,
                                                                                                           jarBytes,
                                                                                                           artifact,
-                                                                                                          targetPath))
+                                                                                                          targetPath,
+                                                                                                          httpTimeout))
                           .flatMap(path -> toLocation(artifact, path));
     }
 
     private static Promise<byte[]> downloadJar(HttpOperations httpOps,
                                                String jarUrl,
                                                Option<MavenSettingsCredentials.Credentials> credentials,
-                                               Artifact artifact) {
-        var jarRequest = buildRequest(jarUrl, credentials);
+                                               Artifact artifact,
+                                               Duration httpTimeout) {
+        var jarRequest = buildRequest(jarUrl, credentials, httpTimeout);
         return httpOps.sendBytes(jarRequest)
                       .flatMap(result -> handleJarResponse(result, jarUrl, artifact));
     }
@@ -108,8 +117,9 @@ public interface RemoteRepository extends Repository {
                                                     Option<MavenSettingsCredentials.Credentials> credentials,
                                                     byte[] jarBytes,
                                                     Artifact artifact,
-                                                    Path targetPath) {
-        var sha1Request = buildRequest(sha1Url, credentials);
+                                                    Path targetPath,
+                                                    Duration httpTimeout) {
+        var sha1Request = buildRequest(sha1Url, credentials, httpTimeout);
         return httpOps.sendString(sha1Request)
                       .flatMap(result -> handleSha1Response(result, jarBytes, artifact))
                       .flatMap(_ -> cacheAndReturn(targetPath, jarBytes, artifact));
@@ -160,11 +170,11 @@ public interface RemoteRepository extends Repository {
         return targetPath;
     }
 
-    private static HttpRequest buildRequest(String url, Option<MavenSettingsCredentials.Credentials> credentials) {
+    private static HttpRequest buildRequest(String url, Option<MavenSettingsCredentials.Credentials> credentials, Duration httpTimeout) {
         var builder = HttpRequest.newBuilder()
                                  .uri(URI.create(url))
                                  .GET()
-                                 .timeout(HTTP_TIMEOUT);
+                                 .timeout(httpTimeout);
         credentials.onPresent(creds -> builder.header("Authorization", creds.toBasicAuthHeader()));
         return builder.build();
     }

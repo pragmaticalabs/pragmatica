@@ -39,7 +39,7 @@ public class AlertForwarder {
         this.enabled = alertConfig.enabled() && config.enabled();
         if (enabled && !config.urls()
                               .isEmpty()) {
-            this.httpOps = Option.some(JdkHttpOperations.jdkHttpOperations(Duration.ofMillis(config.timeoutMs()),
+            this.httpOps = Option.some(JdkHttpOperations.jdkHttpOperations(Duration.ofMillis(config.timeout().millis()),
                                                                            java.net.http.HttpClient.Redirect.NORMAL,
                                                                            Option.none()));
             log.info("AlertForwarder initialized with {} webhook URLs",
@@ -98,7 +98,7 @@ public class AlertForwarder {
     private Promise<Integer> doSend(HttpOperations ops, String url, String payload) {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create(url))
-                                 .timeout(Duration.ofMillis(config.timeoutMs()))
+                                 .timeout(Duration.ofMillis(config.timeout().millis()))
                                  .header("Content-Type", "application/json")
                                  .POST(HttpRequest.BodyPublishers.ofString(payload))
                                  .build();

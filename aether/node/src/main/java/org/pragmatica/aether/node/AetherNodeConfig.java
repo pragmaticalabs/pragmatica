@@ -4,6 +4,7 @@ import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.SliceConfig;
+import org.pragmatica.aether.config.TimeoutsConfig;
 import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
@@ -47,6 +48,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param observability       Observability configuration (depth threshold, sampling target)
 /// @param atomicity           Blueprint deployment atomicity mode (BEST_EFFORT or ALL_OR_NOTHING)
 /// @param activationGated     If true, node waits for CDM activation instead of auto-activating
+/// @param timeouts            Centralized timeout configuration for all subsystems
 /// @param certificateProvider Certificate provider for mTLS and gossip encryption (empty to disable)
 public record AetherNodeConfig(TopologyConfig topology,
                                ProtocolConfig protocol,
@@ -66,6 +68,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                ObservabilityConfig observability,
                                DeploymentAtomicity atomicity,
                                boolean activationGated,
+                               TimeoutsConfig timeouts,
                                Option<CertificateProvider> certificateProvider) {
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;
     public static final int MANAGEMENT_DISABLED = 0;
@@ -143,6 +146,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     ObservabilityConfig.DEFAULT,
                                     DeploymentAtomicity.ALL_OR_NOTHING,
                                     false,
+                                    TimeoutsConfig.timeoutsConfig(),
                                     Option.empty());
     }
 
@@ -171,6 +175,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     ObservabilityConfig.DEFAULT,
                                     DeploymentAtomicity.ALL_OR_NOTHING,
                                     false,
+                                    TimeoutsConfig.timeoutsConfig(),
                                     Option.empty());
     }
 
@@ -201,6 +206,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     ObservabilityConfig.DEFAULT,
                                     DeploymentAtomicity.ALL_OR_NOTHING,
                                     false,
+                                    TimeoutsConfig.timeoutsConfig(),
                                     Option.empty());
     }
 
@@ -233,6 +239,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     observability,
                                     atomicity,
                                     activationGated,
+                                    timeouts,
                                     certificateProvider);
     }
 
@@ -256,6 +263,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     observability,
                                     atomicity,
                                     activationGated,
+                                    timeouts,
                                     certificateProvider);
     }
 
@@ -279,6 +287,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     observability,
                                     atomicity,
                                     activationGated,
+                                    timeouts,
                                     certificateProvider);
     }
 
@@ -302,6 +311,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     observability,
                                     atomicity,
                                     activationGated,
+                                    timeouts,
                                     certificateProvider);
     }
 
@@ -325,6 +335,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     observability,
                                     atomicity,
                                     activationGated,
+                                    timeouts,
                                     certificateProvider);
     }
 
@@ -348,6 +359,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     observability,
                                     atomicity,
                                     activationGated,
+                                    timeouts,
                                     certificateProvider);
     }
 
@@ -371,6 +383,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     observability,
                                     atomicity,
                                     activationGated,
+                                    timeouts,
                                     certificateProvider);
     }
 
@@ -394,6 +407,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     observability,
                                     atomicity,
                                     activationGated,
+                                    timeouts,
                                     certificateProvider);
     }
 
@@ -417,6 +431,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     observability,
                                     atomicity,
                                     activationGated,
+                                    timeouts,
                                     certificateProvider);
     }
 
@@ -440,6 +455,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     observability,
                                     deploymentAtomicity,
                                     activationGated,
+                                    timeouts,
                                     certificateProvider);
     }
 
@@ -463,6 +479,31 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     observability,
                                     atomicity,
                                     gated,
+                                    timeouts,
+                                    certificateProvider);
+    }
+
+    /// Create a new configuration with custom timeouts.
+    public AetherNodeConfig withTimeouts(TimeoutsConfig newTimeouts) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    newTimeouts,
                                     certificateProvider);
     }
 
@@ -486,6 +527,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     observability,
                                     atomicity,
                                     activationGated,
+                                    timeouts,
                                     Option.some(provider));
     }
 

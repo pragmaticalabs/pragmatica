@@ -237,6 +237,7 @@ public interface ClusterDeploymentManager {
                       Set<NodeId> workerNodes,
                       Map<String, GovernorAnnouncementValue> communityGovernors,
                       Map<SliceNodeKey, Long> transitionalStateTimestamps,
+                      TimeSpan reconcileInterval,
                       AtomicReference<ScheduledFuture<?>> reconcileTimer) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
             private static final int MAX_RETRIES = 5;
@@ -259,10 +260,6 @@ public interface ClusterDeploymentManager {
                 }
             }
 
-            /// Mark this Active state as deactivated, preventing stale scheduled callbacks
-            /// from executing after the node has transitioned to Dormant.
-            private static final TimeSpan RECONCILE_INTERVAL = timeSpan(30).seconds();
-
             void deactivate() {
                 deactivated.set(true);
                 cooldownActive.set(false);
@@ -278,7 +275,7 @@ public interface ClusterDeploymentManager {
                                                                          reconcile();
                                                                      }
                                                                  },
-                                                                 RECONCILE_INTERVAL);
+                                                                 reconcileInterval);
                 reconcileTimer.set(future);
             }
 
@@ -2046,6 +2043,9 @@ public interface ClusterDeploymentManager {
     /// @param autoHealConfig  Auto-heal retry configuration
     /// @param atomicity       Blueprint deployment atomicity mode
     /// @param workerRegistry  Worker endpoint registry for pool-aware allocation (empty to disable)
+    /// Default reconciliation interval (30 seconds).
+    TimeSpan DEFAULT_RECONCILE_INTERVAL = timeSpan(30).seconds();
+
     static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
                                                              ClusterNode<KVCommand<AetherKey>> cluster,
                                                              KVStore<AetherKey, AetherValue> kvStore,
@@ -2056,6 +2056,22 @@ public interface ClusterDeploymentManager {
                                                              AutoHealConfig autoHealConfig,
                                                              DeploymentAtomicity atomicity,
                                                              int coreMax) {
+        return clusterDeploymentManager(self, cluster, kvStore, router, initialTopology,
+                                        topologyManager, computeProvider, autoHealConfig,
+                                        atomicity, coreMax, DEFAULT_RECONCILE_INTERVAL);
+    }
+
+    static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
+                                                             ClusterNode<KVCommand<AetherKey>> cluster,
+                                                             KVStore<AetherKey, AetherValue> kvStore,
+                                                             MessageRouter router,
+                                                             List<NodeId> initialTopology,
+                                                             TopologyManager topologyManager,
+                                                             Option<ComputeProvider> computeProvider,
+                                                             AutoHealConfig autoHealConfig,
+                                                             DeploymentAtomicity atomicity,
+                                                             int coreMax,
+                                                             TimeSpan reconcileInterval) {
         record clusterDeploymentManager(NodeId self,
                                         ClusterNode<KVCommand<AetherKey>> cluster,
                                         KVStore<AetherKey, AetherValue> kvStore,
@@ -2065,6 +2081,7 @@ public interface ClusterDeploymentManager {
                                         AutoHealConfig autoHealConfig,
                                         DeploymentAtomicity atomicity,
                                         int coreMax,
+                                        TimeSpan reconcileInterval,
                                         Set<NodeId> seedNodes,
                                         AtomicReference<ClusterDeploymentState> state,
                                         AtomicReference<List<NodeId>> topologyRef) implements ClusterDeploymentManager {
@@ -2104,6 +2121,7 @@ public interface ClusterDeploymentManager {
                                                                         ConcurrentHashMap.newKeySet(),
                                                                         new ConcurrentHashMap<>(),
                                                                         new ConcurrentHashMap<>(),
+                                                                        reconcileInterval,
                                                                         new AtomicReference<>());
                     // Swap to Active FIRST — ensures topology changes arriving on other threads
                     // are dispatched to Active.onTopologyChange() instead of being lost in Dormant.
@@ -2258,6 +2276,7 @@ public interface ClusterDeploymentManager {
                                             autoHealConfig,
                                             atomicity,
                                             coreMax,
+                                            reconcileInterval,
                                             new HashSet<>(initialTopology),
                                             new AtomicReference<>(new ClusterDeploymentState.Dormant()),
                                             new AtomicReference<>(List.copyOf(initialTopology)));

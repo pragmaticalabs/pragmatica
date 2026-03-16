@@ -230,7 +230,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                                        clusterNetwork.unwrap(),
                                                        serializer.unwrap(),
                                                        deserializer.unwrap(),
-                                                       config.forwardTimeoutMs()));
+                                                       config.forwardTimeout()));
     }
 
     @Override

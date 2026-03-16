@@ -2,10 +2,12 @@ package org.pragmatica.aether.config;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.List;
 
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Configuration for alert forwarding.
 ///
@@ -19,7 +21,7 @@ import static org.pragmatica.lang.Result.success;
 /// enabled = true
 /// urls = ["https://pagerduty.example.com/webhook", "https://slack.example.com/webhook"]
 /// retry_count = 3
-/// timeout_ms = 5000
+/// timeout = "5s"
 ///
 /// [alerts.events]
 /// enabled = true
@@ -50,7 +52,7 @@ public record AlertConfig(boolean enabled,
     /// Create AlertConfig with webhook URLs.
     public static AlertConfig alertConfig(List<String> urls) {
         return alertConfig(true,
-                           WebhookConfig.webhookConfig(true, urls, 3, 5000)
+                           WebhookConfig.webhookConfig(true, urls, 3, timeSpan(5).seconds())
                                         .unwrap(),
                            EventConfig.eventConfig(true)
                                       .unwrap()).unwrap();
@@ -61,20 +63,23 @@ public record AlertConfig(boolean enabled,
     /// @param enabled Whether webhooks are enabled
     /// @param urls List of webhook URLs to call
     /// @param retryCount Number of retries for failed webhook calls
-    /// @param timeoutMs Timeout for webhook calls in milliseconds
+    /// @param timeout Timeout for webhook calls
     @SuppressWarnings("JBCT-ZONE-02")
     public record WebhookConfig(boolean enabled,
                                 List<String> urls,
                                 int retryCount,
-                                int timeoutMs) {
-        private static final WebhookConfig DISABLED = webhookConfig(false, List.of(), 0, 0).unwrap();
+                                TimeSpan timeout) {
+        private static final WebhookConfig DISABLED = webhookConfig(false,
+                                                                     List.of(),
+                                                                     0,
+                                                                     timeSpan(0).millis()).unwrap();
 
         /// Factory method following JBCT naming convention.
         public static Result<WebhookConfig> webhookConfig(boolean enabled,
                                                           List<String> urls,
                                                           int retryCount,
-                                                          int timeoutMs) {
-            return success(new WebhookConfig(enabled, List.copyOf(urls), retryCount, timeoutMs));
+                                                          TimeSpan timeout) {
+            return success(new WebhookConfig(enabled, List.copyOf(urls), retryCount, timeout));
         }
 
         /// Disabled webhook configuration.
@@ -85,7 +90,7 @@ public record AlertConfig(boolean enabled,
         /// Check webhook configuration.
         public Result<WebhookConfig> check() {
             return checkUrls().flatMap(WebhookConfig::checkRetryCount)
-                            .flatMap(WebhookConfig::checkTimeoutMs);
+                            .flatMap(WebhookConfig::checkTimeout);
         }
 
         private Result<WebhookConfig> checkUrls() {
@@ -106,10 +111,10 @@ public record AlertConfig(boolean enabled,
                                      .result();
         }
 
-        private Result<WebhookConfig> checkTimeoutMs() {
-            return ! enabled || timeoutMs >= 100
+        private Result<WebhookConfig> checkTimeout() {
+            return ! enabled || timeout.millis() >= 100
                    ? success(this)
-                   : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("webhook.timeout_ms must be >= 100")
+                   : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("webhook.timeout must be >= 100ms")
                                      .result();
         }
     }

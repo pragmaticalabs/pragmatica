@@ -54,12 +54,27 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                             .result();
     }
 
+    /// Default cleanup interval.
+    public static final TimeSpan DEFAULT_CLEANUP_INTERVAL = timeSpan(60).seconds();
+
+    /// Default sync retry interval.
+    public static final TimeSpan DEFAULT_SYNC_RETRY_INTERVAL = timeSpan(5).seconds();
+
+    /// Default number of phases to retain.
+    public static final long DEFAULT_REMOVE_OLDER_THAN_PHASES = 100;
+
     /// Creates a default (production) configuration.
     /// Supports `SYNC_RETRY_INTERVAL_MS` environment variable override for E2E testing.
     public static ProtocolConfig defaultConfig() {
         var syncRetryMs = System.getenv("SYNC_RETRY_INTERVAL_MS");
-        var syncRetry = syncRetryMs != null ? timeSpan(Long.parseLong(syncRetryMs)).millis() : timeSpan(5).seconds();
-        return new ProtocolConfig(timeSpan(60).seconds(), syncRetry, 100);
+        var syncRetry = syncRetryMs != null ? timeSpan(Long.parseLong(syncRetryMs)).millis() : DEFAULT_SYNC_RETRY_INTERVAL;
+        return new ProtocolConfig(DEFAULT_CLEANUP_INTERVAL, syncRetry, DEFAULT_REMOVE_OLDER_THAN_PHASES);
+    }
+
+    /// Creates a configuration from explicit values, with defaults for unspecified parameters.
+    /// Intended for wiring from external configuration (e.g., TOML).
+    public static ProtocolConfig consensusConfig(TimeSpan cleanupInterval, TimeSpan syncRetryInterval) {
+        return new ProtocolConfig(cleanupInterval, syncRetryInterval, DEFAULT_REMOVE_OLDER_THAN_PHASES);
     }
 
     /// Creates a test configuration with faster intervals.

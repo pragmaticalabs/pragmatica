@@ -604,6 +604,7 @@ public interface AetherNode {
         var invocationHandler = InvocationHandler.invocationHandler(config.self(),
                                                                     clusterNode.network(),
                                                                     invocationMetrics,
+                                                                    config.timeouts().invocation().timeout(),
                                                                     serializer,
                                                                     deserializer,
                                                                     httpRoutePublisher,
@@ -631,7 +632,8 @@ public interface AetherNode {
                                                                                          config.autoHeal(),
                                                                                          config.atomicity(),
                                                                                          config.topology()
-                                                                                               .coreMax());
+                                                                                               .coreMax(),
+                                                                                         config.timeouts().cluster().reconciliationInterval());
         // Create load balancer manager when provider is available
         var loadBalancerManager = config.environment()
                                         .flatMap(EnvironmentIntegration::loadBalancer)
@@ -651,7 +653,9 @@ public interface AetherNode {
         // Create HTTP route registry for application HTTP routing
         var httpRouteRegistry = HttpRouteRegistry.httpRouteRegistry();
         // Create metrics components
-        var metricsCollector = MetricsCollector.metricsCollector(config.self(), clusterNode.network());
+        var metricsCollector = MetricsCollector.metricsCollector(config.self(),
+                                                               clusterNode.network(),
+                                                               config.timeouts().observability().metricsSlidingWindow().millis());
         // Wire invocation metrics and management port into MetricsCollector for cluster-wide gossip
         metricsCollector.setInvocationMetricsProvider(invocationMetrics);
         metricsCollector.recordCustom("mgmt.port", config.managementPort());
@@ -663,7 +667,11 @@ public interface AetherNode {
         // Create Maven protocol handler from artifact store (DHT created in createNode)
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         // Create rolling update manager
-        var rollingUpdateManager = RollingUpdateManager.rollingUpdateManager(clusterNode, kvStore, invocationMetrics);
+        var rollingUpdateManager = RollingUpdateManager.rollingUpdateManager(clusterNode,
+                                                                              kvStore,
+                                                                              invocationMetrics,
+                                                                              config.timeouts().rollingUpdate().kvOperation(),
+                                                                              config.timeouts().rollingUpdate().terminalRetention().millis());
         // Create alert manager with KV-Store persistence
         var alertManager = AlertManager.alertManager(clusterNode, kvStore);
         // Create dynamic config manager if dynamic provider is available
@@ -676,7 +684,7 @@ public interface AetherNode {
         var minuteAggregator = MinuteAggregator.minuteAggregator();
         // Create subsystem collectors for comprehensive snapshots
         var gcMetricsCollector = GCMetricsCollector.gcMetricsCollector();
-        var eventLoopMetricsCollector = EventLoopMetricsCollector.eventLoopMetricsCollector();
+        var eventLoopMetricsCollector = EventLoopMetricsCollector.eventLoopMetricsCollector(config.timeouts().observability().eventLoopProbe().millis());
         // EventLoopGroups are registered in startClusterAsync() when Server becomes available
         // Create comprehensive snapshot collector (feeds TTM pipeline)
         var snapshotCollector = ComprehensiveSnapshotCollector.comprehensiveSnapshotCollector(gcMetricsCollector,
@@ -723,6 +731,8 @@ public interface AetherNode {
                                                      invocationHandler,
                                                      serializer,
                                                      deserializer,
+                                                     config.timeouts().invocation().invokerTimeout().millis(),
+                                                     config.timeouts().observability().invocationCleanup().millis(),
                                                      rollingUpdateManager,
                                                      observabilityInterceptor);
         // Wire the deferred invoker facade to the actual SliceInvoker
@@ -748,7 +758,9 @@ public interface AetherNode {
                                                                                 config.sliceAction(),
                                                                                 nodeCodec,
                                                                                 Option.some(httpRoutePublisher),
-                                                                                Option.some(sliceInvoker));
+                                                                                Option.some(sliceInvoker),
+                                                                                config.timeouts().deployment().activationChain(),
+                                                                                config.timeouts().deployment().transitionRetryDelay());
         // Extract shared event loop groups from the cluster network's TCP server
         var serverBossGroup = clusterNode.network()
                                          .server()

@@ -27,10 +27,11 @@ import org.slf4j.LoggerFactory;
 @SuppressWarnings("JBCT-RET-01")
 public class DashboardMetricsPublisher {
     private static final Logger log = LoggerFactory.getLogger(DashboardMetricsPublisher.class);
-    private static final long BROADCAST_INTERVAL_MS = 1000;
+    private static final long DEFAULT_broadcastIntervalMs = 1000;
 
     private static final double EMA_ALPHA = 0.2;
 
+    private final long broadcastIntervalMs;
     private final Supplier<AetherNode> nodeSupplier;
     private final AlertManager alertManager;
     private final ScheduledExecutorService scheduler;
@@ -46,8 +47,15 @@ public class DashboardMetricsPublisher {
 
     public DashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier,
                                      AlertManager alertManager) {
+        this(nodeSupplier, alertManager, DEFAULT_broadcastIntervalMs);
+    }
+
+    public DashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier,
+                                     AlertManager alertManager,
+                                     long broadcastIntervalMs) {
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
+        this.broadcastIntervalMs = broadcastIntervalMs;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
                                                                         var thread = new Thread(r, "dashboard-publisher");
                                                                         thread.setDaemon(true);
@@ -60,8 +68,8 @@ public class DashboardMetricsPublisher {
             return;
         }
         scheduler.scheduleAtFixedRate(this::publishMetrics,
-                                      BROADCAST_INTERVAL_MS,
-                                      BROADCAST_INTERVAL_MS,
+                                      broadcastIntervalMs,
+                                      broadcastIntervalMs,
                                       TimeUnit.MILLISECONDS);
         log.info("Dashboard metrics publisher started");
     }
@@ -242,7 +250,7 @@ public class DashboardMetricsPublisher {
         // Clamp to 0: counters can decrease when nodes restart and metrics reset
         long deltaInvocations = Math.max(0, totalInvocations - lastTotalInvocations);
         long deltaSuccess = Math.max(0, totalSuccess - lastTotalSuccess);
-        double instantRps = deltaInvocations / (BROADCAST_INTERVAL_MS / 1000.0);
+        double instantRps = deltaInvocations / (broadcastIntervalMs / 1000.0);
         double instantSuccessRate = deltaInvocations > 0
                                     ? (double) deltaSuccess / deltaInvocations
                                     : 1.0;

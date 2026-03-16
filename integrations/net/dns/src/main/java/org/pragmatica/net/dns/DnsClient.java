@@ -53,12 +53,18 @@ public interface DnsClient extends AsyncCloseable {
 
     Promise<DomainAddress> resolve(DomainName domainName, InetSocketAddress serverAddress);
 
-    /// Create DNS client with provided event loop group.
+    /// Create DNS client with provided event loop group and default query timeout.
     /// The event loop group will NOT be shut down when the client is closed.
     static DnsClient dnsClient(EventLoopGroup eventLoopGroup) {
+        return dnsClient(eventLoopGroup, DnsClientImpl.DEFAULT_QUERY_TIMEOUT);
+    }
+
+    /// Create DNS client with provided event loop group and configurable query timeout.
+    /// The event loop group will NOT be shut down when the client is closed.
+    static DnsClient dnsClient(EventLoopGroup eventLoopGroup, TimeSpan queryTimeout) {
         var bootstrap = new Bootstrap().group(eventLoopGroup)
                                        .channel(NioDatagramChannel.class);
-        var client = DnsClientImpl.forBootstrap(bootstrap, false);
+        var client = DnsClientImpl.forBootstrap(bootstrap, false, queryTimeout);
         bootstrap.handler(DnsChannelInitializer.forClient(client));
         return client;
     }
@@ -104,11 +110,17 @@ record Request(DomainName domainName, Promise<DomainAddress> promise, int reques
 record DnsClientImpl(Bootstrap bootstrap,
                      ConcurrentHashMap<Integer, Request> requestMap,
                      AtomicInteger idCounter,
-                     boolean ownsEventLoop) implements DnsClient {
-    private static final TimeSpan QUERY_TIMEOUT = timeSpan(10).seconds();
+                     boolean ownsEventLoop,
+                     TimeSpan queryTimeout) implements DnsClient {
+    /// Default DNS query timeout.
+    static final TimeSpan DEFAULT_QUERY_TIMEOUT = timeSpan(10).seconds();
 
     static DnsClientImpl forBootstrap(Bootstrap bootstrap, boolean ownsEventLoop) {
-        return new DnsClientImpl(bootstrap, new ConcurrentHashMap<>(), new AtomicInteger(1), ownsEventLoop);
+        return new DnsClientImpl(bootstrap, new ConcurrentHashMap<>(), new AtomicInteger(1), ownsEventLoop, DEFAULT_QUERY_TIMEOUT);
+    }
+
+    static DnsClientImpl forBootstrap(Bootstrap bootstrap, boolean ownsEventLoop, TimeSpan queryTimeout) {
+        return new DnsClientImpl(bootstrap, new ConcurrentHashMap<>(), new AtomicInteger(1), ownsEventLoop, queryTimeout);
     }
 
     @Override
@@ -190,8 +202,8 @@ record DnsClientImpl(Bootstrap bootstrap,
                                                                    .channel()
                                                                    .writeAndFlush(buildQuery(serverAddress, request));
                                                           // Setup guard timeout
-        promise.async(QUERY_TIMEOUT,
-                      pending -> pending.fail(new RequestTimeout("No response from server in 10 seconds")));
+        promise.async(queryTimeout,
+                      pending -> pending.fail(new RequestTimeout("No response from server within " + queryTimeout.millis() + "ms")));
                                                       })
                       .onEmpty(() -> promise.fail(Request.exhausted()));
     }

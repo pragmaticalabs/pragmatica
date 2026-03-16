@@ -108,7 +108,7 @@ class ConfigLoaderSecurityTest {
         ConfigLoader.loadFromString(toml)
             .onFailure(cause -> fail(cause.message()))
             .onSuccess(config -> {
-                assertThat(config.appHttp().forwardTimeoutMs()).isEqualTo(10000);
+                assertThat(config.appHttp().forwardTimeout().millis()).isEqualTo(10000);
             });
     }
 

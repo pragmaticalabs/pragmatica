@@ -25,7 +25,7 @@ class RollbackManagerTest {
 
     @BeforeEach
     void setUp() {
-        config = RollbackConfig.rollbackConfig(true, true, 300, 2).unwrap();
+        config = RollbackConfig.rollbackConfig(true, true, org.pragmatica.lang.io.TimeSpan.timeSpan(5).minutes(), 2).unwrap();
     }
 
     @Nested

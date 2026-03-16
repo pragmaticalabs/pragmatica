@@ -147,10 +147,29 @@ public interface InvocationHandler {
                                                Deserializer deserializer,
                                                HttpRoutePublisher httpRoutePublisher,
                                                ObservabilityInterceptor observabilityInterceptor) {
+        return invocationHandler(self,
+                                 network,
+                                 metricsCollector,
+                                 DEFAULT_INVOCATION_TIMEOUT,
+                                 serializer,
+                                 deserializer,
+                                 httpRoutePublisher,
+                                 observabilityInterceptor);
+    }
+
+    /// Create a new InvocationHandler with metrics, serialization, HTTP routing, observability, and custom timeout.
+    static InvocationHandler invocationHandler(NodeId self,
+                                               ClusterNetwork network,
+                                               InvocationMetricsCollector metricsCollector,
+                                               TimeSpan invocationTimeout,
+                                               Serializer serializer,
+                                               Deserializer deserializer,
+                                               HttpRoutePublisher httpRoutePublisher,
+                                               ObservabilityInterceptor observabilityInterceptor) {
         return new InvocationHandlerImpl(self,
                                          network,
                                          Option.option(metricsCollector),
-                                         DEFAULT_INVOCATION_TIMEOUT,
+                                         invocationTimeout,
                                          Option.option(serializer),
                                          Option.option(deserializer),
                                          Option.option(httpRoutePublisher),

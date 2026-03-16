@@ -418,30 +418,16 @@ All infrastructure modules transition to unified `@ResourceQualifier(type, confi
 
 The following values are compile-time constants that should eventually be externalized to configuration (TOML or management API). Listed by module and priority.
 
-**Should be configurable (operator-facing):**
+**Migrated to `TimeoutsConfig` (v0.20.0):** WebSocket auth timeout, dashboard broadcast interval, alert history size, evaluation interval, trace store capacity, metrics sliding window, forwarding retry delay, invocation cleanup interval, lifecycle retries, event loop probe interval, rolling update terminal retention. See [timeout-configuration.md](../../reference/timeout-configuration.md).
+
+**Remaining (not timeout-related):**
 
 | Location | Constant | Value | Notes |
 |----------|----------|-------|-------|
 | `AppHttpServer` | `MAX_CONTENT_LENGTH` | 16 MB | App HTTP request size limit |
 | `ManagementServer` | `MAX_CONTENT_LENGTH` | 64 MB | Management API request size limit (artifact uploads) |
-| `WebSocketAuthenticator` | `AUTH_TIMEOUT_MS` | 5s | WebSocket auth deadline |
-| `DashboardMetricsPublisher` | `BROADCAST_INTERVAL_MS` | 1000 ms | WebSocket push frequency |
-| `AlertManager` | `MAX_ALERT_HISTORY` | 100 | Alert history ring buffer |
-| `ScalingConfig` | `DEFAULT_EVALUATION_INTERVAL_MS` | 5000 ms | Auto-scaler evaluation tick |
 | `ScalingConfig` | `DEFAULT_WINDOW_SIZE` | 10 | Metric smoothing window |
 | `ArtifactStore` | `CHUNK_SIZE` | 64 KB | DHT chunk size for artifact storage |
-| `InvocationTraceStore` | `DEFAULT_CAPACITY` | 50,000 | Trace ring buffer size |
-| `MetricsCollector` | `SLIDING_WINDOW_MS` | 2 hours | Metric retention window |
-
-**Reasonable defaults (low priority):**
-
-| Location | Constant | Value | Notes |
-|----------|----------|-------|-------|
-| `AppHttpServer` | `RETRY_DELAY_MS` | 200 ms | Forward retry backoff |
-| `SliceInvoker` | `CLEANUP_INTERVAL_MS` | 60s | Stale invocation cleanup |
-| `NodeDeploymentManager` | `MAX_LIFECYCLE_RETRIES` | 10 | Slice start/stop retries |
-| `EventLoopMetricsCollector` | `PROBE_INTERVAL_MS` | 100 ms | Event loop lag probe |
-| `RollingUpdateManager` | `TERMINAL_RETENTION_MS` | 1 hour | Completed update cleanup |
 | `CronExpression` | `MAX_SEARCH_YEARS` | 4 | Cron next-fire search bound |
 | `ForgeCluster` | `ROLLING_RESTART_DELAY_MS` | 5s | Forge rolling restart pace |
 

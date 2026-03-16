@@ -96,7 +96,7 @@ public final class AetherPassiveLB {
                                                         passiveNode.network(),
                                                         serializer,
                                                         deserializer,
-                                                        config.forwardTimeoutMs());
+                                                        config.forwardTimeout());
         wireRoutes(passiveNode, routeRegistry, httpForwarder);
         return new AetherPassiveLB(config, passiveNode, routeRegistry, httpForwarder);
     }

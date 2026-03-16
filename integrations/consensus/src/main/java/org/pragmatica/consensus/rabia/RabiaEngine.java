@@ -71,7 +71,8 @@ import static org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.S
 public class RabiaEngine<C extends Command> {
     private static final Logger log = LoggerFactory.getLogger(RabiaEngine.class);
     private static final double SCALE = 0.5d;
-    private static final long PHASE_STALL_CHECK_MS = 500;
+    /// Default phase stall check interval.
+    public static final TimeSpan DEFAULT_PHASE_STALL_CHECK = TimeSpan.timeSpan(500).millis();
 
     private final NodeId self;
     private final TopologyManager topologyManager;
@@ -80,6 +81,7 @@ public class RabiaEngine<C extends Command> {
     private final ProtocolConfig config;
     private final ConsensusMetrics metrics;
     private final boolean activationGated;
+    private final TimeSpan phaseStallCheck;
     private volatile boolean activationAuthorized;
     private final AtomicReference<QuorumStateNotification> pendingQuorum = new AtomicReference<>();
 
@@ -118,7 +120,7 @@ public class RabiaEngine<C extends Command> {
                        ClusterNetwork network,
                        StateMachine<C> stateMachine,
                        ProtocolConfig config) {
-        this(topologyManager, network, stateMachine, config, ConsensusMetrics.noop());
+        this(topologyManager, network, stateMachine, config, ConsensusMetrics.noop(), false, RabiaPersistence.inMemory(), DEFAULT_PHASE_STALL_CHECK);
     }
 
     /// Creates a new Rabia consensus engine with metrics but without activation gating.
@@ -133,7 +135,7 @@ public class RabiaEngine<C extends Command> {
                        StateMachine<C> stateMachine,
                        ProtocolConfig config,
                        ConsensusMetrics metrics) {
-        this(topologyManager, network, stateMachine, config, metrics, false);
+        this(topologyManager, network, stateMachine, config, metrics, false, RabiaPersistence.inMemory(), DEFAULT_PHASE_STALL_CHECK);
     }
 
     /// Creates a new Rabia consensus engine with metrics and activation gating but in-memory persistence.
@@ -154,10 +156,11 @@ public class RabiaEngine<C extends Command> {
                        ProtocolConfig config,
                        ConsensusMetrics metrics,
                        boolean activationGated) {
-        this(topologyManager, network, stateMachine, config, metrics, activationGated, RabiaPersistence.inMemory());
+        this(topologyManager, network, stateMachine, config, metrics, activationGated, RabiaPersistence.inMemory(), DEFAULT_PHASE_STALL_CHECK);
     }
 
-    /// Creates a new Rabia consensus engine with all parameters including persistence.
+    /// Creates a new Rabia consensus engine with all parameters except phaseStallCheck.
+    /// Uses the default phase stall check interval.
     ///
     /// @param topologyManager The topology manager for node communication
     /// @param network         The network implementation
@@ -173,6 +176,27 @@ public class RabiaEngine<C extends Command> {
                        ConsensusMetrics metrics,
                        boolean activationGated,
                        RabiaPersistence<C> persistence) {
+        this(topologyManager, network, stateMachine, config, metrics, activationGated, persistence, DEFAULT_PHASE_STALL_CHECK);
+    }
+
+    /// Creates a new Rabia consensus engine with all parameters including persistence and phase stall check.
+    ///
+    /// @param topologyManager The topology manager for node communication
+    /// @param network         The network implementation
+    /// @param stateMachine    The state machine to apply commands to
+    /// @param config          Configuration for the consensus engine
+    /// @param metrics         Metrics collector for observability
+    /// @param activationGated Whether consensus activation requires explicit authorization
+    /// @param persistence     The persistence implementation for state backup
+    /// @param phaseStallCheck Interval for checking phase stalls
+    public RabiaEngine(TopologyManager topologyManager,
+                       ClusterNetwork network,
+                       StateMachine<C> stateMachine,
+                       ProtocolConfig config,
+                       ConsensusMetrics metrics,
+                       boolean activationGated,
+                       RabiaPersistence<C> persistence,
+                       TimeSpan phaseStallCheck) {
         this.self = topologyManager.self()
                                    .id();
         this.topologyManager = topologyManager;
@@ -184,6 +208,7 @@ public class RabiaEngine<C extends Command> {
         this.activationGated = activationGated;
         this.activationAuthorized = !activationGated;
         this.persistence = persistence;
+        this.phaseStallCheck = phaseStallCheck;
         this.cleanupTask = Option.some(SharedScheduler.scheduleAtFixedRate(this::cleanupOldPhases,
                                                                            config.cleanupInterval()));
     }
@@ -575,7 +600,7 @@ public class RabiaEngine<C extends Command> {
     private ScheduledFuture<?> createStallDetector() {
         return SharedScheduler.scheduleAtFixedRate(
             () -> executor.execute(this::checkPhaseStall),
-            TimeSpan.timeSpan(PHASE_STALL_CHECK_MS).millis());
+            phaseStallCheck);
     }
 
     /// Checks if the current phase is stalled due to missing proposals and re-broadcasts

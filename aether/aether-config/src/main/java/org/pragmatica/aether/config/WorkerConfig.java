@@ -2,11 +2,13 @@ package org.pragmatica.aether.config;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.List;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Configuration for a worker node.
 /// Worker nodes are passive compute nodes that run slices without
@@ -18,7 +20,7 @@ import static org.pragmatica.lang.Result.success;
 /// @param swimSettings                  SWIM protocol tuning
 /// @param sliceConfig                   Slice repository configuration
 /// @param advertiseAddress              Address to advertise for cross-host communication (empty = auto-detect)
-/// @param metricsAggregationIntervalMs  Metrics aggregation interval in milliseconds
+/// @param metricsAggregation            Metrics aggregation interval
 @SuppressWarnings({"JBCT-ZONE-02", "JBCT-ZONE-03"})
 public record WorkerConfig(List<String> coreNodes,
                            int clusterPort,
@@ -28,19 +30,19 @@ public record WorkerConfig(List<String> coreNodes,
                            String groupName,
                            String zone,
                            int maxGroupSize,
-                           long heartbeatIntervalMs,
-                           long heartbeatTimeoutMs,
+                           TimeSpan heartbeatInterval,
+                           TimeSpan heartbeatTimeout,
                            String advertiseAddress,
-                           long metricsAggregationIntervalMs) {
+                           TimeSpan metricsAggregation) {
     public static final int DEFAULT_CLUSTER_PORT = 7100;
     public static final int DEFAULT_SWIM_PORT = 7200;
     public static final String DEFAULT_GROUP_NAME = "default";
     public static final String DEFAULT_ZONE = "local";
     public static final int DEFAULT_MAX_GROUP_SIZE = 100;
-    public static final long DEFAULT_HEARTBEAT_INTERVAL_MS = 500;
-    public static final long DEFAULT_HEARTBEAT_TIMEOUT_MS = 2000;
+    public static final TimeSpan DEFAULT_HEARTBEAT_INTERVAL = timeSpan(500).millis();
+    public static final TimeSpan DEFAULT_HEARTBEAT_TIMEOUT = timeSpan(2).seconds();
     public static final String DEFAULT_ADVERTISE_ADDRESS = "";
-    public static final long DEFAULT_METRICS_AGGREGATION_INTERVAL_MS = 5000;
+    public static final TimeSpan DEFAULT_METRICS_AGGREGATION = timeSpan(5).seconds();
 
     /// Compact constructor to normalize null/blank/invalid values to defaults.
     public WorkerConfig {
@@ -53,17 +55,17 @@ public record WorkerConfig(List<String> coreNodes,
         if (maxGroupSize < 2) {
             maxGroupSize = DEFAULT_MAX_GROUP_SIZE;
         }
-        if (heartbeatIntervalMs <= 0) {
-            heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS;
+        if (heartbeatInterval.millis() <= 0) {
+            heartbeatInterval = DEFAULT_HEARTBEAT_INTERVAL;
         }
-        if (heartbeatTimeoutMs <= 0) {
-            heartbeatTimeoutMs = DEFAULT_HEARTBEAT_TIMEOUT_MS;
+        if (heartbeatTimeout.millis() <= 0) {
+            heartbeatTimeout = DEFAULT_HEARTBEAT_TIMEOUT;
         }
         if (advertiseAddress == null) {
             advertiseAddress = DEFAULT_ADVERTISE_ADDRESS;
         }
-        if (metricsAggregationIntervalMs <= 0) {
-            metricsAggregationIntervalMs = DEFAULT_METRICS_AGGREGATION_INTERVAL_MS;
+        if (metricsAggregation.millis() <= 0) {
+            metricsAggregation = DEFAULT_METRICS_AGGREGATION;
         }
     }
 
@@ -84,10 +86,10 @@ public record WorkerConfig(List<String> coreNodes,
                             groupName,
                             zone,
                             maxGroupSize,
-                            DEFAULT_HEARTBEAT_INTERVAL_MS,
-                            DEFAULT_HEARTBEAT_TIMEOUT_MS,
+                            DEFAULT_HEARTBEAT_INTERVAL,
+                            DEFAULT_HEARTBEAT_TIMEOUT,
                             DEFAULT_ADVERTISE_ADDRESS,
-                            DEFAULT_METRICS_AGGREGATION_INTERVAL_MS);
+                            DEFAULT_METRICS_AGGREGATION);
     }
 
     /// Factory method with validation for all fields including heartbeat settings.
@@ -99,8 +101,8 @@ public record WorkerConfig(List<String> coreNodes,
                                                     String groupName,
                                                     String zone,
                                                     int maxGroupSize,
-                                                    long heartbeatIntervalMs,
-                                                    long heartbeatTimeoutMs) {
+                                                    TimeSpan heartbeatInterval,
+                                                    TimeSpan heartbeatTimeout) {
         return workerConfig(coreNodes,
                             clusterPort,
                             swimPort,
@@ -109,10 +111,10 @@ public record WorkerConfig(List<String> coreNodes,
                             groupName,
                             zone,
                             maxGroupSize,
-                            heartbeatIntervalMs,
-                            heartbeatTimeoutMs,
+                            heartbeatInterval,
+                            heartbeatTimeout,
                             DEFAULT_ADVERTISE_ADDRESS,
-                            DEFAULT_METRICS_AGGREGATION_INTERVAL_MS);
+                            DEFAULT_METRICS_AGGREGATION);
     }
 
     /// Factory method with validation for all fields including advertise address and metrics settings.
@@ -124,10 +126,10 @@ public record WorkerConfig(List<String> coreNodes,
                                                     String groupName,
                                                     String zone,
                                                     int maxGroupSize,
-                                                    long heartbeatIntervalMs,
-                                                    long heartbeatTimeoutMs,
+                                                    TimeSpan heartbeatInterval,
+                                                    TimeSpan heartbeatTimeout,
                                                     String advertiseAddress,
-                                                    long metricsAggregationIntervalMs) {
+                                                    TimeSpan metricsAggregation) {
         return checkCoreNodes(coreNodes).flatMap(_ -> checkPort("clusterPort", clusterPort))
                              .flatMap(_ -> checkPort("swimPort", swimPort))
                              .flatMap(_ -> checkNotBlank("groupName", groupName))
@@ -141,10 +143,10 @@ public record WorkerConfig(List<String> coreNodes,
                                                         groupName,
                                                         zone,
                                                         maxGroupSize,
-                                                        heartbeatIntervalMs,
-                                                        heartbeatTimeoutMs,
+                                                        heartbeatInterval,
+                                                        heartbeatTimeout,
                                                         advertiseAddress,
-                                                        metricsAggregationIntervalMs));
+                                                        metricsAggregation));
     }
 
     /// Factory method with defaults for group fields following JBCT naming convention.
@@ -189,27 +191,27 @@ public record WorkerConfig(List<String> coreNodes,
 
     /// SWIM protocol tuning settings.
     ///
-    /// @param periodMs         SWIM probe period in ms
-    /// @param probeTimeoutMs   Timeout waiting for ack in ms
-    /// @param indirectProbes   Number of indirect probes on timeout
-    /// @param suspectTimeoutMs Time in suspect state before marking faulty in ms
-    /// @param maxPiggyback     Max piggyback updates per message
-    public record SwimSettings(long periodMs,
-                               long probeTimeoutMs,
+    /// @param period            SWIM probe period
+    /// @param probeTimeout      Timeout waiting for ack
+    /// @param indirectProbes    Number of indirect probes on timeout
+    /// @param suspectTimeout    Time in suspect state before marking faulty
+    /// @param maxPiggyback      Max piggyback updates per message
+    public record SwimSettings(TimeSpan period,
+                               TimeSpan probeTimeout,
                                int indirectProbes,
-                               long suspectTimeoutMs,
+                               TimeSpan suspectTimeout,
                                int maxPiggyback) {
-        public static final long DEFAULT_PERIOD_MS = 1000;
-        public static final long DEFAULT_PROBE_TIMEOUT_MS = 500;
+        public static final TimeSpan DEFAULT_PERIOD = timeSpan(1).seconds();
+        public static final TimeSpan DEFAULT_PROBE_TIMEOUT = timeSpan(500).millis();
         public static final int DEFAULT_INDIRECT_PROBES = 3;
-        public static final long DEFAULT_SUSPECT_TIMEOUT_MS = 5000;
+        public static final TimeSpan DEFAULT_SUSPECT_TIMEOUT = timeSpan(5).seconds();
         public static final int DEFAULT_MAX_PIGGYBACK = 8;
 
         @SuppressWarnings("JBCT-VO-02") // Bootstrap default — factory delegates here
-        private static final SwimSettings DEFAULT = new SwimSettings(DEFAULT_PERIOD_MS,
-                                                                     DEFAULT_PROBE_TIMEOUT_MS,
+        private static final SwimSettings DEFAULT = new SwimSettings(DEFAULT_PERIOD,
+                                                                     DEFAULT_PROBE_TIMEOUT,
                                                                      DEFAULT_INDIRECT_PROBES,
-                                                                     DEFAULT_SUSPECT_TIMEOUT_MS,
+                                                                     DEFAULT_SUSPECT_TIMEOUT,
                                                                      DEFAULT_MAX_PIGGYBACK);
 
         /// Default SWIM settings.
@@ -218,27 +220,27 @@ public record WorkerConfig(List<String> coreNodes,
         }
 
         /// Factory method with validation following JBCT naming convention.
-        public static Result<SwimSettings> swimSettings(long periodMs,
-                                                        long probeTimeoutMs,
+        public static Result<SwimSettings> swimSettings(TimeSpan period,
+                                                        TimeSpan probeTimeout,
                                                         int indirectProbes,
-                                                        long suspectTimeoutMs,
+                                                        TimeSpan suspectTimeout,
                                                         int maxPiggyback) {
-            return checkPositiveLong("periodMs", periodMs).flatMap(_ -> checkPositiveLong("probeTimeoutMs",
-                                                                                          probeTimeoutMs))
+            return checkPositiveTimeSpan("period", period).flatMap(_ -> checkPositiveTimeSpan("probeTimeout",
+                                                                                              probeTimeout))
                                     .flatMap(_ -> checkPositiveInt("indirectProbes", indirectProbes))
-                                    .flatMap(_ -> checkPositiveLong("suspectTimeoutMs", suspectTimeoutMs))
+                                    .flatMap(_ -> checkPositiveTimeSpan("suspectTimeout", suspectTimeout))
                                     .flatMap(_ -> checkPositiveInt("maxPiggyback", maxPiggyback))
-                                    .map(_ -> new SwimSettings(periodMs,
-                                                               probeTimeoutMs,
+                                    .map(_ -> new SwimSettings(period,
+                                                               probeTimeout,
                                                                indirectProbes,
-                                                               suspectTimeoutMs,
+                                                               suspectTimeout,
                                                                maxPiggyback));
         }
 
-        private static Result<Long> checkPositiveLong(String name, long value) {
-            return value > 0
+        private static Result<TimeSpan> checkPositiveTimeSpan(String name, TimeSpan value) {
+            return value.millis() > 0
                    ? success(value)
-                   : WorkerConfigError.invalidWorkerConfig(name + " must be positive, got: " + value)
+                   : WorkerConfigError.invalidWorkerConfig(name + " must be positive, got: " + value.millis() + "ms")
                                       .result();
         }
 

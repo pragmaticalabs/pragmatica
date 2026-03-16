@@ -408,10 +408,10 @@ public interface WorkerNode {
     }
 
     private static SwimConfig toSwimConfig(SwimSettings settings) {
-        return SwimConfig.swimConfig(Duration.ofMillis(settings.periodMs()),
-                                     Duration.ofMillis(settings.probeTimeoutMs()),
+        return SwimConfig.swimConfig(Duration.ofMillis(settings.period().millis()),
+                                     Duration.ofMillis(settings.probeTimeout().millis()),
                                      settings.indirectProbes(),
-                                     Duration.ofMillis(settings.suspectTimeoutMs()),
+                                     Duration.ofMillis(settings.suspectTimeout().millis()),
                                      settings.maxPiggyback());
     }
 
@@ -765,7 +765,7 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
                                                                          () -> groupMembershipTracker.myGroup()
                                                                                                      .communityId(),
                                                                          this::connectedGroupFollowers,
-                                                                         config.metricsAggregationIntervalMs());
+                                                                         config.metricsAggregation().millis());
         metricsAggregator = aggregator;
         aggregator.start();
         LOG.debug("Started metrics aggregator on governor {}", nodeId.id());
@@ -803,7 +803,7 @@ final class AssembledWorkerNode implements WorkerNode, SwimMembershipListener {
             return;
         }
         Promise.<Unit> promise()
-               .timeout(timeSpan(config.heartbeatIntervalMs()).millis())
+               .timeout(config.heartbeatInterval())
                .onFailure(_ -> sendHeartbeatAndReschedule(governorId));
     }
 
