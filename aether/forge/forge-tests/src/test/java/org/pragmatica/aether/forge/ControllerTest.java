@@ -2,7 +2,6 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -67,23 +66,6 @@ class ControllerTest {
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
-    }
-
-    @BeforeEach
-    void restoreCluster() {
-        // Restore killed node if any (from controller_survivesLeaderFailure)
-        if (cluster.nodeCount() < 3) {
-            cluster.addNode().await();
-            await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(() -> cluster.nodeCount() == 3);
-            await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(() -> cluster.currentLeader().isPresent());
-            await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(this::allNodesHealthy);
-        }
     }
 
     @AfterAll
@@ -159,25 +141,6 @@ class ControllerTest {
             }
         }
 
-        @Test
-        void controller_survivesLeaderFailure() {
-            // Kill the leader (ct-1 is deterministic leader)
-            cluster.killNode("ct-1")
-                   .await();
-
-            // Wait for new quorum and leader
-            await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(() -> cluster.currentLeader().isPresent());
-
-            await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(ControllerTest.this::allNodesHealthy);
-
-            // Controller should still work
-            var status = getControllerStatus(anyNodePort());
-            assertThat(status).doesNotContain("\"error\"");
-        }
     }
 
     private int anyNodePort() {

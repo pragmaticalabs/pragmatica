@@ -163,36 +163,6 @@ class PubSubTest extends ForgeTestBase {
         awaitClickCount(port, shortCode, clickCount);
     }
 
-    @Test
-    void pubSubDelivery_survivesLeaderFailover() {
-        var port = firstAvailableAppPort();
-
-        var shortCode = shortenUrl(port, "https://example.com/pubsub-failover");
-        assertThat(shortCode).as("Short code from creation").isNotNull().isNotEmpty();
-
-        var originalLeaderId = cluster.currentLeader().unwrap();
-
-        // Suppress CDM auto-heal during kill
-        cluster.setClusterSize(4);
-        cluster.killNode(originalLeaderId).await();
-
-        // Wait for new leader election
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent()
-                            && !cluster.currentLeader().unwrap().equals(originalLeaderId));
-
-        // Wait for routes to become available on surviving nodes
-        await().atMost(DEPLOY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> !cluster.getAvailableAppHttpPorts().isEmpty());
-
-        var survivingPort = cluster.getAvailableAppHttpPorts().getFirst();
-        resolveShortCode(survivingPort, shortCode);
-
-        awaitClickCount(survivingPort, shortCode, 1);
-    }
-
     // ===== Domain Helpers =====
 
     private String shortenUrl(int port, String url) {

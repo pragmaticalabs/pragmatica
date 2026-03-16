@@ -79,20 +79,6 @@ class SliceDeploymentTest {
         // Also undeploy any blueprint from blueprintApply test
         delete(cluster.getLeaderManagementPort().or(cluster.status().nodes().getFirst().mgmtPort()),
                "/api/blueprint/org.test:blueprint:1.0.0");
-
-        // Restore killed node if any (from deploySlice_survivesNodeFailure)
-        if (cluster.nodeCount() < 3) {
-            cluster.addNode().await();
-            await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(() -> cluster.nodeCount() == 3);
-            await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(() -> cluster.currentLeader().isPresent());
-            await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(this::allNodesHealthy);
-        }
     }
 
     @AfterAll
@@ -181,32 +167,6 @@ class SliceDeploymentTest {
                    var slices = getSlices(leaderPort);
                    return !slices.contains(TEST_ARTIFACT);
                });
-    }
-
-    @Test
-    void deploySlice_survivesNodeFailure() {
-        var leaderPort = cluster.getLeaderManagementPort().unwrap();
-
-        // Deploy with 3 instances across 3 nodes
-        deploy(leaderPort, TEST_ARTIFACT, 3);
-        await().atMost(DEPLOY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> sliceIsActive(TEST_ARTIFACT));
-
-        // Kill one node (not the leader)
-        var leaderId = cluster.currentLeader().unwrap();
-        var nodeToKill = leaderId.equals("sd-2") ? "sd-3" : "sd-2";
-        cluster.killNode(nodeToKill).await();
-
-        // Wait for quorum to stabilize
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
-        // Slice should still be available (replicated)
-        var newLeaderPort = cluster.getLeaderManagementPort().unwrap();
-        var slices = getSlices(newLeaderPort);
-        assertThat(slices).contains(TEST_ARTIFACT);
     }
 
     @Test

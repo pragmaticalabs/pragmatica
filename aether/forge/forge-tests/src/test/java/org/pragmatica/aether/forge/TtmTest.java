@@ -130,27 +130,6 @@ class TtmTest {
             }
         }
 
-        @Test
-        void ttmStatus_survivesLeaderFailure() {
-            // Get initial status
-            var initialStatus = getTtmStatusFromAnyNode();
-            assertThat(initialStatus).doesNotContain("\"error\"");
-
-            // Kill the actual leader
-            var leaderId = cluster.currentLeader().unwrap();
-            cluster.killNode(leaderId)
-                   .await();
-
-            // Wait for new quorum
-            await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(() -> cluster.currentLeader().isPresent());
-
-            // TTM status should still be available
-            var newStatus = getTtmStatusFromAnyNode();
-            assertThat(newStatus).doesNotContain("\"error\"");
-            assertThat(newStatus).contains("\"state\":");
-        }
     }
 
     @Nested

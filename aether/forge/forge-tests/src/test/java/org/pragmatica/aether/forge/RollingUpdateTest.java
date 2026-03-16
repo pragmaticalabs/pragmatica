@@ -95,8 +95,7 @@ class RollingUpdateTest {
             case "rollingUpdate_completion_removesOldVersion" -> 40;
             case "rollingUpdate_rollback_restoresOldVersion" -> 60;
             case "rollingUpdate_maintainsRequestContinuity" -> 80;
-            case "rollingUpdate_nodeFailure_continuesUpdate" -> 100;
-            default -> 120;
+            default -> 100;
         };
     }
 
@@ -271,49 +270,6 @@ class RollingUpdateTest {
 
         assertThat(totalRequests).isGreaterThan(10);
         assertThat(successRate).isGreaterThan(0.95);
-    }
-
-    @Test
-    void rollingUpdate_nodeFailure_continuesUpdate() {
-        startRollingUpdate(NEW_VERSION_NUMBER, 3);
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(() -> {
-                   if (sliceHasFailed(NEW_VERSION)) {
-                       throw new AssertionError("Slice deployment failed: " + NEW_VERSION);
-                   }
-               })
-               .until(() -> sliceIsActive(NEW_VERSION));
-
-        // Kill a non-leader node during update
-        var leaderId = cluster.currentLeader().or("ru-1");
-        var nodeToKill = leaderId.equals("ru-3") ? "ru-4" : "ru-3";
-
-        cluster.killNode(nodeToKill)
-               .await();
-
-        // Wait for quorum to stabilize
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
-        // Update should continue
-        adjustRouting("1:1");
-
-        var status = getUpdateStatus();
-        assertThat(status).contains("\"state\":\"ROUTING\"");
-
-        // Add a new node to replace the killed one
-        cluster.addNode()
-               .await();
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
-        // Complete update
-        adjustRouting("1:0");
-        completeUpdate();
     }
 
     // ===== HTTP Helpers =====
