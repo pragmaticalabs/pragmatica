@@ -633,7 +633,7 @@ public interface AetherNode {
                                                                                          config.atomicity(),
                                                                                          config.topology()
                                                                                                .coreMax(),
-                                                                                         config.timeouts().cluster().reconciliationInterval());
+                                                                                         config.timeouts().deployment().reconciliationInterval());
         // Create load balancer manager when provider is available
         var loadBalancerManager = config.environment()
                                         .flatMap(EnvironmentIntegration::loadBalancer)

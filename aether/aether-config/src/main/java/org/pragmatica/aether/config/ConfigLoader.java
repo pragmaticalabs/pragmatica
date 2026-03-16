@@ -348,6 +348,7 @@ public final class ConfigLoader {
             parseTimeSpan(doc, "timeouts.deployment", "unloading", d.unloading()),
             parseTimeSpan(doc, "timeouts.deployment", "activation_chain", d.activationChain()),
             parseTimeSpan(doc, "timeouts.deployment", "transition_retry_delay", d.transitionRetryDelay()),
+            parseTimeSpan(doc, "timeouts.deployment", "reconciliation_interval", d.reconciliationInterval()),
             parseInt(doc, "timeouts.deployment", "max_lifecycle_retries", d.maxLifecycleRetries()));
     }
 

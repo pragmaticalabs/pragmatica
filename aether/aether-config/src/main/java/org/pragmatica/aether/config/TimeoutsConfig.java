@@ -71,6 +71,7 @@ public record TimeoutsConfig(
         TimeSpan unloading,
         TimeSpan activationChain,
         TimeSpan transitionRetryDelay,
+        TimeSpan reconciliationInterval,
         int maxLifecycleRetries) {
         public static DeploymentTimeouts deploymentTimeouts() {
             return new DeploymentTimeouts(
@@ -78,8 +79,9 @@ public record TimeoutsConfig(
                 timeSpan(1).minutes(),
                 timeSpan(30).seconds(),
                 timeSpan(2).minutes(),
-                timeSpan(2).minutes(),
+                timeSpan(5).minutes(),
                 timeSpan(2).seconds(),
+                timeSpan(30).seconds(),
                 60);
         }
     }
@@ -212,7 +214,7 @@ public record TimeoutsConfig(
         public static RepositoryTimeouts repositoryTimeouts() {
             return new RepositoryTimeouts(
                 timeSpan(30).seconds(),
-                timeSpan(30).seconds());
+                timeSpan(10).seconds());
         }
     }
 
