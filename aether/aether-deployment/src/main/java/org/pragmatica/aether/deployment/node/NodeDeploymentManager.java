@@ -1108,7 +1108,7 @@ public interface NodeDeploymentManager {
                                                                                                 transitionRetryDelay());
                             state().set(activeState);
                             log.info("Node {} NodeDeploymentManager activated", self().id());
-                            // Register ON_DUTY lifecycle state (only if key doesn't exist — preserve DECOMMISSIONED on restart)
+                            // Register ON_DUTY lifecycle state (always writes unless DECOMMISSIONED)
                             registerLifecycleOnDuty();
                             // Reactivate suspended slices if any
                             if (!suspended.isEmpty()) {
@@ -1141,8 +1141,12 @@ public interface NodeDeploymentManager {
 
             private void registerLifecycleOnDuty() {
                 var lifecycleKey = AetherKey.NodeLifecycleKey.nodeLifecycleKey(self());
-                // Check if key already exists (preserve DECOMMISSIONED state on restart)
+                // Unconditionally write ON_DUTY unless node is DECOMMISSIONED.
+                // Must always write because consensus snapshot restore may contain a stale
+                // ON_DUTY entry that a pending removal batch will delete after activation.
                 kvStore().get(lifecycleKey)
+                       .flatMap(v -> v instanceof NodeLifecycleValue lv ? Option.some(lv) : Option.empty())
+                       .filter(v -> v.state() == NodeLifecycleState.DECOMMISSIONED)
                        .onEmpty(() -> writeLifecycleOnDuty(lifecycleKey, 1));
             }
 
