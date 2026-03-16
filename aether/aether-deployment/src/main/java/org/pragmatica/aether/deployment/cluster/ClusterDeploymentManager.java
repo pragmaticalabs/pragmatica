@@ -1913,6 +1913,7 @@ public interface ClusterDeploymentManager {
                           reconciled,
                           blueprints.size());
                 cleanupOrphanedSliceEntries();
+                cleanupStaleNodeRoutes();
                 detectStuckTransitionalStates();
             }
 
@@ -2056,9 +2057,17 @@ public interface ClusterDeploymentManager {
                                                              AutoHealConfig autoHealConfig,
                                                              DeploymentAtomicity atomicity,
                                                              int coreMax) {
-        return clusterDeploymentManager(self, cluster, kvStore, router, initialTopology,
-                                        topologyManager, computeProvider, autoHealConfig,
-                                        atomicity, coreMax, DEFAULT_RECONCILE_INTERVAL);
+        return clusterDeploymentManager(self,
+                                        cluster,
+                                        kvStore,
+                                        router,
+                                        initialTopology,
+                                        topologyManager,
+                                        computeProvider,
+                                        autoHealConfig,
+                                        atomicity,
+                                        coreMax,
+                                        DEFAULT_RECONCILE_INTERVAL);
     }
 
     static ClusterDeploymentManager clusterDeploymentManager(NodeId self,

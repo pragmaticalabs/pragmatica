@@ -24,11 +24,11 @@ public record TtmConfig(String modelPath,
                         double confidenceThreshold,
                         boolean enabled) {
     private static final TtmConfig DEFAULT = ttmConfig("models/ttm-aether.onnx",
-                                                        60,
-                                                        1,
-                                                        timeSpan(60).seconds(),
-                                                        0.7,
-                                                        false).unwrap();
+                                                       60,
+                                                       1,
+                                                       timeSpan(60).seconds(),
+                                                       0.7,
+                                                       false).unwrap();
 
     /// Default TTM configuration (disabled).
     public static TtmConfig ttmConfig() {

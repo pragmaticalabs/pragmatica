@@ -39,7 +39,6 @@ public interface LocalRepository extends Repository {
     /// Create a LocalRepository at a specific path with custom timeout.
     static LocalRepository localRepository(Path localRepo, TimeSpan locateTimeout) {
         record repository(Path localRepo, TimeSpan locateTimeout) implements LocalRepository {
-
             @Override
             public Promise<Location> locate(Artifact artifact) {
                 return resolveLocation(artifact).async()

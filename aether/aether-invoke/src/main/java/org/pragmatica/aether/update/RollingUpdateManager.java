@@ -171,7 +171,8 @@ public interface RollingUpdateManager {
     void onDeploymentFailed(DeploymentEvent.DeploymentFailed event);
 
     /// Default KV operation timeout (30 seconds).
-    TimeSpan DEFAULT_KV_OPERATION_TIMEOUT = TimeSpan.timeSpan(30).seconds();
+    TimeSpan DEFAULT_KV_OPERATION_TIMEOUT = TimeSpan.timeSpan(30)
+                                                   .seconds();
 
     /// Default retention period for terminal-state updates (1 hour).
     long DEFAULT_terminalRetentionMs = TimeUnit.HOURS.toMillis(1);
@@ -632,7 +633,12 @@ public interface RollingUpdateManager {
                                   .mapToUnit();
             }
         }
-        return new rollingUpdateManager(clusterNode, kvStore, metricsCollector, kvOperationTimeout, terminalRetentionMs, new ConcurrentHashMap<>());
+        return new rollingUpdateManager(clusterNode,
+                                        kvStore,
+                                        metricsCollector,
+                                        kvOperationTimeout,
+                                        terminalRetentionMs,
+                                        new ConcurrentHashMap<>());
     }
 
     /// Helper record for accumulating metrics across snapshots.

@@ -52,7 +52,10 @@ public record AlertConfig(boolean enabled,
     /// Create AlertConfig with webhook URLs.
     public static AlertConfig alertConfig(List<String> urls) {
         return alertConfig(true,
-                           WebhookConfig.webhookConfig(true, urls, 3, timeSpan(5).seconds())
+                           WebhookConfig.webhookConfig(true,
+                                                       urls,
+                                                       3,
+                                                       timeSpan(5).seconds())
                                         .unwrap(),
                            EventConfig.eventConfig(true)
                                       .unwrap()).unwrap();
@@ -69,10 +72,7 @@ public record AlertConfig(boolean enabled,
                                 List<String> urls,
                                 int retryCount,
                                 TimeSpan timeout) {
-        private static final WebhookConfig DISABLED = webhookConfig(false,
-                                                                     List.of(),
-                                                                     0,
-                                                                     timeSpan(0).millis()).unwrap();
+        private static final WebhookConfig DISABLED = webhookConfig(false, List.of(), 0, timeSpan(0).millis()).unwrap();
 
         /// Factory method following JBCT naming convention.
         public static Result<WebhookConfig> webhookConfig(boolean enabled,

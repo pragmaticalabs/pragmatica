@@ -204,8 +204,10 @@ public interface TTMManager {
             stopEvaluation();
             stateRef.set(TTMState.RUNNING);
             var task = scheduler.scheduleAtFixedRate(this::runEvaluation,
-                                                     config.evaluationInterval().millis(),
-                                                     config.evaluationInterval().millis(),
+                                                     config.evaluationInterval()
+                                                           .millis(),
+                                                     config.evaluationInterval()
+                                                           .millis(),
                                                      TimeUnit.MILLISECONDS);
             evaluationTask.set(task);
             log.info("TTM evaluation started with interval {}", config.evaluationInterval());

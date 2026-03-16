@@ -2,7 +2,6 @@ package org.pragmatica.aether.config;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.nio.file.Files;

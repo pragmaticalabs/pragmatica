@@ -604,7 +604,9 @@ public interface AetherNode {
         var invocationHandler = InvocationHandler.invocationHandler(config.self(),
                                                                     clusterNode.network(),
                                                                     invocationMetrics,
-                                                                    config.timeouts().invocation().timeout(),
+                                                                    config.timeouts()
+                                                                          .invocation()
+                                                                          .timeout(),
                                                                     serializer,
                                                                     deserializer,
                                                                     httpRoutePublisher,
@@ -633,7 +635,9 @@ public interface AetherNode {
                                                                                          config.atomicity(),
                                                                                          config.topology()
                                                                                                .coreMax(),
-                                                                                         config.timeouts().deployment().reconciliationInterval());
+                                                                                         config.timeouts()
+                                                                                               .deployment()
+                                                                                               .reconciliationInterval());
         // Create load balancer manager when provider is available
         var loadBalancerManager = config.environment()
                                         .flatMap(EnvironmentIntegration::loadBalancer)
@@ -654,8 +658,11 @@ public interface AetherNode {
         var httpRouteRegistry = HttpRouteRegistry.httpRouteRegistry();
         // Create metrics components
         var metricsCollector = MetricsCollector.metricsCollector(config.self(),
-                                                               clusterNode.network(),
-                                                               config.timeouts().observability().metricsSlidingWindow().millis());
+                                                                 clusterNode.network(),
+                                                                 config.timeouts()
+                                                                       .observability()
+                                                                       .metricsSlidingWindow()
+                                                                       .millis());
         // Wire invocation metrics and management port into MetricsCollector for cluster-wide gossip
         metricsCollector.setInvocationMetricsProvider(invocationMetrics);
         metricsCollector.recordCustom("mgmt.port", config.managementPort());
@@ -668,10 +675,15 @@ public interface AetherNode {
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         // Create rolling update manager
         var rollingUpdateManager = RollingUpdateManager.rollingUpdateManager(clusterNode,
-                                                                              kvStore,
-                                                                              invocationMetrics,
-                                                                              config.timeouts().rollingUpdate().kvOperation(),
-                                                                              config.timeouts().rollingUpdate().terminalRetention().millis());
+                                                                             kvStore,
+                                                                             invocationMetrics,
+                                                                             config.timeouts()
+                                                                                   .rollingUpdate()
+                                                                                   .kvOperation(),
+                                                                             config.timeouts()
+                                                                                   .rollingUpdate()
+                                                                                   .terminalRetention()
+                                                                                   .millis());
         // Create alert manager with KV-Store persistence
         var alertManager = AlertManager.alertManager(clusterNode, kvStore);
         // Create dynamic config manager if dynamic provider is available
@@ -684,7 +696,10 @@ public interface AetherNode {
         var minuteAggregator = MinuteAggregator.minuteAggregator();
         // Create subsystem collectors for comprehensive snapshots
         var gcMetricsCollector = GCMetricsCollector.gcMetricsCollector();
-        var eventLoopMetricsCollector = EventLoopMetricsCollector.eventLoopMetricsCollector(config.timeouts().observability().eventLoopProbe().millis());
+        var eventLoopMetricsCollector = EventLoopMetricsCollector.eventLoopMetricsCollector(config.timeouts()
+                                                                                                  .observability()
+                                                                                                  .eventLoopProbe()
+                                                                                                  .millis());
         // EventLoopGroups are registered in startClusterAsync() when Server becomes available
         // Create comprehensive snapshot collector (feeds TTM pipeline)
         var snapshotCollector = ComprehensiveSnapshotCollector.comprehensiveSnapshotCollector(gcMetricsCollector,
@@ -731,8 +746,14 @@ public interface AetherNode {
                                                      invocationHandler,
                                                      serializer,
                                                      deserializer,
-                                                     config.timeouts().invocation().invokerTimeout().millis(),
-                                                     config.timeouts().observability().invocationCleanup().millis(),
+                                                     config.timeouts()
+                                                           .invocation()
+                                                           .invokerTimeout()
+                                                           .millis(),
+                                                     config.timeouts()
+                                                           .observability()
+                                                           .invocationCleanup()
+                                                           .millis(),
                                                      rollingUpdateManager,
                                                      observabilityInterceptor);
         // Wire the deferred invoker facade to the actual SliceInvoker
@@ -759,8 +780,12 @@ public interface AetherNode {
                                                                                 nodeCodec,
                                                                                 Option.some(httpRoutePublisher),
                                                                                 Option.some(sliceInvoker),
-                                                                                config.timeouts().deployment().activationChain(),
-                                                                                config.timeouts().deployment().transitionRetryDelay());
+                                                                                config.timeouts()
+                                                                                      .deployment()
+                                                                                      .activationChain(),
+                                                                                config.timeouts()
+                                                                                      .deployment()
+                                                                                      .transitionRetryDelay());
         // Extract shared event loop groups from the cluster network's TCP server
         var serverBossGroup = clusterNode.network()
                                          .server()
@@ -1147,6 +1172,8 @@ public interface AetherNode {
                                                             scheduledTaskStateRegistry::onStateRemove)
                                                   .onPut(AetherKey.NodeLifecycleKey.class,
                                                          nodeDeploymentManager::onNodeLifecyclePut)
+                                                  .onRemove(AetherKey.NodeLifecycleKey.class,
+                                                            nodeDeploymentManager::onNodeLifecycleRemove)
                                                   .onPut(AetherKey.NodeLifecycleKey.class,
                                                          clusterDeploymentManager::onNodeLifecyclePut)
                                                   .onPut(AetherKey.ActivationDirectiveKey.class,
@@ -1281,6 +1308,9 @@ public interface AetherNode {
         // AppHttpServer topology change notifications (for immediate retry on node departure)
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class, appHttpServer::onNodeRemoved));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class, appHttpServer::onNodeDown));
+        // Fast-path route eviction — immediately remove dead node from local route cache
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+                                              msg -> httpRouteRegistry.evictNode(msg.nodeId())));
         // Cluster event aggregator — fan-out handlers for structured event collection
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class, eventAggregator::onNodeAdded));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,

@@ -81,12 +81,12 @@ public interface RemoteRepository extends Repository {
         var jarUrl = baseUrl + artifactPath;
         var sha1Url = jarUrl + ".sha1";
         return downloadJar(httpOps, jarUrl, credentials, artifact, httpTimeout).flatMap(jarBytes -> verifySha1AndCache(httpOps,
-                                                                                                          sha1Url,
-                                                                                                          credentials,
-                                                                                                          jarBytes,
-                                                                                                          artifact,
-                                                                                                          targetPath,
-                                                                                                          httpTimeout))
+                                                                                                                       sha1Url,
+                                                                                                                       credentials,
+                                                                                                                       jarBytes,
+                                                                                                                       artifact,
+                                                                                                                       targetPath,
+                                                                                                                       httpTimeout))
                           .flatMap(path -> toLocation(artifact, path));
     }
 
@@ -170,7 +170,9 @@ public interface RemoteRepository extends Repository {
         return targetPath;
     }
 
-    private static HttpRequest buildRequest(String url, Option<MavenSettingsCredentials.Credentials> credentials, Duration httpTimeout) {
+    private static HttpRequest buildRequest(String url,
+                                            Option<MavenSettingsCredentials.Credentials> credentials,
+                                            Duration httpTimeout) {
         var builder = HttpRequest.newBuilder()
                                  .uri(URI.create(url))
                                  .GET()

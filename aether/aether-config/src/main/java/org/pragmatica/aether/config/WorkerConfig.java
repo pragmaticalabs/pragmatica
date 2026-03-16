@@ -227,14 +227,14 @@ public record WorkerConfig(List<String> coreNodes,
                                                         int maxPiggyback) {
             return checkPositiveTimeSpan("period", period).flatMap(_ -> checkPositiveTimeSpan("probeTimeout",
                                                                                               probeTimeout))
-                                    .flatMap(_ -> checkPositiveInt("indirectProbes", indirectProbes))
-                                    .flatMap(_ -> checkPositiveTimeSpan("suspectTimeout", suspectTimeout))
-                                    .flatMap(_ -> checkPositiveInt("maxPiggyback", maxPiggyback))
-                                    .map(_ -> new SwimSettings(period,
-                                                               probeTimeout,
-                                                               indirectProbes,
-                                                               suspectTimeout,
-                                                               maxPiggyback));
+                                        .flatMap(_ -> checkPositiveInt("indirectProbes", indirectProbes))
+                                        .flatMap(_ -> checkPositiveTimeSpan("suspectTimeout", suspectTimeout))
+                                        .flatMap(_ -> checkPositiveInt("maxPiggyback", maxPiggyback))
+                                        .map(_ -> new SwimSettings(period,
+                                                                   probeTimeout,
+                                                                   indirectProbes,
+                                                                   suspectTimeout,
+                                                                   maxPiggyback));
         }
 
         private static Result<TimeSpan> checkPositiveTimeSpan(String name, TimeSpan value) {

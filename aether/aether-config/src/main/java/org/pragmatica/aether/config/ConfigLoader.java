@@ -102,24 +102,25 @@ public final class ConfigLoader {
     }
 
     // --- Parse helpers ---
-
     private static TimeSpan parseTimeSpan(TomlDocument doc, String section, String key, TimeSpan defaultValue) {
         return doc.getString(section, key)
-                  .flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v).option())
+                  .flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
+                                   .option())
                   .map(ts -> TimeSpan.fromDuration(ts.duration()))
                   .or(defaultValue);
     }
 
     private static long parseLong(TomlDocument doc, String section, String key, long defaultValue) {
-        return doc.getLong(section, key).or(defaultValue);
+        return doc.getLong(section, key)
+                  .or(defaultValue);
     }
 
     private static int parseInt(TomlDocument doc, String section, String key, int defaultValue) {
-        return doc.getInt(section, key).or(defaultValue);
+        return doc.getInt(section, key)
+                  .or(defaultValue);
     }
 
     // --- Section populators ---
-
     private static void populateClusterConfig(TomlDocument doc, AetherConfig.Builder builder) {
         doc.getInt("cluster", "nodes")
            .onPresent(builder::nodes);
@@ -225,8 +226,11 @@ public final class ConfigLoader {
         var predictionHorizon = doc.getInt("ttm", "prediction_horizon")
                                    .or(1);
         // Try new string key first, fall back to old _ms long key
-        var evalInterval = parseTimeSpanOrMs(doc, "ttm", "evaluation_interval", "evaluation_interval_ms",
-                                              timeSpan(60).seconds());
+        var evalInterval = parseTimeSpanOrMs(doc,
+                                             "ttm",
+                                             "evaluation_interval",
+                                             "evaluation_interval_ms",
+                                             timeSpan(60).seconds());
         var confidence = doc.getDouble("ttm", "confidence_threshold")
                             .or(0.7);
         return TtmConfig.ttmConfig(modelPath, inputWindow, predictionHorizon, evalInterval, confidence, true)
@@ -249,8 +253,11 @@ public final class ConfigLoader {
         var port = doc.getInt("app-http", "port")
                       .or(AppHttpConfig.DEFAULT_APP_HTTP_PORT);
         // Try new string key first, fall back to old _ms long key
-        var forwardTimeout = parseTimeSpanOrMs(doc, "app-http", "forward_timeout", "forward_timeout_ms",
-                                                AppHttpConfig.DEFAULT_FORWARD_TIMEOUT);
+        var forwardTimeout = parseTimeSpanOrMs(doc,
+                                               "app-http",
+                                               "forward_timeout",
+                                               "forward_timeout_ms",
+                                               AppHttpConfig.DEFAULT_FORWARD_TIMEOUT);
         var apiKeys = resolveApiKeys(doc);
         if (enabled || !apiKeys.isEmpty()) {
             builder.appHttp(AppHttpConfig.appHttpConfig(enabled, port, apiKeys, forwardTimeout)
@@ -274,15 +281,19 @@ public final class ConfigLoader {
     }
 
     private static void populateDhtReplicationConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        var hasDelay = doc.getString("dht.replication", "cooldown_delay").isPresent()
-                       || doc.getLong("dht.replication", "cooldown_delay_ms").isPresent();
+        var hasDelay = doc.getString("dht.replication", "cooldown_delay")
+                          .isPresent() || doc.getLong("dht.replication", "cooldown_delay_ms")
+                                             .isPresent();
         var hasRate = doc.getInt("dht.replication", "cooldown_rate")
                          .isPresent();
         var hasRf = doc.getInt("dht.replication", "target_rf")
                        .isPresent();
         if (hasDelay || hasRate || hasRf) {
-            var delay = parseTimeSpanOrMs(doc, "dht.replication", "cooldown_delay", "cooldown_delay_ms",
-                                           DhtReplicationConfig.DEFAULT_COOLDOWN_DELAY);
+            var delay = parseTimeSpanOrMs(doc,
+                                          "dht.replication",
+                                          "cooldown_delay",
+                                          "cooldown_delay_ms",
+                                          DhtReplicationConfig.DEFAULT_COOLDOWN_DELAY);
             var rate = doc.getInt("dht.replication", "cooldown_rate")
                           .or(DhtReplicationConfig.DEFAULT_COOLDOWN_RATE);
             var rf = doc.getInt("dht.replication", "target_rf")
@@ -306,160 +317,278 @@ public final class ConfigLoader {
     @SuppressWarnings("JBCT-SEQ-01")
     private static TimeoutsConfig timeoutsFromDocument(TomlDocument doc) {
         var defaults = TimeoutsConfig.timeoutsConfig();
-        return new TimeoutsConfig(
-            parseInvocationTimeouts(doc, defaults.invocation()),
-            parseForwardingTimeouts(doc, defaults.forwarding()),
-            parseDeploymentTimeouts(doc, defaults.deployment()),
-            parseRollingUpdateTimeouts(doc, defaults.rollingUpdate()),
-            parseClusterTimeouts(doc, defaults.cluster()),
-            parseConsensusTimeouts(doc, defaults.consensus()),
-            parseElectionTimeouts(doc, defaults.election()),
-            parseSwimTimeouts(doc, defaults.swim()),
-            parseObservabilityTimeouts(doc, defaults.observability()),
-            parseDhtTimeouts(doc, defaults.dht()),
-            parseWorkerTimeouts(doc, defaults.worker()),
-            parseSecurityTimeouts(doc, defaults.security()),
-            parseRepositoryTimeouts(doc, defaults.repository()),
-            parseScalingTimeouts(doc, defaults.scaling()));
+        return new TimeoutsConfig(parseInvocationTimeouts(doc, defaults.invocation()),
+                                  parseForwardingTimeouts(doc, defaults.forwarding()),
+                                  parseDeploymentTimeouts(doc, defaults.deployment()),
+                                  parseRollingUpdateTimeouts(doc, defaults.rollingUpdate()),
+                                  parseClusterTimeouts(doc, defaults.cluster()),
+                                  parseConsensusTimeouts(doc, defaults.consensus()),
+                                  parseElectionTimeouts(doc, defaults.election()),
+                                  parseSwimTimeouts(doc, defaults.swim()),
+                                  parseObservabilityTimeouts(doc, defaults.observability()),
+                                  parseDhtTimeouts(doc, defaults.dht()),
+                                  parseWorkerTimeouts(doc, defaults.worker()),
+                                  parseSecurityTimeouts(doc, defaults.security()),
+                                  parseRepositoryTimeouts(doc, defaults.repository()),
+                                  parseScalingTimeouts(doc, defaults.scaling()));
     }
 
     private static TimeoutsConfig.InvocationTimeouts parseInvocationTimeouts(TomlDocument doc,
-                                                                              TimeoutsConfig.InvocationTimeouts d) {
-        return new TimeoutsConfig.InvocationTimeouts(
-            parseTimeSpan(doc, "timeouts.invocation", "timeout", d.timeout()),
-            parseTimeSpan(doc, "timeouts.invocation", "invoker_timeout", d.invokerTimeout()),
-            parseTimeSpan(doc, "timeouts.invocation", "retry_base_delay", d.retryBaseDelay()),
-            parseInt(doc, "timeouts.invocation", "max_retries", d.maxRetries()));
+                                                                             TimeoutsConfig.InvocationTimeouts d) {
+        return new TimeoutsConfig.InvocationTimeouts(parseTimeSpan(doc, "timeouts.invocation", "timeout", d.timeout()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.invocation",
+                                                                   "invoker_timeout",
+                                                                   d.invokerTimeout()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.invocation",
+                                                                   "retry_base_delay",
+                                                                   d.retryBaseDelay()),
+                                                     parseInt(doc, "timeouts.invocation", "max_retries", d.maxRetries()));
     }
 
     private static TimeoutsConfig.ForwardingTimeouts parseForwardingTimeouts(TomlDocument doc,
-                                                                              TimeoutsConfig.ForwardingTimeouts d) {
-        return new TimeoutsConfig.ForwardingTimeouts(
-            parseTimeSpan(doc, "timeouts.forwarding", "retry_delay", d.retryDelay()),
-            parseInt(doc, "timeouts.forwarding", "max_retries", d.maxRetries()));
+                                                                             TimeoutsConfig.ForwardingTimeouts d) {
+        return new TimeoutsConfig.ForwardingTimeouts(parseTimeSpan(doc,
+                                                                   "timeouts.forwarding",
+                                                                   "retry_delay",
+                                                                   d.retryDelay()),
+                                                     parseInt(doc, "timeouts.forwarding", "max_retries", d.maxRetries()));
     }
 
     private static TimeoutsConfig.DeploymentTimeouts parseDeploymentTimeouts(TomlDocument doc,
-                                                                              TimeoutsConfig.DeploymentTimeouts d) {
-        return new TimeoutsConfig.DeploymentTimeouts(
-            parseTimeSpan(doc, "timeouts.deployment", "loading", d.loading()),
-            parseTimeSpan(doc, "timeouts.deployment", "activating", d.activating()),
-            parseTimeSpan(doc, "timeouts.deployment", "deactivating", d.deactivating()),
-            parseTimeSpan(doc, "timeouts.deployment", "unloading", d.unloading()),
-            parseTimeSpan(doc, "timeouts.deployment", "activation_chain", d.activationChain()),
-            parseTimeSpan(doc, "timeouts.deployment", "transition_retry_delay", d.transitionRetryDelay()),
-            parseTimeSpan(doc, "timeouts.deployment", "reconciliation_interval", d.reconciliationInterval()),
-            parseInt(doc, "timeouts.deployment", "max_lifecycle_retries", d.maxLifecycleRetries()));
+                                                                             TimeoutsConfig.DeploymentTimeouts d) {
+        return new TimeoutsConfig.DeploymentTimeouts(parseTimeSpan(doc, "timeouts.deployment", "loading", d.loading()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.deployment",
+                                                                   "activating",
+                                                                   d.activating()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.deployment",
+                                                                   "deactivating",
+                                                                   d.deactivating()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.deployment",
+                                                                   "unloading",
+                                                                   d.unloading()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.deployment",
+                                                                   "activation_chain",
+                                                                   d.activationChain()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.deployment",
+                                                                   "transition_retry_delay",
+                                                                   d.transitionRetryDelay()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.deployment",
+                                                                   "reconciliation_interval",
+                                                                   d.reconciliationInterval()),
+                                                     parseInt(doc,
+                                                              "timeouts.deployment",
+                                                              "max_lifecycle_retries",
+                                                              d.maxLifecycleRetries()));
     }
 
     private static TimeoutsConfig.RollingUpdateTimeouts parseRollingUpdateTimeouts(TomlDocument doc,
-                                                                                    TimeoutsConfig.RollingUpdateTimeouts d) {
-        return new TimeoutsConfig.RollingUpdateTimeouts(
-            parseTimeSpan(doc, "timeouts.rolling_update", "kv_operation", d.kvOperation()),
-            parseTimeSpan(doc, "timeouts.rolling_update", "terminal_retention", d.terminalRetention()),
-            parseTimeSpan(doc, "timeouts.rolling_update", "cleanup_grace_period", d.cleanupGracePeriod()),
-            parseTimeSpan(doc, "timeouts.rolling_update", "rollback_cooldown", d.rollbackCooldown()));
+                                                                                   TimeoutsConfig.RollingUpdateTimeouts d) {
+        return new TimeoutsConfig.RollingUpdateTimeouts(parseTimeSpan(doc,
+                                                                      "timeouts.rolling_update",
+                                                                      "kv_operation",
+                                                                      d.kvOperation()),
+                                                        parseTimeSpan(doc,
+                                                                      "timeouts.rolling_update",
+                                                                      "terminal_retention",
+                                                                      d.terminalRetention()),
+                                                        parseTimeSpan(doc,
+                                                                      "timeouts.rolling_update",
+                                                                      "cleanup_grace_period",
+                                                                      d.cleanupGracePeriod()),
+                                                        parseTimeSpan(doc,
+                                                                      "timeouts.rolling_update",
+                                                                      "rollback_cooldown",
+                                                                      d.rollbackCooldown()));
     }
 
     private static TimeoutsConfig.ClusterTimeouts parseClusterTimeouts(TomlDocument doc,
-                                                                        TimeoutsConfig.ClusterTimeouts d) {
-        return new TimeoutsConfig.ClusterTimeouts(
-            parseTimeSpan(doc, "timeouts.cluster", "hello", d.hello()),
-            parseTimeSpan(doc, "timeouts.cluster", "reconciliation_interval", d.reconciliationInterval()),
-            parseTimeSpan(doc, "timeouts.cluster", "ping_interval", d.pingInterval()),
-            parseTimeSpan(doc, "timeouts.cluster", "channel_protection", d.channelProtection()));
+                                                                       TimeoutsConfig.ClusterTimeouts d) {
+        return new TimeoutsConfig.ClusterTimeouts(parseTimeSpan(doc, "timeouts.cluster", "hello", d.hello()),
+                                                  parseTimeSpan(doc,
+                                                                "timeouts.cluster",
+                                                                "reconciliation_interval",
+                                                                d.reconciliationInterval()),
+                                                  parseTimeSpan(doc,
+                                                                "timeouts.cluster",
+                                                                "ping_interval",
+                                                                d.pingInterval()),
+                                                  parseTimeSpan(doc,
+                                                                "timeouts.cluster",
+                                                                "channel_protection",
+                                                                d.channelProtection()));
     }
 
     private static TimeoutsConfig.ConsensusTimeouts parseConsensusTimeouts(TomlDocument doc,
-                                                                            TimeoutsConfig.ConsensusTimeouts d) {
-        return new TimeoutsConfig.ConsensusTimeouts(
-            parseTimeSpan(doc, "timeouts.consensus", "sync_retry_interval", d.syncRetryInterval()),
-            parseTimeSpan(doc, "timeouts.consensus", "cleanup_interval", d.cleanupInterval()),
-            parseTimeSpan(doc, "timeouts.consensus", "proposal_timeout", d.proposalTimeout()),
-            parseTimeSpan(doc, "timeouts.consensus", "phase_stall_check", d.phaseStallCheck()),
-            parseTimeSpan(doc, "timeouts.consensus", "git_persistence", d.gitPersistence()));
+                                                                           TimeoutsConfig.ConsensusTimeouts d) {
+        return new TimeoutsConfig.ConsensusTimeouts(parseTimeSpan(doc,
+                                                                  "timeouts.consensus",
+                                                                  "sync_retry_interval",
+                                                                  d.syncRetryInterval()),
+                                                    parseTimeSpan(doc,
+                                                                  "timeouts.consensus",
+                                                                  "cleanup_interval",
+                                                                  d.cleanupInterval()),
+                                                    parseTimeSpan(doc,
+                                                                  "timeouts.consensus",
+                                                                  "proposal_timeout",
+                                                                  d.proposalTimeout()),
+                                                    parseTimeSpan(doc,
+                                                                  "timeouts.consensus",
+                                                                  "phase_stall_check",
+                                                                  d.phaseStallCheck()),
+                                                    parseTimeSpan(doc,
+                                                                  "timeouts.consensus",
+                                                                  "git_persistence",
+                                                                  d.gitPersistence()));
     }
 
     private static TimeoutsConfig.ElectionTimeouts parseElectionTimeouts(TomlDocument doc,
-                                                                          TimeoutsConfig.ElectionTimeouts d) {
-        return new TimeoutsConfig.ElectionTimeouts(
-            parseTimeSpan(doc, "timeouts.election", "base_delay", d.baseDelay()),
-            parseTimeSpan(doc, "timeouts.election", "per_rank_delay", d.perRankDelay()),
-            parseTimeSpan(doc, "timeouts.election", "retry_delay", d.retryDelay()));
+                                                                         TimeoutsConfig.ElectionTimeouts d) {
+        return new TimeoutsConfig.ElectionTimeouts(parseTimeSpan(doc, "timeouts.election", "base_delay", d.baseDelay()),
+                                                   parseTimeSpan(doc,
+                                                                 "timeouts.election",
+                                                                 "per_rank_delay",
+                                                                 d.perRankDelay()),
+                                                   parseTimeSpan(doc, "timeouts.election", "retry_delay", d.retryDelay()));
     }
 
     private static TimeoutsConfig.SwimTimeouts parseSwimTimeouts(TomlDocument doc,
-                                                                  TimeoutsConfig.SwimTimeouts d) {
-        return new TimeoutsConfig.SwimTimeouts(
-            parseTimeSpan(doc, "timeouts.swim", "period", d.period()),
-            parseTimeSpan(doc, "timeouts.swim", "probe_timeout", d.probeTimeout()),
-            parseTimeSpan(doc, "timeouts.swim", "suspect_timeout", d.suspectTimeout()));
+                                                                 TimeoutsConfig.SwimTimeouts d) {
+        return new TimeoutsConfig.SwimTimeouts(parseTimeSpan(doc, "timeouts.swim", "period", d.period()),
+                                               parseTimeSpan(doc, "timeouts.swim", "probe_timeout", d.probeTimeout()),
+                                               parseTimeSpan(doc, "timeouts.swim", "suspect_timeout", d.suspectTimeout()));
     }
 
     private static TimeoutsConfig.ObservabilityTimeouts parseObservabilityTimeouts(TomlDocument doc,
-                                                                                    TimeoutsConfig.ObservabilityTimeouts d) {
-        return new TimeoutsConfig.ObservabilityTimeouts(
-            parseTimeSpan(doc, "timeouts.observability", "dashboard_broadcast", d.dashboardBroadcast()),
-            parseTimeSpan(doc, "timeouts.observability", "metrics_sliding_window", d.metricsSlidingWindow()),
-            parseTimeSpan(doc, "timeouts.observability", "event_loop_probe", d.eventLoopProbe()),
-            parseTimeSpan(doc, "timeouts.observability", "sampler_recalculation", d.samplerRecalculation()),
-            parseTimeSpan(doc, "timeouts.observability", "invocation_cleanup", d.invocationCleanup()),
-            parseInt(doc, "timeouts.observability", "trace_store_capacity", d.traceStoreCapacity()),
-            parseInt(doc, "timeouts.observability", "alert_history_size", d.alertHistorySize()));
+                                                                                   TimeoutsConfig.ObservabilityTimeouts d) {
+        return new TimeoutsConfig.ObservabilityTimeouts(parseTimeSpan(doc,
+                                                                      "timeouts.observability",
+                                                                      "dashboard_broadcast",
+                                                                      d.dashboardBroadcast()),
+                                                        parseTimeSpan(doc,
+                                                                      "timeouts.observability",
+                                                                      "metrics_sliding_window",
+                                                                      d.metricsSlidingWindow()),
+                                                        parseTimeSpan(doc,
+                                                                      "timeouts.observability",
+                                                                      "event_loop_probe",
+                                                                      d.eventLoopProbe()),
+                                                        parseTimeSpan(doc,
+                                                                      "timeouts.observability",
+                                                                      "sampler_recalculation",
+                                                                      d.samplerRecalculation()),
+                                                        parseTimeSpan(doc,
+                                                                      "timeouts.observability",
+                                                                      "invocation_cleanup",
+                                                                      d.invocationCleanup()),
+                                                        parseInt(doc,
+                                                                 "timeouts.observability",
+                                                                 "trace_store_capacity",
+                                                                 d.traceStoreCapacity()),
+                                                        parseInt(doc,
+                                                                 "timeouts.observability",
+                                                                 "alert_history_size",
+                                                                 d.alertHistorySize()));
     }
 
     private static TimeoutsConfig.DhtTimeouts parseDhtTimeouts(TomlDocument doc,
-                                                                TimeoutsConfig.DhtTimeouts d) {
-        return new TimeoutsConfig.DhtTimeouts(
-            parseTimeSpan(doc, "timeouts.dht", "operation", d.operation()),
-            parseTimeSpan(doc, "timeouts.dht", "anti_entropy_interval", d.antiEntropyInterval()));
+                                                               TimeoutsConfig.DhtTimeouts d) {
+        return new TimeoutsConfig.DhtTimeouts(parseTimeSpan(doc, "timeouts.dht", "operation", d.operation()),
+                                              parseTimeSpan(doc,
+                                                            "timeouts.dht",
+                                                            "anti_entropy_interval",
+                                                            d.antiEntropyInterval()));
     }
 
     private static TimeoutsConfig.WorkerTimeouts parseWorkerTimeouts(TomlDocument doc,
-                                                                      TimeoutsConfig.WorkerTimeouts d) {
-        return new TimeoutsConfig.WorkerTimeouts(
-            parseTimeSpan(doc, "timeouts.worker", "heartbeat_interval", d.heartbeatInterval()),
-            parseTimeSpan(doc, "timeouts.worker", "heartbeat_timeout", d.heartbeatTimeout()),
-            parseTimeSpan(doc, "timeouts.worker", "metrics_aggregation", d.metricsAggregation()));
+                                                                     TimeoutsConfig.WorkerTimeouts d) {
+        return new TimeoutsConfig.WorkerTimeouts(parseTimeSpan(doc,
+                                                               "timeouts.worker",
+                                                               "heartbeat_interval",
+                                                               d.heartbeatInterval()),
+                                                 parseTimeSpan(doc,
+                                                               "timeouts.worker",
+                                                               "heartbeat_timeout",
+                                                               d.heartbeatTimeout()),
+                                                 parseTimeSpan(doc,
+                                                               "timeouts.worker",
+                                                               "metrics_aggregation",
+                                                               d.metricsAggregation()));
     }
 
     private static TimeoutsConfig.SecurityTimeouts parseSecurityTimeouts(TomlDocument doc,
-                                                                          TimeoutsConfig.SecurityTimeouts d) {
-        return new TimeoutsConfig.SecurityTimeouts(
-            parseTimeSpan(doc, "timeouts.security", "websocket_auth", d.websocketAuth()),
-            parseTimeSpan(doc, "timeouts.security", "dns_query", d.dnsQuery()),
-            parseTimeSpan(doc, "timeouts.security", "cert_renewal_retry", d.certRenewalRetry()));
+                                                                         TimeoutsConfig.SecurityTimeouts d) {
+        return new TimeoutsConfig.SecurityTimeouts(parseTimeSpan(doc,
+                                                                 "timeouts.security",
+                                                                 "websocket_auth",
+                                                                 d.websocketAuth()),
+                                                   parseTimeSpan(doc, "timeouts.security", "dns_query", d.dnsQuery()),
+                                                   parseTimeSpan(doc,
+                                                                 "timeouts.security",
+                                                                 "cert_renewal_retry",
+                                                                 d.certRenewalRetry()));
     }
 
     private static TimeoutsConfig.RepositoryTimeouts parseRepositoryTimeouts(TomlDocument doc,
-                                                                              TimeoutsConfig.RepositoryTimeouts d) {
-        return new TimeoutsConfig.RepositoryTimeouts(
-            parseTimeSpan(doc, "timeouts.repository", "http_timeout", d.httpTimeout()),
-            parseTimeSpan(doc, "timeouts.repository", "locate_timeout", d.locateTimeout()));
+                                                                             TimeoutsConfig.RepositoryTimeouts d) {
+        return new TimeoutsConfig.RepositoryTimeouts(parseTimeSpan(doc,
+                                                                   "timeouts.repository",
+                                                                   "http_timeout",
+                                                                   d.httpTimeout()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.repository",
+                                                                   "locate_timeout",
+                                                                   d.locateTimeout()));
     }
 
     private static TimeoutsConfig.ScalingTimeouts parseScalingTimeouts(TomlDocument doc,
-                                                                        TimeoutsConfig.ScalingTimeouts d) {
-        return new TimeoutsConfig.ScalingTimeouts(
-            parseTimeSpan(doc, "timeouts.scaling", "evaluation_interval", d.evaluationInterval()),
-            parseTimeSpan(doc, "timeouts.scaling", "warmup_period", d.warmupPeriod()),
-            parseTimeSpan(doc, "timeouts.scaling", "slice_cooldown", d.sliceCooldown()),
-            parseTimeSpan(doc, "timeouts.scaling", "community_cooldown", d.communityCooldown()),
-            parseTimeSpan(doc, "timeouts.scaling", "auto_heal_retry", d.autoHealRetry()),
-            parseTimeSpan(doc, "timeouts.scaling", "auto_heal_startup_cooldown", d.autoHealStartupCooldown()));
+                                                                       TimeoutsConfig.ScalingTimeouts d) {
+        return new TimeoutsConfig.ScalingTimeouts(parseTimeSpan(doc,
+                                                                "timeouts.scaling",
+                                                                "evaluation_interval",
+                                                                d.evaluationInterval()),
+                                                  parseTimeSpan(doc,
+                                                                "timeouts.scaling",
+                                                                "warmup_period",
+                                                                d.warmupPeriod()),
+                                                  parseTimeSpan(doc,
+                                                                "timeouts.scaling",
+                                                                "slice_cooldown",
+                                                                d.sliceCooldown()),
+                                                  parseTimeSpan(doc,
+                                                                "timeouts.scaling",
+                                                                "community_cooldown",
+                                                                d.communityCooldown()),
+                                                  parseTimeSpan(doc,
+                                                                "timeouts.scaling",
+                                                                "auto_heal_retry",
+                                                                d.autoHealRetry()),
+                                                  parseTimeSpan(doc,
+                                                                "timeouts.scaling",
+                                                                "auto_heal_startup_cooldown",
+                                                                d.autoHealStartupCooldown()));
     }
 
     /// Parse a TimeSpan from either a new string key or a legacy _ms long key.
     /// Tries the string key first (e.g., "forward_timeout" = "5s"),
     /// then falls back to the long key (e.g., "forward_timeout_ms" = 5000).
     private static TimeSpan parseTimeSpanOrMs(TomlDocument doc,
-                                               String section,
-                                               String stringKey,
-                                               String msKey,
-                                               TimeSpan defaultValue) {
+                                              String section,
+                                              String stringKey,
+                                              String msKey,
+                                              TimeSpan defaultValue) {
         // Try new string-based key first
         var fromString = doc.getString(section, stringKey)
-                            .flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v).option())
+                            .flatMap(v -> org.pragmatica.lang.parse.TimeSpan.timeSpan(v)
+                                             .option())
                             .map(ts -> TimeSpan.fromDuration(ts.duration()));
         if (fromString.isPresent()) {
             return fromString.unwrap();
@@ -471,7 +600,6 @@ public final class ConfigLoader {
     }
 
     // --- API keys ---
-
     private static Map<String, ApiKeyEntry> resolveApiKeys(TomlDocument doc) {
         // 1. Environment variable has highest priority
         var envKeys = System.getenv("AETHER_API_KEYS");

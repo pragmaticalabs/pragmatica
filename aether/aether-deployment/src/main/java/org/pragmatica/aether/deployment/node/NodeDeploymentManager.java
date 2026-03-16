@@ -79,6 +79,12 @@ public interface NodeDeploymentManager {
     @MessageReceiver
     void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
 
+    /// Handle unexpected removal of local node's lifecycle key by re-registering ON_DUTY.
+    /// Defense-in-depth: guards against race where a pending consensus batch removes the key
+    /// after activation has already written it.
+    @MessageReceiver
+    void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove);
+
     /// Set a shutdown callback to be invoked when SHUTTING_DOWN lifecycle state is received.
     void setShutdownCallback(Runnable callback);
 
@@ -990,10 +996,12 @@ public interface NodeDeploymentManager {
     }
 
     /// Default activation chain timeout (2 minutes).
-    TimeSpan DEFAULT_ACTIVATION_CHAIN_TIMEOUT = TimeSpan.timeSpan(120_000).millis();
+    TimeSpan DEFAULT_ACTIVATION_CHAIN_TIMEOUT = TimeSpan.timeSpan(120_000)
+                                                       .millis();
 
     /// Default transition retry delay (2 seconds).
-    TimeSpan DEFAULT_TRANSITION_RETRY_DELAY = TimeSpan.timeSpan(2000).millis();
+    TimeSpan DEFAULT_TRANSITION_RETRY_DELAY = TimeSpan.timeSpan(2000)
+                                                     .millis();
 
     static NodeDeploymentManager nodeDeploymentManager(NodeId self,
                                                        MessageRouter router,
@@ -1145,7 +1153,9 @@ public interface NodeDeploymentManager {
                 // Must always write because consensus snapshot restore may contain a stale
                 // ON_DUTY entry that a pending removal batch will delete after activation.
                 kvStore().get(lifecycleKey)
-                       .flatMap(v -> v instanceof NodeLifecycleValue lv ? Option.some(lv) : Option.empty())
+                       .flatMap(v -> v instanceof NodeLifecycleValue lv
+                                     ? Option.some(lv)
+                                     : Option.empty())
                        .filter(v -> v.state() == NodeLifecycleState.DECOMMISSIONED)
                        .onEmpty(() -> writeLifecycleOnDuty(lifecycleKey, 1));
             }
@@ -1195,6 +1205,16 @@ public interface NodeDeploymentManager {
                     log.warn("Node {} received SHUTTING_DOWN lifecycle state — initiating shutdown", self().id());
                     Option.option(shutdownCallback().get())
                           .onPresent(Runnable::run);
+                }
+            }
+
+            @Override
+            public void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove) {
+                var key = valueRemove.cause()
+                                     .key();
+                if (key.nodeId().equals(self()) && isActive()) {
+                    log.warn("Node {} lifecycle key removed unexpectedly — re-registering ON_DUTY", self().id());
+                    registerLifecycleOnDuty();
                 }
             }
 
