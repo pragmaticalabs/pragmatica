@@ -49,8 +49,8 @@ public record TimeoutsConfig(
         int maxRetries) {
         public static InvocationTimeouts invocationTimeouts() {
             return new InvocationTimeouts(
-                timeSpan(25).seconds(),
-                timeSpan(30).seconds(),
+                timeSpan(15).seconds(),
+                timeSpan(20).seconds(),
                 timeSpan(100).millis(),
                 3);
         }

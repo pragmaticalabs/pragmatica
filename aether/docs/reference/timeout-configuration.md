@@ -36,8 +36,8 @@ All configurable timeouts in a single table, grouped by TOML section.
 
 | TOML Key | Default | Description |
 |----------|---------|-------------|
-| `timeout` | `25s` | Maximum time for a single slice invocation |
-| `invoker_timeout` | `30s` | Outer timeout wrapping invocation + retry overhead |
+| `timeout` | `15s` | Maximum time for a single slice invocation |
+| `invoker_timeout` | `20s` | Outer timeout wrapping invocation + retry overhead |
 | `retry_base_delay` | `100ms` | Base delay between invocation retries (exponential backoff) |
 | `max_retries` | `3` | Maximum number of invocation retry attempts |
 
@@ -178,13 +178,13 @@ Client Request
 [app-http] forward_timeout = 5s     <-- HTTP forwarding to target node
   |
   v
-[timeouts.invocation] timeout = 25s  <-- Slice method execution
+[timeouts.invocation] timeout = 15s  <-- Slice method execution
   |
   v
-[timeouts.invocation] invoker_timeout = 30s  <-- Outer wrapper (includes retry overhead)
+[timeouts.invocation] invoker_timeout = 20s  <-- Outer wrapper (includes retry overhead)
 ```
 
-**Constraint:** `invoker_timeout` (30s) > `timeout` (25s) > `forward_timeout` (5s)
+**Constraint:** `invoker_timeout` (20s) > `timeout` (15s) > `forward_timeout` (5s)
 
 The 5-second gap between `invoker_timeout` and `timeout` accommodates retry delays and routing overhead. The `forward_timeout` is shorter because it covers only the network hop, not the execution.
 

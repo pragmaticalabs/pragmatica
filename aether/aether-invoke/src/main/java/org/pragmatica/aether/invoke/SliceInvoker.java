@@ -184,8 +184,8 @@ public interface SliceInvoker extends SliceInvokerFacade {
     /// Get count of pending invocations (for monitoring).
     int pendingCount();
 
-    /// Default timeout for invocations (30 seconds).
-    long DEFAULT_TIMEOUT_MS = 30_000;
+    /// Default timeout for invocations (20 seconds).
+    long DEFAULT_TIMEOUT_MS = 20_000;
 
     /// Default maximum retries.
     int DEFAULT_MAX_RETRIES = 3;
