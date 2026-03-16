@@ -169,36 +169,14 @@ public interface TcpTopologyManager extends TopologyManager {
                                .forEach(this::addNode);
             }
 
-            // TODO [LOW PRIORITY]: Race condition - node resurrection after removal
-            //
-            // Current pattern: get() then put() is not atomic. If a node is removed between
-            // the get() and put(), the put() will resurrect the removed node.
-            //
-            // Timeline:
-            //   Thread A (connection failed): get(nodeId) -> returns state
-            //   Thread B (remove node):       remove(nodeId) -> node gone
-            //   Thread A (connection failed): put(nodeId, newState) -> resurrects removed node
-            //
-            // Fix: Use computeIfPresent() for atomic read-modify-write:
-            //   nodeStatesById.computeIfPresent(nodeId, (id, state) ->
-            //       processConnectionFailure(state, cause));
-            //
-            // Required changes:
-            //   1. processConnectionFailure() must return NodeState instead of void
-            //   2. Same fix needed for handleConnectionEstablished/processConnectionEstablished
-            //   3. RemoveNode path also routes DisconnectNode which could interact unexpectedly
-            //   4. Needs careful testing of all node lifecycle scenarios
-            //
-            // Low probability in practice - removal and connection events rarely overlap.
             @Override
             public void handleConnectionFailed(NetworkServiceMessage.ConnectionFailed connectionFailed) {
                 var nodeId = connectionFailed.nodeId();
-                Option.option(nodeStatesById.get(nodeId))
-                      .onPresent(state -> processConnectionFailure(state,
-                                                                   connectionFailed.cause()));
+                nodeStatesById.computeIfPresent(nodeId, (_, state) ->
+                    processConnectionFailure(state, connectionFailed.cause()));
             }
 
-            private void processConnectionFailure(NodeState state, Cause cause) {
+            private NodeState processConnectionFailure(NodeState state, Cause cause) {
                 var nodeId = state.info()
                                   .id();
                 var newAttempts = state.failedAttempts() + 1;
@@ -207,30 +185,26 @@ public interface TcpTopologyManager extends TopologyManager {
                 var delay = backoff.backoffStrategy()
                                    .nextTimeout(newAttempts);
                 var nextAttempt = now.plusNanos(delay.nanos());
-                var suspectedState = NodeState.suspected(state.info(), newAttempts, now, nextAttempt);
-                nodeStatesById.put(nodeId, suspectedState);
                 log.debug("Node {} connection failed (attempt {}), next attempt after {}: {}",
                           nodeId,
                           newAttempts,
                           delay,
                           cause.message());
+                return NodeState.suspected(state.info(), newAttempts, now, nextAttempt);
             }
 
             @Override
             public void handleConnectionEstablished(NetworkServiceMessage.ConnectionEstablished connectionEstablished) {
                 var nodeId = connectionEstablished.nodeId();
-                Option.option(nodeStatesById.get(nodeId))
-                      .onPresent(this::processConnectionEstablished);
+                nodeStatesById.computeIfPresent(nodeId, (_, state) ->
+                    processConnectionEstablished(state));
             }
 
-            private void processConnectionEstablished(NodeState state) {
-                var nodeId = state.info()
-                                  .id();
-                var healthyState = NodeState.healthy(state.info(), now());
-                nodeStatesById.put(nodeId, healthyState);
+            private NodeState processConnectionEstablished(NodeState state) {
                 if (state.health() == NodeHealth.SUSPECTED) {
-                    log.debug("Node {} recovered from suspected state", nodeId);
+                    log.debug("Node {} recovered from suspected state", state.info().id());
                 }
+                return NodeState.healthy(state.info(), now());
             }
 
             private void addNode(NodeInfo nodeInfo) {
