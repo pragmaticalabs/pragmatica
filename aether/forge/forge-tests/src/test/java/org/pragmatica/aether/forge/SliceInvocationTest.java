@@ -8,18 +8,18 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.HttpOperations;
 
-import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import org.pragmatica.aether.ember.EmberCluster;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// Tests for slice method invocation.
 ///
@@ -41,20 +41,19 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class SliceInvocationTest {
     private static final int BASE_PORT = 6000;
     private static final int BASE_MGMT_PORT = 6100;
+    private static final int BASE_APP_HTTP_PORT = 6200;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:slice-invocation:1.0.0";
+    private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
     private EmberCluster cluster;
-    private HttpClient httpClient;
+    private final HttpOperations http = jdkHttpOperations();
 
     @BeforeAll
     void setUp() {
-        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "si");
-        httpClient = HttpClient.newBuilder()
-                               .connectTimeout(Duration.ofSeconds(5))
-                               .build();
+        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "si");
         cluster.start()
                .await()
                .onFailure(cause -> {
@@ -293,12 +292,10 @@ class SliceInvocationTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private void assertDeploymentSucceeded(String response) {
@@ -330,12 +327,10 @@ class SliceInvocationTest {
                                  .DELETE()
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private String httpRequest(String method, int port, String path, String body) {
@@ -350,12 +345,10 @@ class SliceInvocationTest {
             builder.method(method, HttpRequest.BodyPublishers.noBody());
         }
 
-        try {
-            var response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        return http.sendString(builder.build())
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private boolean allNodesHealthy() {
@@ -370,11 +363,9 @@ class SliceInvocationTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.statusCode() == 200 && response.body().contains("\"quorum\":true");
-        } catch (IOException | InterruptedException e) {
-            return false;
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
+                   .or(false);
     }
 }

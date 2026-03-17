@@ -16,6 +16,7 @@
 
 package org.pragmatica.http.server;
 
+import io.netty.channel.EventLoopGroup;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -36,5 +37,19 @@ public interface HttpServer {
     /// @return promise of the running server
     static Promise<HttpServer> httpServer(HttpServerConfig config, BiConsumer<RequestContext, ResponseWriter> handler) {
         return NettyHttpServer.create(config, handler);
+    }
+
+    /// Create and start an HTTP server using externally managed event loop groups.
+    ///
+    /// @param config      server configuration
+    /// @param handler     request handler
+    /// @param bossGroup   external boss event loop group
+    /// @param workerGroup external worker event loop group
+    /// @return promise of the running server
+    static Promise<HttpServer> httpServer(HttpServerConfig config,
+                                          BiConsumer<RequestContext, ResponseWriter> handler,
+                                          EventLoopGroup bossGroup,
+                                          EventLoopGroup workerGroup) {
+        return NettyHttpServer.createShared(config, handler, bossGroup, workerGroup);
     }
 }

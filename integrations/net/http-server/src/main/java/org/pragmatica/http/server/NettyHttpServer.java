@@ -57,15 +57,18 @@ final class NettyHttpServer implements HttpServer {
     private final Option<EventLoopGroup> bossGroup;
     private final Option<EventLoopGroup> workerGroup;
     private final Option<Channel> serverChannel;
+    private final boolean ownsGroups;
 
     private NettyHttpServer(int port,
                             Option<EventLoopGroup> bossGroup,
                             Option<EventLoopGroup> workerGroup,
-                            Option<Channel> serverChannel) {
+                            Option<Channel> serverChannel,
+                            boolean ownsGroups) {
         this.port = port;
         this.bossGroup = bossGroup;
         this.workerGroup = workerGroup;
         this.serverChannel = serverChannel;
+        this.ownsGroups = ownsGroups;
     }
 
     @Override
@@ -87,6 +90,10 @@ final class NettyHttpServer implements HttpServer {
     }
 
     private void cleanupAndComplete(Promise<Unit> promise) {
+        if (!ownsGroups) {
+            promise.succeed(unit());
+            return;
+        }
         var workerFuture = workerGroup.map(EventLoopGroup::shutdownGracefully);
         var bossFuture = bossGroup.map(EventLoopGroup::shutdownGracefully);
         if (workerFuture.isPresent() && bossFuture.isPresent()) {
@@ -122,15 +129,43 @@ final class NettyHttpServer implements HttpServer {
                                                                                                  future,
                                                                                                  sslContext,
                                                                                                  bossGroup,
-                                                                                                 workerGroup)));
+                                                                                                 workerGroup,
+                                                                                                 true)));
+    }
+
+    static Promise<HttpServer> createShared(HttpServerConfig config,
+                                            BiConsumer<RequestContext, ResponseWriter> handler,
+                                            EventLoopGroup bossGroup,
+                                            EventLoopGroup workerGroup) {
+        var sslContext = config.tls()
+                               .await()
+                               .flatMap(TlsContextFactory::create)
+                               .option();
+        var socketOptions = config.socketOptions();
+        var bootstrap = new ServerBootstrap().group(bossGroup, workerGroup)
+                                             .channel(NioServerSocketChannel.class)
+                                             .childHandler(new HttpServerInitializer(config, handler, sslContext))
+                                             .option(ChannelOption.SO_BACKLOG,
+                                                     socketOptions.soBacklog())
+                                             .childOption(ChannelOption.SO_KEEPALIVE,
+                                                          socketOptions.soKeepalive());
+        return Promise.promise(promise -> bootstrap.bind(config.port())
+                                                   .addListener((ChannelFuture future) -> onBind(config,
+                                                                                                 promise,
+                                                                                                 future,
+                                                                                                 sslContext,
+                                                                                                 bossGroup,
+                                                                                                 workerGroup,
+                                                                                                 false)));
     }
 
     private static void onBind(HttpServerConfig config,
                                Promise<HttpServer> promise,
                                ChannelFuture future,
                                Option<SslContext> sslContext,
-                               MultiThreadIoEventLoopGroup bossGroup,
-                               MultiThreadIoEventLoopGroup workerGroup) {
+                               EventLoopGroup bossGroup,
+                               EventLoopGroup workerGroup,
+                               boolean ownsGroups) {
         if (future.isSuccess()) {
             var protocol = sslContext.map(_ -> "HTTPS")
                                      .or("HTTP");
@@ -138,10 +173,13 @@ final class NettyHttpServer implements HttpServer {
             promise.succeed(new NettyHttpServer(config.port(),
                                                 Option.option(bossGroup),
                                                 Option.option(workerGroup),
-                                                Option.option(future.channel())));
+                                                Option.option(future.channel()),
+                                                ownsGroups));
         } else {
-            bossGroup.shutdownGracefully();
-            workerGroup.shutdownGracefully();
+            if (ownsGroups) {
+                bossGroup.shutdownGracefully();
+                workerGroup.shutdownGracefully();
+            }
             promise.fail(new HttpServerError.BindFailed(config.port(), future.cause()));
         }
     }

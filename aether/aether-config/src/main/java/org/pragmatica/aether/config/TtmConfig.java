@@ -2,26 +2,33 @@ package org.pragmatica.aether.config;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Configuration for TTM (Tiny Time Mixers) predictive scaling.
 ///
 /// @param modelPath            Path to ONNX model file
 /// @param inputWindowMinutes   Number of minutes of historical data for prediction (default: 60)
 /// @param predictionHorizon    Minutes ahead to predict (default: 1)
-/// @param evaluationIntervalMs Interval between TTM evaluations in milliseconds (default: 60000)
+/// @param evaluationInterval   Interval between TTM evaluations (default: 60s)
 /// @param confidenceThreshold  Minimum confidence for applying predictions (0.0-1.0, default: 0.7)
 /// @param enabled              Whether TTM is enabled (default: false)
 @SuppressWarnings({"JBCT-ZONE-02", "JBCT-SEQ-01"})
 public record TtmConfig(String modelPath,
                         int inputWindowMinutes,
                         int predictionHorizon,
-                        long evaluationIntervalMs,
+                        TimeSpan evaluationInterval,
                         double confidenceThreshold,
                         boolean enabled) {
-    private static final TtmConfig DEFAULT = ttmConfig("models/ttm-aether.onnx", 60, 1, 60_000L, 0.7, false).unwrap();
+    private static final TtmConfig DEFAULT = ttmConfig("models/ttm-aether.onnx",
+                                                       60,
+                                                       1,
+                                                       timeSpan(60).seconds(),
+                                                       0.7,
+                                                       false).unwrap();
 
     /// Default TTM configuration (disabled).
     public static TtmConfig ttmConfig() {
@@ -32,15 +39,15 @@ public record TtmConfig(String modelPath,
     public static Result<TtmConfig> ttmConfig(String modelPath,
                                               int inputWindowMinutes,
                                               int predictionHorizon,
-                                              long evaluationIntervalMs,
+                                              TimeSpan evaluationInterval,
                                               double confidenceThreshold,
                                               boolean enabled) {
-        return checkModelAndTiming(modelPath, enabled, inputWindowMinutes, predictionHorizon).flatMap(_ -> checkIntervalAndConfidence(evaluationIntervalMs,
+        return checkModelAndTiming(modelPath, enabled, inputWindowMinutes, predictionHorizon).flatMap(_ -> checkIntervalAndConfidence(evaluationInterval,
                                                                                                                                       confidenceThreshold))
                                   .map(_ -> new TtmConfig(modelPath,
                                                           inputWindowMinutes,
                                                           predictionHorizon,
-                                                          evaluationIntervalMs,
+                                                          evaluationInterval,
                                                           confidenceThreshold,
                                                           enabled));
     }
@@ -49,7 +56,7 @@ public record TtmConfig(String modelPath,
         return ttmConfig(modelPath,
                          inputWindowMinutes,
                          predictionHorizon,
-                         evaluationIntervalMs,
+                         evaluationInterval,
                          confidenceThreshold,
                          enabled)
         .unwrap();
@@ -59,7 +66,7 @@ public record TtmConfig(String modelPath,
         return ttmConfig(modelPath,
                          inputWindowMinutes,
                          predictionHorizon,
-                         evaluationIntervalMs,
+                         evaluationInterval,
                          confidenceThreshold,
                          enabled)
         .unwrap();
@@ -69,17 +76,17 @@ public record TtmConfig(String modelPath,
         return ttmConfig(modelPath,
                          inputWindowMinutes,
                          predictionHorizon,
-                         evaluationIntervalMs,
+                         evaluationInterval,
                          confidenceThreshold,
                          enabled)
         .unwrap();
     }
 
-    public TtmConfig withEvaluationIntervalMs(long evaluationIntervalMs) {
+    public TtmConfig withEvaluationInterval(TimeSpan evaluationInterval) {
         return ttmConfig(modelPath,
                          inputWindowMinutes,
                          predictionHorizon,
-                         evaluationIntervalMs,
+                         evaluationInterval,
                          confidenceThreshold,
                          enabled)
         .unwrap();
@@ -89,7 +96,7 @@ public record TtmConfig(String modelPath,
         return ttmConfig(modelPath,
                          inputWindowMinutes,
                          predictionHorizon,
-                         evaluationIntervalMs,
+                         evaluationInterval,
                          confidenceThreshold,
                          enabled)
         .unwrap();
@@ -130,14 +137,15 @@ public record TtmConfig(String modelPath,
                                .result();
     }
 
-    private static Result<Double> checkIntervalAndConfidence(long evaluationIntervalMs, double confidenceThreshold) {
-        return checkInterval(evaluationIntervalMs).flatMap(_ -> checkConfidence(confidenceThreshold));
+    private static Result<Double> checkIntervalAndConfidence(TimeSpan evaluationInterval, double confidenceThreshold) {
+        return checkInterval(evaluationInterval).flatMap(_ -> checkConfidence(confidenceThreshold));
     }
 
-    private static Result<Long> checkInterval(long evaluationIntervalMs) {
-        return evaluationIntervalMs >= 10_000L && evaluationIntervalMs <= 300_000L
-               ? success(evaluationIntervalMs)
-               : TtmConfigError.InvalidTtmConfig.invalidTtmConfig("evaluationIntervalMs must be 10000-300000")
+    private static Result<TimeSpan> checkInterval(TimeSpan evaluationInterval) {
+        var millis = evaluationInterval.millis();
+        return millis >= 10_000L && millis <= 300_000L
+               ? success(evaluationInterval)
+               : TtmConfigError.InvalidTtmConfig.invalidTtmConfig("evaluationInterval must be 10s-300s")
                                .result();
     }
 

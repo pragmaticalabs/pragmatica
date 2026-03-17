@@ -9,6 +9,9 @@ ARG VERSION=dev
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.source="https://github.com/pragmaticalabs/pragmatica"
 
+# Install iptables for network partition testing (E2E tests)
+RUN apk add --no-cache iptables
+
 # Create non-root user for security
 RUN addgroup -g 1000 aether && \
     adduser -u 1000 -G aether -s /bin/sh -D aether

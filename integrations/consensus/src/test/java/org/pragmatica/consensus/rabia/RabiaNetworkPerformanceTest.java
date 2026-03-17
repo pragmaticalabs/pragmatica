@@ -288,9 +288,6 @@ class RabiaNetworkPerformanceTest {
             router.addRoute(NetworkServiceMessage.ListConnectedNodes.class, network::listNodes);
             router.addRoute(NetworkServiceMessage.Send.class, network::handleSend);
             router.addRoute(NetworkServiceMessage.Broadcast.class, network::handleBroadcast);
-            router.addRoute(NetworkMessage.Ping.class, network::handlePing);
-            router.addRoute(NetworkMessage.Pong.class, network::handlePong);
-
             // Create engine
             engine = new RabiaEngine<>(topologyManager, network, new SimpleStateMachine(), ProtocolConfig.testConfig());
 

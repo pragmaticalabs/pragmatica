@@ -7,10 +7,6 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
-import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
-import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -212,15 +208,11 @@ class EndpointRegistryTest {
     private void registerEndpoint(Artifact artifact, MethodName method, int instance, NodeId nodeId) {
         var key = new EndpointKey(artifact, method, instance);
         var value = new EndpointValue(nodeId);
-        var command = new KVCommand.Put<EndpointKey, EndpointValue>(key, value);
-        var notification = new ValuePut<>(command, Option.none());
-        registry.onEndpointPut(notification);
+        registry.registerEndpoint(key, value);
     }
 
     private void removeEndpoint(Artifact artifact, MethodName method, int instance) {
         var key = new EndpointKey(artifact, method, instance);
-        var command = new KVCommand.Remove<EndpointKey>(key);
-        var notification = new ValueRemove<EndpointKey, EndpointValue>(command, Option.none());
-        registry.onEndpointRemove(notification);
+        registry.unregisterEndpoint(key);
     }
 }

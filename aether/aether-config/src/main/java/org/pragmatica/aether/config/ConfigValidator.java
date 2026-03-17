@@ -2,10 +2,10 @@ package org.pragmatica.aether.config;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -117,13 +117,13 @@ public final class ConfigValidator {
     }
 
     private static void durationErrors(NodeConfig node, List<String> errors) {
-        positiveDurationError(node.metricsInterval(), "Metrics interval", errors);
-        positiveDurationError(node.reconciliation(), "Reconciliation interval", errors);
+        positiveTimeSpanError(node.metricsInterval(), "Metrics interval", errors);
+        positiveTimeSpanError(node.reconciliation(), "Reconciliation interval", errors);
     }
 
-    private static void positiveDurationError(Duration duration, String name, List<String> errors) {
-        if (duration.isNegative() || duration.isZero()) {
-            errors.add(name + " must be positive. Got: " + duration);
+    private static void positiveTimeSpanError(TimeSpan timeSpan, String name, List<String> errors) {
+        if (timeSpan.millis() <= 0) {
+            errors.add(name + " must be positive. Got: " + timeSpan.millis() + "ms");
         }
     }
 

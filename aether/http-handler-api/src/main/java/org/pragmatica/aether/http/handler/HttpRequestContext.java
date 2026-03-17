@@ -16,7 +16,6 @@ import static org.pragmatica.lang.Result.success;
 /// Contains all information needed to reconstruct HTTP request at destination node
 /// where parameter extraction occurs.
 ///
-/// Note: The body byte array is defensively copied to ensure immutability.
 ///
 /// @param path        request path (e.g., "/users/123")
 /// @param method      HTTP method (e.g., "GET", "POST")
@@ -35,7 +34,6 @@ public record HttpRequestContext(String path,
                                  SecurityContext security) {
     private static final byte[] EMPTY_BODY = new byte[0];
 
-    /// Canonical constructor with defensive copy of body.
     public HttpRequestContext {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(method, "method");
@@ -43,17 +41,9 @@ public record HttpRequestContext(String path,
         Objects.requireNonNull(headers, "headers");
         Objects.requireNonNull(requestId, "requestId");
         Objects.requireNonNull(security, "security");
-        body = (body == null || body.length == 0)
-               ? EMPTY_BODY
-               : body.clone();
-    }
-
-    /// Defensive copy on access.
-    @Override
-    public byte[] body() {
-        return body.length == 0
-               ? EMPTY_BODY
-               : body.clone();
+        if (body == null || body.length == 0) {
+            body = EMPTY_BODY;
+        }
     }
 
     /// Validated factory for constructing request context.

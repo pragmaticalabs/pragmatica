@@ -3,13 +3,15 @@ package org.pragmatica.aether.deployment.loadbalancer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.LoadBalancerState;
 import org.pragmatica.aether.environment.RouteChange;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue.RouteEntry;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -38,6 +40,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class LoadBalancerManagerTest {
 
+    private static final Artifact TEST_ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
+
     private NodeId selfNode;
     private NodeId node1;
     private NodeId node2;
@@ -62,19 +66,16 @@ class LoadBalancerManagerTest {
     @Nested
     class DormantState {
         @Test
-        void dormantState_onRoutePut_doesNothing() {
-            var routeKey = HttpNodeRouteKey.httpNodeRouteKey("GET", "/api/test", node1);
-            var routeValue = HttpNodeRouteValue.httpNodeRouteValue("test:artifact:1.0", "create");
-            fireValuePut(routeKey, routeValue);
+        void dormantState_onNodeRoutesPut_doesNothing() {
+            fireNodeRoutesPut("GET", "/api/test", node1);
 
             assertThat(provider.routeChanges).isEmpty();
             assertThat(provider.reconcileCalls).isEmpty();
         }
 
         @Test
-        void dormantState_onRouteRemove_doesNothing() {
-            var routeKey = HttpNodeRouteKey.httpNodeRouteKey("GET", "/api/test", node1);
-            fireValueRemove(routeKey, null);
+        void dormantState_onNodeRoutesRemove_doesNothing() {
+            fireNodeRoutesRemove(node1);
 
             assertThat(provider.routeChanges).isEmpty();
         }
@@ -91,9 +92,10 @@ class LoadBalancerManagerTest {
     class LeaderActivation {
         @Test
         void leaderChange_becomingLeader_activatesAndReconciles() {
-            // Pre-populate KVStore with a per-node route entry
-            var routeKey = HttpNodeRouteKey.httpNodeRouteKey("GET", "/api/users", node1);
-            var routeValue = HttpNodeRouteValue.httpNodeRouteValue("test:users:1.0", "list");
+            // Pre-populate KVStore with a compound route entry
+            var routeKey = NodeRoutesKey.nodeRoutesKey(node1, TEST_ARTIFACT);
+            var routeValue = NodeRoutesValue.nodeRoutesValue(List.of(
+                RouteEntry.activeRoute("GET", "/api/users/", "list")));
             kvStore.process(new KVCommand.Put<>(routeKey, routeValue));
 
             // Register node1 in topology so IP resolution works
@@ -118,9 +120,7 @@ class LoadBalancerManagerTest {
             manager.onLeaderChange(LeaderNotification.leaderChange(Option.some(node2), false));
 
             // Subsequent events should be no-ops
-            var routeKey = HttpNodeRouteKey.httpNodeRouteKey("GET", "/api/test", node1);
-            var routeValue = HttpNodeRouteValue.httpNodeRouteValue("test:artifact:1.0", "create");
-            fireValuePut(routeKey, routeValue);
+            fireNodeRoutesPut("GET", "/api/test", node1);
 
             assertThat(provider.routeChanges).isEmpty();
         }
@@ -137,14 +137,9 @@ class LoadBalancerManagerTest {
         }
 
         @Test
-        void activeState_onHttpRoutePut_callsProviderRouteChanged() {
-            var key1 = HttpNodeRouteKey.httpNodeRouteKey("POST", "/api/orders", node1);
-            var val1 = HttpNodeRouteValue.httpNodeRouteValue("test:orders:1.0", "create");
-            fireValuePut(key1, val1);
-
-            var key2 = HttpNodeRouteKey.httpNodeRouteKey("POST", "/api/orders", node2);
-            var val2 = HttpNodeRouteValue.httpNodeRouteValue("test:orders:1.0", "create");
-            fireValuePut(key2, val2);
+        void activeState_onNodeRoutesPut_callsProviderRouteChanged() {
+            fireNodeRoutesPut("POST", "/api/orders/", node1);
+            fireNodeRoutesPut("POST", "/api/orders/", node2);
 
             // Should have 2 notifications (one per put)
             assertThat(provider.routeChanges).hasSize(2);
@@ -157,9 +152,7 @@ class LoadBalancerManagerTest {
         @Test
         void activeState_onNodeRemoved_callsProviderNodeRemoved() {
             // First, trigger a route put so that node1's IP is tracked
-            var routeKey = HttpNodeRouteKey.httpNodeRouteKey("GET", "/api/test", node1);
-            var routeValue = HttpNodeRouteValue.httpNodeRouteValue("test:artifact:1.0", "create");
-            fireValuePut(routeKey, routeValue);
+            fireNodeRoutesPut("GET", "/api/test/", node1);
             provider.clear();
 
             // Remove node1
@@ -169,19 +162,14 @@ class LoadBalancerManagerTest {
         }
 
         @Test
-        void activeState_onRouteRemove_callsProviderWithUpdatedNodeSet() {
+        void activeState_onNodeRoutesRemove_callsProviderWithUpdatedNodeSet() {
             // Add routes for two nodes
-            var key1 = HttpNodeRouteKey.httpNodeRouteKey("DELETE", "/api/items", node1);
-            var val1 = HttpNodeRouteValue.httpNodeRouteValue("test:items:1.0", "delete");
-            fireValuePut(key1, val1);
-
-            var key2 = HttpNodeRouteKey.httpNodeRouteKey("DELETE", "/api/items", node2);
-            var val2 = HttpNodeRouteValue.httpNodeRouteValue("test:items:1.0", "delete");
-            fireValuePut(key2, val2);
+            fireNodeRoutesPut("DELETE", "/api/items/", node1);
+            fireNodeRoutesPut("DELETE", "/api/items/", node2);
             provider.clear();
 
-            // Remove node1's route
-            fireValueRemove(key1, val1);
+            // Remove node1's routes
+            fireNodeRoutesRemove(node1);
 
             // Should still have node2
             assertThat(provider.routeChanges).hasSize(1);
@@ -192,13 +180,11 @@ class LoadBalancerManagerTest {
         }
 
         @Test
-        void activeState_onRouteRemove_lastNode_callsProviderWithEmptyNodeIps() {
-            var routeKey = HttpNodeRouteKey.httpNodeRouteKey("GET", "/api/gone", node1);
-            var routeValue = HttpNodeRouteValue.httpNodeRouteValue("test:gone:1.0", "get");
-            fireValuePut(routeKey, routeValue);
+        void activeState_onNodeRoutesRemove_lastNode_callsProviderWithEmptyNodeIps() {
+            fireNodeRoutesPut("GET", "/api/gone/", node1);
             provider.clear();
 
-            fireValueRemove(routeKey, routeValue);
+            fireNodeRoutesRemove(node1);
 
             assertThat(provider.routeChanges).hasSize(1);
             var change = provider.routeChanges.getFirst();
@@ -214,16 +200,20 @@ class LoadBalancerManagerTest {
         manager.onLeaderChange(LeaderNotification.leaderChange(Option.some(selfNode), true));
     }
 
-    private void fireValuePut(HttpNodeRouteKey key, HttpNodeRouteValue value) {
-        var command = new KVCommand.Put<HttpNodeRouteKey, HttpNodeRouteValue>(key, value);
+    private void fireNodeRoutesPut(String method, String path, NodeId nodeId) {
+        var key = NodeRoutesKey.nodeRoutesKey(nodeId, TEST_ARTIFACT);
+        var route = RouteEntry.activeRoute(method, path, "create");
+        var value = NodeRoutesValue.nodeRoutesValue(List.of(route));
+        var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
-        manager.onRoutePut(notification);
+        manager.onNodeRoutesPut(notification);
     }
 
-    private void fireValueRemove(HttpNodeRouteKey key, HttpNodeRouteValue previousValue) {
-        var command = new KVCommand.Remove<HttpNodeRouteKey>(key);
-        var notification = new ValueRemove<>(command, Option.option(previousValue));
-        manager.onRouteRemove(notification);
+    private void fireNodeRoutesRemove(NodeId nodeId) {
+        var key = NodeRoutesKey.nodeRoutesKey(nodeId, TEST_ARTIFACT);
+        var command = new KVCommand.Remove<NodeRoutesKey>(key);
+        var notification = new ValueRemove<NodeRoutesKey, NodeRoutesValue>(command, Option.none());
+        manager.onNodeRoutesRemove(notification);
     }
 
     // === Recording Stubs ===

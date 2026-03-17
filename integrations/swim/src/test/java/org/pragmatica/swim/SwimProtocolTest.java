@@ -153,6 +153,36 @@ class SwimProtocolTest {
 
             assertThat(transport.sentMessages).isEmpty();
         }
+
+        @Test
+        void onMessage_pingReqRelay_ackForwardedBackToRequester() {
+            // Setup: self knows both NODE_A (requester) and NODE_B (target)
+            protocol.addSeedMember(NODE_A, ADDR_A);
+            protocol.addSeedMember(NODE_B, ADDR_B);
+            transport.sentMessages.clear();
+
+            // NODE_A asks self to probe NODE_B (indirect probe)
+            var pingReq = new PingReq(NODE_A, NODE_B, 42L);
+            protocol.onMessage(ADDR_A, pingReq);
+
+            // Self should send Ping to NODE_B
+            assertThat(transport.sentMessages).hasSize(1);
+            assertThat(transport.sentMessages.getFirst().target()).isEqualTo(ADDR_B);
+
+            transport.sentMessages.clear();
+
+            // NODE_B responds with Ack
+            var ack = Ack.ack(NODE_B, 42L, List.of());
+            protocol.onMessage(ADDR_B, ack);
+
+            // Self should forward Ack back to NODE_A (the original requester)
+            assertThat(transport.sentMessages).hasSize(1);
+            var forwarded = transport.sentMessages.getFirst();
+            assertThat(forwarded.target()).isEqualTo(ADDR_A);
+            assertThat(forwarded.message()).isInstanceOf(Ack.class);
+            assertThat(((Ack) forwarded.message()).from()).isEqualTo(NODE_B);
+            assertThat(((Ack) forwarded.message()).sequence()).isEqualTo(42L);
+        }
     }
 
     @Nested

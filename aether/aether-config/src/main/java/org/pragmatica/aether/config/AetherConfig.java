@@ -45,6 +45,7 @@ import static org.pragmatica.lang.Result.success;
 /// @param appHttp        Application HTTP server configuration
 /// @param backup         Backup configuration
 /// @param dhtReplication DHT replication behavior configuration
+/// @param timeouts       Centralized timeout configuration
 public record AetherConfig(ClusterConfig cluster,
                            NodeConfig node,
                            Option<TlsConfig> tls,
@@ -54,7 +55,8 @@ public record AetherConfig(ClusterConfig cluster,
                            SliceConfig slice,
                            AppHttpConfig appHttp,
                            BackupConfig backup,
-                           DhtReplicationConfig dhtReplication) {
+                           DhtReplicationConfig dhtReplication,
+                           TimeoutsConfig timeouts) {
     /// Factory method following JBCT naming convention.
     public static Result<AetherConfig> aetherConfig(ClusterConfig cluster,
                                                     NodeConfig node,
@@ -65,7 +67,8 @@ public record AetherConfig(ClusterConfig cluster,
                                                     SliceConfig slice,
                                                     AppHttpConfig appHttp,
                                                     BackupConfig backup,
-                                                    DhtReplicationConfig dhtReplication) {
+                                                    DhtReplicationConfig dhtReplication,
+                                                    TimeoutsConfig timeouts) {
         return success(new AetherConfig(cluster,
                                         node,
                                         tls,
@@ -75,7 +78,8 @@ public record AetherConfig(ClusterConfig cluster,
                                         slice,
                                         appHttp,
                                         backup,
-                                        dhtReplication));
+                                        dhtReplication,
+                                        timeouts));
     }
 
     /// Create configuration with defaults for specified environment.
@@ -90,7 +94,8 @@ public record AetherConfig(ClusterConfig cluster,
                             SliceConfig.sliceConfig(),
                             AppHttpConfig.appHttpConfig(),
                             BackupConfig.backupConfig(env),
-                            DhtReplicationConfig.dhtReplicationConfig()).unwrap();
+                            DhtReplicationConfig.dhtReplicationConfig(),
+                            TimeoutsConfig.timeoutsConfig()).unwrap();
     }
 
     /// Create default configuration (Docker environment).
@@ -146,6 +151,7 @@ public record AetherConfig(ClusterConfig cluster,
         private AppHttpConfig appHttpConfig;
         private BackupConfig backupConfig;
         private DhtReplicationConfig dhtReplicationConfig;
+        private TimeoutsConfig timeoutsConfig;
 
         @SuppressWarnings("JBCT-NAM-01")
         public Builder withEnvironment(Environment environment) {
@@ -218,6 +224,11 @@ public record AetherConfig(ClusterConfig cluster,
             return this;
         }
 
+        public Builder timeouts(TimeoutsConfig timeoutsConfig) {
+            this.timeoutsConfig = timeoutsConfig;
+            return this;
+        }
+
         public AetherConfig build() {
             var base = AetherConfig.aetherConfig(environment);
             var clusterConfig = applyClusterOverrides(base.cluster());
@@ -230,6 +241,7 @@ public record AetherConfig(ClusterConfig cluster,
             var finalAppHttp = appHttpFor();
             var finalBackup = backupFor();
             var finalDhtReplication = dhtReplicationFor();
+            var finalTimeouts = timeoutsFor();
             return AetherConfig.aetherConfig(clusterConfig,
                                              nodeConfig,
                                              finalTls,
@@ -239,7 +251,8 @@ public record AetherConfig(ClusterConfig cluster,
                                              finalSlice,
                                              finalAppHttp,
                                              finalBackup,
-                                             finalDhtReplication)
+                                             finalDhtReplication,
+                                             finalTimeouts)
                                .unwrap();
         }
 
@@ -295,6 +308,10 @@ public record AetherConfig(ClusterConfig cluster,
 
         private DhtReplicationConfig dhtReplicationFor() {
             return option(dhtReplicationConfig).or(DhtReplicationConfig.dhtReplicationConfig());
+        }
+
+        private TimeoutsConfig timeoutsFor() {
+            return option(timeoutsConfig).or(TimeoutsConfig.timeoutsConfig());
         }
     }
 }

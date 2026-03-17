@@ -16,6 +16,7 @@ package org.pragmatica.postgres.io.backend;
 
 import org.pragmatica.postgres.io.Decoder;
 import org.pragmatica.postgres.message.backend.ReadyForQuery;
+import org.pragmatica.postgres.message.backend.ReadyForQuery.TransactionStatus;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
@@ -38,8 +39,7 @@ import java.nio.charset.Charset;
 public class ReadyForQueryDecoder implements Decoder<ReadyForQuery> {
     @Override
     public ReadyForQuery read(ByteBuffer buffer, int contentLength, Charset encoding) {
-        buffer.get();
-        return ReadyForQuery.INSTANCE;
+        return new ReadyForQuery(TransactionStatus.fromByte(buffer.get()));
     }
 
     @Override

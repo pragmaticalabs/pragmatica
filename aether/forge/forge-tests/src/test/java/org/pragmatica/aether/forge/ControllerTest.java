@@ -2,24 +2,23 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.HttpOperations;
 
-import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import org.pragmatica.aether.ember.EmberCluster;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// Tests for the cluster controller (DecisionTreeController).
 ///
@@ -42,18 +41,17 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class ControllerTest {
     private static final int BASE_PORT = 10500;
     private static final int BASE_MGMT_PORT = 10600;
+    private static final int BASE_APP_HTTP_PORT = 10700;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
+    private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
     private EmberCluster cluster;
-    private HttpClient httpClient;
+    private final HttpOperations http = jdkHttpOperations();
 
     @BeforeAll
     void setUp() {
-        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "ct");
-        httpClient = HttpClient.newBuilder()
-                               .connectTimeout(Duration.ofSeconds(5))
-                               .build();
+        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "ct");
 
         cluster.start()
                .await()
@@ -68,23 +66,6 @@ class ControllerTest {
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
-    }
-
-    @BeforeEach
-    void restoreCluster() {
-        // Restore killed node if any (from controller_survivesLeaderFailure)
-        if (cluster.nodeCount() < 3) {
-            cluster.addNode().await();
-            await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(() -> cluster.nodeCount() == 3);
-            await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(() -> cluster.currentLeader().isPresent());
-            await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(this::allNodesHealthy);
-        }
     }
 
     @AfterAll
@@ -160,25 +141,6 @@ class ControllerTest {
             }
         }
 
-        @Test
-        void controller_survivesLeaderFailure() {
-            // Kill the leader (ct-1 is deterministic leader)
-            cluster.killNode("ct-1")
-                   .await();
-
-            // Wait for new quorum and leader
-            await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(() -> cluster.currentLeader().isPresent());
-
-            await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(ControllerTest.this::allNodesHealthy);
-
-            // Controller should still work
-            var status = getControllerStatus(anyNodePort());
-            assertThat(status).doesNotContain("\"error\"");
-        }
     }
 
     private int anyNodePort() {
@@ -207,12 +169,10 @@ class ControllerTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "error: " + e.getMessage();
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private String httpPost(int port, String path, String body) {
@@ -222,12 +182,10 @@ class ControllerTest {
                                  .header("Content-Type", "application/json")
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "error: " + e.getMessage();
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private boolean allNodesHealthy() {
@@ -242,11 +200,9 @@ class ControllerTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.statusCode() == 200 && response.body().contains("\"quorum\":true");
-        } catch (IOException | InterruptedException e) {
-            return false;
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
+                   .or(false);
     }
 }

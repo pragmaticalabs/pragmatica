@@ -564,6 +564,61 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Scheduled task state key format:
+    /// ```
+    /// scheduled-task-state/{configSection}/{groupId}:{artifactId}:{version}/{methodName}
+    /// ```
+    /// Stores execution state for scheduled tasks (last run, next fire, failures).
+    record ScheduledTaskStateKey(String configSection, Artifact artifact, MethodName methodName) implements AetherKey {
+        private static final String PREFIX = "scheduled-task-state/";
+
+        @Override
+        public String asString() {
+            return PREFIX + configSection + "/" + artifact.asString() + "/" + methodName.name();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static ScheduledTaskStateKey scheduledTaskStateKey(String configSection,
+                                                                  Artifact artifact,
+                                                                  MethodName methodName) {
+            return new ScheduledTaskStateKey(configSection, artifact, methodName);
+        }
+
+        public static Result<ScheduledTaskStateKey> scheduledTaskStateKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key)
+                                                            .result();
+            }
+            var content = key.substring(PREFIX.length());
+            var firstSlash = content.indexOf('/');
+            if (firstSlash == - 1) {
+                return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key)
+                                                            .result();
+            }
+            var configSection = content.substring(0, firstSlash);
+            var rest = content.substring(firstSlash + 1);
+            var lastSlash = rest.lastIndexOf('/');
+            if (lastSlash == - 1) {
+                return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key)
+                                                            .result();
+            }
+            var artifactPart = rest.substring(0, lastSlash);
+            var methodPart = rest.substring(lastSlash + 1);
+            if (configSection.isEmpty() || methodPart.isEmpty()) {
+                return SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR.apply(key)
+                                                            .result();
+            }
+            return Result.all(Artifact.artifact(artifactPart),
+                              MethodName.methodName(methodPart))
+                         .map((artifact, method) -> new ScheduledTaskStateKey(configSection, artifact, method));
+        }
+    }
+
     /// Node lifecycle key format:
     /// ```
     /// node-lifecycle/{nodeId}
@@ -827,9 +882,106 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Node-artifact key format:
+    /// ```
+    /// node-artifact/{nodeId}/{groupId}:{artifactId}:{version}
+    /// ```
+    /// Compound key combining deployment state and endpoint registration per node per artifact.
+    /// Replaces separate EndpointKey and SliceNodeKey — single writer (hosting node), no races.
+    record NodeArtifactKey(NodeId nodeId, Artifact artifact) implements AetherKey {
+        private static final String PREFIX = "node-artifact/";
+
+        public boolean isForNode(NodeId nodeId) {
+            return this.nodeId.equals(nodeId);
+        }
+
+        @Override
+        public String asString() {
+            return PREFIX + nodeId.id() + "/" + artifact.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static NodeArtifactKey nodeArtifactKey(NodeId nodeId, Artifact artifact) {
+            return new NodeArtifactKey(nodeId, artifact);
+        }
+
+        public static Result<NodeArtifactKey> nodeArtifactKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return NODE_ARTIFACT_KEY_FORMAT_ERROR.apply(key)
+                                                     .result();
+            }
+            var content = key.substring(PREFIX.length());
+            var slashIndex = content.indexOf('/');
+            if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return NODE_ARTIFACT_KEY_FORMAT_ERROR.apply(key)
+                                                     .result();
+            }
+            var nodeIdPart = content.substring(0, slashIndex);
+            var artifactPart = content.substring(slashIndex + 1);
+            return Result.all(NodeId.nodeId(nodeIdPart),
+                              Artifact.artifact(artifactPart))
+                         .map((nid, art) -> new NodeArtifactKey(nid, art));
+        }
+    }
+
+    /// Node-routes key format:
+    /// ```
+    /// node-routes/{nodeId}/{groupId}:{artifactId}:{version}
+    /// ```
+    /// HTTP route registrations grouped by artifact per node.
+    /// Single writer (hosting node) — one entry per artifact per node replaces N route entries.
+    record NodeRoutesKey(NodeId nodeId, Artifact artifact) implements AetherKey {
+        private static final String PREFIX = "node-routes/";
+
+        public boolean isForNode(NodeId nodeId) {
+            return this.nodeId.equals(nodeId);
+        }
+
+        @Override
+        public String asString() {
+            return PREFIX + nodeId.id() + "/" + artifact.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static NodeRoutesKey nodeRoutesKey(NodeId nodeId, Artifact artifact) {
+            return new NodeRoutesKey(nodeId, artifact);
+        }
+
+        public static Result<NodeRoutesKey> nodeRoutesKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return NODE_ROUTES_KEY_FORMAT_ERROR.apply(key)
+                                                   .result();
+            }
+            var content = key.substring(PREFIX.length());
+            var slashIndex = content.indexOf('/');
+            if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return NODE_ROUTES_KEY_FORMAT_ERROR.apply(key)
+                                                   .result();
+            }
+            var nodeIdPart = content.substring(0, slashIndex);
+            var artifactPart = content.substring(slashIndex + 1);
+            return Result.all(NodeId.nodeId(nodeIdPart),
+                              Artifact.artifact(artifactPart))
+                         .map((nid, art) -> new NodeRoutesKey(nid, art));
+        }
+    }
+
+    Fn1<Cause, String> NODE_ARTIFACT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-artifact key format: %s");
+    Fn1<Cause, String> NODE_ROUTES_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-routes key format: %s");
     Fn1<Cause, String> GOVERNOR_ANNOUNCEMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid governor-announcement key format: %s");
     Fn1<Cause, String> GOSSIP_KEY_ROTATION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid gossip-key-rotation key format: %s");
     Fn1<Cause, String> SCHEDULED_TASK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid scheduled-task key format: %s");
+    Fn1<Cause, String> SCHEDULED_TASK_STATE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid scheduled-task-state key format: %s");
     Fn1<Cause, String> TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid topic-sub key format: %s");
     Fn1<Cause, String> SLICE_TARGET_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-target key format: %s");
     Fn1<Cause, String> APP_BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid app-blueprint key format: %s");

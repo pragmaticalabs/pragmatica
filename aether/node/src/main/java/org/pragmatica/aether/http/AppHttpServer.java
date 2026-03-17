@@ -19,7 +19,9 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -50,6 +52,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -81,6 +84,14 @@ public interface AppHttpServer {
     /// Handle KV-Store removals to rebuild router when routes change.
     @MessageReceiver
     void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove);
+
+    /// Handle compound NodeRoutesKey put — triggers router rebuild.
+    @SuppressWarnings("JBCT-RET-01") // Event callback
+    void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
+
+    /// Handle compound NodeRoutesKey remove — triggers router rebuild.
+    @SuppressWarnings("JBCT-RET-01") // Event callback
+    void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
 
     /// Handle incoming HTTP forward request from another node.
     @MessageReceiver
@@ -133,7 +144,9 @@ public interface AppHttpServer {
                                        Option<Serializer> serializer,
                                        Option<Deserializer> deserializer,
                                        Option<TlsConfig> tls,
-                                       Option<InvocationMetricsCollector> metricsCollector) {
+                                       Option<InvocationMetricsCollector> metricsCollector,
+                                       Option<EventLoopGroup> bossGroup,
+                                       Option<EventLoopGroup> workerGroup) {
         return new AppHttpServerImpl(config,
                                      selfNodeId,
                                      routeRegistry,
@@ -142,7 +155,9 @@ public interface AppHttpServer {
                                      serializer,
                                      deserializer,
                                      tls,
-                                     metricsCollector);
+                                     metricsCollector,
+                                     bossGroup,
+                                     workerGroup);
     }
 }
 
@@ -161,6 +176,8 @@ class AppHttpServerImpl implements AppHttpServer {
     private final SecurityValidator securityValidator;
     private final Option<TlsConfig> tls;
     private final Option<InvocationMetricsCollector> metricsCollector;
+    private final Option<EventLoopGroup> bossGroup;
+    private final Option<EventLoopGroup> workerGroup;
     private final Option<HttpForwarder> httpForwarder;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
     private final AtomicReference<RouteTable> routeTableRef = new AtomicReference<>(RouteTable.empty());
@@ -174,7 +191,9 @@ class AppHttpServerImpl implements AppHttpServer {
                       Option<Serializer> serializer,
                       Option<Deserializer> deserializer,
                       Option<TlsConfig> tls,
-                      Option<InvocationMetricsCollector> metricsCollector) {
+                      Option<InvocationMetricsCollector> metricsCollector,
+                      Option<EventLoopGroup> bossGroup,
+                      Option<EventLoopGroup> workerGroup) {
         this.config = config;
         this.selfNodeId = selfNodeId;
         this.routeRegistry = routeRegistry;
@@ -187,6 +206,8 @@ class AppHttpServerImpl implements AppHttpServer {
                                  : SecurityValidator.noOpValidator();
         this.tls = tls;
         this.metricsCollector = metricsCollector;
+        this.bossGroup = bossGroup;
+        this.workerGroup = workerGroup;
         this.httpForwarder = buildHttpForwarder(selfNodeId,
                                                 routeRegistry,
                                                 clusterNetwork,
@@ -209,7 +230,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                                        clusterNetwork.unwrap(),
                                                        serializer.unwrap(),
                                                        deserializer.unwrap(),
-                                                       config.forwardTimeoutMs()));
+                                                       config.forwardTimeout()));
     }
 
     @Override
@@ -226,11 +247,15 @@ class AppHttpServerImpl implements AppHttpServer {
         log.info("Starting App HTTP server on port {}", config.port());
         rebuildRouter();
         var serverConfig = buildServerConfig();
-        return HttpServer.httpServer(serverConfig, this::handleRequest)
-                         .map(this::registerStartedServer)
-                         .onFailure(cause -> log.error("Failed to start App HTTP server on port {}: {}",
-                                                       config.port(),
-                                                       cause.message()));
+        var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
+                                                                                                this::handleRequest,
+                                                                                                bg,
+                                                                                                wg)))
+                                     .or(HttpServer.httpServer(serverConfig, this::handleRequest));
+        return serverPromise.map(this::registerStartedServer)
+                            .onFailure(cause -> log.error("Failed to start App HTTP server on port {}: {}",
+                                                          config.port(),
+                                                          cause.message()));
     }
 
     private HttpServerConfig buildServerConfig() {
@@ -293,6 +318,20 @@ class AppHttpServerImpl implements AppHttpServer {
     public void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove) {
         routeSyncReceived.set(true);
         log.debug("HttpNodeRouteKey removed, rebuilding router");
+        rebuildRouter();
+    }
+
+    @Override
+    public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
+        routeSyncReceived.set(true);
+        log.debug("NodeRoutesKey added, rebuilding router");
+        rebuildRouter();
+    }
+
+    @Override
+    public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
+        routeSyncReceived.set(true);
+        log.debug("NodeRoutesKey removed, rebuilding router");
         rebuildRouter();
     }
 

@@ -13,7 +13,7 @@ This guide covers upgrading an Aether cluster with zero downtime using the rolli
 ```bash
 ./aether/script/rolling-aether-upgrade.sh \
   --cluster localhost:8081 \
-  --version 0.19.3
+  --version 0.20.0
 ```
 
 ## How It Works
@@ -46,7 +46,7 @@ If any node fails its canary check, the upgrade halts. The cluster remains in a 
 Preview the upgrade plan without making changes:
 
 ```bash
-./rolling-aether-upgrade.sh --cluster localhost:8081 --version 0.19.3 --dry-run
+./rolling-aether-upgrade.sh --cluster localhost:8081 --version 0.20.0 --dry-run
 ```
 
 ## Container-Based Upgrades
@@ -56,18 +56,18 @@ For container deployments, use `--skip-download` and restart containers with the
 ```bash
 ./rolling-aether-upgrade.sh \
   --cluster localhost:8081 \
-  --version 0.19.3 \
+  --version 0.20.0 \
   --skip-download
 ```
 
 When prompted to restart a node, use your container runtime:
 
 ```bash
-# Podman/Docker
-podman stop aether-node-1 && podman run -d --name aether-node-1 ghcr.io/pragmaticalabs/aether-node:0.19.3 ...
+# Docker/Docker
+docker stop aether-node-1 && docker run -d --name aether-node-1 ghcr.io/pragmaticalabs/aether-node:0.20.0 ...
 
 # Kubernetes
-kubectl set image deployment/aether-node aether-node=ghcr.io/pragmaticalabs/aether-node:0.19.3
+kubectl set image deployment/aether-node aether-node=ghcr.io/pragmaticalabs/aether-node:0.20.0
 ```
 
 ## Failure Recovery

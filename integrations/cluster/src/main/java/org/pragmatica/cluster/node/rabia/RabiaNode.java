@@ -16,8 +16,6 @@ import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoverNodes;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
 import org.pragmatica.consensus.net.NetworkMessage.Hello;
-import org.pragmatica.consensus.net.NetworkMessage.Ping;
-import org.pragmatica.consensus.net.NetworkMessage.Pong;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Broadcast;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectedNodesList;
@@ -257,7 +255,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         if (useConsensusLeaderElection) {
             // Consensus-based leader election: submit proposals through consensus
             LeaderManager.LeaderProposalHandler proposalHandler =
-            (candidate, viewSequence) -> submitLeaderProposal(consensus, candidate);
+            (candidate, viewSequence) -> submitLeaderProposal(consensus, candidate, DEFAULT_PROPOSAL_TIMEOUT);
             leaderManager = LeaderManager.leaderManager(config.topology()
                                                               .self(),
                                                         delegateRouter,
@@ -278,9 +276,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                             .route(route(DiscoverNodes.class, topologyManager::handleDiscoverNodes),
                                                    route(DiscoveredNodes.class, topologyManager::handleDiscoveredNodes),
                                                    route(Hello.class,
-                                                         _ -> {}),
-                                                   route(Ping.class, network::handlePing),
-                                                   route(Pong.class, network::handlePong));
+                                                         _ -> {}));
         var networkServiceRoutes = SealedBuilder.from(NetworkServiceMessage.class)
                                                 .route(route(ConnectedNodesList.class, topologyManager::reconcile),
                                                        route(ConnectNode.class, network::connect),
@@ -421,14 +417,19 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
              .add((Consumer) tuple.last());
     }
 
+    /// Default timeout for leader proposals.
+    TimeSpan DEFAULT_PROPOSAL_TIMEOUT = timeSpan(3).seconds();
+
     @SuppressWarnings("unchecked")
-    private static <C extends Command> Promise<Unit> submitLeaderProposal(RabiaEngine<C> consensus, NodeId candidate) {
+    private static <C extends Command> Promise<Unit> submitLeaderProposal(RabiaEngine<C> consensus,
+                                                                          NodeId candidate,
+                                                                          TimeSpan proposalTimeout) {
         log.info("Submitting leader proposal: candidate={}", candidate);
         var command = new KVCommand.Put<>(LeaderKey.INSTANCE, LeaderValue.leaderValue(candidate));
         // Timeout for leader proposals - if consensus doesn't complete in this time, fail and retry.
         // This handles the case where other nodes are still syncing and ignoring proposals.
         return consensus.apply(List.of((C) command))
-                        .timeout(timeSpan(3).seconds())
+                        .timeout(proposalTimeout)
                         .mapToUnit();
     }
 }

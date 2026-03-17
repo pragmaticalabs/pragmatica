@@ -1,13 +1,10 @@
 package org.pragmatica.aether.metrics.artifact;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.dht.MapSubscription;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
-import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.Set;
@@ -29,32 +26,13 @@ import org.slf4j.LoggerFactory;
 ///
 /// Key format watched: `slices/{nodeId`/{artifact}}
 public interface ArtifactDeploymentTracker {
-    /// Handle slice deployment event.
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut);
+    /// Handle NodeArtifactKey put — tracks deployment count.
+    @SuppressWarnings("JBCT-RET-01") // Event callback
+    void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
 
-    /// Handle slice removal event.
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01")
-    void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove);
-
-    /// Create a MapSubscription adapter for DHT slice-node events.
-    default MapSubscription<SliceNodeKey, SliceNodeValue> asSliceNodeSubscription() {
-        return new MapSubscription<>() {
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onPut(SliceNodeKey key, SliceNodeValue value) {
-                onSliceNodePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
-            }
-
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onRemove(SliceNodeKey key) {
-                onSliceNodeRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
-            }
-        };
-    }
+    /// Handle NodeArtifactKey remove — decrements deployment count.
+    @SuppressWarnings("JBCT-RET-01") // Event callback
+    void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
 
     /// Check if an artifact is deployed anywhere in the cluster.
     boolean isDeployed(Artifact artifact);
@@ -79,22 +57,24 @@ class ArtifactDeploymentTrackerImpl implements ArtifactDeploymentTracker {
 
     @Override
     @SuppressWarnings("JBCT-RET-01")
-    public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
+    public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
         var artifact = valuePut.cause()
                                .key()
                                .artifact();
         deploymentCounts.compute(artifact, (_, count) -> incrementCount(count));
-        log.debug("Artifact deployed: {} (total deployments: {})", artifact.asString(), deploymentCounts.get(artifact));
+        log.debug("Artifact deployed (NodeArtifactKey): {} (total: {})",
+                  artifact.asString(),
+                  deploymentCounts.get(artifact));
     }
 
     @Override
     @SuppressWarnings("JBCT-RET-01")
-    public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
+    public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
         var artifact = valueRemove.cause()
                                   .key()
                                   .artifact();
         deploymentCounts.compute(artifact, (_, count) -> decrementCount(count));
-        log.debug("Artifact undeployed: {} (remaining deployments: {})",
+        log.debug("Artifact undeployed (NodeArtifactKey): {} (remaining: {})",
                   artifact.asString(),
                   deploymentCounts.getOrDefault(artifact, 0));
     }

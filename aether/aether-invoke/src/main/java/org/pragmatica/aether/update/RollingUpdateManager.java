@@ -170,21 +170,37 @@ public interface RollingUpdateManager {
     @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
     void onDeploymentFailed(DeploymentEvent.DeploymentFailed event);
 
+    /// Default KV operation timeout (30 seconds).
+    TimeSpan DEFAULT_KV_OPERATION_TIMEOUT = TimeSpan.timeSpan(30)
+                                                   .seconds();
+
+    /// Default retention period for terminal-state updates (1 hour).
+    long DEFAULT_terminalRetentionMs = TimeUnit.HOURS.toMillis(1);
+
     /// Factory method following JBCT naming convention.
     static RollingUpdateManager rollingUpdateManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                      KVStore<AetherKey, AetherValue> kvStore,
                                                      InvocationMetricsCollector metricsCollector) {
+        return rollingUpdateManager(clusterNode,
+                                    kvStore,
+                                    metricsCollector,
+                                    DEFAULT_KV_OPERATION_TIMEOUT,
+                                    DEFAULT_terminalRetentionMs);
+    }
+
+    /// Factory method with custom timeout settings.
+    static RollingUpdateManager rollingUpdateManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                                     KVStore<AetherKey, AetherValue> kvStore,
+                                                     InvocationMetricsCollector metricsCollector,
+                                                     TimeSpan kvOperationTimeout,
+                                                     long terminalRetentionMs) {
         record rollingUpdateManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                     KVStore<AetherKey, AetherValue> kvStore,
                                     InvocationMetricsCollector metricsCollector,
+                                    TimeSpan kvOperationTimeout,
+                                    long terminalRetentionMs,
                                     Map<String, RollingUpdate> updates) implements RollingUpdateManager {
             private static final Logger log = LoggerFactory.getLogger(RollingUpdateManager.class);
-            private static final TimeSpan KV_OPERATION_TIMEOUT = TimeSpan.timeSpan(30)
-                                                                        .seconds();
-
-            /// Retention period for terminal-state updates before pruning from in-memory map.
-            /// Updates in COMPLETED, ROLLED_BACK, or FAILED state are pruned after this period.
-            private static final long TERMINAL_RETENTION_MS = TimeUnit.HOURS.toMillis(1);
 
             @Override
             @SuppressWarnings("JBCT-RET-01")
@@ -489,14 +505,14 @@ public interface RollingUpdateManager {
                                                                System.currentTimeMillis());
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
                 return clusterNode.<Unit> apply(List.of(command))
-                                  .timeout(KV_OPERATION_TIMEOUT)
+                                  .timeout(kvOperationTimeout)
                                   .map(_ -> transitioned);
             }
 
             /// Prune terminal-state updates that have exceeded the retention period.
             /// This prevents unbounded growth of the in-memory updates map.
             private void pruneTerminalUpdates() {
-                var cutoff = System.currentTimeMillis() - TERMINAL_RETENTION_MS;
+                var cutoff = System.currentTimeMillis() - terminalRetentionMs;
                 var pruned = updates.entrySet()
                                     .removeIf(entry -> {
                                                   var update = entry.getValue();
@@ -519,7 +535,7 @@ public interface RollingUpdateManager {
                                                                 System.currentTimeMillis());
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
                 return clusterNode.<Unit> apply(List.of(command))
-                                  .timeout(KV_OPERATION_TIMEOUT)
+                                  .timeout(kvOperationTimeout)
                                   .map(_ -> update);
             }
 
@@ -553,7 +569,7 @@ public interface RollingUpdateManager {
                 // Send routing AND target in single batch to ensure atomic processing
                 // Routing must be applied before target so old version is preserved
                 return clusterNode.<Unit> apply(List.of(routingCmd, targetCmd))
-                                  .timeout(KV_OPERATION_TIMEOUT)
+                                  .timeout(kvOperationTimeout)
                                   .flatMap(_ -> persistAndTransition(update, RollingUpdateState.DEPLOYED));
             }
 
@@ -604,7 +620,7 @@ public interface RollingUpdateManager {
                                                  System.currentTimeMillis());
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
                 return clusterNode.<Unit> apply(List.of(command))
-                                  .timeout(KV_OPERATION_TIMEOUT)
+                                  .timeout(kvOperationTimeout)
                                   .mapToUnit();
             }
 
@@ -613,11 +629,16 @@ public interface RollingUpdateManager {
                 var routingKey = new AetherKey.VersionRoutingKey(update.artifactBase());
                 var routingCmd = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(routingKey);
                 return clusterNode.<Unit> apply(List.of(routingCmd))
-                                  .timeout(KV_OPERATION_TIMEOUT)
+                                  .timeout(kvOperationTimeout)
                                   .mapToUnit();
             }
         }
-        return new rollingUpdateManager(clusterNode, kvStore, metricsCollector, new ConcurrentHashMap<>());
+        return new rollingUpdateManager(clusterNode,
+                                        kvStore,
+                                        metricsCollector,
+                                        kvOperationTimeout,
+                                        terminalRetentionMs,
+                                        new ConcurrentHashMap<>());
     }
 
     /// Helper record for accumulating metrics across snapshots.

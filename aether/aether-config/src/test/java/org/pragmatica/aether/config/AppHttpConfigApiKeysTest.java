@@ -96,17 +96,17 @@ class AppHttpConfigApiKeysTest {
     }
 
     @Test
-    void withForwardTimeoutMs_overridesDefault() {
+    void withForwardTimeout_overridesDefault() {
         var config = AppHttpConfig.appHttpConfig()
-                                  .withForwardTimeoutMs(10000);
+                                  .withForwardTimeout(org.pragmatica.lang.io.TimeSpan.timeSpan(10).seconds());
 
-        assertThat(config.forwardTimeoutMs()).isEqualTo(10000);
+        assertThat(config.forwardTimeout().millis()).isEqualTo(10_000);
     }
 
     @Test
     void defaults_forwardTimeout() {
         var config = AppHttpConfig.appHttpConfig();
 
-        assertThat(config.forwardTimeoutMs()).isEqualTo(AppHttpConfig.DEFAULT_FORWARD_TIMEOUT_MS);
+        assertThat(config.forwardTimeout()).isEqualTo(AppHttpConfig.DEFAULT_FORWARD_TIMEOUT);
     }
 }

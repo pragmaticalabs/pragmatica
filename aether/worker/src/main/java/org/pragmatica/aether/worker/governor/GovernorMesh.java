@@ -1,8 +1,8 @@
 package org.pragmatica.aether.worker.governor;
 
-import org.pragmatica.aether.worker.network.WorkerNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.messaging.MessageRouter.DelegateRouter;
 
 import java.util.Map;
 
@@ -38,8 +38,8 @@ public interface GovernorMesh {
         return new GovernorMeshInstance();
     }
 
-    /// Create a governor mesh with WorkerNetwork for TCP peer registration.
-    static GovernorMesh governorMesh(WorkerNetwork workerNetwork) {
-        return new GovernorMeshInstance(workerNetwork);
+    /// Create a governor mesh with NCN delegate router for peer management.
+    static GovernorMesh governorMesh(DelegateRouter delegateRouter) {
+        return new GovernorMeshInstance(delegateRouter);
     }
 }

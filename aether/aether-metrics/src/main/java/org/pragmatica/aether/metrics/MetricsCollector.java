@@ -89,19 +89,26 @@ public interface MetricsCollector {
     @SuppressWarnings("JBCT-RET-01")
     void onMetricsPong(MetricsPong pong);
 
-    /// Create a new MetricsCollector instance.
+    /// Default sliding window duration: 2 hours in milliseconds.
+    long DEFAULT_slidingWindowMs = 2 * 60 * 60 * 1000L;
+
+    /// Create a new MetricsCollector instance with default sliding window.
     static MetricsCollector metricsCollector(NodeId self, ClusterNetwork network) {
-        return new MetricsCollectorImpl(self, network);
+        return new MetricsCollectorImpl(self, network, DEFAULT_slidingWindowMs);
+    }
+
+    /// Create a new MetricsCollector instance with custom sliding window.
+    static MetricsCollector metricsCollector(NodeId self, ClusterNetwork network, long slidingWindowMs) {
+        return new MetricsCollectorImpl(self, network, slidingWindowMs);
     }
 }
 
 /// Implementation of MetricsCollector.
 class MetricsCollectorImpl implements MetricsCollector {
-    // Sliding window duration: 2 hours in milliseconds
-    private static final long SLIDING_WINDOW_MS = 2 * 60 * 60 * 1000L;
+    private final long slidingWindowMs;
 
-    // Ring buffer capacity: 2 hours at 1 sample/second
-    private static final int RING_BUFFER_CAPACITY = (int)(SLIDING_WINDOW_MS / 1000);
+    // Ring buffer capacity: sliding window at 1 sample/second
+    private final int ringBufferCapacity;
 
     private final NodeId self;
     private final ClusterNetwork network;
@@ -125,9 +132,11 @@ class MetricsCollectorImpl implements MetricsCollector {
     // Ring buffer for historical metrics - fixed capacity, O(1) add, oldest elements auto-evicted
     private final ConcurrentHashMap<NodeId, RingBuffer<MetricsSnapshot>> historicalMetricsMap = new ConcurrentHashMap<>();
 
-    MetricsCollectorImpl(NodeId self, ClusterNetwork network) {
+    MetricsCollectorImpl(NodeId self, ClusterNetwork network, long slidingWindowMs) {
         this.self = self;
         this.network = network;
+        this.slidingWindowMs = slidingWindowMs;
+        this.ringBufferCapacity = (int)(slidingWindowMs / 1000);
         this.osMxBean = ManagementFactory.getOperatingSystemMXBean();
         this.memoryMxBean = ManagementFactory.getMemoryMXBean();
     }
@@ -182,7 +191,7 @@ class MetricsCollectorImpl implements MetricsCollector {
 
     @Override
     public Map<NodeId, List<MetricsSnapshot>> historicalMetrics() {
-        var cutoff = System.currentTimeMillis() - SLIDING_WINDOW_MS;
+        var cutoff = System.currentTimeMillis() - slidingWindowMs;
         var result = new ConcurrentHashMap<NodeId, List<MetricsSnapshot>>();
         historicalMetricsMap.forEach((nodeId, ringBuffer) -> addFilteredHistory(result, nodeId, ringBuffer, cutoff));
         return result;
@@ -298,7 +307,7 @@ class MetricsCollectorImpl implements MetricsCollector {
     /// Add metrics snapshot to historical ring buffer.
     /// Old entries are automatically evicted when buffer is full.
     private void addToHistory(NodeId nodeId, Map<String, Double> metrics) {
-        var ringBuffer = historicalMetricsMap.computeIfAbsent(nodeId, _ -> RingBuffer.ringBuffer(RING_BUFFER_CAPACITY));
+        var ringBuffer = historicalMetricsMap.computeIfAbsent(nodeId, _ -> RingBuffer.ringBuffer(ringBufferCapacity));
         ringBuffer.add(new MetricsSnapshot(System.currentTimeMillis(), metrics));
     }
 

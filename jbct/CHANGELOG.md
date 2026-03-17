@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Linter: `@Contract` annotation support — methods or classes annotated with `@Contract` are exempt from JBCT-RET-01 (void return type). Use `@Contract` instead of `@SuppressWarnings("JBCT-RET-01")` to declare that void is intentional for a method's contract (framework callbacks, fire-and-forget mutations, event handlers). Annotation lives in `org.pragmatica.lang.Contract`.
 - CLI: `jbct add-slice <name>` command — scaffolds a new slice into an existing project with all required files (interface, test, routes.toml, config, dependency manifest) in a dedicated sub-package, enforcing the one-slice-per-package convention
 
 ### Fixed

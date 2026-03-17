@@ -32,6 +32,7 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecs.CODECS);
         all.addAll(org.pragmatica.aether.invoke.InvokeCodecs.CODECS);
         all.addAll(org.pragmatica.aether.http.forward.ForwardCodecs.CODECS);
+        all.addAll(org.pragmatica.aether.dht.DhtCodecs.CODECS);
         all.addAll(org.pragmatica.aether.http.handler.HandlerCodecs.CODECS);
         all.addAll(org.pragmatica.aether.http.handler.security.SecurityCodecs.CODECS);
         all.addAll(org.pragmatica.swim.SwimCodecs.CODECS);

@@ -18,9 +18,8 @@ class SliceLifecycleE2ETest extends AbstractE2ETest {
         // Step 1: Deploy echo-slice with 1 instance
         deployAndAwaitActive(TEST_ARTIFACT, 1);
 
-        // Step 2: Verify routes registered
-        var routes = cluster.anyNode().getRoutes();
-        assertThat(routes).describedAs("Routes should contain echo endpoint").contains("echo");
+        // Step 2: Verify routes registered (routes propagate via DHT after ACTIVE)
+        cluster.awaitRoutesContain("echo", DEPLOY_TIMEOUT);
 
         // Step 3: Scale to 3 instances, verify ACTIVE on all nodes
         var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();

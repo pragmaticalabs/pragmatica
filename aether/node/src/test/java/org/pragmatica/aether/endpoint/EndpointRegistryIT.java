@@ -10,10 +10,6 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.aether.update.VersionRouting;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
-import org.pragmatica.lang.Option;
-
 import java.util.HashMap;
 import java.util.Map;
 
@@ -221,7 +217,6 @@ class EndpointRegistryIT {
     private void registerDirectEndpoint(Artifact artifact, MethodName method, int instance, String nodeId) {
         var key = new EndpointKey(artifact, method, instance);
         var value = new EndpointValue(nodeId(nodeId).unwrap());
-        var put = new KVCommand.Put<>(key, value);
-        registry.onEndpointPut(new ValuePut<>(put, Option.empty()));
+        registry.registerEndpoint(key, value);
     }
 }

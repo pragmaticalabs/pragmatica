@@ -3,6 +3,9 @@ package org.pragmatica.aether.forge.load;
 import org.pragmatica.aether.forge.ForgeMetrics;
 import org.pragmatica.aether.forge.load.pattern.TemplateProcessor;
 import org.pragmatica.aether.forge.simulator.EntryPointMetrics;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -12,7 +15,6 @@ import org.pragmatica.lang.parse.Network;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.util.Arrays;
 import java.time.Duration;
 import java.time.Instant;
@@ -69,7 +71,7 @@ public final class ConfigurableLoadRunner {
     private final Supplier<List<Integer>> portSupplier;
     private final ForgeMetrics metrics;
     private final EntryPointMetrics entryPointMetrics;
-    private final HttpClient httpClient;
+    private final HttpOperations http;
     private final AtomicInteger portRoundRobin = new AtomicInteger(0);
 
     private final AtomicReference<State> state = new AtomicReference<>(State.IDLE);
@@ -88,15 +90,16 @@ public final class ConfigurableLoadRunner {
         this.portSupplier = portSupplier;
         this.metrics = metrics;
         this.entryPointMetrics = entryPointMetrics;
-        this.httpClient = buildHttpClient();
+        this.http = buildHttpOperations();
     }
 
-    private static HttpClient buildHttpClient() {
-        var builder = HttpClient.newBuilder()
-                                .version(HttpClient.Version.HTTP_1_1)
-                                .connectTimeout(REQUEST_TIMEOUT);
-        return builder.executor(Executors.newVirtualThreadPerTaskExecutor())
-                      .build();
+    private static HttpOperations buildHttpOperations() {
+        var client = HttpClient.newBuilder()
+                               .version(HttpClient.Version.HTTP_1_1)
+                               .connectTimeout(REQUEST_TIMEOUT)
+                               .executor(Executors.newVirtualThreadPerTaskExecutor())
+                               .build();
+        return JdkHttpOperations.jdkHttpOperations(client);
     }
 
     public static ConfigurableLoadRunner configurableLoadRunner(int port,
@@ -373,7 +376,7 @@ public final class ConfigurableLoadRunner {
                                          pathTemplate,
                                          bodyProcessor,
                                          this::selectPort,
-                                         httpClient,
+                                         http,
                                          metrics,
                                          entryPointMetrics,
                                          () -> state.get());
@@ -488,7 +491,7 @@ public final class ConfigurableLoadRunner {
                                 Option<TemplateProcessor> pathTemplateProcessor,
                                 Option<TemplateProcessor> bodyProcessor,
                                 Supplier<Integer> portSupplier,
-                                HttpClient httpClient,
+                                HttpOperations http,
                                 ForgeMetrics metrics,
                                 EntryPointMetrics entryPointMetrics,
                                 Supplier<State> stateSupplier,
@@ -511,7 +514,7 @@ public final class ConfigurableLoadRunner {
                                                  Option<TemplateProcessor> pathTemplateProcessor,
                                                  Option<TemplateProcessor> bodyProcessor,
                                                  Supplier<Integer> portSupplier,
-                                                 HttpClient httpClient,
+                                                 HttpOperations http,
                                                  ForgeMetrics metrics,
                                                  EntryPointMetrics entryPointMetrics,
                                                  Supplier<State> stateSupplier) {
@@ -522,7 +525,7 @@ public final class ConfigurableLoadRunner {
                                             pathTemplateProcessor,
                                             bodyProcessor,
                                             portSupplier,
-                                            httpClient,
+                                            http,
                                             metrics,
                                             entryPointMetrics,
                                             stateSupplier,
@@ -678,10 +681,10 @@ public final class ConfigurableLoadRunner {
         }
 
         private void dispatchRequest(URI uri, String method, String body, long requestStartTime) {
-            var requestBuilder = buildHttpRequest(uri, method, body);
-            httpClient.sendAsync(requestBuilder.build(),
-                                 HttpResponse.BodyHandlers.ofString())
-                      .whenComplete((response, error) -> recordCompletion(response, error, requestStartTime));
+            var request = buildHttpRequest(uri, method, body).build();
+            http.sendString(request)
+                .onSuccess(result -> recordHttpResult(result, requestStartTime))
+                .onFailure(cause -> recordFailure(System.nanoTime() - requestStartTime));
         }
 
         private String httpMethodFor(String path, String body) {
@@ -725,30 +728,18 @@ public final class ConfigurableLoadRunner {
             return bldr.DELETE();
         }
 
-        private void recordCompletion(HttpResponse<String> response, Throwable error, long requestStartTime) {
-            option(error).onPresent(_ -> recordFailure(System.nanoTime() - requestStartTime));
-            option(response).onPresent(r -> recordResponse(r, requestStartTime));
-        }
-
-        private void recordResponse(HttpResponse<String> response, long requestStartTime) {
+        private void recordHttpResult(HttpResult<String> result, long requestStartTime) {
             var latencyNanos = System.nanoTime() - requestStartTime;
             totalLatencyNanos.addAndGet(latencyNanos);
-            var statusCode = response.statusCode();
-            var isSuccess = statusCode >= 200 && statusCode < 300;
-            recordOutcome(isSuccess, latencyNanos, response);
-        }
-
-        private void recordOutcome(boolean isSuccess, long latencyNanos, HttpResponse<String> response) {
-            // Routing only — no transformation
-            if (isSuccess) {
+            if (result.isSuccess()) {
                 recordSuccess(latencyNanos);
             } else {
-                recordHttpFailure(latencyNanos, response);
+                recordHttpResultFailure(latencyNanos, result);
             }
         }
 
-        private void recordHttpFailure(long latencyNanos, HttpResponse<String> response) {
-            log.warn("HTTP {} from {}: {}", response.statusCode(), response.uri(), response.body());
+        private void recordHttpResultFailure(long latencyNanos, HttpResult<String> result) {
+            log.warn("HTTP {} : {}", result.statusCode(), result.body());
             recordFailure(latencyNanos);
         }
 

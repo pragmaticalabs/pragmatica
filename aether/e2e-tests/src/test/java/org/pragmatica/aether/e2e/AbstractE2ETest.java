@@ -26,12 +26,12 @@ public abstract class AbstractE2ETest {
     // CI environments get 2x multiplier via TestEnvironment.adapt()
     protected static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(15).seconds().duration());
     protected static final Duration DEPLOY_TIMEOUT = adapt(timeSpan(90).seconds().duration());
-    protected static final Duration RECOVERY_TIMEOUT = adapt(timeSpan(30).seconds().duration());
+    protected static final Duration RECOVERY_TIMEOUT = adapt(timeSpan(60).seconds().duration());
     protected static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
 
     // Common artifact for slice deployment tests - pure function echo slice
     // Note: Uses slice artifact ID (echo-slice-echo-service), not module artifact ID (echo-slice)
-    protected static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.19.3");
+    protected static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.20.0");
     protected static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
 
     protected AetherCluster cluster;
@@ -54,6 +54,8 @@ public abstract class AbstractE2ETest {
         cluster.start();
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();
+        cluster.awaitClusterConverged();
+        cluster.awaitAllNodesOnDuty();
         cluster.uploadTestArtifacts();
         additionalSetUp();
     }

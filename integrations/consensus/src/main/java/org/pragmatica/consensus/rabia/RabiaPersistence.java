@@ -21,6 +21,7 @@ import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.Codec;
 
 import java.nio.file.Path;
@@ -39,12 +40,21 @@ public interface RabiaPersistence<C extends Command> {
     /// Load the persisted state.
     Option<SavedState<C>> load();
 
-    /// Create a git-backed persistence implementation.
+    /// Create a git-backed persistence implementation with default timeout.
     static <C extends Command> RabiaPersistence<C> gitBacked(Path backupDir,
                                                               Option<String> remote,
                                                               Function<byte[], Result<String>> snapshotToToml,
                                                               Function<String, Result<byte[]>> tomlToSnapshot) {
         return new GitBackedPersistence<>(backupDir, remote, snapshotToToml, tomlToSnapshot);
+    }
+
+    /// Create a git-backed persistence implementation with configurable timeout.
+    static <C extends Command> RabiaPersistence<C> gitBacked(Path backupDir,
+                                                              Option<String> remote,
+                                                              Function<byte[], Result<String>> snapshotToToml,
+                                                              Function<String, Result<byte[]>> tomlToSnapshot,
+                                                              TimeSpan gitTimeout) {
+        return new GitBackedPersistence<>(backupDir, remote, snapshotToToml, tomlToSnapshot, gitTimeout);
     }
 
     /// Create an in-memory persistence implementation (for testing or single-session use).

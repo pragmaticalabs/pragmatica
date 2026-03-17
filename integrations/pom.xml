@@ -5,7 +5,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>pragmatica</artifactId>
-        <version>0.19.3</version>
+        <version>0.20.0</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -31,5 +31,6 @@
         <module>cloud</module>
         <module>statemachine</module>
         <module>swim</module>
+        <module>hlc</module>
     </modules>
 </project>

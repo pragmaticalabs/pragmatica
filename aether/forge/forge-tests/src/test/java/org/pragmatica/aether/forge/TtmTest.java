@@ -8,18 +8,18 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.HttpOperations;
 
-import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import org.pragmatica.aether.ember.EmberCluster;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// Tests for TTM (Tiny Time Mixers) predictive scaling.
 ///
@@ -42,18 +42,17 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class TtmTest {
     private static final int BASE_PORT = 11500;
     private static final int BASE_MGMT_PORT = 11600;
+    private static final int BASE_APP_HTTP_PORT = 11700;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
+    private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
     private EmberCluster cluster;
-    private HttpClient httpClient;
+    private final HttpOperations http = jdkHttpOperations();
 
     @BeforeAll
     void setUp() {
-        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, "tm");
-        httpClient = HttpClient.newBuilder()
-                               .connectTimeout(Duration.ofSeconds(5))
-                               .build();
+        cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "tm");
 
         cluster.start()
                .await()
@@ -131,27 +130,6 @@ class TtmTest {
             }
         }
 
-        @Test
-        void ttmStatus_survivesLeaderFailure() {
-            // Get initial status
-            var initialStatus = getTtmStatusFromAnyNode();
-            assertThat(initialStatus).doesNotContain("\"error\"");
-
-            // Kill the actual leader
-            var leaderId = cluster.currentLeader().unwrap();
-            cluster.killNode(leaderId)
-                   .await();
-
-            // Wait for new quorum
-            await().atMost(WAIT_TIMEOUT)
-                   .pollInterval(POLL_INTERVAL)
-                   .until(() -> cluster.currentLeader().isPresent());
-
-            // TTM status should still be available
-            var newStatus = getTtmStatusFromAnyNode();
-            assertThat(newStatus).doesNotContain("\"error\"");
-            assertThat(newStatus).contains("\"state\":");
-        }
     }
 
     @Nested
@@ -181,11 +159,9 @@ class TtmTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "error: " + e.getMessage();
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 }

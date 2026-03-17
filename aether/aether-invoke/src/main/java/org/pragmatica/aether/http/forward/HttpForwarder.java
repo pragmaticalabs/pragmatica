@@ -13,6 +13,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.CoreError;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.serialization.Deserializer;
@@ -58,27 +59,49 @@ public interface HttpForwarder {
     @MessageReceiver
     void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
 
-    /// Create an HttpForwarder instance.
+    /// Create an HttpForwarder instance with default retry settings.
     static HttpForwarder httpForwarder(NodeId selfNodeId,
                                        HttpRouteRegistry routeRegistry,
                                        ClusterNetwork clusterNetwork,
                                        Serializer serializer,
                                        Deserializer deserializer,
-                                       long forwardTimeoutMs) {
+                                       TimeSpan forwardTimeout) {
+        return httpForwarder(selfNodeId,
+                             routeRegistry,
+                             clusterNetwork,
+                             serializer,
+                             deserializer,
+                             forwardTimeout,
+                             DEFAULT_RETRY_DELAY_MS,
+                             DEFAULT_MAX_FORWARD_RETRIES);
+    }
+
+    long DEFAULT_RETRY_DELAY_MS = 200;
+    int DEFAULT_MAX_FORWARD_RETRIES = 3;
+
+    /// Create an HttpForwarder instance with custom retry settings.
+    static HttpForwarder httpForwarder(NodeId selfNodeId,
+                                       HttpRouteRegistry routeRegistry,
+                                       ClusterNetwork clusterNetwork,
+                                       Serializer serializer,
+                                       Deserializer deserializer,
+                                       TimeSpan forwardTimeout,
+                                       long retryDelayMs,
+                                       int maxForwardRetries) {
         @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
         record httpForwarder(NodeId selfNodeId,
                              HttpRouteRegistry routeRegistry,
                              ClusterNetwork clusterNetwork,
                              Serializer serializer,
                              Deserializer deserializer,
-                             long forwardTimeoutMs,
+                             TimeSpan forwardTimeout,
+                             long retryDelayMs,
+                             int maxForwardRetries,
                              Map<String, PendingForward> pendingForwards,
                              Map<NodeId, Set<String>> pendingForwardsByNode,
                              Map<String, AtomicInteger> roundRobinCounters) implements HttpForwarder {
             private static final Logger log = LoggerFactory.getLogger(HttpForwarder.class);
-            private static final long RETRY_DELAY_MS = 200;
             private static final int MAX_PENDING_FORWARDS = 10_000;
-            private static final int MAX_FORWARD_RETRIES = 3;
 
             record PendingForward(Promise<HttpResponseData> promise,
                                   long createdAtMs,
@@ -107,7 +130,7 @@ public interface HttpForwarder {
                                  Set.of(),
                                  routeIdentity,
                                  requestId,
-                                 Math.min(connectedNodes.size() - 1, MAX_FORWARD_RETRIES));
+                                 Math.min(connectedNodes.size() - 1, maxForwardRetries));
                 return resultPromise;
             }
 
@@ -199,10 +222,10 @@ public interface HttpForwarder {
                     log.debug("No candidates for {} [{}], waiting {}ms before re-query ({} retries remaining)",
                               routeIdentity,
                               requestId,
-                              RETRY_DELAY_MS,
+                              retryDelayMs,
                               retriesRemaining);
                     Promise.<Unit> promise()
-                           .timeout(timeSpan(RETRY_DELAY_MS).millis())
+                           .timeout(timeSpan(retryDelayMs).millis())
                            .onResult(_ -> retryAfterDelay(requestContext,
                                                           resultPromise,
                                                           routeIdentity,
@@ -296,7 +319,7 @@ public interface HttpForwarder {
                                                       _ -> ConcurrentHashMap.newKeySet())
                                      .add(correlationId);
                 // Set up timeout — will resolve internalPromise with CoreError.Timeout
-                internalPromise.timeout(timeSpan(forwardTimeoutMs).millis());
+                internalPromise.timeout(forwardTimeout);
                 // Send forward request
                 var forwardRequest = new HttpForwardRequest(selfNodeId, correlationId, requestId, requestData);
                 clusterNetwork.send(targetNode, forwardRequest);
@@ -320,7 +343,7 @@ public interface HttpForwarder {
                     removeFromNodeIndex(correlationId, targetNode);
                 }
                 if (cause instanceof CoreError.Timeout) {
-                    log.warn("Forward to {} timed out after {}ms [{}]", targetNode, forwardTimeoutMs, requestId);
+                    log.warn("Forward to {} timed out after {} [{}]", targetNode, forwardTimeout, requestId);
                 }
                 onFailure.run();
             }
@@ -357,7 +380,6 @@ public interface HttpForwarder {
 
             // ================== Node Departure ==================
             private void handleNodeDeparture(NodeId departedNode) {
-                routeRegistry.evictNode(departedNode);
                 Option.option(pendingForwardsByNode.remove(departedNode))
                       .filter(ids -> !ids.isEmpty())
                       .onPresent(correlationIds -> retryPendingForwards(departedNode, correlationIds));
@@ -407,7 +429,9 @@ public interface HttpForwarder {
                                  clusterNetwork,
                                  serializer,
                                  deserializer,
-                                 forwardTimeoutMs,
+                                 forwardTimeout,
+                                 retryDelayMs,
+                                 maxForwardRetries,
                                  new ConcurrentHashMap<>(),
                                  new ConcurrentHashMap<>(),
                                  new ConcurrentHashMap<>());

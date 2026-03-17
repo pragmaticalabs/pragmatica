@@ -7,7 +7,9 @@ import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.cluster.node.passive.PassiveNode;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
@@ -31,6 +33,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
+import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -93,7 +96,7 @@ public final class AetherPassiveLB {
                                                         passiveNode.network(),
                                                         serializer,
                                                         deserializer,
-                                                        config.forwardTimeoutMs());
+                                                        config.forwardTimeout());
         wireRoutes(passiveNode, routeRegistry, httpForwarder);
         return new AetherPassiveLB(config, passiveNode, routeRegistry, httpForwarder);
     }
@@ -129,9 +132,19 @@ public final class AetherPassiveLB {
         var serverConfig = HttpServerConfig.httpServerConfig("passive-lb",
                                                              config.httpPort())
                                            .withMaxContentLength(MAX_CONTENT_LENGTH);
-        return HttpServer.httpServer(serverConfig, this::handleRequest)
-                         .onSuccess(server -> httpServer = Option.some(server))
-                         .mapToUnit();
+        var serverBossGroup = passiveNode.network()
+                                         .server()
+                                         .map(org.pragmatica.net.tcp.Server::bossGroup);
+        var serverWorkerGroup = passiveNode.network()
+                                           .server()
+                                           .map(org.pragmatica.net.tcp.Server::workerGroup);
+        var serverPromise = serverBossGroup.flatMap(bg -> serverWorkerGroup.map(wg -> HttpServer.httpServer(serverConfig,
+                                                                                                            this::handleRequest,
+                                                                                                            bg,
+                                                                                                            wg)))
+                                           .or(HttpServer.httpServer(serverConfig, this::handleRequest));
+        return serverPromise.onSuccess(server -> httpServer = Option.some(server))
+                            .mapToUnit();
     }
 
     private Promise<Unit> stopHttpServer() {
@@ -149,8 +162,20 @@ public final class AetherPassiveLB {
             sendHealthResponse(response, requestId);
             return;
         }
+        log.debug("Route lookup: {} {} — registry has {} routes",
+                  method,
+                  path,
+                  routeRegistry.allRoutes()
+                               .size());
         var routeOpt = routeRegistry.findRoute(method, path);
         if (routeOpt.isEmpty()) {
+            log.warn("No route found for {} {} — available routes: {}",
+                     method,
+                     path,
+                     routeRegistry.allRoutes()
+                                  .stream()
+                                  .map(r -> r.httpMethod() + " " + r.pathPrefix() + " -> " + r.nodes())
+                                  .toList());
             response.error(HttpStatus.NOT_FOUND, "No route found for " + method + " " + path);
             return;
         }
@@ -197,16 +222,9 @@ public final class AetherPassiveLB {
     }
 
     // ================== Message Wiring ==================
-    @SuppressWarnings({"unchecked"})
     private static void wireRoutes(PassiveNode<AetherKey, AetherValue> passiveNode,
                                    HttpRouteRegistry routeRegistry,
                                    HttpForwarder httpForwarder) {
-        var kvNotificationRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
-                                                       .onPut(AetherKey.HttpNodeRouteKey.class,
-                                                              routeRegistry::onRoutePut)
-                                                       .onRemove(AetherKey.HttpNodeRouteKey.class,
-                                                                 routeRegistry::onRouteRemove)
-                                                       .build();
         var topologyChangeRoutes = SealedBuilder.from(TopologyChangeNotification.class)
                                                 .route(route(TopologyChangeNotification.NodeAdded.class,
                                                              (TopologyChangeNotification.NodeAdded msg) -> {}),
@@ -214,12 +232,20 @@ public final class AetherPassiveLB {
                                                              httpForwarder::onNodeRemoved),
                                                        route(TopologyChangeNotification.NodeDown.class,
                                                              httpForwarder::onNodeDown));
+        // KV notification router for NodeRoutesKey — receives committed KV decisions
+        var kvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                           .onPut(NodeRoutesKey.class, routeRegistry::onNodeRoutesPut)
+                                           .onRemove(NodeRoutesKey.class, routeRegistry::onNodeRoutesRemove)
+                                           .build();
         var allEntries = new ArrayList<>(passiveNode.routeEntries());
         allEntries.add(topologyChangeRoutes);
-        for (var entry : kvNotificationRouter.asRouteEntries()) {
-            allEntries.add(entry);
-        }
+        allEntries.addAll(kvRouter.asRouteEntries());
         allEntries.add(route(HttpForwardResponse.class, httpForwarder::onHttpForwardResponse));
-        RabiaNode.buildAndWireRouter(passiveNode.delegateRouter(), allEntries);
+        RabiaNode.buildAndWireRouter(passiveNode.delegateRouter(),
+                                     allEntries)
+                 .onFailure(cause -> log.error("FATAL: Failed to wire passive LB routes: {}",
+                                               cause.message()))
+                 .onSuccess(_ -> log.info("Passive LB routes wired successfully ({} entries)",
+                                          allEntries.size()));
     }
 }

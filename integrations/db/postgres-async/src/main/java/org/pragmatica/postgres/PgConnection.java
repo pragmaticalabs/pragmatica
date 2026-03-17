@@ -60,6 +60,10 @@ public class PgConnection implements Connection {
             this.sql = sql;
         }
 
+        String sname() {
+            return sname;
+        }
+
         @Override
         public Promise<PgResultSet> query(Object... params) {
             var rows = new ArrayList<PgRow>(16);

@@ -29,7 +29,6 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
 
-import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -151,28 +150,62 @@ public interface LeaderManager {
 
     Logger log = LoggerFactory.getLogger(LeaderManager.class);
 
-    /// Retry delay for leader proposals that fail (e.g., when consensus not ready yet)
-    TimeSpan PROPOSAL_RETRY_DELAY = timeSpan(500).millis();
+    /// Default retry delay for leader proposals that fail (e.g., when consensus not ready yet)
+    TimeSpan DEFAULT_PROPOSAL_RETRY_DELAY = timeSpan(500).millis();
 
-    /// Initial delay before first leader election attempt.
-    /// This allows all nodes time to complete synchronization (codec warmup, state sync)
-    /// before leader proposals are submitted. Without this delay, early nodes submit proposals
-    /// that are ignored by dormant nodes, causing leader election to stall.
-    TimeSpan INITIAL_ELECTION_DELAY = timeSpan(3).seconds();
+    /// Default base delay before the first leader proposal after consensus activation.
+    /// This allows all nodes to complete consensus sync before any proposals are submitted.
+    /// Without this, the first node to activate submits proposals that fail because
+    /// other nodes are still dormant (syncing), and those proposals time out after 3 seconds.
+    TimeSpan DEFAULT_BASE_ELECTION_DELAY = timeSpan(2).seconds();
 
-    /// Number of election retries before fallback allows any active node to propose.
-    /// With PROPOSAL_RETRY_DELAY of 500ms, this gives the designated min node 3 seconds
-    /// to become active before other nodes take over.
-    int ELECTION_FALLBACK_RETRIES = 6;
+    /// Default additional delay per rank position for staggered initial election.
+    /// Rank 0 proposes after BASE_ELECTION_DELAY, rank 1 after BASE + 1s, rank 2 after BASE + 2s.
+    /// This ensures only one node proposes at a time.
+    TimeSpan DEFAULT_PER_RANK_DELAY = timeSpan(1).seconds();
+
+    /// Create a leader manager with consensus-based election and configurable timeouts.
+    ///
+    /// @param self this node's ID
+    /// @param router message router for notifications
+    /// @param proposalHandler handler for submitting proposals through consensus
+    /// @param expectedCluster expected cluster members for deterministic min calculation
+    /// @param proposalRetryDelay delay before retrying failed proposals
+    /// @param baseElectionDelay base delay before first election attempt
+    /// @param perRankDelay additional delay per rank position
+    static LeaderManager leaderManager(NodeId self,
+                                       MessageRouter router,
+                                       LeaderProposalHandler proposalHandler,
+                                       List<NodeId> expectedCluster,
+                                       TimeSpan proposalRetryDelay,
+                                       TimeSpan baseElectionDelay,
+                                       TimeSpan perRankDelay) {
+        return leaderManager(self, router, Option.some(proposalHandler), expectedCluster,
+                             proposalRetryDelay, baseElectionDelay, perRankDelay);
+    }
 
     private static LeaderManager leaderManager(NodeId self,
                                                MessageRouter router,
                                                Option<LeaderProposalHandler> proposalHandler,
                                                List<NodeId> expectedCluster) {
+        return leaderManager(self, router, proposalHandler, expectedCluster,
+                             DEFAULT_PROPOSAL_RETRY_DELAY, DEFAULT_BASE_ELECTION_DELAY, DEFAULT_PER_RANK_DELAY);
+    }
+
+    private static LeaderManager leaderManager(NodeId self,
+                                               MessageRouter router,
+                                               Option<LeaderProposalHandler> proposalHandler,
+                                               List<NodeId> expectedCluster,
+                                               TimeSpan proposalRetryDelay,
+                                               TimeSpan baseElectionDelay,
+                                               TimeSpan perRankDelay) {
         record leaderManager(NodeId self,
                              MessageRouter router,
                              Option<LeaderProposalHandler> proposalHandler,
                              List<NodeId> expectedCluster,
+                             TimeSpan proposalRetryDelay,
+                             TimeSpan baseElectionDelay,
+                             TimeSpan perRankDelay,
                              AtomicBoolean active,
                              AtomicLong viewSequence,
                              AtomicReference<Option<NodeId>> currentLeader,
@@ -237,7 +270,22 @@ public interface LeaderManager {
                           expectedCluster);
                 if (!active.get()) {
                     log.debug("triggerElection skipped: not active");
-                    scheduleElectionRetryIfNeeded();
+                    return;
+                }
+                // On first call during initial election, apply base delay + rank-based stagger.
+                // Base delay: allows all nodes to complete consensus sync (nodes activate
+                // at different times, and proposals fail when target nodes are still dormant).
+                // Rank stagger: ensures only one node proposes at a time, preventing livelock.
+                if (!hasEverHadLeader.get() && electionRetryCount.get() == 0) {
+                    var rank = computeRank();
+                    var totalDelay = timeSpan(baseElectionDelay.millis() + rank * perRankDelay.millis()).millis();
+                    log.info("Initial election: rank={}, delaying {}ms (base={}ms + rank*{}ms) before first attempt",
+                             rank,
+                             totalDelay.millis(),
+                             baseElectionDelay.millis(),
+                             perRankDelay.millis());
+                    electionRetryCount.incrementAndGet();
+                    SharedScheduler.schedule(this::triggerElection, totalDelay);
                     return;
                 }
                 proposalHandler.onPresent(handler -> {
@@ -247,13 +295,13 @@ public interface LeaderManager {
             }
 
             private void scheduleElectionRetryIfNeeded() {
-                if (!hasEverHadLeader.get() && currentLeader.get()
-                                                            .isEmpty()) {
+                if (currentLeader.get().isEmpty()) {
                     var retries = electionRetryCount.incrementAndGet();
-                    log.debug("No leader elected yet, scheduling election retry #{} in {}ms",
+                    var jitteredDelay = timeSpan((long) (proposalRetryDelay.millis() * (1.0 + Math.random() * 0.5))).millis();
+                    log.debug("No leader yet, scheduling election retry #{} in {}ms",
                               retries,
-                              PROPOSAL_RETRY_DELAY.millis());
-                    SharedScheduler.schedule(this::triggerElection, PROPOSAL_RETRY_DELAY);
+                              jitteredDelay.millis());
+                    SharedScheduler.schedule(this::triggerElection, jitteredDelay);
                 }
             }
 
@@ -271,49 +319,26 @@ public interface LeaderManager {
                     log.debug("Skipping election trigger: no candidates available");
                     return;
                 }
-                var isInitialElection = !hasEverHadLeader.get();
-                var retries = electionRetryCount.get();
-                // During initial election, rotate candidate every ELECTION_FALLBACK_RETRIES attempts.
-                // This prevents stalling when the min node is slow to activate — each candidate
-                // gets a turn as both proposer and submitter.
-                // All nodes compute the same rotation because they use the same sorted expectedCluster
-                // and the same formula: index = (retries / FALLBACK_RETRIES) % poolSize.
-                var candidateIndex = isInitialElection
-                                     ? (retries / ELECTION_FALLBACK_RETRIES) % sortedCandidates.size()
-                                     : 0;
-                var candidate = sortedCandidates.get(candidateIndex);
-                var shouldSubmit = self.equals(candidate);
-                // Fallback within current rotation: after half the retry window,
-                // any active node can submit for the current candidate (in case the
-                // candidate is active but its submission keeps failing).
-                if (!shouldSubmit && isInitialElection) {
-                    var retriesWithinRotation = retries % ELECTION_FALLBACK_RETRIES;
-                    if (retriesWithinRotation >= ELECTION_FALLBACK_RETRIES / 2) {
-                        log.info("Election fallback at retry {}: self={} submitting for candidate={} "
-                                 + "(rotation {}/{})",
-                                 retries,
-                                 self,
-                                 candidate,
-                                 candidateIndex,
-                                 sortedCandidates.size());
-                        shouldSubmit = true;
-                    }
-                }
-                if (!shouldSubmit) {
-                    log.debug("Skipping election: self={} is not current candidate {} (rotation {}/{}, retry {})",
+                // During initial election, only the lowest-ranked node (first in sorted order)
+                // submits proposals. The base delay + rank-based stagger in triggerElection()
+                // ensures: (1) all nodes are active before the first proposal, and (2) only one
+                // node proposes at a time. No fallback is needed — the lowest-ranked node retries
+                // until consensus completes. If it's truly stuck, re-election via quorum flap
+                // will eventually resolve it.
+                var candidate = sortedCandidates.getFirst();
+                // During initial election, only min-rank node submits to prevent livelock.
+                // During re-election, any node can submit — consensus deduplicates, and
+                // the min-rank node may be in the majority partition (never lost quorum)
+                // and won't re-propose since it already has a leader.
+                if (!hasEverHadLeader.get() && !self.equals(candidate)) {
+                    log.debug("Skipping initial election: self={} is not designated candidate {}",
                               self,
-                              candidate,
-                              candidateIndex,
-                              sortedCandidates.size(),
-                              retries);
+                              candidate);
                     return;
                 }
-                log.debug("Submitting leader proposal: candidate={}, submitter={}, rotation {}/{}, retry {}",
+                log.debug("Submitting leader proposal: candidate={}, submitter={}",
                           candidate,
-                          self,
-                          candidateIndex,
-                          sortedCandidates.size(),
-                          retries);
+                          self);
                 // DON'T clear currentLeader here - let consensus decide.
                 // The leader will be updated via onLeaderCommitted().
                 submitProposal(handler, candidate);
@@ -437,7 +462,7 @@ public interface LeaderManager {
                 proposalInFlight.set(false);
                                       log.debug("Leader proposal failed ({}), scheduling retry in {}ms",
                                                 cause.message(),
-                                                PROPOSAL_RETRY_DELAY.millis());
+                                                proposalRetryDelay.millis());
                                       scheduleProposalRetry(handler, candidate);
                                   });
             }
@@ -451,7 +476,7 @@ public interface LeaderManager {
                                                  submitProposal(handler, candidate);
                                              }
                                          },
-                                         PROPOSAL_RETRY_DELAY);
+                                         proposalRetryDelay);
             }
 
             private void electLocally(NodeId candidate) {
@@ -499,27 +524,37 @@ public interface LeaderManager {
 
             private void start() {
                 active.set(true);
-                // In local mode, notify immediately if we have a candidate.
-                // In consensus mode, trigger election - notification comes only from onLeaderCommitted().
                 if (proposalHandler.isPresent()) {
-                    // Consensus mode: only schedule election trigger.
-                    // DO NOT re-notify here - it causes flapping when nodes have different partial views.
-                    // Notification will come from onLeaderCommitted() with forceNotify if this is re-establishment.
-                    // Use INITIAL_ELECTION_DELAY on first election to allow all nodes to complete
-                    // synchronization before leader proposals are submitted.
-                    var isFirstElection = !hasEverHadLeader.get();
-                    var delay = isFirstElection
-                                ? INITIAL_ELECTION_DELAY
-                                : PROPOSAL_RETRY_DELAY;
-                    log.debug("Quorum established, scheduling leader election trigger (initial={}, delay={}ms)",
-                              isFirstElection,
-                              delay.millis());
-                    SharedScheduler.schedule(this::triggerElection, delay);
+                    // Consensus mode: do NOT schedule election here.
+                    // ESTABLISHED fires before consensus sync completes, so proposals would be
+                    // rejected by dormant engines. The caller (AetherNode) triggers election
+                    // after consensus is fully synchronized, with rank-based staggering applied
+                    // inside triggerElection() to prevent livelock.
+                    //
+                    // For re-election (hasEverHadLeader=true), trigger immediately — consensus
+                    // is already active, no sync delay to worry about.
+                    if (hasEverHadLeader.get()) {
+                        log.debug("Quorum re-established, triggering re-election immediately");
+                        SharedScheduler.schedule(this::triggerElection, proposalRetryDelay);
+                    } else {
+                        log.debug("Quorum established, waiting for consensus sync before initial election");
+                    }
                 } else {
                     // Local mode: notify if we have a candidate
                     currentLeader.get()
                                  .onPresent(_ -> notifyLeaderChange());
                 }
+            }
+
+            /// Compute the rank of this node within the candidate pool.
+            /// Rank 0 = lowest NodeId (first to propose). Unknown nodes get last rank.
+            private int computeRank() {
+                var pool = expectedCluster.isEmpty() ? currentTopology.get() : expectedCluster;
+                var sorted = pool.stream()
+                                 .sorted()
+                                 .toList();
+                var rank = sorted.indexOf(self);
+                return rank >= 0 ? rank : sorted.size();
             }
 
             private void stop() {
@@ -539,6 +574,9 @@ public interface LeaderManager {
                                  router,
                                  proposalHandler,
                                  List.copyOf(expectedCluster),
+                                 proposalRetryDelay,
+                                 baseElectionDelay,
+                                 perRankDelay,
                                  new AtomicBoolean(false),
                                  new AtomicLong(0),
                                  new AtomicReference<>(Option.none()),

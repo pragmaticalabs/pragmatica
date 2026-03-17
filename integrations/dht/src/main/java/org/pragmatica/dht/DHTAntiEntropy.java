@@ -17,6 +17,7 @@
 package org.pragmatica.dht;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.utility.KSUID;
 
 import java.nio.charset.StandardCharsets;
@@ -36,7 +37,9 @@ import org.slf4j.LoggerFactory;
 /// to detect and repair inconsistencies.
 public final class DHTAntiEntropy {
     private static final Logger log = LoggerFactory.getLogger(DHTAntiEntropy.class);
-    private static final long INTERVAL_SECONDS = 30;
+
+    /// Default anti-entropy synchronization interval.
+    public static final TimeSpan DEFAULT_ANTI_ENTROPY_INTERVAL = TimeSpan.timeSpan(30).seconds();
 
     /// Tracks a pending digest comparison: local digest + partition for a remote peer.
     record PendingDigest(NodeId peer, int partitionIndex, byte[] localDigest) {}
@@ -44,16 +47,18 @@ public final class DHTAntiEntropy {
     private final DHTNode node;
     private final DHTNetwork network;
     private final DHTConfig config;
+    private final TimeSpan antiEntropyInterval;
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     /// Pending digest comparisons indexed by correlation ID.
     private final ConcurrentHashMap<String, PendingDigest> pendingDigests = new ConcurrentHashMap<>();
 
-    private DHTAntiEntropy(DHTNode node, DHTNetwork network, DHTConfig config) {
+    private DHTAntiEntropy(DHTNode node, DHTNetwork network, DHTConfig config, TimeSpan antiEntropyInterval) {
         this.node = node;
         this.network = network;
         this.config = config;
+        this.antiEntropyInterval = antiEntropyInterval;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
                                                                         var thread = new Thread(r, "dht-anti-entropy");
                                                                         thread.setDaemon(true);
@@ -61,13 +66,23 @@ public final class DHTAntiEntropy {
                                                                     });
     }
 
-    /// Create an anti-entropy process for the given node.
+    /// Create an anti-entropy process for the given node with default interval.
     ///
     /// @param node    local DHT node with storage and ring
     /// @param network cluster network for sending digest requests
     /// @param config  DHT configuration
     public static DHTAntiEntropy dhtAntiEntropy(DHTNode node, DHTNetwork network, DHTConfig config) {
-        return new DHTAntiEntropy(node, network, config);
+        return new DHTAntiEntropy(node, network, config, DEFAULT_ANTI_ENTROPY_INTERVAL);
+    }
+
+    /// Create an anti-entropy process for the given node with configurable interval.
+    ///
+    /// @param node                local DHT node with storage and ring
+    /// @param network             cluster network for sending digest requests
+    /// @param config              DHT configuration
+    /// @param antiEntropyInterval interval between anti-entropy synchronization rounds
+    public static DHTAntiEntropy dhtAntiEntropy(DHTNode node, DHTNetwork network, DHTConfig config, TimeSpan antiEntropyInterval) {
+        return new DHTAntiEntropy(node, network, config, antiEntropyInterval);
     }
 
     /// Start the periodic anti-entropy process.
@@ -75,8 +90,9 @@ public final class DHTAntiEntropy {
         if (!running.compareAndSet(false, true)) {
             return;
         }
-        scheduler.scheduleAtFixedRate(this::runAntiEntropy, INTERVAL_SECONDS, INTERVAL_SECONDS, TimeUnit.SECONDS);
-        log.info("DHT anti-entropy started (interval: {}s)", INTERVAL_SECONDS);
+        var intervalSeconds = antiEntropyInterval.millis() / 1000;
+        scheduler.scheduleAtFixedRate(this::runAntiEntropy, intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
+        log.info("DHT anti-entropy started (interval: {}s)", intervalSeconds);
     }
 
     /// Stop the anti-entropy process.

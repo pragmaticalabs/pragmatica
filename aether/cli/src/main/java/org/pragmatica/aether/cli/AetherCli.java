@@ -2,6 +2,9 @@ package org.pragmatica.aether.cli;
 
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ConfigLoader;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
@@ -9,9 +12,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.time.Instant;
 import java.nio.file.Path;
@@ -94,7 +95,7 @@ public class AetherCli implements Runnable {
     description = "API key for authenticated access")
     private String apiKey;
 
-    private final HttpClient httpClient = HttpClient.newHttpClient();
+    private final HttpOperations httpOps = JdkHttpOperations.jdkHttpOperations();
 
     @SuppressWarnings("JBCT-RET-01")
     public static void main(String[] args) {
@@ -268,50 +269,42 @@ public class AetherCli implements Runnable {
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
     String fetchFromNode(String path) {
-        try{
-            var uri = URI.create("http://" + nodeAddress + path);
-            var request = buildGetRequest(uri);
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return extractResponseBody(response);
-        } catch (Exception e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        var uri = URI.create("http://" + nodeAddress + path);
+        var request = buildGetRequest(uri);
+        return httpOps.sendString(request)
+                      .await()
+                      .fold(cause -> "{\"error\":\"" + cause.message() + "\"}",
+                            AetherCli::extractResponseBody);
     }
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
     String postToNode(String path, String body) {
-        try{
-            var uri = URI.create("http://" + nodeAddress + path);
-            var request = buildPostRequest(uri, body);
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return extractResponseBody(response);
-        } catch (Exception e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        var uri = URI.create("http://" + nodeAddress + path);
+        var request = buildPostRequest(uri, body);
+        return httpOps.sendString(request)
+                      .await()
+                      .fold(cause -> "{\"error\":\"" + cause.message() + "\"}",
+                            AetherCli::extractResponseBody);
     }
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01", "JBCT-UTIL-02"})
     String putToNode(String path, byte[] content, String contentType) {
-        try{
-            var uri = URI.create("http://" + nodeAddress + path);
-            var request = buildPutRequest(uri, content, contentType);
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return extractPutResponseBody(response);
-        } catch (Exception e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        var uri = URI.create("http://" + nodeAddress + path);
+        var request = buildPutRequest(uri, content, contentType);
+        return httpOps.sendString(request)
+                      .await()
+                      .fold(cause -> "{\"error\":\"" + cause.message() + "\"}",
+                            AetherCli::extractPutResponseBody);
     }
 
     @SuppressWarnings("JBCT-UTIL-01")
     String deleteFromNode(String path) {
-        try{
-            var uri = URI.create("http://" + nodeAddress + path);
-            var request = buildDeleteRequest(uri);
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return extractResponseBody(response);
-        } catch (Exception e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        var uri = URI.create("http://" + nodeAddress + path);
+        var request = buildDeleteRequest(uri);
+        return httpOps.sendString(request)
+                      .await()
+                      .fold(cause -> "{\"error\":\"" + cause.message() + "\"}",
+                            AetherCli::extractResponseBody);
     }
 
     private Option<String> resolveApiKey() {
@@ -360,7 +353,7 @@ public class AetherCli implements Runnable {
     }
 
     @SuppressWarnings("JBCT-SEQ-01")
-    private static String extractResponseBody(HttpResponse<String> response) {
+    private static String extractResponseBody(HttpResult<String> response) {
         if (response.statusCode() == 200) {
             return response.body();
         }
@@ -374,7 +367,7 @@ public class AetherCli implements Runnable {
     }
 
     @SuppressWarnings("JBCT-UTIL-02")
-    private static String extractPutResponseBody(HttpResponse<String> response) {
+    private static String extractPutResponseBody(HttpResult<String> response) {
         if (response.statusCode() == 200 || response.statusCode() == 201) {
             return response.body()
                            .isEmpty()
@@ -384,7 +377,7 @@ public class AetherCli implements Runnable {
         return formatErrorResponse(response);
     }
 
-    private static String formatErrorResponse(HttpResponse<String> response) {
+    private static String formatErrorResponse(HttpResult<String> response) {
         var body = response.body();
         if (body != null && body.startsWith("{")) {
             return body;
@@ -1993,7 +1986,10 @@ public class AetherCli implements Runnable {
     @Command(name = "scheduled-tasks",
     description = "Scheduled task management",
     subcommands = {ScheduledTasksCommand.ListCommand.class,
-    ScheduledTasksCommand.GetCommand.class})
+    ScheduledTasksCommand.GetCommand.class,
+    ScheduledTasksCommand.PauseCommand.class,
+    ScheduledTasksCommand.ResumeCommand.class,
+    ScheduledTasksCommand.TriggerCommand.class})
     static class ScheduledTasksCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -2029,6 +2025,78 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var response = tasksParent.parent.fetchFromNode("/api/scheduled-tasks/" + configSection);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "pause", description = "Pause a scheduled task")
+        static class PauseCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ScheduledTasksCommand tasksParent;
+
+            @Parameters(index = "0", description = "Config section")
+            private String configSection;
+
+            @Parameters(index = "1", description = "Artifact coordinates (groupId:artifactId:version)")
+            private String artifact;
+
+            @Parameters(index = "2", description = "Method name")
+            private String method;
+
+            @Override
+            public Integer call() {
+                var response = tasksParent.parent.postToNode("/api/scheduled-tasks/" + configSection + "/" + artifact
+                                                             + "/" + method + "/pause",
+                                                             "");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "resume", description = "Resume a paused scheduled task")
+        static class ResumeCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ScheduledTasksCommand tasksParent;
+
+            @Parameters(index = "0", description = "Config section")
+            private String configSection;
+
+            @Parameters(index = "1", description = "Artifact coordinates (groupId:artifactId:version)")
+            private String artifact;
+
+            @Parameters(index = "2", description = "Method name")
+            private String method;
+
+            @Override
+            public Integer call() {
+                var response = tasksParent.parent.postToNode("/api/scheduled-tasks/" + configSection + "/" + artifact
+                                                             + "/" + method + "/resume",
+                                                             "");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "trigger", description = "Manually trigger a scheduled task")
+        static class TriggerCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ScheduledTasksCommand tasksParent;
+
+            @Parameters(index = "0", description = "Config section")
+            private String configSection;
+
+            @Parameters(index = "1", description = "Artifact coordinates (groupId:artifactId:version)")
+            private String artifact;
+
+            @Parameters(index = "2", description = "Method name")
+            private String method;
+
+            @Override
+            public Integer call() {
+                var response = tasksParent.parent.postToNode("/api/scheduled-tasks/" + configSection + "/" + artifact
+                                                             + "/" + method + "/trigger",
+                                                             "");
                 System.out.println(formatJson(response));
                 return 0;
             }

@@ -1,14 +1,13 @@
 package org.pragmatica.aether.http;
 
-import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
-import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.HashSet;
 import java.util.List;
@@ -40,14 +39,6 @@ import org.slf4j.LoggerFactory;
 /// Uses TreeMap with floor-entry lookup for efficient prefix matching.
 /// Same algorithm as RequestRouter in http-routing module.
 public interface HttpRouteRegistry {
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
-    void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut);
-
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
-    void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove);
-
     /// Find route for HTTP method and path.
     ///
     ///
@@ -61,22 +52,13 @@ public interface HttpRouteRegistry {
     /// Get all registered routes (for monitoring/debugging and router building).
     List<RouteInfo> allRoutes();
 
-    /// Create a MapSubscription adapter for DHT events.
-    default MapSubscription<HttpNodeRouteKey, HttpNodeRouteValue> asHttpRouteSubscription() {
-        return new MapSubscription<>() {
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onPut(HttpNodeRouteKey key, HttpNodeRouteValue value) {
-                onRoutePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
-            }
+    /// Handle compound NodeRoutesKey put — extracts individual routes from value and registers each.
+    @SuppressWarnings("JBCT-RET-01") // Event callback
+    void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
 
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onRemove(HttpNodeRouteKey key) {
-                onRouteRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
-            }
-        };
-    }
+    /// Handle compound NodeRoutesKey remove — unregisters all routes for the node+artifact.
+    @SuppressWarnings("JBCT-RET-01") // Event callback
+    void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove);
 
     /// Immediately evict a node from all cached routes.
     /// Local-only operation — does not affect KV store.
@@ -111,16 +93,53 @@ public interface HttpRouteRegistry {
 
             @Override
             @SuppressWarnings("JBCT-RET-01")
-            public void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut) {
+            public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
                 var key = valuePut.cause()
                                   .key();
-                var method = key.httpMethod();
-                var prefix = key.pathPrefix();
+                var value = valuePut.cause()
+                                    .value();
                 var nodeId = key.nodeId();
-                log.debug("HttpRouteRegistry: Processing HttpNodeRouteKey {} {} node={}", method, prefix, nodeId);
-                var ref = routesByMethod.computeIfAbsent(method, _ -> new AtomicReference<>(new TreeMap<>()));
-                ref.updateAndGet(current -> addNodeToRoute(current, method, prefix, nodeId));
-                log.debug("HttpRouteRegistry: Registered route {} {} node={}", method, prefix, nodeId);
+                for (var route : value.routes()) {
+                    if (!route.isRoutable()) {
+                        continue;
+                    }
+                    var method = route.httpMethod();
+                    var prefix = route.pathPrefix();
+                    var ref = routesByMethod.computeIfAbsent(method, _ -> new AtomicReference<>(new TreeMap<>()));
+                    ref.updateAndGet(current -> addNodeToRoute(current, method, prefix, nodeId));
+                    log.debug("HttpRouteRegistry: Registered compound route {} {} node={}", method, prefix, nodeId);
+                }
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onNodeRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
+                var key = valueRemove.cause()
+                                     .key();
+                var nodeId = key.nodeId();
+                // Remove this node from all routes — we don't know which routes were registered
+                routesByMethod.values()
+                              .forEach(ref -> ref.updateAndGet(current -> removeNodeFromAllRoutes(current, nodeId)));
+            }
+
+            private TreeMap<String, RouteInfo> removeNodeFromAllRoutes(TreeMap<String, RouteInfo> current,
+                                                                       NodeId nodeId) {
+                var updated = new TreeMap<String, RouteInfo>();
+                for (var entry : current.entrySet()) {
+                    var route = entry.getValue();
+                    if (!route.nodes()
+                              .contains(nodeId)) {
+                        updated.put(entry.getKey(), route);
+                        continue;
+                    }
+                    var remaining = new HashSet<>(route.nodes());
+                    remaining.remove(nodeId);
+                    if (!remaining.isEmpty()) {
+                        updated.put(entry.getKey(),
+                                    RouteInfo.routeInfo(route.httpMethod(), route.pathPrefix(), Set.copyOf(remaining)));
+                    }
+                }
+                return updated;
             }
 
             private TreeMap<String, RouteInfo> addNodeToRoute(TreeMap<String, RouteInfo> current,
@@ -135,41 +154,6 @@ public interface HttpRouteRegistry {
                 nodes.add(nodeId);
                 updated.put(prefix,
                             RouteInfo.routeInfo(method, prefix, Set.copyOf(nodes)));
-                return updated;
-            }
-
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove) {
-                var key = valueRemove.cause()
-                                     .key();
-                var method = key.httpMethod();
-                var prefix = key.pathPrefix();
-                var nodeId = key.nodeId();
-                Option.option(routesByMethod.get(method))
-                      .onPresent(ref -> ref.updateAndGet(current -> removeNodeFromRoute(current, method, prefix, nodeId)));
-            }
-
-            private TreeMap<String, RouteInfo> removeNodeFromRoute(TreeMap<String, RouteInfo> current,
-                                                                   String method,
-                                                                   String prefix,
-                                                                   NodeId nodeId) {
-                var existing = current.get(prefix);
-                if (existing == null || !existing.nodes()
-                                                 .contains(nodeId)) {
-                    return current;
-                }
-                var updated = new TreeMap<>(current);
-                var remaining = new HashSet<>(existing.nodes());
-                remaining.remove(nodeId);
-                if (remaining.isEmpty()) {
-                    updated.remove(prefix);
-                    log.debug("Unregistered HTTP route: {} {} (last node {} removed)", method, prefix, nodeId);
-                } else {
-                    updated.put(prefix,
-                                RouteInfo.routeInfo(method, prefix, Set.copyOf(remaining)));
-                    log.debug("Removed node {} from HTTP route: {} {}", nodeId, method, prefix);
-                }
                 return updated;
             }
 

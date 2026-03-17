@@ -106,6 +106,11 @@ public abstract class ConnectibleBuilder {
         return this;
     }
 
+    public ConnectibleBuilder poolMode(PoolMode poolMode) {
+        properties.poolMode = poolMode;
+        return this;
+    }
+
     /**
      * Configuration for a connectible.
      */
@@ -123,6 +128,7 @@ public abstract class ConnectibleBuilder {
         private String encoding = System.getProperty("pg.async.encoding", "utf-8");
         private String validationQuery;
         private int ioThreads = Math.max(Runtime.getRuntime().availableProcessors(), 8);
+        private PoolMode poolMode = PoolMode.SESSION;
 
         public String hostname() {
             return hostname;
@@ -170,6 +176,10 @@ public abstract class ConnectibleBuilder {
 
         public int ioThreads() {
             return ioThreads;
+        }
+
+        public PoolMode poolMode() {
+            return poolMode;
         }
     }
 }

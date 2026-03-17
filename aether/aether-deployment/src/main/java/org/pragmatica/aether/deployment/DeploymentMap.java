@@ -1,15 +1,13 @@
 package org.pragmatica.aether.deployment;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.List;
@@ -26,28 +24,13 @@ import java.util.stream.Collectors;
 /// for dashboard display.
 @SuppressWarnings("JBCT-RET-01") // MessageReceiver callbacks — void required by messaging framework
 public sealed interface DeploymentMap {
-    @MessageReceiver
-    void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut);
+    /// Handle NodeArtifactKey put — extracts state from compound value.
+    @SuppressWarnings("JBCT-RET-01") // Event callback
+    void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
 
-    @MessageReceiver
-    void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove);
-
-    /// Create a MapSubscription adapter for DHT slice-node events.
-    default MapSubscription<SliceNodeKey, SliceNodeValue> asSliceNodeSubscription() {
-        return new MapSubscription<>() {
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onPut(SliceNodeKey key, SliceNodeValue value) {
-                onSliceNodePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
-            }
-
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onRemove(SliceNodeKey key) {
-                onSliceNodeRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
-            }
-        };
-    }
+    /// Handle NodeArtifactKey remove.
+    @SuppressWarnings("JBCT-RET-01") // Event callback
+    void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
 
     Map<Artifact, SliceState> byNode(NodeId nodeId);
 
@@ -73,19 +56,20 @@ final class DeploymentMapImpl implements DeploymentMap {
     private final ConcurrentHashMap<SliceNodeKey, SliceState> index = new ConcurrentHashMap<>();
 
     @Override
-    public void onSliceNodePut(ValuePut<SliceNodeKey, SliceNodeValue> valuePut) {
+    public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
         var key = valuePut.cause()
                           .key();
         var value = valuePut.cause()
                             .value();
-        index.put(key, value.state());
+        index.put(new SliceNodeKey(key.artifact(), key.nodeId()),
+                  value.state());
     }
 
     @Override
-    public void onSliceNodeRemove(ValueRemove<SliceNodeKey, SliceNodeValue> valueRemove) {
+    public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
         var key = valueRemove.cause()
                              .key();
-        index.remove(key);
+        index.remove(new SliceNodeKey(key.artifact(), key.nodeId()));
     }
 
     @Override

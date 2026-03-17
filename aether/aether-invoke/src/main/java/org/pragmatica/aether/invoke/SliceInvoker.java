@@ -184,8 +184,8 @@ public interface SliceInvoker extends SliceInvokerFacade {
     /// Get count of pending invocations (for monitoring).
     int pendingCount();
 
-    /// Default timeout for invocations (30 seconds).
-    long DEFAULT_TIMEOUT_MS = 30_000;
+    /// Default timeout for invocations (20 seconds).
+    long DEFAULT_TIMEOUT_MS = 20_000;
 
     /// Default maximum retries.
     int DEFAULT_MAX_RETRIES = 3;
@@ -232,7 +232,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
     /// @return unit
     Unit unregisterAffinityResolver(Artifact artifact, MethodName method);
 
-    /// Create a new SliceInvoker.
+    /// Create a new SliceInvoker with default timeout and cleanup interval.
     static SliceInvoker sliceInvoker(NodeId self,
                                      ClusterNetwork network,
                                      EndpointRegistry endpointRegistry,
@@ -248,11 +248,12 @@ public interface SliceInvoker extends SliceInvokerFacade {
                             serializer,
                             deserializer,
                             DEFAULT_TIMEOUT_MS,
+                            SliceInvokerImpl.DEFAULT_CLEANUP_INTERVAL_MS,
                             rollingUpdateManager,
                             observabilityInterceptor);
     }
 
-    /// Create with custom timeout.
+    /// Create with custom timeout and cleanup interval.
     static SliceInvoker sliceInvoker(NodeId self,
                                      ClusterNetwork network,
                                      EndpointRegistry endpointRegistry,
@@ -260,6 +261,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                      Serializer serializer,
                                      Deserializer deserializer,
                                      long timeoutMs,
+                                     long cleanupIntervalMs,
                                      RollingUpdateManager rollingUpdateManager,
                                      ObservabilityInterceptor observabilityInterceptor) {
         return new SliceInvokerImpl(self,
@@ -269,6 +271,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                     serializer,
                                     deserializer,
                                     timeoutMs,
+                                    cleanupIntervalMs,
                                     rollingUpdateManager,
                                     observabilityInterceptor);
     }
@@ -279,7 +282,7 @@ class SliceInvokerImpl implements SliceInvoker {
     private static final Cause NO_ENDPOINT_FOUND = Causes.cause("No endpoint found for slice/method");
     private static final Cause SLICE_NOT_FOUND = Causes.cause("Slice not found locally");
     private static final Cause INVOKER_STOPPED = Causes.cause("SliceInvoker has been stopped");
-    private static final long CLEANUP_INTERVAL_MS = 60_000;
+    static final long DEFAULT_CLEANUP_INTERVAL_MS = 60_000;
 
     // Clean up stale entries every minute
     private final NodeId self;
@@ -318,6 +321,7 @@ class SliceInvokerImpl implements SliceInvoker {
                      Serializer serializer,
                      Deserializer deserializer,
                      long timeoutMs,
+                     long cleanupIntervalMs,
                      RollingUpdateManager rollingUpdateManager,
                      ObservabilityInterceptor observabilityInterceptor) {
         this.self = self;
@@ -332,8 +336,8 @@ class SliceInvokerImpl implements SliceInvoker {
         this.scheduler = Executors.newSingleThreadScheduledExecutor(this::createSchedulerThread);
         // Schedule periodic cleanup of stale pending invocations
         scheduler.scheduleAtFixedRate(this::cleanupStaleInvocations,
-                                      CLEANUP_INTERVAL_MS,
-                                      CLEANUP_INTERVAL_MS,
+                                      cleanupIntervalMs,
+                                      cleanupIntervalMs,
                                       TimeUnit.MILLISECONDS);
     }
 

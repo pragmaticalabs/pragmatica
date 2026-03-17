@@ -17,7 +17,7 @@ mvn package
 ### Loading with SliceStore
 
 ```java
-var artifact = Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.19.3");
+var artifact = Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.20.0");
 var sliceStore = SliceStore.sliceManager();
 
 sliceStore.loadSlice(artifact)

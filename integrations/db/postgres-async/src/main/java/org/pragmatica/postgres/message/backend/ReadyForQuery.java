@@ -17,8 +17,18 @@ package org.pragmatica.postgres.message.backend;
 import org.pragmatica.postgres.message.BackendMessage;
 
 /**
- * @author  Antti Laisi
+ * @author Antti Laisi
  */
-public record ReadyForQuery() implements BackendMessage {
-    public static final ReadyForQuery INSTANCE = new ReadyForQuery();
+public record ReadyForQuery(TransactionStatus status) implements BackendMessage {
+    public enum TransactionStatus {
+        IDLE, IN_TRANSACTION, FAILED;
+
+        public static TransactionStatus fromByte(byte b) {
+            return switch (b) {
+                case 'T' -> IN_TRANSACTION;
+                case 'E' -> FAILED;
+                default -> IDLE;
+            };
+        }
+    }
 }

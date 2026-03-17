@@ -6,8 +6,13 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.Arrays;
+import java.util.Deque;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 
 import org.slf4j.Logger;
@@ -24,7 +29,12 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     private final Function<byte[], K> keyDeserializer;
     private final Function<V, byte[]> valueSerializer;
     private final Function<byte[], V> valueDeserializer;
+    private final ConcurrentHashMap<K, V> localCache = new ConcurrentHashMap<>();
     private final List<MapSubscription<K, V>> subscriptions = new CopyOnWriteArrayList<>();
+    private final Deque<PendingNotification<K, V>> pendingNotifications = new ArrayDeque<>();
+    private boolean draining;
+
+    private record PendingNotification<K, V>(K key, V value) {}
 
     NamespacedReplicatedMap(String name,
                             DHTClient client,
@@ -45,7 +55,7 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     public Promise<Unit> put(K key, V value) {
         return client.put(prefixKey(keySerializer.apply(key)),
                           valueSerializer.apply(value))
-                     .onSuccess(_ -> notifyPut(key, value));
+                     .withSuccess(_ -> cacheAndNotify(key, value));
     }
 
     @Override
@@ -57,7 +67,7 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     @Override
     public Promise<Boolean> remove(K key) {
         return client.remove(prefixKey(keySerializer.apply(key)))
-                     .onSuccess(removed -> notifyRemoveIfTrue(key, removed));
+                     .withSuccess(removed -> cacheRemoveAndNotify(key, removed));
     }
 
     @Override
@@ -67,8 +77,49 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01") // Side-effect iteration over local cache
+    public void forEach(BiConsumer<K, V> consumer) {
+        localCache.forEach(consumer);
+    }
+
+    @Override
     public String name() {
         return name;
+    }
+
+    /// Dispatch a remote DHT put to local subscribers if the key matches this map's namespace.
+    /// Returns true if the key was dispatched (prefix matched), false otherwise.
+    boolean onRemotePut(byte[] rawKey, byte[] rawValue) {
+        if (!startsWith(rawKey, namespacePrefix)) {
+            return false;
+        }
+        var key = keyDeserializer.apply(Arrays.copyOfRange(rawKey, namespacePrefix.length, rawKey.length));
+        var value = valueDeserializer.apply(rawValue);
+        cacheAndNotify(key, value);
+        return true;
+    }
+
+    /// Dispatch a remote DHT remove to local subscribers if the key matches this map's namespace.
+    boolean onRemoteRemove(byte[] rawKey) {
+        if (!startsWith(rawKey, namespacePrefix)) {
+            return false;
+        }
+        var key = keyDeserializer.apply(Arrays.copyOfRange(rawKey, namespacePrefix.length, rawKey.length));
+        localCache.remove(key);
+        subscriptions.forEach(sub -> safeOnRemove(sub, key));
+        return true;
+    }
+
+    private static boolean startsWith(byte[] array, byte[] prefix) {
+        if (array.length < prefix.length) {
+            return false;
+        }
+        for (int i = 0; i < prefix.length; i++) {
+            if (array[i] != prefix[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private byte[] prefixKey(byte[] rawKey) {
@@ -78,14 +129,38 @@ final class NamespacedReplicatedMap<K, V> implements ReplicatedMap<K, V> {
         return result;
     }
 
+    @SuppressWarnings("JBCT-RET-01") // Notification side-effect drain loop
+    private void cacheAndNotify(K key, V value) {
+        pendingNotifications.addLast(new PendingNotification<>(key, value));
+        if (draining) {
+            return;
+        }
+        draining = true;
+        try{
+            drainPendingNotifications();
+        } finally{
+            draining = false;
+        }
+    }
+
+    @SuppressWarnings("JBCT-RET-01") // Notification side-effect drain loop
+    private void drainPendingNotifications() {
+        PendingNotification<K, V> pending;
+        while ((pending = pendingNotifications.pollFirst()) != null) {
+            localCache.put(pending.key(), pending.value());
+            notifySubscribers(pending.key(), pending.value());
+        }
+    }
+
     @SuppressWarnings("JBCT-RET-01") // Notification side-effect - void required
-    private void notifyPut(K key, V value) {
+    private void notifySubscribers(K key, V value) {
         subscriptions.forEach(sub -> safeOnPut(sub, key, value));
     }
 
     @SuppressWarnings("JBCT-RET-01") // Notification side-effect - void required
-    private void notifyRemoveIfTrue(K key, boolean removed) {
+    private void cacheRemoveAndNotify(K key, boolean removed) {
         if (removed) {
+            localCache.remove(key);
             subscriptions.forEach(sub -> safeOnRemove(sub, key));
         }
     }

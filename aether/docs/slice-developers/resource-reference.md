@@ -654,7 +654,7 @@ public interface OrderService {
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `interval` | `String` | — | Fixed-rate interval: `"30s"`, `"5m"`, `"1h"`, `"1d"` |
+| `interval` | `String` | — | Fixed-rate interval: `"30s"`, `"5m"`, `"1h"`, `"1d"`, `"2w"` |
 | `cron` | `String` | — | Standard 5-field cron: `minute hour dom month dow` |
 | `leaderOnly` | `boolean` | `true` | Whether only the leader node triggers the task |
 
@@ -704,6 +704,34 @@ Examples: `*/5 * * * *` (every 5 min), `0 9 * * 1-5` (weekdays at 9am), `0 0 1 *
 - `leaderOnly = false`: each node with the slice starts its own timer
 - Timers are quorum-gated: cancelled on quorum loss, restarted on quorum establishment
 - Schedule changes via Management API trigger automatic timer restart
+- Interval tasks use fixed-rate scheduling; cron tasks use one-shot timers that re-schedule after each execution
+- Supported interval units: `s` (seconds), `m` (minutes), `h` (hours), `d` (days), `w` (weeks)
+
+### Operational Controls
+
+Scheduled tasks can be managed at runtime via the Management API and CLI:
+
+- **Pause** — suspends a task's timer without removing the schedule. The task will not fire until resumed
+- **Resume** — restarts a paused task's timer from the current time
+- **Manual trigger** — fires a task immediately regardless of schedule or paused state
+
+Pause/resume state is persisted in the KV-Store through consensus — it survives leader failover and node restarts.
+
+See [Management API](../reference/management-api.md) and [CLI Reference](../reference/cli.md) for endpoint and command details.
+
+### Execution State
+
+The runtime tracks execution metrics for each scheduled task:
+
+| Metric | Description |
+|--------|-------------|
+| `lastExecutionAt` | Epoch millis of the most recent execution |
+| `nextFireAt` | Epoch millis of the next scheduled fire (cron tasks) |
+| `consecutiveFailures` | Number of consecutive failed executions (resets on success) |
+| `totalExecutions` | Lifetime execution count |
+| `lastFailureMessage` | Error message from the most recent failure |
+
+Execution state is written to the KV-Store after each execution (fire-and-forget). Query via `GET /api/scheduled-tasks/{config}/{artifact}/{method}/state`.
 
 ### Method Constraints
 

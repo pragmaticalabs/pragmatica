@@ -27,7 +27,6 @@ import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
-import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.*;
 import org.pragmatica.consensus.topology.NodeState;
@@ -648,12 +647,6 @@ class RabiaEngineTest {
 
         @Override
         public void listNodes(NetworkServiceMessage.ListConnectedNodes listConnectedNodes) {}
-
-        @Override
-        public void handlePing(NetworkMessage.Ping ping) {}
-
-        @Override
-        public void handlePong(NetworkMessage.Pong pong) {}
 
         @Override
         public void handleSend(NetworkServiceMessage.Send send) {}

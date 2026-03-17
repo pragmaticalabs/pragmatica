@@ -1,16 +1,15 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.topology.TopologyGraph;
 import org.pragmatica.aether.slice.topology.TopologyParser;
@@ -25,11 +24,8 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -260,19 +256,12 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private int countActiveInstances(AetherNode node, Artifact artifact) {
-        var count = new AtomicInteger(0);
-        node.kvStore()
-            .forEach(SliceNodeKey.class,
-                     SliceNodeValue.class,
-                     (key, value) -> countIfActive(count, key, value, artifact));
-        return count.get();
-    }
-
-    private void countIfActive(AtomicInteger count, SliceNodeKey key, SliceNodeValue value, Artifact artifact) {
-        if (key.artifact()
-               .equals(artifact) && value.state() == SliceState.ACTIVE) {
-            count.incrementAndGet();
-        }
+        return (int) node.deploymentMap()
+                        .byArtifact(artifact)
+                        .values()
+                        .stream()
+                        .filter(state -> state == SliceState.ACTIVE)
+                        .count();
     }
 
     private String determineSliceDeploymentStatus(int target, int active) {
@@ -427,58 +416,32 @@ public final class SliceRoutes implements RouteSource {
 
     private SlicesStatusResponse buildSlicesStatusResponse() {
         var node = nodeSupplier.get();
-        Map<Artifact, List<SliceInstance>> slicesByArtifact = new HashMap<>();
-        node.kvStore()
-            .forEach(SliceNodeKey.class,
-                     SliceNodeValue.class,
-                     (key, value) -> collectSliceInstance(slicesByArtifact, key, value));
-        var slices = slicesByArtifact.entrySet()
-                                     .stream()
-                                     .map(this::toSliceStatus)
-                                     .toList();
+        var slices = node.deploymentMap()
+                         .allDeployments()
+                         .stream()
+                         .map(this::toSliceStatusFromDeployment)
+                         .toList();
         return new SlicesStatusResponse(slices);
     }
 
-    private SliceStatus toSliceStatus(Map.Entry<Artifact, List<SliceInstance>> entry) {
-        var artifact = entry.getKey();
-        var instances = entry.getValue();
-        var aggregateState = computeAggregateState(instances);
-        var instanceInfos = instances.stream()
-                                     .map(this::toSliceInstanceInfo)
-                                     .toList();
-        return new SliceStatus(artifact.asString(), aggregateState.name(), instanceInfos);
+    private SliceStatus toSliceStatusFromDeployment(DeploymentMap.SliceDeploymentInfo info) {
+        var instanceInfos = info.instances()
+                                .stream()
+                                .map(this::toSliceInstanceInfoFromDeployment)
+                                .toList();
+        return new SliceStatus(info.artifact(),
+                               info.aggregateState()
+                                   .name(),
+                               instanceInfos);
     }
 
-    private SliceState computeAggregateState(List<SliceInstance> instances) {
-        return Option.from(instances.stream()
-                                    .map(SliceInstance::state)
-                                    .filter(s -> s == SliceState.ACTIVE)
-                                    .findAny())
-                     .or(instances.isEmpty()
-                         ? SliceState.FAILED
-                         : instances.getFirst()
-                                    .state());
-    }
-
-    private SliceInstanceInfo toSliceInstanceInfo(SliceInstance instance) {
-        var health = instance.state() == SliceState.ACTIVE
+    private SliceInstanceInfo toSliceInstanceInfoFromDeployment(DeploymentMap.SliceInstanceInfo inst) {
+        var health = inst.state() == SliceState.ACTIVE
                      ? "HEALTHY"
                      : "UNHEALTHY";
-        return new SliceInstanceInfo(instance.nodeId()
-                                             .id(),
-                                     instance.state()
-                                             .name(),
+        return new SliceInstanceInfo(inst.nodeId(),
+                                     inst.state()
+                                         .name(),
                                      health);
     }
-
-    private void collectSliceInstance(Map<Artifact, List<SliceInstance>> map,
-                                      SliceNodeKey sliceKey,
-                                      SliceNodeValue sliceValue) {
-        map.computeIfAbsent(sliceKey.artifact(),
-                            _ -> new ArrayList<>())
-           .add(new SliceInstance(sliceKey.nodeId(),
-                                  sliceValue.state()));
-    }
-
-    private record SliceInstance(NodeId nodeId, SliceState state) {}
 }

@@ -16,10 +16,12 @@ package org.pragmatica.postgres.net.netty;
 
 import org.pragmatica.postgres.PgConnectionPool;
 import org.pragmatica.postgres.PgDatabase;
+import org.pragmatica.postgres.PgTransactionPool;
 import org.pragmatica.postgres.ProtocolStream;
 import org.pragmatica.postgres.SqlError;
 import org.pragmatica.postgres.net.Connectible;
 import org.pragmatica.postgres.net.ConnectibleBuilder;
+import org.pragmatica.postgres.net.PoolMode;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
@@ -70,7 +72,9 @@ public class NettyConnectibleBuilder extends ConnectibleBuilder {
     }
 
     public Connectible pool() {
-        return new PgConnectionPool(properties, this::obtainStream);
+        return properties.poolMode() == PoolMode.TRANSACTION
+            ? new PgTransactionPool(properties, this::obtainStream)
+            : new PgConnectionPool(properties, this::obtainStream);
     }
 
     public Connectible plain() {

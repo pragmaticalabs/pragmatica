@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
+import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
@@ -41,9 +42,9 @@ class ScheduledTaskRegistryTest {
     }
 
     private void putTask(String configSection, Artifact artifact, MethodName method,
-                         NodeId node, String interval, String cron, boolean leaderOnly) {
+                         NodeId node, String interval, String cron, ExecutionMode executionMode) {
         var key = ScheduledTaskKey.scheduledTaskKey(configSection, artifact, method);
-        var value = new ScheduledTaskValue(node, interval, cron, leaderOnly);
+        var value = new ScheduledTaskValue(node, interval, cron, executionMode, false);
         var put = new KVCommand.Put<>(key, value);
         registry.onScheduledTaskPut(new ValuePut<>(put, Option.none()));
     }
@@ -58,7 +59,7 @@ class ScheduledTaskRegistryTest {
     class TaskPut {
         @Test
         void onScheduledTaskPut_addsTask() {
-            putTask("cache", artifact, method, nodeA, "30s", "", false);
+            putTask("cache", artifact, method, nodeA, "30s", "", ExecutionMode.ALL);
 
             var tasks = registry.allTasks();
 
@@ -71,7 +72,7 @@ class ScheduledTaskRegistryTest {
             assertThat(task.interval()).isEqualTo("30s");
             assertThat(task.isInterval()).isTrue();
             assertThat(task.isCron()).isFalse();
-            assertThat(task.leaderOnly()).isFalse();
+            assertThat(task.executionMode()).isEqualTo(ExecutionMode.ALL);
         }
     }
 
@@ -79,7 +80,7 @@ class ScheduledTaskRegistryTest {
     class TaskRemove {
         @Test
         void onScheduledTaskRemove_deletesTask() {
-            putTask("cache", artifact, method, nodeA, "30s", "", false);
+            putTask("cache", artifact, method, nodeA, "30s", "", ExecutionMode.ALL);
 
             removeTask("cache", artifact, method);
 
@@ -91,26 +92,26 @@ class ScheduledTaskRegistryTest {
     class AllTasks {
         @Test
         void allTasks_returnsAllRegistered() {
-            putTask("cache", artifact, method, nodeA, "30s", "", false);
-            putTask("metrics", artifact, method2, nodeA, "1m", "", true);
-            putTask("billing", artifact2, method, nodeB, "", "0 */5 * * *", true);
+            putTask("cache", artifact, method, nodeA, "30s", "", ExecutionMode.ALL);
+            putTask("metrics", artifact, method2, nodeA, "1m", "", ExecutionMode.SINGLE);
+            putTask("billing", artifact2, method, nodeB, "", "0 */5 * * *", ExecutionMode.SINGLE);
 
             assertThat(registry.allTasks()).hasSize(3);
         }
     }
 
     @Nested
-    class LeaderOnlyTasks {
+    class SingleModeTasks {
         @Test
-        void leaderOnlyTasks_filtersCorrectly() {
-            putTask("cache", artifact, method, nodeA, "30s", "", false);
-            putTask("metrics", artifact, method2, nodeA, "1m", "", true);
-            putTask("billing", artifact2, method, nodeB, "5m", "", true);
+        void singleModeTasks_filtersCorrectly() {
+            putTask("cache", artifact, method, nodeA, "30s", "", ExecutionMode.ALL);
+            putTask("metrics", artifact, method2, nodeA, "1m", "", ExecutionMode.SINGLE);
+            putTask("billing", artifact2, method, nodeB, "5m", "", ExecutionMode.SINGLE);
 
-            var leaderOnly = registry.leaderOnlyTasks();
+            var singleMode = registry.singleModeTasks();
 
-            assertThat(leaderOnly).hasSize(2);
-            assertThat(leaderOnly).allMatch(ScheduledTask::leaderOnly);
+            assertThat(singleMode).hasSize(2);
+            assertThat(singleMode).allMatch(task -> task.executionMode() == ExecutionMode.SINGLE);
         }
     }
 
@@ -118,9 +119,9 @@ class ScheduledTaskRegistryTest {
     class LocalTasks {
         @Test
         void localTasks_filtersByNodeId() {
-            putTask("cache", artifact, method, nodeA, "30s", "", false);
-            putTask("metrics", artifact, method2, nodeB, "1m", "", true);
-            putTask("billing", artifact2, method, nodeA, "5m", "", false);
+            putTask("cache", artifact, method, nodeA, "30s", "", ExecutionMode.ALL);
+            putTask("metrics", artifact, method2, nodeB, "1m", "", ExecutionMode.SINGLE);
+            putTask("billing", artifact2, method, nodeA, "5m", "", ExecutionMode.ALL);
 
             var localA = registry.localTasks(nodeA);
             var localB = registry.localTasks(nodeB);
@@ -139,7 +140,7 @@ class ScheduledTaskRegistryTest {
             var notifications = new CopyOnWriteArrayList<Option<ScheduledTask>>();
             registry.setChangeListener((_, taskOpt) -> notifications.add(taskOpt));
 
-            putTask("cache", artifact, method, nodeA, "30s", "", false);
+            putTask("cache", artifact, method, nodeA, "30s", "", ExecutionMode.ALL);
 
             assertThat(notifications).hasSize(1);
             assertThat(notifications.getFirst().isPresent()).isTrue();
@@ -147,7 +148,7 @@ class ScheduledTaskRegistryTest {
 
         @Test
         void setChangeListener_notifiesOnRemove() {
-            putTask("cache", artifact, method, nodeA, "30s", "", false);
+            putTask("cache", artifact, method, nodeA, "30s", "", ExecutionMode.ALL);
 
             var notifications = new CopyOnWriteArrayList<Option<ScheduledTask>>();
             registry.setChangeListener((_, taskOpt) -> notifications.add(taskOpt));
@@ -172,7 +173,7 @@ class ScheduledTaskRegistryTest {
                     executor.submit(() -> {
                         try {
                             var art = Artifact.artifact("org.example:slice-" + index + ":1.0.0").unwrap();
-                            putTask("section-" + index, art, method, nodeA, index + "s", "", false);
+                            putTask("section-" + index, art, method, nodeA, index + "s", "", ExecutionMode.ALL);
                         } finally {
                             latch.countDown();
                         }

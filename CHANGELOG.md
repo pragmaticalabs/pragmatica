@@ -4,7 +4,61 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.19.3] - Unreleased
+## [0.20.0] - Unreleased
+
+### Added
+- **Scheduled task ExecutionMode** — replaced `boolean leaderOnly` with `ExecutionMode` enum (`SINGLE`, `ALL`). `SINGLE` (default) fires on leader only, `ALL` fires independently on every node with the slice deployed. TOML: `executionMode = "ALL"` in `[scheduling.*]` sections
+- **Blueprint pub-sub validation** — deploy-time validation rejects blueprints where a publisher topic has no subscriber. `PubSubValidator` cross-references all publisher/subscriber config sections across all slices in the blueprint. Orphan publishers produce a descriptive error and the blueprint is not deployed
+- **Transaction-mode connection pooling** — postgres-async driver now supports `PoolMode.TRANSACTION` which multiplexes N logical connections over M physical connections. Borrows per-query/transaction, returns on completion. Includes prepared statement migration across physical backends, LISTEN/NOTIFY pinning, nested transaction (savepoint) support, and `ReadyForQuery` transaction status parsing. Eliminates need for external PgBouncer
+- **Compound KV-Store key types** — `NodeArtifactKey` (replaces per-method EndpointKey + SliceNodeKey) and `NodeRoutesKey` (replaces per-route HttpNodeRouteKey) with compound values. Single writer per node per artifact, ~10x reduction in entry count and consensus commits
+- **Hybrid Logical Clock** — new `integrations/hlc` module providing `HlcTimestamp` (packed 48-bit micros + 16-bit counter) and thread-safe `HlcClock` with drift detection, used for DHT versioned writes
+- **Cron scheduling** — wired existing `CronExpression` parser into `ScheduledTaskManager` with one-shot+re-schedule pattern. Cron tasks fire at the next matching time, then re-schedule automatically
+- **Weeks interval unit** — `IntervalParser` now supports `w` suffix (e.g., `2w` = 14 days) for schedules that cron can't express naturally
+- **Pause/resume scheduled tasks** — operators can pause and resume individual scheduled tasks via REST API (`POST .../pause`, `.../resume`) and CLI (`scheduled-tasks pause/resume`). Paused state persisted in KV-Store through consensus
+- **Manual trigger** — fire any scheduled task immediately via REST API (`POST .../trigger`) or CLI (`scheduled-tasks trigger`), regardless of schedule or paused state
+- **Execution state tracking** — `ScheduledTaskStateRegistry` tracks last execution time, consecutive failures, total executions per task. State written to KV-Store after each execution (fire-and-forget). REST API responses enriched with execution metrics
+- **Execution state endpoint** — `GET /api/scheduled-tasks/{config}/{artifact}/{method}/state` returns detailed execution state including failure messages
+- **Centralized timeout configuration** — all operator-facing timeouts consolidated into `TimeoutsConfig` with 14 subsystem groups. TOML `[timeouts.*]` sections with human-readable duration strings (`"5s"`, `"2m"`, `"500ms"`). Covers invocation, forwarding, deployment, rolling updates, cluster, consensus, election, SWIM, observability, DHT, worker, security, repository, and scaling. Legacy `_ms` fields (`forward_timeout_ms`, `cooldown_delay_ms`) supported with automatic migration. Reference: `aether/docs/reference/timeout-configuration.md`
+
+### Changed
+- **Invocation timeouts reduced** — server-side timeout 25s→15s, client-side invoker timeout 30s→20s. Faster failure detection for stuck invocations
+- **Activation chain timeout increased** — 2m→5m to accommodate loading (2m) + activating (1m) with headroom
+- **Local repository locate timeout reduced** — 30s→10s (local filesystem operations don't need 30s)
+- **Config record field standardization** — all `long *Ms`/`int *Seconds`/`Duration` fields in config records replaced with `TimeSpan`. Affected: `AppHttpConfig`, `WorkerConfig`, `TtmConfig`, `RollbackConfig`, `AlertConfig.WebhookConfig`, `NodeConfig`, `PassiveLBConfig`
+- **Control plane KV-Store migration (complete)** — all control plane data migrated from DHT to KV-Store with compound key types. Publishers write only `NodeArtifactKey`/`NodeRoutesKey` (no dual-write). All consumers (EndpointRegistry, DeploymentMap, HttpRouteRegistry, ControlLoop, ArtifactDeploymentTracker, LoadBalancerManager) handle new types via KVNotificationRouter. CDM cleanup uses new key types for stale entry removal. ~10x reduction in consensus commits per deployment
+- **WorkerNetwork eliminated** — consolidated inter-worker TCP transport into NettyClusterNetwork (NCN) via PassiveNode's DelegateRouter. Workers now use a single Netty TCP stack instead of two. All inter-worker messaging (mutations, decisions, snapshots, metrics, DHT relay) flows through NCN's `Send`/`Broadcast` messages
+- **Server UDP support** — `Server` now supports optional UDP port binding alongside TCP, sharing the same workerGroup (EventLoopGroup). Configured via `ServerConfig.withUdpPort()`. Foundation for future lightweight UDP messaging
+- **SWIM sole failure detector** — removed NCN's Ping/Pong keepalive. SWIM is now the only failure detection mechanism. Eliminates redundant probing and simplifies the network layer
+- **SWIM shared thread pool** — `NettySwimTransport` can use Server's workerGroup instead of creating a separate `NioEventLoopGroup(1)`. Passed via `CoreSwimHealthDetector` on quorum establishment
+- **HTTP server shared EventLoopGroups** — `HttpServer` accepts external `EventLoopGroup` instances via new factory overload. `NettyHttpServer.createShared()` binds on provided groups without owning them (no shutdown on stop). AppHttpServer, ManagementServer, and AetherPassiveLB now share Server's boss/worker groups, reducing per-node thread pools from 6+ to 2
+- **Worker module JBCT compliance** — converted 7 types (`MutationForwarder`, `GovernorCleanup`, `DecisionRelay`, `WorkerBootstrap`, `WorkerMetricsAggregator`, `WorkerDeploymentManager`, `GovernorElection`) from final classes/sealed interfaces to JBCT-compliant interfaces with local record implementations. Eliminated Mockito from all 7 worker test files, replaced with simple record stubs
+- **DHT versioned writes** — every DHT put now carries an HLC version; storage rejects writes with version <= current, fixing out-of-order state overwrites (e.g., LOADED overwriting ACTIVE)
+- **ReplicatedMap local cache** — `NamespacedReplicatedMap` now maintains a `ConcurrentHashMap` local cache with `forEach()` for iteration, enabling CDM to rebuild slice state from DHT
+- **CDM state rebuild** — `ClusterDeploymentManager` rebuilds slice state from DHT `ReplicatedMap` instead of consensus KV-Store
+- **DHT notification broadcasting** — active nodes broadcast DHT route mutations to passive peers (load balancers) via `DHTNotification` protocol messages
+
+### Fixed
+- **CDM reconciliation interval** — ClusterDeploymentManager was incorrectly wired to cluster topology interval (5s) instead of its own 30s deployment reconciliation cycle, causing 6x excessive reconciliation
+- **TcpTopologyManager node resurrection race** — `get()`+`put()` pattern in connection failure/established handlers was not atomic; a concurrent `remove()` between the two calls could resurrect a removed node. Fixed with `computeIfPresent()` for atomic read-modify-write
+- **Route eviction on node death** — `HttpRouteRegistry.evictNode()` existed but was never wired to `NodeRemoved` topology event. Dead nodes stayed in route tables until CDM's slow consensus-based cleanup completed (60s+). Now evicted immediately on disconnect. Also added `cleanupStaleNodeRoutes()` to periodic reconcile as defense-in-depth
+- **NodeLifecycleKey race on restart** — `registerLifecycleOnDuty()` skipped write if key existed, but pending consensus batch could delete the stale key after the check. Now unconditionally writes ON_DUTY (only guards DECOMMISSIONED). Added `onRemove` defense-in-depth handler to re-register if key is unexpectedly removed
+- **CDM LOAD command tracking race** — `issueLoadCommand()` put LOAD in `sliceStates` before consensus confirmed, causing phantom instances that blocked reconcile retries. Moved tracking to `withSuccess` callback
+- **NDM pending LOAD scan** — NDM now scans KV-Store for pending LOAD commands on activation, catching commands issued by CDM before NDM transitioned from Dormant
+- **Worker thread bottleneck offloading** — SWIM `DisconnectNode` routing uses `routeAsync` to avoid blocking shared SWIM thread. `StaticFileHandler` caches classpath resources in `ConcurrentHashMap` to eliminate repeated blocking I/O
+- **HTTP forwarding zero-copy bodies** — removed unnecessary defensive `byte[]` cloning from `HttpRequestContext` and `HttpResponseData` constructors and accessors, eliminating ~4 array copies per forwarded request
+- **Anti-entropy migration HLC poisoning** — migration data now carries HLC versions and uses `putVersioned()` instead of unversioned `put()` which was storing with `Long.MAX_VALUE`, permanently blocking all subsequent versioned writes to affected keys
+- **GitBackedPersistence** — configure git user email/name after `git init` to prevent commit failures on CI runners without global git config
+- **ReadTimeoutHandler removed** — Netty `ReadTimeoutHandler` removed from cluster network; SWIM health detection handles peer liveness instead
+- **ReplicatedMap async notification race** — `NamespacedReplicatedMap` used `.onSuccess()` (async dispatch) for cache updates and subscriber notifications, causing rapid state transitions (LOADED→ACTIVE) to arrive out of order at CDM. Changed to `.withSuccess()` (synchronous dispatch) to preserve causal write ordering
+- **ReplicatedMap subscriber re-entrance** — synchronous notification delivery exposed a re-entrance bug: when subscriber callbacks trigger nested puts (e.g., CDM reacting to LOADED by issuing ACTIVATE), the outer `forEach` continued delivering stale values to later subscribers (DeploymentMap). Replaced with drain loop (trampoline pattern) that enqueues notifications and processes them iteratively, ensuring each state transition is fully delivered to all subscribers before the next begins
+- **Full DHT replication for control plane** — AetherMaps now uses `DHTConfig.FULL` replication so all nodes receive all control plane notifications (slice-nodes, endpoints, routes), fixing notification delivery gaps on non-replica nodes
+- **Route eviction on node departure** — removed redundant `routeRegistry.evictNode()` call from `HttpForwarder`; DHT cleanup handles route removal
+- **RemoteRepositoryTest** — assertion updated to accept both "Download failed" and "HTTP operation failed" error messages after HttpOperations refactor
+- **CodecProcessor doubly-nested types** — `@Codec` annotation processor now recursively scans nested helper types inside permitted subclasses (e.g., `RouteEntry` inside `NodeRoutesValue`). Previously only scanned one nesting level, causing `No codec registered` errors at runtime
+- **Virtual thread starvation in example tests** — `InMemoryDatabaseConnector` now uses synchronous `Promise.resolved()` instead of async `Promise.lift()` for in-memory operations, preventing carrier thread starvation on low-vCPU CI runners
+- **Test await timeouts** — all example test `await()` calls now use 10-second timeouts to prevent indefinite hangs on resource-constrained environments
+
+## [0.19.3]
 
 ### Multi-Blueprint Lifecycle
 - Fixed critical bug: blueprint deletion now only removes artifacts owned by the deleted blueprint (was removing ALL artifacts)

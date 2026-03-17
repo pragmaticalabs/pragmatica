@@ -25,23 +25,31 @@ import org.slf4j.LoggerFactory;
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
 public final class WebSocketAuthenticator {
     private static final Logger log = LoggerFactory.getLogger(WebSocketAuthenticator.class);
-    private static final long AUTH_TIMEOUT_MS = 5_000;
+    private static final long DEFAULT_AUTH_TIMEOUT_MS = 5_000;
     private static final JsonMapper JSON = JsonMapper.defaultJsonMapper();
     private static final String AUTH_TYPE = "AUTH";
 
     private final SecurityValidator securityValidator;
     private final boolean securityEnabled;
+    private final long authTimeoutMs;
     private final Set<String> authenticatedSessions = ConcurrentHashMap.newKeySet();
     private final Map<String, Long> pendingSessions = new ConcurrentHashMap<>();
 
-    private WebSocketAuthenticator(SecurityValidator securityValidator, boolean securityEnabled) {
+    private WebSocketAuthenticator(SecurityValidator securityValidator, boolean securityEnabled, long authTimeoutMs) {
         this.securityValidator = securityValidator;
         this.securityEnabled = securityEnabled;
+        this.authTimeoutMs = authTimeoutMs;
     }
 
     public static WebSocketAuthenticator webSocketAuthenticator(SecurityValidator securityValidator,
                                                                 boolean securityEnabled) {
-        return new WebSocketAuthenticator(securityValidator, securityEnabled);
+        return new WebSocketAuthenticator(securityValidator, securityEnabled, DEFAULT_AUTH_TIMEOUT_MS);
+    }
+
+    public static WebSocketAuthenticator webSocketAuthenticator(SecurityValidator securityValidator,
+                                                                boolean securityEnabled,
+                                                                long authTimeoutMs) {
+        return new WebSocketAuthenticator(securityValidator, securityEnabled, authTimeoutMs);
     }
 
     /// Handle new connection. Returns true if session is immediately authorized (no auth needed).
@@ -87,7 +95,7 @@ public final class WebSocketAuthenticator {
     @SuppressWarnings("JBCT-PAT-01")
     private void waitAndExpireSession(WebSocketSession session) {
         try{
-            Thread.sleep(AUTH_TIMEOUT_MS);
+            Thread.sleep(authTimeoutMs);
         } catch (InterruptedException e) {
             Thread.currentThread()
                   .interrupt();

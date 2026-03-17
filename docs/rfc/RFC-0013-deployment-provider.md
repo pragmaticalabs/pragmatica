@@ -43,7 +43,7 @@ File: `aether/cloud-tests/src/test/java/org/pragmatica/aether/cloud/HetznerCloud
 ### Current Pain Points
 
 1. **No reusable deployment abstraction** -- Every consumer (cloud-tests, future CLI `aether deploy`, CDM auto-heal) must re-implement SSH/SCP/health-check logic.
-2. **No container deployment path at runtime** -- `DockerGenerator` and `KubernetesGenerator` produce static files. Nothing orchestrates `docker run` or `podman run` against a live target host.
+2. **No container deployment path at runtime** -- `DockerGenerator` and `KubernetesGenerator` produce static files. Nothing orchestrates `docker run` or `docker run` against a live target host.
 3. **Binary deployment is test-only** -- The SCP + nohup pattern in `HetznerCloudCluster` and `CloudNode` is not accessible from production code.
 4. **No rolling upgrade automation** -- The deployment runbook (`aether/docs/operators/runbooks/deployment.md`) documents a manual stop-copy-start cycle.
 5. **No integration with CDM** -- `ClusterDeploymentManager` can call `ComputeProvider.provision()` to create VMs but has no way to deploy Aether onto them.
@@ -56,7 +56,7 @@ File: `aether/cloud-tests/src/test/java/org/pragmatica/aether/cloud/HetznerCloud
 - **REQ-D04**: Model deployment failures as sealed `Cause` types.
 - **REQ-D05**: Support the full lifecycle: deploy, health-verify, log-access, upgrade, shutdown.
 - **REQ-D06**: Extract `cloud-tests` ad-hoc code into a `BinaryDeploymentProvider` implementation.
-- **REQ-D07**: Provide a `ContainerDeploymentProvider` implementation for Docker/Podman.
+- **REQ-D07**: Provide a `ContainerDeploymentProvider` implementation for Docker/Docker.
 - **REQ-D08**: Enable CDM auto-heal to provision + deploy in a single orchestrated flow.
 
 ## Design
@@ -128,7 +128,7 @@ import static org.pragmatica.lang.Result.success;
 /// Deployment strategy determines HOW the Aether runtime is placed on a target host.
 public sealed interface DeploymentStrategy {
 
-    /// Deploy via container runtime (Docker, Podman, or orchestrator).
+    /// Deploy via container runtime (Docker, Docker, or orchestrator).
     record Container(String image,
                      String registry,
                      ContainerRuntime runtime,
@@ -636,13 +636,13 @@ The existing `withCompute()` convenience method and the 3-argument `environmentI
 
 ### 10. Container Strategy Implementation Sketch
 
-The container deployment flow for a Hetzner VM with Podman/Docker installed:
+The container deployment flow for a Hetzner VM with Docker/Docker installed:
 
 ```java
 package org.pragmatica.aether.environment.hetzner;
 
 /// Hetzner container-based deployment.
-/// Assumes the target VM has a container runtime (podman or docker) pre-installed
+/// Assumes the target VM has a container runtime (docker or docker) pre-installed
 /// via cloud-init or pre-baked image.
 public record HetznerContainerDeploymentProvider(
         SshClient sshClient,

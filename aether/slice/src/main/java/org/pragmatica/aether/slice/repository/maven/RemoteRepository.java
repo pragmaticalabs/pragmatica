@@ -3,6 +3,8 @@ package org.pragmatica.aether.slice.repository.maven;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -11,9 +13,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -35,7 +35,7 @@ import static org.pragmatica.aether.slice.repository.Location.location;
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-ZONE-02", "JBCT-RET-03", "JBCT-EX-01"})
 public interface RemoteRepository extends Repository {
     Logger log = LoggerFactory.getLogger(RemoteRepository.class);
-    Duration HTTP_TIMEOUT = Duration.ofSeconds(30);
+    Duration DEFAULT_HTTP_TIMEOUT = Duration.ofSeconds(30);
 
     /// Create a RemoteRepository for the given Maven repository.
     ///
@@ -43,95 +43,142 @@ public interface RemoteRepository extends Repository {
     /// @param baseUrl Base URL of the remote Maven repository
     /// @return RemoteRepository instance
     static RemoteRepository remoteRepository(String repoId, String baseUrl) {
+        return remoteRepository(repoId, baseUrl, DEFAULT_HTTP_TIMEOUT);
+    }
+
+    /// Create a RemoteRepository with custom HTTP timeout.
+    static RemoteRepository remoteRepository(String repoId, String baseUrl, Duration httpTimeout) {
         var normalizedUrl = baseUrl.endsWith("/")
                             ? baseUrl
                             : baseUrl + "/";
         var credentials = MavenSettingsCredentials.forServer(repoId);
         var localRepo = Path.of(MavenLocalRepoLocator.findLocalRepository());
-        return artifact -> resolveArtifact(artifact, normalizedUrl, credentials, localRepo);
+        return artifact -> resolveArtifact(artifact, normalizedUrl, credentials, localRepo, httpTimeout);
     }
 
     private static Promise<Location> resolveArtifact(Artifact artifact,
                                                      String baseUrl,
                                                      Option<MavenSettingsCredentials.Credentials> credentials,
-                                                     Path localRepo) {
+                                                     Path localRepo,
+                                                     Duration httpTimeout) {
         var cachedPath = localPath(artifact, localRepo);
         if (Files.exists(cachedPath)) {
             log.debug("Cache hit for {} at {}", artifact.asString(), cachedPath);
             return toLocation(artifact, cachedPath);
         }
-        return downloadAndCache(artifact, baseUrl, credentials, cachedPath);
+        return downloadAndCache(artifact, baseUrl, credentials, cachedPath, httpTimeout);
     }
 
     private static Promise<Location> downloadAndCache(Artifact artifact,
                                                       String baseUrl,
                                                       Option<MavenSettingsCredentials.Credentials> credentials,
-                                                      Path targetPath) {
+                                                      Path targetPath,
+                                                      Duration httpTimeout) {
+        var httpOps = JdkHttpOperations.jdkHttpOperations(httpTimeout,
+                                                          java.net.http.HttpClient.Redirect.NORMAL,
+                                                          Option.none());
         var artifactPath = remotePath(artifact);
         var jarUrl = baseUrl + artifactPath;
         var sha1Url = jarUrl + ".sha1";
-        return Promise.lift(cause -> new RemoteRepositoryError.DownloadFailed(jarUrl, cause),
-                            () -> {
-                                try (var client = HttpClient.newBuilder()
-                                                            .followRedirects(HttpClient.Redirect.NORMAL)
-                                                            .connectTimeout(HTTP_TIMEOUT)
-                                                            .build()) {
-                                    var jarBytes = downloadJar(client, jarUrl, credentials, artifact);
-                                    verifySha1(client, sha1Url, credentials, jarBytes, artifact);
-                                    cacheArtifact(targetPath, jarBytes);
-                                    log.info("Cached {} to {}",
-                                             artifact.asString(),
-                                             targetPath);
-                                    return targetPath;
-                                }
-                            })
-                      .flatMap(path -> toLocation(artifact, path));
+        return downloadJar(httpOps, jarUrl, credentials, artifact, httpTimeout).flatMap(jarBytes -> verifySha1AndCache(httpOps,
+                                                                                                                       sha1Url,
+                                                                                                                       credentials,
+                                                                                                                       jarBytes,
+                                                                                                                       artifact,
+                                                                                                                       targetPath,
+                                                                                                                       httpTimeout))
+                          .flatMap(path -> toLocation(artifact, path));
     }
 
-    private static byte[] downloadJar(HttpClient client,
-                                      String jarUrl,
-                                      Option<MavenSettingsCredentials.Credentials> credentials,
-                                      Artifact artifact) throws IOException, InterruptedException {
-        var jarRequest = buildRequest(jarUrl, credentials);
-        var jarResponse = client.send(jarRequest, HttpResponse.BodyHandlers.ofByteArray());
-        if (jarResponse.statusCode() != 200) {
-            throw new RemoteDownloadException(jarUrl, jarResponse.statusCode());
+    private static Promise<byte[]> downloadJar(HttpOperations httpOps,
+                                               String jarUrl,
+                                               Option<MavenSettingsCredentials.Credentials> credentials,
+                                               Artifact artifact,
+                                               Duration httpTimeout) {
+        var jarRequest = buildRequest(jarUrl, credentials, httpTimeout);
+        return httpOps.sendBytes(jarRequest)
+                      .flatMap(result -> handleJarResponse(result, jarUrl, artifact));
+    }
+
+    private static Promise<byte[]> handleJarResponse(org.pragmatica.http.HttpResult<byte[]> result,
+                                                     String jarUrl,
+                                                     Artifact artifact) {
+        if (result.statusCode() != 200) {
+            return new RemoteRepositoryError.DownloadFailed(jarUrl,
+                                                            new RemoteDownloadException(jarUrl, result.statusCode())).promise();
         }
-        var jarBytes = jarResponse.body();
+        var jarBytes = result.body();
         log.info("Downloaded {} ({} bytes) from {}", artifact.asString(), jarBytes.length, jarUrl);
-        return jarBytes;
+        return Promise.success(jarBytes);
     }
 
-    private static HttpRequest buildRequest(String url, Option<MavenSettingsCredentials.Credentials> credentials) {
+    private static Promise<Path> verifySha1AndCache(HttpOperations httpOps,
+                                                    String sha1Url,
+                                                    Option<MavenSettingsCredentials.Credentials> credentials,
+                                                    byte[] jarBytes,
+                                                    Artifact artifact,
+                                                    Path targetPath,
+                                                    Duration httpTimeout) {
+        var sha1Request = buildRequest(sha1Url, credentials, httpTimeout);
+        return httpOps.sendString(sha1Request)
+                      .flatMap(result -> handleSha1Response(result, jarBytes, artifact))
+                      .flatMap(_ -> cacheAndReturn(targetPath, jarBytes, artifact));
+    }
+
+    @SuppressWarnings("JBCT-SEQ-01")
+    private static Promise<byte[]> handleSha1Response(org.pragmatica.http.HttpResult<String> result,
+                                                      byte[] jarBytes,
+                                                      Artifact artifact) {
+        if (result.statusCode() == 200) {
+            return verifySha1Checksum(result.body(), jarBytes, artifact);
+        }
+        log.debug("No SHA-1 checksum available for {} ({}), skipping verification",
+                  artifact.asString(),
+                  result.statusCode());
+        return Promise.success(jarBytes);
+    }
+
+    @SuppressWarnings("JBCT-SEQ-01")
+    private static Promise<byte[]> verifySha1Checksum(String sha1Body, byte[] jarBytes, Artifact artifact) {
+        var expectedSha1 = sha1Body.trim()
+                                   .split("\\s") [0];
+        return Promise.lift(cause -> new RemoteRepositoryError.DownloadFailed(artifact.asString(),
+                                                                              cause),
+                            () -> computeSha1(jarBytes))
+                      .flatMap(actualSha1 -> matchChecksum(expectedSha1, actualSha1, jarBytes, artifact));
+    }
+
+    private static Promise<byte[]> matchChecksum(String expected, String actual, byte[] jarBytes, Artifact artifact) {
+        if (!expected.equalsIgnoreCase(actual)) {
+            return new RemoteRepositoryError.DownloadFailed(artifact.asString(),
+                                                            new ChecksumMismatchException(artifact.asString(),
+                                                                                          expected,
+                                                                                          actual)).promise();
+        }
+        log.debug("SHA-1 verified for {}: {}", artifact.asString(), actual);
+        return Promise.success(jarBytes);
+    }
+
+    private static Promise<Path> cacheAndReturn(Path targetPath, byte[] jarBytes, Artifact artifact) {
+        return Promise.lift(cause -> new RemoteRepositoryError.DownloadFailed(artifact.asString(), cause),
+                            () -> cacheAndReturnPath(targetPath, jarBytes, artifact));
+    }
+
+    private static Path cacheAndReturnPath(Path targetPath, byte[] jarBytes, Artifact artifact) throws IOException {
+        cacheArtifact(targetPath, jarBytes);
+        log.info("Cached {} to {}", artifact.asString(), targetPath);
+        return targetPath;
+    }
+
+    private static HttpRequest buildRequest(String url,
+                                            Option<MavenSettingsCredentials.Credentials> credentials,
+                                            Duration httpTimeout) {
         var builder = HttpRequest.newBuilder()
                                  .uri(URI.create(url))
                                  .GET()
-                                 .timeout(HTTP_TIMEOUT);
+                                 .timeout(httpTimeout);
         credentials.onPresent(creds -> builder.header("Authorization", creds.toBasicAuthHeader()));
         return builder.build();
-    }
-
-    private static void verifySha1(HttpClient client,
-                                   String sha1Url,
-                                   Option<MavenSettingsCredentials.Credentials> credentials,
-                                   byte[] jarBytes,
-                                   Artifact artifact) throws Exception {
-        var sha1Request = buildRequest(sha1Url, credentials);
-        var sha1Response = client.send(sha1Request, HttpResponse.BodyHandlers.ofString());
-        if (sha1Response.statusCode() == 200) {
-            var expectedSha1 = sha1Response.body()
-                                           .trim()
-                                           .split("\\s") [0];
-            var actualSha1 = computeSha1(jarBytes);
-            if (!expectedSha1.equalsIgnoreCase(actualSha1)) {
-                throw new ChecksumMismatchException(artifact.asString(), expectedSha1, actualSha1);
-            }
-            log.debug("SHA-1 verified for {}: {}", artifact.asString(), actualSha1);
-        } else {
-            log.debug("No SHA-1 checksum available for {} ({}), skipping verification",
-                      artifact.asString(),
-                      sha1Response.statusCode());
-        }
     }
 
     private static String computeSha1(byte[] data) throws Exception {

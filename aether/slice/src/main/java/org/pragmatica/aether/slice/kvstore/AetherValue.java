@@ -3,6 +3,7 @@ package org.pragmatica.aether.slice.kvstore;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -181,19 +182,27 @@ public sealed interface AetherValue {
     /// @param registeredBy the node that registered this scheduled task
     /// @param interval fixed-rate interval in TimeSpan format (e.g., "5m", "30s"); empty string if cron mode
     /// @param cron standard 5-field cron expression; empty string if interval mode
-    /// @param leaderOnly whether only the leader node triggers this task
+    /// @param executionMode how the task fires across the cluster (SINGLE or ALL)
     record ScheduledTaskValue(NodeId registeredBy,
                               String interval,
                               String cron,
-                              boolean leaderOnly) implements AetherValue {
+                              ExecutionMode executionMode,
+                              boolean paused) implements AetherValue {
         /// Creates a scheduled task value with interval-based scheduling.
-        public static ScheduledTaskValue intervalTask(NodeId registeredBy, String interval, boolean leaderOnly) {
-            return new ScheduledTaskValue(registeredBy, interval, "", leaderOnly);
+        public static ScheduledTaskValue intervalTask(NodeId registeredBy,
+                                                      String interval,
+                                                      ExecutionMode executionMode) {
+            return new ScheduledTaskValue(registeredBy, interval, "", executionMode, false);
         }
 
         /// Creates a scheduled task value with cron-based scheduling.
-        public static ScheduledTaskValue cronTask(NodeId registeredBy, String cron, boolean leaderOnly) {
-            return new ScheduledTaskValue(registeredBy, "", cron, leaderOnly);
+        public static ScheduledTaskValue cronTask(NodeId registeredBy, String cron, ExecutionMode executionMode) {
+            return new ScheduledTaskValue(registeredBy, "", cron, executionMode, false);
+        }
+
+        /// Returns a copy with the paused state changed.
+        public ScheduledTaskValue withPaused(boolean paused) {
+            return new ScheduledTaskValue(registeredBy, interval, cron, executionMode, paused);
         }
 
         /// Returns true if this is an interval-based schedule.
@@ -204,6 +213,45 @@ public sealed interface AetherValue {
         /// Returns true if this is a cron-based schedule.
         public boolean isCron() {
             return ! cron.isEmpty();
+        }
+    }
+
+    /// Execution state for a scheduled task.
+    /// Tracks last execution time, next fire time, and failure statistics.
+    ///
+    /// @param lastExecutionAt epoch millis of last execution (0 if never run)
+    /// @param nextFireAt epoch millis of next scheduled fire (0 if unknown)
+    /// @param consecutiveFailures count of consecutive failures (reset on success)
+    /// @param totalExecutions total number of executions
+    /// @param lastFailureMessage message from the last failure (empty if none)
+    /// @param updatedAt timestamp of last state update
+    record ScheduledTaskStateValue(long lastExecutionAt,
+                                   long nextFireAt,
+                                   int consecutiveFailures,
+                                   int totalExecutions,
+                                   String lastFailureMessage,
+                                   long updatedAt) implements AetherValue {
+        /// Creates a state value for a successful execution.
+        public static ScheduledTaskStateValue successState(long nextFireAt, int totalExecutions) {
+            return new ScheduledTaskStateValue(System.currentTimeMillis(),
+                                               nextFireAt,
+                                               0,
+                                               totalExecutions,
+                                               "",
+                                               System.currentTimeMillis());
+        }
+
+        /// Creates a state value for a failed execution.
+        public static ScheduledTaskStateValue failureState(long nextFireAt,
+                                                           int consecutiveFailures,
+                                                           int totalExecutions,
+                                                           String failureMessage) {
+            return new ScheduledTaskStateValue(System.currentTimeMillis(),
+                                               nextFireAt,
+                                               consecutiveFailures,
+                                               totalExecutions,
+                                               failureMessage,
+                                               System.currentTimeMillis());
         }
     }
 
@@ -622,6 +670,94 @@ public sealed interface AetherValue {
         /// Returns a new value with updated state and current timestamp.
         public NodeLifecycleValue withState(NodeLifecycleState newState) {
             return new NodeLifecycleValue(newState, System.currentTimeMillis());
+        }
+    }
+
+    /// Compound deployment state and endpoint registration for a single node-artifact pair.
+    /// Carries both deployment state (from SliceNodeValue) and endpoint info (from EndpointValue).
+    ///
+    /// @param state the current deployment state
+    /// @param failureReason when state is FAILED, carries the cause message; otherwise none
+    /// @param fatal whether the failure is fatal (non-retryable)
+    /// @param instanceNumber hash-based instance number for endpoint routing (0 when not ACTIVE)
+    /// @param methods list of method names available on this slice (empty when not ACTIVE)
+    record NodeArtifactValue(SliceState state,
+                             Option<String> failureReason,
+                             boolean fatal,
+                             int instanceNumber,
+                             List<String> methods) implements AetherValue {
+        /// Creates a state-only value (no endpoints — used during LOAD/LOADING/LOADED transitions).
+        public static NodeArtifactValue nodeArtifactValue(SliceState state) {
+            return new NodeArtifactValue(state, Option.none(), false, 0, List.of());
+        }
+
+        /// Creates a FAILED state value by classifying the cause.
+        public static NodeArtifactValue failedNodeArtifactValue(Cause cause) {
+            var classified = SliceLoadingFailure.classify(cause);
+            return new NodeArtifactValue(SliceState.FAILED,
+                                         Option.option(classified.message()),
+                                         classified.isFatal(),
+                                         0,
+                                         List.of());
+        }
+
+        /// Creates an ACTIVE value with endpoint information.
+        public static NodeArtifactValue activeNodeArtifactValue(int instanceNumber, List<String> methods) {
+            return new NodeArtifactValue(SliceState.ACTIVE, Option.none(), false, instanceNumber, List.copyOf(methods));
+        }
+
+        /// Returns a new value with updated state, preserving endpoint info if transitioning to ACTIVE.
+        public NodeArtifactValue withState(SliceState newState) {
+            if (newState == SliceState.ACTIVE) {
+                return new NodeArtifactValue(newState, Option.none(), false, instanceNumber, methods);
+            }
+            return new NodeArtifactValue(newState, Option.none(), false, 0, List.of());
+        }
+
+        /// Returns true if this entry has active endpoints.
+        public boolean hasEndpoints() {
+            return state == SliceState.ACTIVE && !methods.isEmpty();
+        }
+    }
+
+    /// Compound HTTP routes for one artifact on one node.
+    /// One entry per artifact per node replaces N individual route entries.
+    ///
+    /// @param routes list of route registrations
+    record NodeRoutesValue(List<RouteEntry> routes) implements AetherValue {
+        /// Single HTTP route entry within the compound value.
+        ///
+        /// @param httpMethod HTTP method (GET, POST, etc.)
+        /// @param pathPrefix path prefix for routing
+        /// @param sliceMethod factory method name on the slice
+        /// @param state route state: ACTIVE, DRAINING, or CANARY
+        /// @param weight relative load factor (100 = normal, 0 = don't route)
+        /// @param registeredAt epoch millis when this route was registered
+        public record RouteEntry(String httpMethod,
+                                 String pathPrefix,
+                                 String sliceMethod,
+                                 String state,
+                                 int weight,
+                                 long registeredAt) {
+            /// Creates an active route entry with default weight.
+            public static RouteEntry activeRoute(String httpMethod, String pathPrefix, String sliceMethod) {
+                return new RouteEntry(httpMethod, pathPrefix, sliceMethod, "ACTIVE", 100, System.currentTimeMillis());
+            }
+
+            /// Returns true if this route is active and routable.
+            public boolean isRoutable() {
+                return "ACTIVE".equals(state) && weight > 0;
+            }
+        }
+
+        /// Creates an empty routes value.
+        public static NodeRoutesValue empty() {
+            return new NodeRoutesValue(List.of());
+        }
+
+        /// Creates a routes value from a list of entries.
+        public static NodeRoutesValue nodeRoutesValue(List<RouteEntry> routes) {
+            return new NodeRoutesValue(List.copyOf(routes));
         }
     }
 }

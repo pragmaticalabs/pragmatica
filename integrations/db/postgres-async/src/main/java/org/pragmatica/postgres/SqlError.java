@@ -8,6 +8,8 @@ public sealed interface SqlError extends Cause {
     record ChannelClosed(String message) implements SqlError {}
     record SimultaneousUseDetected(String message) implements SqlError {}
     record ConnectionPoolClosed(String message) implements SqlError {}
+    record PoolExhausted(String message) implements SqlError {}
+    record LogicalConnectionClosed(String message) implements SqlError {}
     record BadAuthenticationSequence(String message) implements SqlError {}
     record CommunicationError(String message) implements SqlError {}
 

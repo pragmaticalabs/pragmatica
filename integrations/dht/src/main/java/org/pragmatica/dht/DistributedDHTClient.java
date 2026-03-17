@@ -17,6 +17,7 @@
 package org.pragmatica.dht;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -87,15 +88,16 @@ public final class DistributedDHTClient implements DHTClient {
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
+        var version = node.hlcClock().now().packed();
         Promise<Unit> promise = Promise.promise();
         var quorum = config.effectiveWriteQuorum(node.ring()
                                                      .nodeCount());
         var collector = QuorumCollector.<Unit>quorumCollector(quorum, targets.size(), promise);
         for (var target : targets) {
             if (target.equals(node.nodeId())) {
-                handleLocalPut(key, value, collector);
+                handleLocalPut(key, value, version, collector);
             } else {
-                sendRemotePut(target, key, value, collector);
+                sendRemotePut(target, key, value, version, collector);
             }
         }
         return promise.timeout(config.operationTimeout());
@@ -149,6 +151,11 @@ public final class DistributedDHTClient implements DHTClient {
     /// Get the underlying node.
     public DHTNode node() {
         return node;
+    }
+
+    /// Get the HLC clock (shared with DHTNode).
+    public HlcClock hlcClock() {
+        return node.hlcClock();
     }
 
     // --- Response handlers (called by message router) ---
@@ -205,9 +212,9 @@ public final class DistributedDHTClient implements DHTClient {
             .onFailure(collector::onFailure);
     }
 
-    private void handleLocalPut(byte[] key, byte[] value, QuorumCollector<Unit> collector) {
-        node.putLocal(key, value)
-            .onSuccess(collector::onSuccess)
+    private void handleLocalPut(byte[] key, byte[] value, long version, QuorumCollector<Unit> collector) {
+        node.storage().putVersioned(key, value, version)
+            .onSuccess(_ -> collector.onSuccess(unit()))
             .onFailure(collector::onFailure);
     }
 
@@ -231,12 +238,12 @@ public final class DistributedDHTClient implements DHTClient {
                      new DHTMessage.GetRequest(correlationId, node.nodeId(), key));
     }
 
-    private void sendRemotePut(NodeId target, byte[] key, byte[] value, QuorumCollector<Unit> collector) {
+    private void sendRemotePut(NodeId target, byte[] key, byte[] value, long version, QuorumCollector<Unit> collector) {
         var correlationId = KSUID.ksuid()
                                  .toString();
         pendingOps.put(correlationId, new PendingOperation<>(collector));
         network.send(target,
-                     new DHTMessage.PutRequest(correlationId, node.nodeId(), key, value));
+                     new DHTMessage.PutRequest(correlationId, node.nodeId(), key, value, version));
     }
 
     private void sendRemoteRemove(NodeId target, byte[] key, QuorumCollector<Boolean> collector) {

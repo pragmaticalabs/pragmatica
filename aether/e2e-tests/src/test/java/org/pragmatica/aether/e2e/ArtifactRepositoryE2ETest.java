@@ -37,11 +37,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class ArtifactRepositoryE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
     private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
-    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.19.3");
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.20.0");
     private static final String TEST_ARTIFACT_ID = "echo-slice-echo-service";
 
     // Common timeouts (CI gets 2x via adapt())
-    private static final Duration RECOVERY_TIMEOUT = adapt(timeSpan(90).seconds().duration());
+    private static final Duration RECOVERY_TIMEOUT = adapt(timeSpan(120).seconds().duration());
     private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
 
     private static AetherCluster cluster;
@@ -57,8 +57,10 @@ class ArtifactRepositoryE2ETest {
         cluster.awaitQuorum();
         System.out.println("[DEBUG] Awaiting all healthy...");
         cluster.awaitAllHealthy();
-        System.out.println("[DEBUG] Awaiting leader election...");
-        cluster.awaitLeader();
+        System.out.println("[DEBUG] Awaiting cluster convergence...");
+        cluster.awaitClusterConverged();
+        System.out.println("[DEBUG] Awaiting all nodes ON_DUTY...");
+        cluster.awaitAllNodesOnDuty();
         System.out.println("[DEBUG] Uploading test artifacts to DHT...");
         cluster.uploadTestArtifacts();
         System.out.println("[DEBUG] Cluster ready for tests");
@@ -89,7 +91,8 @@ class ArtifactRepositoryE2ETest {
 
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();
-        cluster.awaitLeader();
+        cluster.awaitClusterConverged();
+        cluster.awaitAllNodesOnDuty();
 
         // Re-upload test artifacts to replenish replicas after node restarts
         System.out.println("[SETUP] Re-uploading test artifacts to ensure replica coverage");

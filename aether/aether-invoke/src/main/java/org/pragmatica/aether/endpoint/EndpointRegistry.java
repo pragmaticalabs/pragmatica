@@ -3,10 +3,11 @@ package org.pragmatica.aether.endpoint;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
-import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.invoke.InvocationContext;
 import org.pragmatica.aether.update.VersionRouting;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -39,39 +40,22 @@ import org.slf4j.LoggerFactory;
 /// This is a pure event-driven component - no active synchronization needed.
 /// Slices automatically publish/unpublish endpoints via consensus.
 public interface EndpointRegistry {
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
-    void onEndpointPut(ValuePut<EndpointKey, EndpointValue> valuePut);
-
-    @MessageReceiver
-    @SuppressWarnings("JBCT-RET-01") // MessageReceiver callback — void required by messaging framework
-    void onEndpointRemove(ValueRemove<EndpointKey, EndpointValue> valueRemove);
-
-    /// Direct endpoint registration (used by DHT subscription and consensus handlers).
+    /// Direct endpoint registration (used internally by onNodeArtifactPut).
     @SuppressWarnings("JBCT-RET-01") // Mutating operation — void is intentional
     void registerEndpoint(EndpointKey key, EndpointValue value);
 
-    /// Direct endpoint unregistration (used by DHT subscription and consensus handlers).
+    /// Direct endpoint unregistration (used internally by onNodeArtifactRemove).
     @SuppressWarnings("JBCT-RET-01") // Mutating operation — void is intentional
     void unregisterEndpoint(EndpointKey key);
 
-    /// Create a MapSubscription adapter for this registry.
-    /// Allows the registry to be fed by DHT ReplicatedMap events.
-    default MapSubscription<EndpointKey, EndpointValue> asMapSubscription() {
-        return new MapSubscription<>() {
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onPut(EndpointKey key, EndpointValue value) {
-                registerEndpoint(key, value);
-            }
+    /// Handle NodeArtifactKey put — extracts methods + instanceNumber from compound value
+    /// and registers individual endpoints per method.
+    @SuppressWarnings("JBCT-RET-01") // Event callback
+    void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
 
-            @Override
-            @SuppressWarnings("JBCT-RET-01")
-            public void onRemove(EndpointKey key) {
-                unregisterEndpoint(key);
-            }
-        };
-    }
+    /// Handle NodeArtifactKey remove — unregisters all endpoints for the node+artifact.
+    @SuppressWarnings("JBCT-RET-01") // Event callback
+    void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
 
     /// Find all endpoints for a given artifact and method.
     List<Endpoint> findEndpoints(Artifact artifact, MethodName methodName);
@@ -156,18 +140,46 @@ public interface EndpointRegistry {
 
             @Override
             @SuppressWarnings("JBCT-RET-01")
-            public void onEndpointPut(ValuePut<EndpointKey, EndpointValue> valuePut) {
-                registerEndpoint(valuePut.cause()
-                                         .key(),
-                                 valuePut.cause()
-                                         .value());
+            public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {
+                var key = valuePut.cause()
+                                  .key();
+                var value = valuePut.cause()
+                                    .value();
+                registerEndpointsFromNodeArtifact(key, value);
             }
 
             @Override
             @SuppressWarnings("JBCT-RET-01")
-            public void onEndpointRemove(ValueRemove<EndpointKey, EndpointValue> valueRemove) {
-                unregisterEndpoint(valueRemove.cause()
-                                              .key());
+            public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
+                var key = valueRemove.cause()
+                                     .key();
+                unregisterEndpointsForNodeArtifact(key);
+            }
+
+            private void registerEndpointsFromNodeArtifact(NodeArtifactKey key, NodeArtifactValue value) {
+                if (value.methods()
+                         .isEmpty()) {
+                    return;
+                }
+                for (var methodStr : value.methods()) {
+                    MethodName.methodName(methodStr)
+                              .onSuccess(methodName -> registerEndpoint(new EndpointKey(key.artifact(),
+                                                                                        methodName,
+                                                                                        value.instanceNumber()),
+                                                                        new EndpointValue(key.nodeId())));
+                }
+            }
+
+            private void unregisterEndpointsForNodeArtifact(NodeArtifactKey key) {
+                var keysToRemove = endpoints.keySet()
+                                            .stream()
+                                            .filter(ek -> ek.artifact()
+                                                            .equals(key.artifact()))
+                                            .filter(ek -> endpoints.get(ek) != null && endpoints.get(ek)
+                                                                                                .nodeId()
+                                                                                                .equals(key.nodeId()))
+                                            .toList();
+                keysToRemove.forEach(this::unregisterEndpoint);
             }
 
             @Override

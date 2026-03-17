@@ -3,8 +3,6 @@ package org.pragmatica.aether.deployment.cluster;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.dht.MapSubscription;
-import org.pragmatica.aether.dht.ReplicatedMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
@@ -13,12 +11,12 @@ import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -54,7 +52,6 @@ class ClusterDeploymentManagerTest {
     private TestClusterNode clusterNode;
     private TestKVStore kvStore;
     private MessageRouter router;
-    private StubSliceNodeMap sliceNodeMap;
     private ClusterDeploymentManager manager;
 
     @BeforeEach
@@ -65,9 +62,8 @@ class ClusterDeploymentManagerTest {
         clusterNode = new TestClusterNode(self);
         kvStore = new TestKVStore();
         router = MessageRouter.mutable();
-        sliceNodeMap = new StubSliceNodeMap();
         manager = ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3),
-                                                                      clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, sliceNodeMap);
+                                                                      clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
     }
 
     // === Leader State Tests ===
@@ -90,8 +86,8 @@ class ClusterDeploymentManagerTest {
         var artifact = createTestArtifact();
         sendSliceTargetPut(artifact, 3);
 
-        // Should issue LOAD commands via DHT
-        assertThat(sliceNodeMap.putKeys).hasSize(3);
+        // Should issue LOAD commands via consensus
+        assertThat(filterNodeArtifactPuts()).hasSize(3);
     }
 
     @Test
@@ -105,7 +101,7 @@ class ClusterDeploymentManagerTest {
         sendSliceTargetPut(artifact, 3);
 
         // Should be ignored in dormant state
-        assertThat(sliceNodeMap.putKeys).isEmpty();
+        assertThat(filterNodeArtifactPuts()).isEmpty();
     }
 
     // === Slice Target Handling Tests ===
@@ -118,7 +114,7 @@ class ClusterDeploymentManagerTest {
         var artifact = createTestArtifact();
         sendSliceTargetPut(artifact, 3);
 
-        assertThat(sliceNodeMap.putKeys).hasSize(3);
+        assertThat(filterNodeArtifactPuts()).hasSize(3);
         assertAllDhtPutsAreLoadFor(artifact);
     }
 
@@ -130,7 +126,7 @@ class ClusterDeploymentManagerTest {
         var artifact = createTestArtifact();
         sendSliceTargetPut(artifact, 0);
 
-        assertThat(sliceNodeMap.putKeys).isEmpty();
+        assertThat(filterNodeArtifactPuts()).isEmpty();
     }
 
     // === Allocation Strategy Tests ===
@@ -143,8 +139,8 @@ class ClusterDeploymentManagerTest {
         var artifact = createTestArtifact();
         sendSliceTargetPut(artifact, 3);
 
-        var allocatedNodes = sliceNodeMap.putKeys.stream()
-                                                 .map(SliceNodeKey::nodeId)
+        var allocatedNodes = filterNodeArtifactPuts().stream()
+                                                 .map(put -> put.key().nodeId())
                                                  .toList();
 
         // Should allocate to all 3 nodes
@@ -160,7 +156,7 @@ class ClusterDeploymentManagerTest {
         sendSliceTargetPut(artifact, 4);
 
         // With 2 nodes and 4 requested instances, only 2 can be allocated (max 1 per node per artifact)
-        assertThat(sliceNodeMap.putKeys).hasSize(2);
+        assertThat(filterNodeArtifactPuts()).hasSize(2);
     }
 
     @Test
@@ -168,14 +164,14 @@ class ClusterDeploymentManagerTest {
         // Create manager with empty initial topology
         var emptyTopologyManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, kvStore, router, List.of(),
-            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, sliceNodeMap);
+            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
         emptyTopologyManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
-        sliceNodeMap.putKeys.clear();
+        clusterNode.appliedCommands.clear();
 
         var artifact = createTestArtifact();
         emptyTopologyManager.onSliceTargetPut(sliceTargetPut(artifact, 3));
 
-        assertThat(sliceNodeMap.putKeys).isEmpty();
+        assertThat(filterNodeArtifactPuts()).isEmpty();
     }
 
     // === Scale Up/Down Tests ===
@@ -189,19 +185,18 @@ class ClusterDeploymentManagerTest {
 
         // Initial allocation of 1 instance
         sendSliceTargetPut(artifact, 1);
-        assertThat(sliceNodeMap.putKeys).hasSize(1);
+        assertThat(filterNodeArtifactPuts()).hasSize(1);
 
         // Get the node that was allocated and mark it as ACTIVE
-        var allocatedKey = sliceNodeMap.putKeys.getFirst();
-        trackSliceState(artifact, allocatedKey.nodeId(), SliceState.ACTIVE);
+        var allocatedNode = filterNodeArtifactPuts().getFirst().key().nodeId();
+        trackSliceState(artifact, allocatedNode, SliceState.ACTIVE);
 
-        sliceNodeMap.putKeys.clear();
-        sliceNodeMap.putValues.clear();
+        clusterNode.appliedCommands.clear();
 
         // Scale up to 3 instances - should add 2 more (to the 2 remaining nodes)
         sendSliceTargetPut(artifact, 3);
 
-        assertThat(sliceNodeMap.putKeys).hasSize(2);
+        assertThat(filterNodeArtifactPuts()).hasSize(2);
     }
 
     @Test
@@ -217,14 +212,13 @@ class ClusterDeploymentManagerTest {
         trackSliceState(artifact, node2, SliceState.ACTIVE);
         trackSliceState(artifact, node3, SliceState.ACTIVE);
 
-        sliceNodeMap.putKeys.clear();
-        sliceNodeMap.putValues.clear();
+        clusterNode.appliedCommands.clear();
 
         // Scale down
         sendSliceTargetPut(artifact, 1);
 
-        // Should issue 2 UNLOAD commands via DHT
-        assertThat(sliceNodeMap.putKeys).hasSize(2);
+        // Should issue 2 UNLOAD commands via consensus
+        assertThat(filterNodeArtifactPuts()).hasSize(2);
         assertAllDhtPutsAreUnloadFor(artifact);
     }
 
@@ -240,8 +234,7 @@ class ClusterDeploymentManagerTest {
         trackSliceState(artifact, self, SliceState.ACTIVE);
         trackSliceState(artifact, node2, SliceState.ACTIVE);
 
-        sliceNodeMap.putKeys.clear();
-        sliceNodeMap.putValues.clear();
+        clusterNode.appliedCommands.clear();
 
         // Add third node with ON_DUTY lifecycle
         kvStore.put(AetherKey.NodeLifecycleKey.nodeLifecycleKey(node3),
@@ -249,7 +242,7 @@ class ClusterDeploymentManagerTest {
         manager.onTopologyChange(TopologyChangeNotification.nodeAdded(node3, List.of(self, node2, node3)));
 
         // Should allocate 1 more instance to reach desired 3
-        assertThat(sliceNodeMap.putKeys).hasSize(1);
+        assertThat(filterNodeArtifactPuts()).hasSize(1);
     }
 
     @Test
@@ -264,17 +257,15 @@ class ClusterDeploymentManagerTest {
         trackSliceState(artifact, node3, SliceState.ACTIVE);
 
         clusterNode.appliedCommands.clear();
-        sliceNodeMap.removeKeys.clear();
 
         // Remove node3 - this removes slice state for node3 and triggers reconciliation
-        // With 2 remaining nodes and slice target wanting 3, we have 2 instances remaining
-        // Reconciliation won't add more because we can't exceed node count
         manager.onTopologyChange(TopologyChangeNotification.nodeRemoved(node3, List.of(self, node2)));
 
-        // SliceNodeKey removes go via DHT
-        assertThat(sliceNodeMap.removeKeys).hasSize(1);
-        assertThat(sliceNodeMap.removeKeys.getFirst().nodeId()).isEqualTo(node3);
-        assertThat(sliceNodeMap.removeKeys.getFirst().artifact()).isEqualTo(artifact);
+        // NodeArtifactKey removes for node3
+        var naRemoves = filterNodeArtifactRemoves();
+        assertThat(naRemoves).hasSize(1);
+        assertThat(naRemoves.getFirst().key().nodeId()).isEqualTo(node3);
+        assertThat(naRemoves.getFirst().key().artifact()).isEqualTo(artifact);
 
         // Consensus commands should include Remove for lifecycle key
         var removeCommands = clusterNode.appliedCommands.stream()
@@ -301,13 +292,12 @@ class ClusterDeploymentManagerTest {
         trackSliceState(artifact, self, SliceState.ACTIVE);
         trackSliceState(artifact, node2, SliceState.ACTIVE);
 
-        sliceNodeMap.putKeys.clear();
-        sliceNodeMap.putValues.clear();
+        clusterNode.appliedCommands.clear();
 
         // Update slice target with same count - no change needed
         sendSliceTargetPut(artifact, 2);
 
-        assertThat(sliceNodeMap.putKeys).isEmpty();
+        assertThat(filterNodeArtifactPuts()).isEmpty();
     }
 
     @Test
@@ -322,8 +312,7 @@ class ClusterDeploymentManagerTest {
         trackSliceState(artifact, self, SliceState.ACTIVE);
         trackSliceState(artifact, node2, SliceState.ACTIVE);
 
-        sliceNodeMap.putKeys.clear();
-        sliceNodeMap.putValues.clear();
+        clusterNode.appliedCommands.clear();
 
         // Remove slice state (simulating unload completion)
         sendSliceStateRemove(artifact, self);
@@ -350,7 +339,7 @@ class ClusterDeploymentManagerTest {
         // Create manager with ComputeProvider and TopologyManager that expects 3 nodes
         var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, prePopulatedKvStore, router, List.of(self, node2),
-            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, sliceNodeMap);
+            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
 
         clusterNode.appliedCommands.clear();
 
@@ -370,7 +359,7 @@ class ClusterDeploymentManagerTest {
         // Create manager with ComputeProvider, no pre-populated blueprints (initial startup)
         var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, kvStore, router, List.of(self, node2),
-            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, sliceNodeMap);
+            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
 
         clusterNode.appliedCommands.clear();
 
@@ -390,7 +379,7 @@ class ClusterDeploymentManagerTest {
         // Create manager with 3 nodes already present (matches target)
         var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, kvStore, router, List.of(self, node2, node3),
-            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, sliceNodeMap);
+            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
 
         clusterNode.appliedCommands.clear();
 
@@ -415,7 +404,7 @@ class ClusterDeploymentManagerTest {
 
         var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, prePopulatedKvStore, router, List.of(self, node2, node3),
-            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, sliceNodeMap);
+            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
 
         // Become leader with full topology (no deficit)
         healingManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
@@ -447,8 +436,6 @@ class ClusterDeploymentManagerTest {
         trackSliceState(mgr, sliceA, self, SliceState.LOADED);
         trackSliceState(mgr, sliceB, self, SliceState.LOADED);
 
-        sliceNodeMap.putKeys.clear();
-        sliceNodeMap.putValues.clear();
         clusterNode.appliedCommands.clear();
 
         // Simulate deterministic failure on slice-a (Fatal = non-retriable)
@@ -456,12 +443,10 @@ class ClusterDeploymentManagerTest {
             new SliceLoadingFailure.Fatal.ClassLoadFailed("com.example.Missing",
                 cause("ClassNotFoundException")));
 
-        // ALL_OR_NOTHING should unload ALL slices in the blueprint via DHT
-        // Verify UNLOAD commands exist for both slices (not just the failed one)
-        var unloadArtifacts = sliceNodeMap.putKeys.stream()
-            .filter(key -> sliceNodeMap.putValues.get(sliceNodeMap.putKeys.indexOf(key))
-                                                  .state() == SliceState.UNLOAD)
-            .map(SliceNodeKey::artifact)
+        // ALL_OR_NOTHING should unload ALL slices in the blueprint via consensus
+        var unloadArtifacts = filterNodeArtifactPuts().stream()
+            .filter(put -> put.value().state() == SliceState.UNLOAD)
+            .map(put -> put.key().artifact())
             .toList();
 
         assertThat(unloadArtifacts).anySatisfy(a -> assertThat(a).isEqualTo(sliceA));
@@ -490,8 +475,6 @@ class ClusterDeploymentManagerTest {
         trackSliceState(sliceA, self, SliceState.LOADED);
         trackSliceState(sliceB, self, SliceState.LOADED);
 
-        sliceNodeMap.putKeys.clear();
-        sliceNodeMap.putValues.clear();
         clusterNode.appliedCommands.clear();
 
         // Simulate deterministic failure on slice-a in BEST_EFFORT mode
@@ -499,11 +482,10 @@ class ClusterDeploymentManagerTest {
             new SliceLoadingFailure.Fatal.ClassLoadFailed("com.example.Missing",
                 cause("ClassNotFoundException")));
 
-        // In BEST_EFFORT, only the failed slice gets UNLOAD via DHT — no sibling rollback
-        var unloadArtifacts = sliceNodeMap.putKeys.stream()
-            .filter(key -> sliceNodeMap.putValues.get(sliceNodeMap.putKeys.indexOf(key))
-                                                  .state() == SliceState.UNLOAD)
-            .map(SliceNodeKey::artifact)
+        // In BEST_EFFORT, only the failed slice gets UNLOAD — no sibling rollback
+        var unloadArtifacts = filterNodeArtifactPuts().stream()
+            .filter(put -> put.value().state() == SliceState.UNLOAD)
+            .map(put -> put.key().artifact())
             .toList();
 
         // Only sliceA should be unloaded, not sliceB
@@ -532,8 +514,6 @@ class ClusterDeploymentManagerTest {
         trackSliceState(mgr, sliceA, self, SliceState.LOADED);
         trackSliceState(mgr, sliceB, self, SliceState.LOADED);
 
-        sliceNodeMap.putKeys.clear();
-        sliceNodeMap.putValues.clear();
         clusterNode.appliedCommands.clear();
 
         // Simulate transient failure (Intermittent = retriable)
@@ -542,7 +522,6 @@ class ClusterDeploymentManagerTest {
                 cause("Connection timed out")));
 
         // Transient failure should NOT trigger blueprint rollback
-        // Only the failed slice gets UNLOAD (from handleSliceFailure), no sibling rollback
         var blueprintRemoves = clusterNode.appliedCommands.stream()
             .filter(cmd -> cmd instanceof KVCommand.Remove<?>)
             .map(cmd -> ((KVCommand.Remove<?>) cmd).key())
@@ -550,11 +529,10 @@ class ClusterDeploymentManagerTest {
             .toList();
         assertThat(blueprintRemoves).isEmpty();
 
-        // sliceB should NOT receive any UNLOAD via DHT
-        var sliceBUnloads = sliceNodeMap.putKeys.stream()
-            .filter(key -> sliceNodeMap.putValues.get(sliceNodeMap.putKeys.indexOf(key))
-                                                  .state() == SliceState.UNLOAD)
-            .filter(key -> key.artifact().equals(sliceB))
+        // sliceB should NOT receive any UNLOAD
+        var sliceBUnloads = filterNodeArtifactPuts().stream()
+            .filter(put -> put.value().state() == SliceState.UNLOAD)
+            .filter(put -> put.key().artifact().equals(sliceB))
             .toList();
         assertThat(sliceBUnloads).isEmpty();
     }
@@ -577,8 +555,7 @@ class ClusterDeploymentManagerTest {
         trackSliceState(mgr, sliceB, self, SliceState.LOADED);
         trackSliceState(mgr, sliceB, self, SliceState.ACTIVE);
 
-        sliceNodeMap.putKeys.clear();
-        sliceNodeMap.putValues.clear();
+        clusterNode.appliedCommands.clear();
 
         // Now simulate a deterministic failure on a different artifact not in the blueprint
         var unrelatedArtifact = Artifact.artifact("org.example:unrelated:1.0.0").unwrap();
@@ -588,17 +565,15 @@ class ClusterDeploymentManagerTest {
 
         // Since tracking was cleared when all slices became ACTIVE,
         // the unrelated failure should NOT trigger any blueprint rollback for slice-a/slice-b
-        var sliceAUnloads = sliceNodeMap.putKeys.stream()
-            .filter(key -> sliceNodeMap.putValues.get(sliceNodeMap.putKeys.indexOf(key))
-                                                  .state() == SliceState.UNLOAD)
-            .filter(key -> key.artifact().equals(sliceA))
+        var sliceAUnloads = filterNodeArtifactPuts().stream()
+            .filter(put -> put.value().state() == SliceState.UNLOAD)
+            .filter(put -> put.key().artifact().equals(sliceA))
             .toList();
         assertThat(sliceAUnloads).isEmpty();
 
-        var sliceBUnloads = sliceNodeMap.putKeys.stream()
-            .filter(key -> sliceNodeMap.putValues.get(sliceNodeMap.putKeys.indexOf(key))
-                                                  .state() == SliceState.UNLOAD)
-            .filter(key -> key.artifact().equals(sliceB))
+        var sliceBUnloads = filterNodeArtifactPuts().stream()
+            .filter(put -> put.value().state() == SliceState.UNLOAD)
+            .filter(put -> put.key().artifact().equals(sliceB))
             .toList();
         assertThat(sliceBUnloads).isEmpty();
     }
@@ -635,12 +610,12 @@ class ClusterDeploymentManagerTest {
 
         sendAppBlueprintPut(manager, blueprintA);
 
-        var loadCountAfterA = sliceNodeMap.putKeys.size();
+        var loadCountAfterA = filterLoadArtifacts().size();
 
         sendAppBlueprintPut(manager, blueprintB);
 
         // No additional LOADs after Blueprint B — it was rejected
-        assertThat(sliceNodeMap.putKeys).hasSize(loadCountAfterA);
+        assertThat(filterLoadArtifacts()).hasSize(loadCountAfterA);
 
         var sharedLib = Artifact.artifact("org.example:shared-lib:1.0.0").unwrap();
         var loadedArtifacts = filterLoadArtifacts();
@@ -660,8 +635,7 @@ class ClusterDeploymentManagerTest {
         sendAppBlueprintPut(manager, blueprintB);
 
         // Clear tracking to isolate deletion effects
-        sliceNodeMap.putKeys.clear();
-        sliceNodeMap.putValues.clear();
+        clusterNode.appliedCommands.clear();
 
         sendAppBlueprintRemove(manager, blueprintA);
 
@@ -689,13 +663,12 @@ class ClusterDeploymentManagerTest {
         sendVersionRoutingPut(serviceA);
 
         // Clear tracking to isolate deletion effects
-        sliceNodeMap.putKeys.clear();
-        sliceNodeMap.putValues.clear();
+        clusterNode.appliedCommands.clear();
 
         sendAppBlueprintRemove(manager, blueprintA);
 
         // Blueprint should NOT be deleted — no UNLOAD commands issued
-        assertThat(sliceNodeMap.putKeys).isEmpty();
+        assertThat(filterNodeArtifactPuts()).isEmpty();
     }
 
     @Test
@@ -711,8 +684,7 @@ class ClusterDeploymentManagerTest {
         sendAppBlueprintPut(manager, blueprintV1);
 
         // Clear tracking to isolate re-deploy effects
-        sliceNodeMap.putKeys.clear();
-        sliceNodeMap.putValues.clear();
+        clusterNode.appliedCommands.clear();
 
         // Re-deploy same BlueprintId with updated artifact version — this is an update, not a conflict
         var sliceV2 = ResolvedSlice.resolvedSlice(
@@ -744,14 +716,13 @@ class ClusterDeploymentManagerTest {
         var restoredManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, kvStore, router, List.of(self, node2, node3),
             clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT,
-            ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, sliceNodeMap);
+            ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
 
         // Become leader triggers rebuildStateFromKVStore
         restoredManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
 
         // Clear tracking from restoration
-        sliceNodeMap.putKeys.clear();
-        sliceNodeMap.putValues.clear();
+        clusterNode.appliedCommands.clear();
 
         // Add topology so allocations can happen
         for (var nodeId : List.of(self, node2, node3)) {
@@ -760,15 +731,57 @@ class ClusterDeploymentManagerTest {
         }
         restoredManager.onTopologyChange(TopologyChangeNotification.nodeAdded(node3, List.of(self, node2, node3)));
 
-        sliceNodeMap.putKeys.clear();
-        sliceNodeMap.putValues.clear();
+        clusterNode.appliedCommands.clear();
 
         // Deploy Blueprint B with overlapping artifact "service-a"
         var blueprintB = createNamedBlueprint("app-b", "service-a");
         sendAppBlueprintPut(restoredManager, blueprintB);
 
         // Blueprint B should be rejected — "service-a" already owned by Blueprint A from restore
-        assertThat(sliceNodeMap.putKeys).isEmpty();
+        assertThat(filterNodeArtifactPuts()).isEmpty();
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void handleAppBlueprintChange_ownerPopulatedInSliceTargetValue() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        var blueprintA = createNamedBlueprint("app-owner", "service-owned");
+        sendAppBlueprintPut(manager, blueprintA);
+
+        // Find the SliceTargetKey Put command in applied commands
+        var targetValues = clusterNode.appliedCommands.stream()
+            .filter(cmd -> cmd instanceof KVCommand.Put<?, ?> put && put.key() instanceof SliceTargetKey)
+            .map(cmd -> ((KVCommand.Put<?, ?>) cmd).value())
+            .map(SliceTargetValue.class::cast)
+            .toList();
+
+        assertThat(targetValues).isNotEmpty();
+
+        var targetValue = targetValues.getFirst();
+        assertThat(targetValue.owningBlueprint().isPresent()).isTrue();
+        assertThat(targetValue.owningBlueprint().unwrap()).isEqualTo(blueprintA.id());
+    }
+
+    @Test
+    void handleSliceTargetChange_preservesOwner() {
+        becomeLeader();
+        addTopology(self, node2, node3);
+
+        var artifact = createTestArtifact();
+        var bpId = BlueprintId.blueprintId("org.example:owner-bp:1.0.0").unwrap();
+
+        // Send a slice target with explicit owner
+        var key = SliceTargetKey.sliceTargetKey(artifact.base());
+        var value = SliceTargetValue.sliceTargetValue(artifact.version(), 3, 0, Option.some(bpId));
+        var command = new KVCommand.Put<>(key, value);
+        var notification = new ValuePut<>(command, Option.none());
+        manager.onSliceTargetPut(notification);
+
+        // Verify LOAD commands were issued (owner didn't break allocation)
+        assertThat(filterNodeArtifactPuts()).hasSize(3);
+        assertAllDhtPutsAreLoadFor(artifact);
     }
 
     // === Helper Methods ===
@@ -819,31 +832,31 @@ class ClusterDeploymentManagerTest {
     }
 
     private void trackSliceState(ClusterDeploymentManager mgr, Artifact artifact, NodeId nodeId, SliceState state) {
-        var key = new SliceNodeKey(artifact, nodeId);
-        var value = SliceNodeValue.sliceNodeValue(state);
+        var key = NodeArtifactKey.nodeArtifactKey(nodeId, artifact);
+        var value = NodeArtifactValue.nodeArtifactValue(state);
         var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
-        mgr.onSliceNodePut(notification);
+        mgr.onNodeArtifactPut(notification);
     }
 
     private void trackSliceStateWithFailure(ClusterDeploymentManager mgr, Artifact artifact, NodeId nodeId, Cause failureReason) {
-        var key = new SliceNodeKey(artifact, nodeId);
-        var value = SliceNodeValue.failedSliceNodeValue(failureReason);
+        var key = NodeArtifactKey.nodeArtifactKey(nodeId, artifact);
+        var value = NodeArtifactValue.failedNodeArtifactValue(failureReason);
         var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
-        mgr.onSliceNodePut(notification);
+        mgr.onNodeArtifactPut(notification);
     }
 
     private void sendSliceStateRemove(Artifact artifact, NodeId nodeId) {
-        var key = new SliceNodeKey(artifact, nodeId);
-        var command = new KVCommand.Remove<SliceNodeKey>(key);
-        var notification = new ValueRemove<SliceNodeKey, SliceNodeValue>(command, Option.none());
-        manager.onSliceNodeRemove(notification);
+        var key = NodeArtifactKey.nodeArtifactKey(nodeId, artifact);
+        var command = new KVCommand.Remove<NodeArtifactKey>(key);
+        var notification = new ValueRemove<NodeArtifactKey, NodeArtifactValue>(command, Option.none());
+        manager.onNodeArtifactRemove(notification);
     }
 
     private ClusterDeploymentManager createAllOrNothingManager() {
         return ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3),
-            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING, 0, sliceNodeMap);
+            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING, 0);
     }
 
     private void sendAppBlueprintPut(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint) {
@@ -897,33 +910,53 @@ class ClusterDeploymentManagerTest {
     }
 
     private List<Artifact> filterLoadArtifacts() {
-        return java.util.stream.IntStream.range(0, sliceNodeMap.putKeys.size())
-            .filter(i -> sliceNodeMap.putValues.get(i).state() == SliceState.LOAD)
-            .mapToObj(i -> sliceNodeMap.putKeys.get(i).artifact())
+        return filterNodeArtifactPuts().stream()
+            .filter(put -> put.value().state() == SliceState.LOAD)
+            .map(put -> put.key().artifact())
             .toList();
     }
 
     private List<Artifact> filterUnloadArtifacts() {
-        return java.util.stream.IntStream.range(0, sliceNodeMap.putKeys.size())
-            .filter(i -> sliceNodeMap.putValues.get(i).state() == SliceState.UNLOAD)
-            .mapToObj(i -> sliceNodeMap.putKeys.get(i).artifact())
+        return filterNodeArtifactPuts().stream()
+            .filter(put -> put.value().state() == SliceState.UNLOAD)
+            .map(put -> put.key().artifact())
             .toList();
     }
 
     private void assertAllDhtPutsAreLoadFor(Artifact artifact) {
-        assertThat(sliceNodeMap.putKeys).isNotEmpty();
-        for (int i = 0; i < sliceNodeMap.putKeys.size(); i++) {
-            assertThat(sliceNodeMap.putKeys.get(i).artifact()).isEqualTo(artifact);
-            assertThat(sliceNodeMap.putValues.get(i)).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.LOAD));
+        var puts = filterNodeArtifactPuts();
+        assertThat(puts).isNotEmpty();
+        for (var put : puts) {
+            assertThat(put.key().artifact()).isEqualTo(artifact);
+            assertThat(put.value().state()).isEqualTo(SliceState.LOAD);
         }
     }
 
     private void assertAllDhtPutsAreUnloadFor(Artifact artifact) {
-        assertThat(sliceNodeMap.putKeys).isNotEmpty();
-        for (int i = 0; i < sliceNodeMap.putKeys.size(); i++) {
-            assertThat(sliceNodeMap.putKeys.get(i).artifact()).isEqualTo(artifact);
-            assertThat(sliceNodeMap.putValues.get(i)).isEqualTo(SliceNodeValue.sliceNodeValue(SliceState.UNLOAD));
+        var puts = filterNodeArtifactPuts();
+        assertThat(puts).isNotEmpty();
+        for (var put : puts) {
+            assertThat(put.key().artifact()).isEqualTo(artifact);
+            assertThat(put.value().state()).isEqualTo(SliceState.UNLOAD);
         }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private List<KVCommand.Put<NodeArtifactKey, NodeArtifactValue>> filterNodeArtifactPuts() {
+        return clusterNode.appliedCommands.stream()
+            .filter(cmd -> cmd instanceof KVCommand.Put<?, ?> put && put.key() instanceof NodeArtifactKey)
+            .map(cmd -> (KVCommand.Put) cmd)
+            .map(cmd -> (KVCommand.Put<NodeArtifactKey, NodeArtifactValue>) cmd)
+            .toList();
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private List<KVCommand.Remove<NodeArtifactKey>> filterNodeArtifactRemoves() {
+        return clusterNode.appliedCommands.stream()
+            .filter(cmd -> cmd instanceof KVCommand.Remove<?> rem && rem.key() instanceof NodeArtifactKey)
+            .map(cmd -> (KVCommand.Remove) cmd)
+            .map(cmd -> (KVCommand.Remove<NodeArtifactKey>) cmd)
+            .toList();
     }
 
     // === Test Doubles ===
@@ -1091,39 +1124,4 @@ class ClusterDeploymentManagerTest {
                 org.pragmatica.aether.environment.InstanceType.ON_DEMAND));
         }
     }
-
-    static class StubSliceNodeMap implements ReplicatedMap<SliceNodeKey, SliceNodeValue> {
-        final List<SliceNodeKey> putKeys = new CopyOnWriteArrayList<>();
-        final List<SliceNodeValue> putValues = new CopyOnWriteArrayList<>();
-        final List<SliceNodeKey> removeKeys = new CopyOnWriteArrayList<>();
-
-        @Override
-        public Promise<Unit> put(SliceNodeKey key, SliceNodeValue value) {
-            putKeys.add(key);
-            putValues.add(value);
-            return Promise.unitPromise();
-        }
-
-        @Override
-        public Promise<Option<SliceNodeValue>> get(SliceNodeKey key) {
-            return Promise.success(Option.none());
-        }
-
-        @Override
-        public Promise<Boolean> remove(SliceNodeKey key) {
-            removeKeys.add(key);
-            return Promise.success(true);
-        }
-
-        @Override
-        public ReplicatedMap<SliceNodeKey, SliceNodeValue> subscribe(MapSubscription<SliceNodeKey, SliceNodeValue> subscription) {
-            return this;
-        }
-
-        @Override
-        public String name() {
-            return "test-slice-nodes";
-        }
-    }
-
 }

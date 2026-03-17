@@ -198,6 +198,9 @@ class CachedReplicatedMapTest {
         }
 
         @Override
+        public void forEach(java.util.function.BiConsumer<String, String> consumer) {}
+
+        @Override
         public String name() {
             return "stub-map";
         }

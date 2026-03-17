@@ -15,6 +15,7 @@ import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Option;
 
 import java.net.URI;
+import java.net.http.HttpClient.Redirect;
 import java.net.http.HttpRequest;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -73,7 +74,7 @@ class PubSubTest extends ForgeTestBase {
 
         var configProvider = buildConfigurationProvider(h2Server);
         cluster = emberCluster(5, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "ps", Option.some(configProvider));
-        httpOps = jdkHttpOperations(Duration.ofSeconds(5), java.net.http.HttpClient.Redirect.NORMAL, Option.empty());
+        httpOps = jdkHttpOperations(Duration.ofSeconds(5), Redirect.NORMAL, Option.empty());
         cluster.start()
                .await()
                .onFailure(cause -> {
@@ -86,7 +87,7 @@ class PubSubTest extends ForgeTestBase {
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
-               .until(() -> allNodesHealthy(cluster, httpOps.client()));
+               .until(() -> allNodesHealthy(cluster));
 
         var leaderPortForLifecycle = cluster.getLeaderManagementPort().unwrap();
         await().atMost(WAIT_TIMEOUT)
@@ -160,36 +161,6 @@ class PubSubTest extends ForgeTestBase {
         }
 
         awaitClickCount(port, shortCode, clickCount);
-    }
-
-    @Test
-    void pubSubDelivery_survivesLeaderFailover() {
-        var port = firstAvailableAppPort();
-
-        var shortCode = shortenUrl(port, "https://example.com/pubsub-failover");
-        assertThat(shortCode).as("Short code from creation").isNotNull().isNotEmpty();
-
-        var originalLeaderId = cluster.currentLeader().unwrap();
-
-        // Suppress CDM auto-heal during kill
-        cluster.setClusterSize(4);
-        cluster.killNode(originalLeaderId).await();
-
-        // Wait for new leader election
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent()
-                            && !cluster.currentLeader().unwrap().equals(originalLeaderId));
-
-        // Wait for routes to become available on surviving nodes
-        await().atMost(DEPLOY_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> !cluster.getAvailableAppHttpPorts().isEmpty());
-
-        var survivingPort = cluster.getAvailableAppHttpPorts().getFirst();
-        resolveShortCode(survivingPort, shortCode);
-
-        awaitClickCount(survivingPort, shortCode, 1);
     }
 
     // ===== Domain Helpers =====

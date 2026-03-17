@@ -22,10 +22,14 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.DHTMessage.GetRequest;
 import org.pragmatica.dht.DHTMessage.GetResponse;
+import org.pragmatica.dht.DHTMessage.KeyValue;
+import org.pragmatica.dht.DHTMessage.MigrationDataRequest;
+import org.pragmatica.dht.DHTMessage.MigrationDataResponse;
 import org.pragmatica.dht.DHTMessage.PutRequest;
 import org.pragmatica.dht.DHTMessage.PutResponse;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -161,7 +165,7 @@ class DHTNodeTest {
         @Test
         void handlePutRequest_validData_storesAndSendsSuccessResponse() {
             var captured = new AtomicReference<PutResponse>();
-            var request = new PutRequest("req-2", NODE_ID, key("k1"), value("v1"));
+            var request = new PutRequest("req-2", NODE_ID, key("k1"), value("v1"), 0L);
 
             node.handlePutRequest(request, captured::set);
 
@@ -173,6 +177,80 @@ class DHTNodeTest {
                 .await()
                 .onFailureRun(() -> fail("Expected success"))
                 .onSuccess(opt -> opt.onPresent(v -> assertThat(v).isEqualTo(value("v1"))));
+        }
+
+        @Test
+        void handlePutRequest_versionedWrite_supersededFalseWhenWritten() {
+            var captured = new AtomicReference<PutResponse>();
+            var request = new PutRequest("req-v1", NODE_ID, key("vk1"), value("vv1"), 100L);
+
+            node.handlePutRequest(request, captured::set);
+
+            assertThat(captured.get()).isNotNull();
+            assertThat(captured.get().success()).isTrue();
+            assertThat(captured.get().superseded()).isFalse();
+        }
+
+        @Test
+        void handlePutRequest_staleVersion_supersededTrueWhenRejected() {
+            var first = new AtomicReference<PutResponse>();
+            node.handlePutRequest(new PutRequest("req-v2a", NODE_ID, key("vk2"), value("vv2a"), 200L), first::set);
+
+            var second = new AtomicReference<PutResponse>();
+            node.handlePutRequest(new PutRequest("req-v2b", NODE_ID, key("vk2"), value("vv2b"), 100L), second::set);
+
+            assertThat(second.get()).isNotNull();
+            assertThat(second.get().success()).isTrue();
+            assertThat(second.get().superseded()).isTrue();
+        }
+
+        @Test
+        void applyMigrationData_usesVersionedPut_doesNotPoisonStorage() {
+            node.applyMigrationData(List.of(new KeyValue(key("mk1"), value("migrated"), 50L)));
+
+            var captured = new AtomicReference<PutResponse>();
+            node.handlePutRequest(new PutRequest("req-m1", NODE_ID, key("mk1"), value("updated"), 100L), captured::set);
+
+            assertThat(captured.get()).isNotNull();
+            assertThat(captured.get().success()).isTrue();
+            assertThat(captured.get().superseded()).isFalse();
+
+            node.getLocal(key("mk1"))
+                .await()
+                .onFailureRun(() -> fail("Expected success"))
+                .onSuccess(opt -> opt.onPresent(v -> assertThat(v).isEqualTo(value("updated")))
+                                     .onEmpty(() -> fail("Expected value to be present")));
+        }
+    }
+
+    @Nested
+    class MigrationDataHandling {
+        @Test
+        void handleMigrationDataRequest_includesVersionInEntries() {
+            node.putLocalVersioned(key("mdk1"), value("mdv1"), 42L).await();
+
+            var partition = node.partitionFor(key("mdk1"));
+            var captured = new AtomicReference<MigrationDataResponse>();
+            var request = new MigrationDataRequest("req-md1", NODE_ID, partition.value(), partition.value());
+
+            node.handleMigrationDataRequest(request, captured::set);
+
+            assertThat(captured.get()).isNotNull();
+            assertThat(captured.get().entries()).isNotEmpty();
+            assertThat(captured.get().entries().getFirst().version()).isEqualTo(42L);
+        }
+
+        @Test
+        void applyMigrationData_olderVersion_doesNotOverwrite() {
+            node.putLocalVersioned(key("mdk2"), value("original"), 200L).await();
+
+            node.applyMigrationData(List.of(new KeyValue(key("mdk2"), value("stale"), 100L)));
+
+            node.getLocal(key("mdk2"))
+                .await()
+                .onFailureRun(() -> fail("Expected success"))
+                .onSuccess(opt -> opt.onPresent(v -> assertThat(v).isEqualTo(value("original")))
+                                     .onEmpty(() -> fail("Expected value to be present")));
         }
     }
 

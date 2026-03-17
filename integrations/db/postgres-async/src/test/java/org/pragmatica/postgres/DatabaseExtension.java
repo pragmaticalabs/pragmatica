@@ -2,6 +2,7 @@ package org.pragmatica.postgres;
 
 import org.pragmatica.postgres.net.*;
 import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
+import org.pragmatica.postgres.net.PoolMode;
 import org.junit.jupiter.api.extension.*;
 import org.pragmatica.lang.Promise;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -45,6 +46,10 @@ public class DatabaseExtension implements BeforeAllCallback, AfterAllCallback, B
 
     public static DatabaseExtension withMaxConnections(int maxConnections) {
         return new DatabaseExtension(defaultBuilder().maxConnections(maxConnections));
+    }
+
+    public static DatabaseExtension transactionMode(int maxConnections) {
+        return new DatabaseExtension(defaultBuilder().maxConnections(maxConnections).poolMode(PoolMode.TRANSACTION));
     }
 
     public static <T> DatabaseExtension withConverter(Converter<T> converter) {

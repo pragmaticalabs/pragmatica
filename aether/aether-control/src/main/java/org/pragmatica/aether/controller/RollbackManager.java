@@ -136,7 +136,8 @@ public interface RollbackManager {
             if (previousVersion.isEmpty()) {
                 return RollbackError.General.NO_PREVIOUS_VERSION.result();
             }
-            var cooldownMs = config.cooldownSeconds() * 1000L;
+            var cooldownMs = config.cooldown()
+                                   .millis();
             if (lastRollbackTimestamp > 0 && (currentTime - lastRollbackTimestamp) < cooldownMs) {
                 return RollbackError.General.COOLDOWN_ACTIVE.result();
             }

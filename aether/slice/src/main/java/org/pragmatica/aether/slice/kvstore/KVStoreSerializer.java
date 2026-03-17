@@ -1,5 +1,6 @@
 package org.pragmatica.aether.slice.kvstore;
 
+import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
 import org.pragmatica.consensus.NodeId;
@@ -142,12 +143,15 @@ public final class KVStoreSerializer {
             case AlertThresholdKey _ -> "alert-threshold";
             case TopicSubscriptionKey _ -> "topic-sub";
             case ScheduledTaskKey _ -> "scheduled-task";
+            case ScheduledTaskStateKey _ -> "scheduled-task-state";
             case NodeLifecycleKey _ -> "node-lifecycle";
             case ConfigKey _ -> "config";
             case WorkerSliceDirectiveKey _ -> "worker-directive";
             case ActivationDirectiveKey _ -> "activation";
             case GossipKeyRotationKey _ -> "gossip-key-rotation";
             case GovernorAnnouncementKey _ -> "governor-announcement";
+            case NodeArtifactKey _ -> "node-artifact";
+            case NodeRoutesKey _ -> "node-routes";
         };
     }
 
@@ -178,6 +182,7 @@ public final class KVStoreSerializer {
             case TopicSubscriptionValue v -> v.nodeId()
                                               .id();
             case ScheduledTaskValue v -> serializeScheduledTask(v);
+            case ScheduledTaskStateValue v -> serializeScheduledTaskState(v);
             case VersionRoutingValue v -> serializeVersionRouting(v);
             case RollingUpdateValue v -> serializeRollingUpdate(v);
             case PreviousVersionValue v -> serializePreviousVersion(v);
@@ -191,6 +196,8 @@ public final class KVStoreSerializer {
             case GossipKeyRotationValue v -> serializeGossipKeyRotation(v);
             case NodeLifecycleValue v -> serializeNodeLifecycle(v);
             case GovernorAnnouncementValue v -> serializeGovernorAnnouncement(v);
+            case NodeArtifactValue v -> serializeNodeArtifact(v);
+            case NodeRoutesValue v -> serializeNodeRoutes(v);
             case AppBlueprintValue _ -> "";
         };
     }
@@ -210,7 +217,12 @@ public final class KVStoreSerializer {
 
     private static String serializeScheduledTask(ScheduledTaskValue v) {
         return v.registeredBy()
-                .id() + PIPE + v.interval() + PIPE + v.cron() + PIPE + v.leaderOnly();
+                .id() + PIPE + v.interval() + PIPE + v.cron() + PIPE + v.executionMode()
+                                                                       .name() + PIPE + v.paused();
+    }
+
+    private static String serializeScheduledTaskState(ScheduledTaskStateValue v) {
+        return v.lastExecutionAt() + PIPE + v.nextFireAt() + PIPE + v.consecutiveFailures() + PIPE + v.totalExecutions() + PIPE + v.lastFailureMessage() + PIPE + v.updatedAt();
     }
 
     private static String serializeVersionRouting(VersionRoutingValue v) {
@@ -268,6 +280,24 @@ public final class KVStoreSerializer {
                 .name() + PIPE + v.updatedAt();
     }
 
+    private static String serializeNodeArtifact(NodeArtifactValue v) {
+        var methodsJoined = String.join(",", v.methods());
+        return v.state()
+                .name() + PIPE + v.failureReason()
+                                  .or("") + PIPE + v.fatal() + PIPE + v.instanceNumber() + PIPE + methodsJoined;
+    }
+
+    private static String serializeNodeRoutes(NodeRoutesValue v) {
+        return v.routes()
+                .stream()
+                .map(KVStoreSerializer::serializeRouteEntry)
+                .collect(Collectors.joining(";"));
+    }
+
+    private static String serializeRouteEntry(NodeRoutesValue.RouteEntry r) {
+        return r.httpMethod() + "," + r.pathPrefix() + "," + r.sliceMethod() + "," + r.state() + "," + r.weight() + "," + r.registeredAt();
+    }
+
     private static String serializeGovernorAnnouncement(GovernorAnnouncementValue v) {
         var memberIds = v.members()
                          .stream()
@@ -306,12 +336,15 @@ public final class KVStoreSerializer {
             case "alert-threshold" -> parseAlertThresholdEntry(identity, rawValue);
             case "topic-sub" -> parseTopicSubEntry(identity, rawValue);
             case "scheduled-task" -> parseScheduledTaskEntry(identity, rawValue);
+            case "scheduled-task-state" -> parseScheduledTaskStateEntry(identity, rawValue);
             case "node-lifecycle" -> parseNodeLifecycleEntry(identity, rawValue);
             case "config" -> parseConfigEntry(identity, rawValue);
             case "worker-directive" -> parseWorkerDirectiveEntry(identity, rawValue);
             case "activation" -> parseActivationEntry(identity, rawValue);
             case "gossip-key-rotation" -> parseGossipKeyRotationEntry(identity, rawValue);
             case "governor-announcement" -> parseGovernorAnnouncementEntry(identity, rawValue);
+            case "node-artifact" -> parseNodeArtifactEntry(identity, rawValue);
+            case "node-routes" -> parseNodeRoutesEntry(identity, rawValue);
             default -> new SerializationError.UnknownKeyType(section).result();
         };
     }
@@ -500,16 +533,33 @@ public final class KVStoreSerializer {
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseScheduledTaskEntry(String identity, String raw) {
         var parts = raw.split("\\|", - 1);
-        if (parts.length != 4) {
-            return parseFailure("scheduled-task value requires 4 fields, got " + parts.length);
+        if (parts.length != 4 && parts.length != 5) {
+            return parseFailure("scheduled-task value requires 4 or 5 fields, got " + parts.length);
         }
+        var paused = parts.length >= 5 && Boolean.parseBoolean(parts[4]);
         return ScheduledTaskKey.scheduledTaskKey("scheduled-task/" + identity)
                                .flatMap(key -> org.pragmatica.consensus.NodeId.nodeId(parts[0])
                                                   .map(nodeId -> new ScheduledTaskValue(nodeId,
                                                                                         parts[1],
                                                                                         parts[2],
-                                                                                        Boolean.parseBoolean(parts[3])))
+                                                                                        ExecutionMode.valueOf(parts[3]),
+                                                                                        paused))
                                                   .map(val -> entry(key, val)));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseScheduledTaskStateEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 6) {
+            return parseFailure("scheduled-task-state value requires 6 fields, got " + parts.length);
+        }
+        return ScheduledTaskStateKey.scheduledTaskStateKey("scheduled-task-state/" + identity)
+                                    .map(key -> entry(key,
+                                                      new ScheduledTaskStateValue(Long.parseLong(parts[0]),
+                                                                                  Long.parseLong(parts[1]),
+                                                                                  Integer.parseInt(parts[2]),
+                                                                                  Integer.parseInt(parts[3]),
+                                                                                  parts[4],
+                                                                                  Long.parseLong(parts[5]))));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseNodeLifecycleEntry(String identity, String raw) {
@@ -599,6 +649,53 @@ public final class KVStoreSerializer {
                                              members,
                                              parts[3],
                                              Long.parseLong(parts[4]));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseNodeArtifactEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 5) {
+            return parseFailure("node-artifact value requires 5 fields, got " + parts.length);
+        }
+        return NodeArtifactKey.nodeArtifactKey("node-artifact/" + identity)
+                              .flatMap(key -> org.pragmatica.aether.slice.SliceState.sliceState(parts[0])
+                                                 .map(state -> buildNodeArtifactValue(state, parts))
+                                                 .map(val -> entry(key, val)));
+    }
+
+    private static AetherValue buildNodeArtifactValue(org.pragmatica.aether.slice.SliceState state, String[] parts) {
+        var reason = parts[1].isEmpty()
+                     ? Option.<String>none()
+                     : Option.some(parts[1]);
+        var methods = parts[4].isEmpty()
+                      ? List.<String>of()
+                      : Arrays.asList(parts[4].split(","));
+        return new NodeArtifactValue(state, reason, Boolean.parseBoolean(parts[2]), Integer.parseInt(parts[3]), methods);
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseNodeRoutesEntry(String identity, String raw) {
+        return NodeRoutesKey.nodeRoutesKey("node-routes/" + identity)
+                            .map(key -> entry(key,
+                                              buildNodeRoutesValue(raw)));
+    }
+
+    private static AetherValue buildNodeRoutesValue(String raw) {
+        if (raw.isEmpty()) {
+            return NodeRoutesValue.empty();
+        }
+        var routes = Arrays.stream(raw.split(";"))
+                           .map(KVStoreSerializer::parseRouteEntry)
+                           .toList();
+        return new NodeRoutesValue(routes);
+    }
+
+    private static NodeRoutesValue.RouteEntry parseRouteEntry(String entry) {
+        var parts = entry.split(",", - 1);
+        return new NodeRoutesValue.RouteEntry(parts[0],
+                                              parts[1],
+                                              parts[2],
+                                              parts[3],
+                                              Integer.parseInt(parts[4]),
+                                              Long.parseLong(parts[5]));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseGossipKeyRotationEntry(String identity, String raw) {

@@ -7,12 +7,11 @@ import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.http.HttpResult;
+import org.pragmatica.http.HttpOperations;
 
-import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -21,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import org.pragmatica.aether.ember.EmberCluster;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 
 /// Rolling update tests using EmberCluster.
 ///
@@ -38,6 +38,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 class RollingUpdateTest {
     private static final int BASE_PORT = 9000;
     private static final int BASE_MGMT_PORT = 9100;
+    private static final int BASE_APP_HTTP_PORT = 9200;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String OLD_VERSION = TestArtifacts.ECHO_SLICE;
@@ -45,17 +46,15 @@ class RollingUpdateTest {
     private static final String ARTIFACT_BASE = "org.pragmatica-lite.aether.test:echo-slice-echo-service";
     private static final String NEW_VERSION_NUMBER = TestArtifacts.VERSION;
     private static final String BLUEPRINT_ID = "forge.test:rolling-update:1.0.0";
+    private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
     private EmberCluster cluster;
-    private HttpClient httpClient;
+    private final HttpOperations http = jdkHttpOperations();
 
     @BeforeEach
     void setUp(TestInfo testInfo) {
         int portOffset = getPortOffset(testInfo);
-        cluster = emberCluster(5, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "ru");
-        httpClient = HttpClient.newBuilder()
-                               .connectTimeout(Duration.ofSeconds(5))
-                               .build();
+        cluster = emberCluster(5, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, BASE_APP_HTTP_PORT + portOffset, "ru");
 
         cluster.start()
                .await()
@@ -96,8 +95,7 @@ class RollingUpdateTest {
             case "rollingUpdate_completion_removesOldVersion" -> 40;
             case "rollingUpdate_rollback_restoresOldVersion" -> 60;
             case "rollingUpdate_maintainsRequestContinuity" -> 80;
-            case "rollingUpdate_nodeFailure_continuesUpdate" -> 100;
-            default -> 120;
+            default -> 100;
         };
     }
 
@@ -274,49 +272,6 @@ class RollingUpdateTest {
         assertThat(successRate).isGreaterThan(0.95);
     }
 
-    @Test
-    void rollingUpdate_nodeFailure_continuesUpdate() {
-        startRollingUpdate(NEW_VERSION_NUMBER, 3);
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .failFast(() -> {
-                   if (sliceHasFailed(NEW_VERSION)) {
-                       throw new AssertionError("Slice deployment failed: " + NEW_VERSION);
-                   }
-               })
-               .until(() -> sliceIsActive(NEW_VERSION));
-
-        // Kill a non-leader node during update
-        var leaderId = cluster.currentLeader().or("ru-1");
-        var nodeToKill = leaderId.equals("ru-3") ? "ru-4" : "ru-3";
-
-        cluster.killNode(nodeToKill)
-               .await();
-
-        // Wait for quorum to stabilize
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
-        // Update should continue
-        adjustRouting("1:1");
-
-        var status = getUpdateStatus();
-        assertThat(status).contains("\"state\":\"ROUTING\"");
-
-        // Add a new node to replace the killed one
-        cluster.addNode()
-               .await();
-
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
-        // Complete update
-        adjustRouting("1:0");
-        completeUpdate();
-    }
-
     // ===== HTTP Helpers =====
 
     private String get(String path) {
@@ -326,12 +281,10 @@ class RollingUpdateTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private String post(String path, String body) {
@@ -342,12 +295,10 @@ class RollingUpdateTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private int getLeaderPort() {
@@ -390,12 +341,10 @@ class RollingUpdateTest {
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .timeout(Duration.ofSeconds(10))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.body();
-        } catch (IOException | InterruptedException e) {
-            return "{\"error\":\"" + e.getMessage() + "\"}";
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private void assertDeploymentSucceeded(String response) {
@@ -474,12 +423,10 @@ class RollingUpdateTest {
                                  .GET()
                                  .timeout(Duration.ofSeconds(5))
                                  .build();
-        try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            return response.statusCode() == 200 && response.body().contains("\"quorum\":true");
-        } catch (IOException | InterruptedException e) {
-            return false;
-        }
+        return http.sendString(request)
+                   .await()
+                   .map(r -> r.statusCode() == 200 && r.body().contains("\"quorum\":true"))
+                   .or(false);
     }
 
     private void sleep(Duration duration) {

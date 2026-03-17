@@ -27,12 +27,6 @@ public sealed interface NetworkMessage extends Message.Wired {
     /// Carries the sender's role so receiving nodes can identify passive peers.
     record Hello(NodeId sender, NodeRole role) implements NetworkMessage {}
 
-    /// Ping - test connection request
-    record Ping(NodeId sender) implements NetworkMessage {}
-
-    /// Pong - test connection response
-    record Pong(NodeId sender) implements NetworkMessage {}
-
     /// Topology discovery request - asks recipient to share their known nodes
     record DiscoverNodes(NodeId self) implements NetworkMessage {}
 

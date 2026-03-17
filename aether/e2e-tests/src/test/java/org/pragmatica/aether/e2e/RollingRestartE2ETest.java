@@ -48,6 +48,7 @@ class RollingRestartE2ETest extends AbstractE2ETest {
         cluster.node(nodeId).start();
 
         cluster.awaitClusterConverged();
+        cluster.awaitAllNodesOnDuty();
         System.out.println("[DEBUG] Rolling restart: " + nodeId + " rejoined successfully");
     }
 

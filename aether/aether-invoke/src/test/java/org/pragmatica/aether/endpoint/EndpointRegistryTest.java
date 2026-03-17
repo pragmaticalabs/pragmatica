@@ -7,10 +7,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Option;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -36,8 +33,7 @@ class EndpointRegistryTest {
     private void registerEndpoint(Artifact artifact, MethodName method, int instance, NodeId nodeId) {
         var key = new EndpointKey(artifact, method, instance);
         var value = EndpointValue.endpointValue(nodeId);
-        var put = new KVCommand.Put<EndpointKey, EndpointValue>(key, value);
-        registry.onEndpointPut(new ValuePut<>(put, Option.none()));
+        registry.registerEndpoint(key, value);
     }
 
     @Nested

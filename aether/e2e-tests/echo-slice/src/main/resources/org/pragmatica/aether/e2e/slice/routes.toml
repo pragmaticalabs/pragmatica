@@ -1,0 +1,9 @@
+[routes]
+echo = "GET /echo/{message:String}"
+ping = "GET /ping"
+transform = "GET /transform/{operation:String}/{value:String}"
+fail = "GET /fail/{code:Integer}"
+
+[errors]
+default = 500
+HTTP_400 = ["*required*", "*Invalid*", "*exceeds*"]

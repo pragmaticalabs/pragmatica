@@ -25,6 +25,14 @@ public interface AetherMaps {
     /// The HTTP routes map — maps HttpNodeRouteKey to HttpNodeRouteValue.
     ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRoutes();
 
+    /// Dispatch a remote DHT put to the appropriate map's subscribers.
+    @SuppressWarnings("JBCT-RET-01")
+    void dispatchRemotePut(byte[] rawKey, byte[] rawValue);
+
+    /// Dispatch a remote DHT remove to the appropriate map's subscribers.
+    @SuppressWarnings("JBCT-RET-01")
+    void dispatchRemoteRemove(byte[] rawKey);
+
     /// Create AetherMaps backed by the given DHT client.
     static AetherMaps aetherMaps(DHTClient client) {
         var factory = ReplicatedMapFactory.replicatedMapFactory(client);
@@ -45,7 +53,51 @@ public interface AetherMaps {
                                                                               AetherMaps::deserializeHttpRouteValue);
         record aetherMaps(ReplicatedMap<EndpointKey, EndpointValue> endpoints,
                           ReplicatedMap<SliceNodeKey, SliceNodeValue> sliceNodes,
-                          ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRoutes) implements AetherMaps {}
+                          ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRoutes) implements AetherMaps {
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void dispatchRemotePut(byte[] rawKey, byte[] rawValue) {
+                dispatchPutToFirst(rawKey,
+                                   rawValue,
+                                   asNamespaced(sliceNodes),
+                                   asNamespaced(endpoints),
+                                   asNamespaced(httpRoutes));
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void dispatchRemoteRemove(byte[] rawKey) {
+                dispatchRemoveToFirst(rawKey,
+                                      asNamespaced(sliceNodes),
+                                      asNamespaced(endpoints),
+                                      asNamespaced(httpRoutes));
+            }
+
+            private static <K, V> NamespacedReplicatedMap<K, V> asNamespaced(ReplicatedMap<K, V> map) {
+                return (NamespacedReplicatedMap<K, V>) map;
+            }
+
+            @SafeVarargs
+            private static void dispatchPutToFirst(byte[] rawKey,
+                                                   byte[] rawValue,
+                                                   NamespacedReplicatedMap<?, ?>... maps) {
+                for (var map : maps) {
+                    if (map.onRemotePut(rawKey, rawValue)) {
+                        return;
+                    }
+                }
+            }
+
+            @SafeVarargs
+            private static void dispatchRemoveToFirst(byte[] rawKey,
+                                                      NamespacedReplicatedMap<?, ?>... maps) {
+                for (var map : maps) {
+                    if (map.onRemoteRemove(rawKey)) {
+                        return;
+                    }
+                }
+            }
+        }
         return new aetherMaps(endpoints, sliceNodes, httpRoutes);
     }
 
@@ -101,24 +153,24 @@ public interface AetherMaps {
     }
 
     // --- HttpRoute serializers ---
-    private static byte[] serializeHttpRouteKey(HttpNodeRouteKey key) {
+    public static byte[] serializeHttpRouteKey(HttpNodeRouteKey key) {
         return key.asString()
                   .getBytes(StandardCharsets.UTF_8);
     }
 
-    private static HttpNodeRouteKey deserializeHttpRouteKey(byte[] bytes) {
+    public static HttpNodeRouteKey deserializeHttpRouteKey(byte[] bytes) {
         return HttpNodeRouteKey.httpNodeRouteKey(new String(bytes, StandardCharsets.UTF_8))
                                .unwrap();
     }
 
-    private static byte[] serializeHttpRouteValue(HttpNodeRouteValue value) {
+    public static byte[] serializeHttpRouteValue(HttpNodeRouteValue value) {
         var encoded = value.artifactCoord() + "|" + value.sliceMethod() + "|" + value.state() + "|" + value.weight()
                       + "|" + value.registeredAt();
         return encoded.getBytes(StandardCharsets.UTF_8);
     }
 
     @SuppressWarnings("JBCT-EX-01") // Adapter boundary — deserializing DHT bytes
-    private static HttpNodeRouteValue deserializeHttpRouteValue(byte[] bytes) {
+    public static HttpNodeRouteValue deserializeHttpRouteValue(byte[] bytes) {
         var parts = new String(bytes, StandardCharsets.UTF_8).split("\\|", 5);
         return new HttpNodeRouteValue(parts[0], parts[1], parts[2], Integer.parseInt(parts[3]), Long.parseLong(parts[4]));
     }

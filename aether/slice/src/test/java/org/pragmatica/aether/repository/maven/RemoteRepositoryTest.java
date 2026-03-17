@@ -50,7 +50,7 @@ class RemoteRepositoryTest {
         repository.locate(artifact)
                   .await()
                   .onSuccessRun(Assertions::fail)
-                  .onFailure(cause -> assertThat(cause.message()).contains("Download failed"));
+                  .onFailure(cause -> assertThat(cause.message()).containsAnyOf("Download failed", "HTTP operation failed"));
     }
 
     @Test

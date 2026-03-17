@@ -8,9 +8,13 @@ import org.pragmatica.aether.http.handler.HttpRequestHandlerFactory;
 import org.pragmatica.aether.http.handler.HttpRouteDefinition;
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
-import org.pragmatica.aether.dht.ReplicatedMap;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue.RouteEntry;
+import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
@@ -114,8 +118,8 @@ public interface HttpRoutePublisher {
     }
 
     static HttpRoutePublisher httpRoutePublisher(NodeId selfNodeId,
-                                                 ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRouteMap) {
-        return new HttpRoutePublisherImpl(selfNodeId, httpRouteMap);
+                                                 ClusterNode<KVCommand<AetherKey>> cluster) {
+        return new HttpRoutePublisherImpl(selfNodeId, cluster);
     }
 }
 
@@ -123,16 +127,16 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     private static final Logger log = LoggerFactory.getLogger(HttpRoutePublisherImpl.class);
 
     private final NodeId selfNodeId;
-    private final ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRouteMap;
+    private final ClusterNode<KVCommand<AetherKey>> cluster;
     private final Map<Artifact, HttpRequestHandler> handlers = new ConcurrentHashMap<>();
     private final Map<Artifact, SliceRouter> sliceRouters = new ConcurrentHashMap<>();
     private final Map<Artifact, List<HttpRouteDefinition>> publishedRoutes = new ConcurrentHashMap<>();
     private final RouteMetadataExtractor routeMetadataExtractor = RouteMetadataExtractor.routeMetadataExtractor();
 
     HttpRoutePublisherImpl(NodeId selfNodeId,
-                           ReplicatedMap<HttpNodeRouteKey, HttpNodeRouteValue> httpRouteMap) {
+                           ClusterNode<KVCommand<AetherKey>> cluster) {
         this.selfNodeId = selfNodeId;
-        this.httpRouteMap = httpRouteMap;
+        this.cluster = cluster;
     }
 
     @Override
@@ -234,43 +238,43 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
     private Promise<Unit> publishRoutesToCluster(List<HttpRouteDefinition> routes, Artifact artifact) {
         log.debug("Publishing {} HTTP routes for slice {}", routes.size(), artifact);
-        var promises = routes.stream()
-                             .map(this::publishSingleRoute)
-                             .toList();
-        return Promise.allOf(promises)
+        var routeEntries = routes.stream()
+                                 .map(HttpRoutePublisherImpl::toRouteEntry)
+                                 .toList();
+        var key = NodeRoutesKey.nodeRoutesKey(selfNodeId, artifact);
+        var value = new NodeRoutesValue(routeEntries);
+        KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
+        return cluster.apply(List.of(command))
                       .mapToUnit()
                       .onSuccess(_ -> log.debug("Published {} HTTP routes for slice {}",
                                                 routes.size(),
                                                 artifact));
     }
 
-    private Promise<Unit> publishSingleRoute(HttpRouteDefinition route) {
-        var key = HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(), route.pathPrefix(), selfNodeId);
-        var value = HttpNodeRouteValue.httpNodeRouteValue(route.artifactCoord(), route.sliceMethod());
-        return httpRouteMap.put(key, value);
+    private static RouteEntry toRouteEntry(HttpRouteDefinition route) {
+        return RouteEntry.activeRoute(route.httpMethod(), route.pathPrefix(), route.sliceMethod());
     }
 
     @Override
     public Promise<Unit> unpublishRoutes(Artifact artifact) {
         handlers.remove(artifact);
         sliceRouters.remove(artifact);
-        return Option.option(publishedRoutes.remove(artifact))
-                     .filter(routes -> !routes.isEmpty())
-                     .map(this::unpublishRoutesFromCluster)
-                     .or(Promise.unitPromise());
+        var routes = publishedRoutes.remove(artifact);
+        if (routes == null || routes.isEmpty()) {
+            return Promise.unitPromise();
+        }
+        return unpublishRoutesFromCluster(artifact, routes);
     }
 
-    private Promise<Unit> unpublishRoutesFromCluster(List<HttpRouteDefinition> routes) {
-        var promises = routes.stream()
-                             .map(route -> httpRouteMap.remove(HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(),
-                                                                                                 route.pathPrefix(),
-                                                                                                 selfNodeId)))
-                             .toList();
-        return Promise.allOf(promises)
+    private Promise<Unit> unpublishRoutesFromCluster(Artifact artifact, List<HttpRouteDefinition> routes) {
+        KVCommand<AetherKey> command = new KVCommand.Remove<>(NodeRoutesKey.nodeRoutesKey(selfNodeId, artifact));
+        return cluster.apply(List.of(command))
                       .mapToUnit()
-                      .onSuccess(_ -> log.debug("Unpublished {} HTTP routes",
-                                                routes.size()))
-                      .onFailure(cause -> log.error("Failed to unpublish HTTP routes: {}",
+                      .onSuccess(_ -> log.debug("Unpublished {} HTTP routes for {}",
+                                                routes.size(),
+                                                artifact))
+                      .onFailure(cause -> log.error("Failed to unpublish HTTP routes for {}: {}",
+                                                    artifact,
                                                     cause.message()));
     }
 

@@ -14,13 +14,13 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 1 | Blueprint management | Battle-tested | Declarative TOML-based deployment specs with dependency ordering, validation, and status tracking |
+| 1 | Blueprint management | Battle-tested | Declarative TOML-based deployment specs with dependency ordering, validation, pub-sub orphan detection, and status tracking |
 | 2 | Slice lifecycle | Battle-tested | Full state machine: DOWNLOADING, LOADING, STARTING, ACTIVE, UNLOADING, UNLOADED, FAILED. Per-node tracking via KV-Store |
 | 3 | Rolling updates | Battle-tested | Zero-downtime version deployments with traffic shifting (new:old ratio), health thresholds, auto-progression, rollback, and cleanup policies |
 | 4 | Auto-healing | Battle-tested | Automatic reconciliation of desired vs. actual state on node departure. Leader-only with failover |
 | 5 | Classloader isolation | Complete | Per-slice classloader prevents dependency conflicts between slices |
 | 6 | Manifest versioning | Complete | Envelope format versioning (v1-v6) for backward-compatible manifest evolution |
-| 66 | Compile-time serde | Complete | `@Codec` annotation processor generates `*Codec` classes for records, enums, and sealed interfaces. `SliceCodec` wire format with deterministic hash-based tags, VLQ encoding, zero runtime reflection. Replaces Fory/Kryo for slice boundary serialization |
+| 66 | Compile-time serde | Complete | `@Codec` annotation processor generates `*Codec` classes for records, enums, and sealed interfaces with recursive nested type scanning. `SliceCodec` wire format with deterministic hash-based tags, VLQ encoding, zero runtime reflection. Replaces Fory/Kryo for slice boundary serialization |
 | 102 | Multi-blueprint lifecycle independence | Complete | Blueprint-scoped artifact ownership (`owningBlueprint` in SliceTargetValue), artifact exclusivity enforcement (rejects duplicate artifact across blueprints), owner-filtered blueprint deletion (only removes owned artifacts), rolling update deletion guard, KV-Store restore with ownership. Tier 1 correctness for multi-blueprint clusters |
 
 ## Scaling & Control
@@ -42,7 +42,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 14 | Leader election | Battle-tested | Lightweight leader detection with virtually instant re-election on departure |
 | 15 | Quorum state management | Battle-tested | Monotonic-sequenced quorum notifications, graceful degradation on quorum loss, automatic restoration |
 | 16 | Topology management | Battle-tested | Node discovery, addition/removal events, health tracking, grace period for departures |
-| 17 | Distributed KV-Store | Battle-tested | Consensus-replicated store with typed keys (SliceNode, SliceTarget, HttpRoute, AppBlueprint, VersionRouting, RollingUpdate, Threshold, LogLevel, Config, TopicSubscription) |
+| 17 | Distributed KV-Store | Battle-tested | Consensus-replicated store with typed keys (SliceNode, SliceTarget, HttpRoute, AppBlueprint, VersionRouting, RollingUpdate, Threshold, LogLevel, Config, TopicSubscription, NodeArtifact, NodeRoutes) |
 
 ## Networking & Routing
 
@@ -55,6 +55,8 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 67 | Passive load balancer | Complete | Cluster-aware LB node (NodeRole.PASSIVE) joins cluster network, receives route table via committed Decisions, forwards HTTP via binary protocol. Smart routing, automatic failover, live topology awareness. No HTTP re-serialization. Reusable `PassiveNode<K,V>` abstraction in `integrations/cluster` separates infrastructure from consumer-specific wiring |
 | 68 | NodeRole cluster membership | Complete | ACTIVE/PASSIVE roles in NodeInfo. Passive nodes excluded from quorum/leader election, receive only Decision messages via deliverToPassive() filtering |
 | 69 | HttpForwarder (reusable) | Complete | Extracted HTTP forwarding with round-robin selection, retry with backoff, node departure failover. Used by both AppHttpServer and passive LB |
+| 105 | Server UDP support | Complete | `Server` supports optional UDP port binding alongside TCP via `ServerConfig.withUdpPort()`. UDP DatagramChannel shares workerGroup with TCP (no extra thread pool). Foundation for SWIM integration and future lightweight UDP messaging |
+| 106 | Shared EventLoopGroups | Complete | HTTP servers (AppHttpServer, ManagementServer, AetherPassiveLB) share Server's boss/worker EventLoopGroups instead of creating their own. Reduces per-node thread pools from 6+ to 2. `HttpServer.httpServer()` overload accepts external groups; `NettyHttpServer.createShared()` skips group shutdown on stop |
 
 ## Messaging (Pub-Sub)
 
@@ -69,12 +71,13 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 26 | Scheduled task registry | Complete | KV-Store backed registry tracking periodic task registrations with change listener pattern. 8 unit tests |
-| 27 | Scheduled task manager | Complete | Timer lifecycle manager with leader-only semantics, quorum gating, interval parsing (s/m/h/d), automatic start/cancel on registry changes. 10 unit tests |
-| 28 | Cron expression parser | Complete | 5-field cron syntax (minute hour day-of-month month day-of-week) with ranges, steps, lists. 11 unit tests |
-| 29 | Scheduled task KV types | Complete | `ScheduledTaskKey` and `ScheduledTaskValue` in KV-Store with interval and cron task factories |
+| 26 | Scheduled task registry | Complete | KV-Store backed registry tracking periodic task registrations with change listener pattern. Includes `paused` field for operational control. 8 unit tests |
+| 27 | Scheduled task manager | Complete | Timer lifecycle manager with ExecutionMode (SINGLE/ALL), quorum gating, interval parsing (s/m/h/d/w), cron scheduling, pause/resume support, execution state tracking. `ALL` mode fires independently on every node with the slice deployed. 15 unit tests |
+| 28 | Cron expression parser | Complete | 5-field cron syntax (minute hour day-of-month month day-of-week) with ranges, steps, lists. Wired into ScheduledTaskManager for one-shot+re-schedule pattern. 11 unit tests |
+| 29 | Scheduled task KV types | Complete | `ScheduledTaskKey`/`ScheduledTaskValue` (with `paused` field), `ScheduledTaskStateKey`/`ScheduledTaskStateValue` (execution metrics) |
 | 30 | Deployment lifecycle wiring | Complete | Publish/unpublish scheduled tasks during slice activation, deactivation, reactivation, and failure cleanup |
-| 31 | Scheduled tasks management API | Complete | `GET /api/scheduled-tasks` (list all with active timer count), `GET /api/scheduled-tasks/{configSection}` (filtered). CLI subcommand with list/get |
+| 31 | Scheduled tasks management API | Complete | Full CRUD: list, filter, pause, resume, manual trigger, execution state query. CLI: list/get/pause/resume/trigger |
+| 104 | Execution state tracking | Complete | Tracks last execution time, consecutive failures, total executions per task. Passive `ScheduledTaskStateRegistry` watches KV-Store. Enriched REST responses |
 
 ## Storage & Data
 
@@ -82,7 +85,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 |---|---------|--------|-------------|
 | 32 | Artifact repository | Battle-tested | Maven-compatible, chunked storage, checksum verification (MD5/SHA1), 64MB upload limit, metadata XML generation |
 | 33 | Distributed hash table | Battle-tested | Consistent hash ring (150 vnodes, 1024 partitions), quorum R/W, anti-entropy repair (CRC32 digest exchange, migration on mismatch), re-replication on node departure (DHTRebalancer), per-use-case config via `scoped()` |
+| 105 | Hybrid Logical Clock | Complete | `integrations/hlc/` module. HlcTimestamp (48-bit microseconds + 16-bit counter packed into long), HlcClock (thread-safe, ReentrantLock), drift detection, counter overflow protection. Foundation for causal ordering |
+| 106 | DHT versioned writes | Complete | HLC-stamped puts with atomic version comparison in storage. Rejects stale writes (version ≤ current). Synchronous notification delivery via `withSuccess()` preserves causal write ordering. Superseded flag in PutResponse skips stale notifications. Full replication (`DHTConfig.FULL`) for control plane maps |
 | 34 | Configuration service | Complete | TOML-based config with runtime overrides via KV-Store, environment variable interpolation, system property fallback |
+| 107 | Centralized timeout configuration | Complete | All operator-facing timeouts externalized to `TimeoutsConfig` with 13 subsystem groups (invocation, forwarding, deployment, rolling update, cluster, consensus, election, SWIM, observability, DHT, worker, security, repository, scaling). TOML `[timeouts.*]` sections with human-readable duration strings. Legacy `_ms` fields supported with automatic migration. See [timeout-configuration.md](timeout-configuration.md) |
 
 ## Observability & Metrics
 
@@ -165,15 +171,15 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 80 | SWIM failure detection | Complete | UDP-based protocol with periodic probes, indirect probing, piggybacked membership updates. Standalone `integrations/swim/` module. Used for both worker-to-worker and core-to-core health detection via `CoreSwimHealthDetector` |
+| 80 | SWIM failure detection | Complete | UDP-based protocol with periodic probes, indirect probing, piggybacked membership updates. Standalone `integrations/swim/` module. Sole failure detector — NCN Ping/Pong removed. Shares Server's workerGroup (no separate thread pool). Used for both worker-to-worker and core-to-core health detection via `CoreSwimHealthDetector` |
 | 81 | Worker node | Complete | Passive compute nodes that run slices without participating in Rabia consensus. WorkerNode composes PassiveNode + SWIM + Governor + WorkerDeploymentManager. Full slice lifecycle: receives directives from CDM, self-assigns instances via consistent hashing, loads/activates slices, publishes endpoints to DHT |
 | 82 | Governor election | Complete | Pure deterministic computation — lowest ALIVE NodeId from SWIM membership, scoped to own group. No election messages exchanged. Governor cleanup removes dead node DHT entries. Reconciliation on new governor election. GovernorAnnouncement published to consensus for core-side discovery |
 | 83 | Worker endpoint registry | Complete | `WorkerEndpointRegistry` removed (Phase 2a) — replaced by unified `EndpointRegistry` fed by DHT `ReplicatedMap` subscription events. SliceInvoker uses single registry for both core and worker endpoints |
 | 84 | CDM pool awareness | Complete | AllocationPool for core + worker node sets. CDM discovers workers via `ActivationDirectiveKey(WORKER)`, writes `WorkerSliceDirectiveKey/Value` directives to consensus. PlacementPolicy (CORE_ONLY, WORKERS_PREFERRED, WORKERS_ONLY, ALL) flows from SliceTargetValue through CDM allocation |
 | 85 | Worker management API | Complete | `GET /api/workers`, `GET /api/workers/health`, `GET /api/workers/endpoints`. `POST /api/scale` accepts `placement` parameter. CLI: `workers list`, `workers health`, `scale --placement` |
-| 86 | Core-to-core SWIM health | Complete | `CoreSwimHealthDetector` bridges SWIM `FAULTY`/`LEFT` events to `TopologyChangeNotification.nodeRemoved`. Replaces TCP disconnect detection (15s-2min) with SWIM (1-2s). TCP disconnect decoupled from topology — only triggers reconnection |
+| 86 | Core-to-core SWIM health | Complete | `CoreSwimHealthDetector` bridges SWIM `FAULTY`/`LEFT` events to `DisconnectNode`. SWIM is sole failure detector (NCN Ping/Pong removed). Detection in 1-2s vs TCP disconnect 15s-2min. Shares Server's workerGroup via `start(Option<EventLoopGroup>)`. TCP disconnect decoupled from topology — only triggers reconnection |
 | 87 | Automatic topology growth | Complete | CDM assigns core vs worker role to joining non-seed nodes. `RabiaEngine` activation gating: seed nodes auto-activate on quorum, non-seed nodes wait for `ActivateConsensus` from CDM. `TopologyConfig` extended with `coreMax`/`coreMin`. Management API: `GET /api/cluster/topology`. CLI: `aether topology status` |
-| 88 | DHT-backed ReplicatedMap | Complete | Generic typed `ReplicatedMap<K,V>` abstraction over `DHTClient` with namespace-prefixed keys, serialization, and `MapSubscription` event callbacks. `CachedReplicatedMap` adds LRU + TTL caching. `aether/aether-dht/` module |
+| 88 | DHT-backed ReplicatedMap | Complete | Generic typed `ReplicatedMap<K,V>` abstraction over `DHTClient` with namespace-prefixed keys, serialization, and `MapSubscription` event callbacks. Drain loop (trampoline) prevents subscriber re-entrance from delivering stale notifications. `CachedReplicatedMap` adds LRU + TTL caching. `aether/aether-dht/` module |
 | 89 | Community-aware replication | Complete | `ReplicationPolicy` with home-replica rule (1 home + 2 ring replicas = RF=3). `HomeReplicaResolver` for deterministic community-local selection. Spot-node exclusion via `ConsistentHashRing.nodesFor(key, count, filter)` |
 | 90 | Endpoint DHT migration | Complete | Endpoints moved from consensus KV-Store to DHT `ReplicatedMap`. `EndpointRegistry` fed by DHT subscription events. `NodeDeploymentManager` writes endpoints via DHT. O(3) write amplification vs O(N) with consensus |
 | 91 | Replication cooldown | Complete | Startup RF=1 with background push to RF=3 after configurable delay. Rate-limited to prevent boot storm |
@@ -184,6 +190,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 93 | DHT node cleanup | Complete | `DhtNodeCleanup` removes dead node's endpoints from DHT maps on SWIM DEAD detection |
 | 94 | SliceNodeKey DHT migration | Complete | SliceNodeKey reads/writes moved from consensus to `slice-nodes` ReplicatedMap. CDM and NDM write via DHT. 5 subscribers via `asSliceNodeSubscription()` adapters |
 | 95 | HttpNodeRouteKey DHT migration | Complete | HttpNodeRouteKey reads/writes moved from consensus to `http-routes` ReplicatedMap. HttpRoutePublisher writes via DHT. 3 subscribers via `asHttpRouteSubscription()` adapters |
+| 103 | Compound KV-Store key types | Complete | `NodeArtifactKey` merges EndpointKey + SliceNodeKey into single per-node-per-artifact entry; `NodeRoutesKey` merges HttpNodeRouteKey into compound routes. ~10x entry count reduction. All publishers write only new types. All consumers handle new types via KVNotificationRouter. CDM cleanup migrated to new key types. WorkerNetwork eliminated — inter-worker messaging consolidated into NCN via DelegateRouter |
 | 96 | DHT replication config | Complete | `[dht.replication]` TOML section: `cooldown_delay_ms`, `cooldown_rate`, `target_rf`. Environment-aware defaults |
 | 100 | Event-based community scaling | Complete | Governors monitor follower metrics via `WorkerMetricsPing`/`Pong`, detect sustained threshold breaches (CPU >80%, P95 >500ms, error rate >10%), send `CommunityScalingRequest` to core. Zero baseline bandwidth. `CommunityScalingEvaluator` (sliding window, cooldown), `WorkerMetricsAggregator` (periodic aggregation). Core `ControlLoop` validates and applies scaling. On-demand `CommunityMetricsSnapshot` for diagnostics/dashboard |
 | 101 | Governor advertised address | Complete | Governors announce routable TCP address instead of `0.0.0.0`. Auto-detects via `InetAddress.getLocalHost()` or configurable `worker.advertise_address` in TOML. Required for cross-host governor mesh |
@@ -208,11 +215,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 64 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
 | 65 | Spot instance support | Planned | Elastic pool of spot/preemptible instances for cost-optimized scaling. Core (on-demand) + elastic (spot) pools. Prerequisite: Cloud Integration. Deferred from worker pool Phase 2 to Phase 3 |
 | 66 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts. Prerequisite: Cloud Integration |
-| 67 | TLS certificate management | Complete | Mutual TLS between cluster nodes with CertificateProvider SPI, deterministic self-signed CA, certificate renewal, gossip encryption |
+| 67 | ~~TLS certificate management~~ | ~~Complete~~ | ~~Moved to Security section (features 88-91)~~ |
 | 69 | KV-Store state backup | Planned | Periodic KV-Store snapshots to durable storage (filesystem, S3). Disaster recovery when quorum permanently lost |
 | 70 | Aether runtime rolling upgrade | Planned | Upgrade Aether node software across running cluster without downtime. Node-by-node with health verification |
 | 71 | Email messaging resource | Planned | Facade with pluggable backends (SMTP, AWS SES, SendGrid). Sending (plain text + HTML, attachments) and receiving (automated conversations). SPI-based |
-| 72 | Dead letter handling | Planned | KV-Store backed DLQ for failed pub-sub messages and scheduled task invocations. Retry, inspect, replay via API and CLI |
 | 103 | Per-blueprint artifact scoping (Tier 2) | Planned | Per-blueprint SliceTargetKey scoping for multi-tenant clusters. Blueprint-scoped CDM maps, WorkerSliceDirectiveKey blueprint scoping, Management API `blueprintId` parameter. Prerequisite: Tier 1 (#102) |
 
 ---
@@ -222,10 +228,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 24 |
-| Complete | 77 |
+| Complete | 80 |
 | Partial | 1 |
-| Planned | 13 |
-| Total | 115 |
+| Planned | 12 |
+| Total | 117 |
 
 **Battle-tested features (24):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), E2E test framework, Forge integration tests
 
@@ -246,7 +252,6 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Per-route rate limiting | — |
 | Spot instance support | Cloud Integration |
 | Cluster expense tracking | Cloud Integration |
-| Dead letter handling | Pub-sub + scheduler complete |
 | ~~KV-Store state backup~~ | ~~Complete in 0.19.3~~ |
 | Aether runtime rolling upgrade | Official container or binaries |
 | Email messaging resource | — |
@@ -254,4 +259,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-03-11 (v0.19.3)*
+*Last updated: 2026-03-13 (v0.20.0)*

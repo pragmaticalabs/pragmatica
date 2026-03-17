@@ -3,7 +3,7 @@
 ## Container Command
 
 ```bash
-podman run -it --rm \
+docker run -it --rm \
   --name aether-dx-test \
   -p 8070:8070 \
   -p 8888:8888 \
@@ -19,13 +19,13 @@ podman run -it --rm \
 > - `5150` — Management API / CLI
 >
 > **Reaching host services** (e.g., PostgreSQL in Part 7): use `host.containers.internal`
-> as the hostname. Podman on macOS/Windows resolves this automatically to the host machine.
+> as the hostname. Docker on macOS/Windows resolves this automatically to the host machine.
 > On Linux, add `--add-host=host.containers.internal:host-gateway` to the command above,
 > or use `--network=host` instead of `-p` flags.
 >
-> **`-v .m2/repository`** — mounts local Maven cache so locally-built deps resolve (not published to Central yet). Remove this mount for a true clean-room test once 0.19.3 is published.
+> **`-v .m2/repository`** — mounts local Maven cache so locally-built deps resolve (not published to Central yet). Remove this mount for a true clean-room test once 0.20.0 is published.
 >
-> **`--version` flag** — when testing unreleased versions, use `jbct init --version 0.19.3` to override the dependency versions in generated pom.xml. Without this flag, `jbct init` uses the latest published release from GitHub (0.19.3).
+> **`--version` flag** — when testing unreleased versions, use `jbct init --version 0.20.0` to override the dependency versions in generated pom.xml. Without this flag, `jbct init` uses the latest published release from GitHub (0.20.0).
 
 ### Inside the container — prerequisites
 
@@ -49,7 +49,7 @@ mvn --version    # should show 3.9.12
 **Goal:** Verify install.sh downloads and configures all tools.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/release-0.19.3/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/release-0.20.0/install.sh | sh
 source ~/.bashrc    # or ~/.zshrc
 ```
 
@@ -57,7 +57,7 @@ source ~/.bashrc    # or ~/.zshrc
 
 | # | Check | Command | Expected |
 |---|-------|---------|----------|
-| 1.1 | jbct installed | `jbct --version` | Version printed (0.19.3-candidate) |
+| 1.1 | jbct installed | `jbct --version` | Version printed (0.20.0-candidate) |
 | 1.2 | aether installed | `aether --help` | Help text with subcommands |
 | 1.3 | aether-forge installed | `aether-forge --help` | Help text |
 | 1.4 | Binaries in PATH | `which jbct aether aether-forge` | All three found |
@@ -71,7 +71,7 @@ source ~/.bashrc    # or ~/.zshrc
 ```bash
 cd /tmp
 jbct init my-slice -g com.example -a my-slice --no-ai
-# For unreleased versions: jbct init my-slice -g com.example -a my-slice --no-ai --version 0.19.3
+# For unreleased versions: jbct init my-slice -g com.example -a my-slice --no-ai --version 0.20.0
 cd my-slice
 ```
 
@@ -332,14 +332,14 @@ CREATE TABLE IF NOT EXISTS greetings (
 );
 ```
 
-On the **host machine** (outside the container, where podman is available):
+On the **host machine** (outside the container, where docker is available):
 
 ```bash
 cd /tmp/my-slice
 ./start-postgres.sh
 ```
 
-The script auto-detects podman/docker, starts PostgreSQL, and applies `schema/init.sql` automatically.
+The script auto-detects docker/docker, starts PostgreSQL, and applies `schema/init.sql` automatically.
 
 ### 7b. Uncomment database config
 
@@ -460,9 +460,9 @@ mvn clean install
 |---|-------|---------|----------|
 | 7.1 | Build succeeds | `mvn clean install` | `BUILD SUCCESS` |
 | 7.2 | Greeting with DB | `curl -s http://localhost:8070/api/hello/World` | `{"greeting":"Hello, World!"}` |
-| 7.3 | DB has record | `podman exec my-slice-postgres psql -U postgres -d forge -c "SELECT * FROM greetings"` | Row with "World" |
+| 7.3 | DB has record | `docker exec my-slice-postgres psql -U postgres -d forge -c "SELECT * FROM greetings"` | Row with "World" |
 | 7.4 | Multiple calls | `curl -s http://localhost:8070/api/hello/Alice && curl -s http://localhost:8070/api/hello/Bob` | Both succeed |
-| 7.5 | DB count | `podman exec my-slice-postgres psql -U postgres -d forge -c "SELECT COUNT(*) FROM greetings"` | 3 rows |
+| 7.5 | DB count | `docker exec my-slice-postgres psql -U postgres -d forge -c "SELECT COUNT(*) FROM greetings"` | 3 rows |
 
 ---
 
@@ -791,8 +791,8 @@ cat target/blueprint.toml
 
 | # | Check | Command | Expected |
 |---|-------|---------|----------|
-| 18.1 | Postgres stopped | `podman ps` | No my-slice-postgres container |
-| 18.2 | Volume removed (purge) | `podman volume ls` | No my-slice-pgdata volume |
+| 18.1 | Postgres stopped | `docker ps` | No my-slice-postgres container |
+| 18.2 | Volume removed (purge) | `docker volume ls` | No my-slice-pgdata volume |
 
 ---
 

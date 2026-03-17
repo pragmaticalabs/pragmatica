@@ -286,7 +286,7 @@ upgrade_node() {
     log_warn "  Restart it with version $VERSION now."
     log_warn "  Examples:"
     log_warn "    systemctl restart aether-node@$node_id"
-    log_warn "    podman restart $node_id"
+    log_warn "    docker restart $node_id"
     log_warn "    kubectl rollout restart deployment/$node_id"
     log_warn "  ============================================"
     echo ""

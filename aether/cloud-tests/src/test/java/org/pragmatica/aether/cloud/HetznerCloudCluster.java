@@ -25,6 +25,7 @@ import org.pragmatica.lang.Result;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -91,6 +92,7 @@ public final class HetznerCloudCluster implements AutoCloseable {
         verifyJavaInstalled();
         deployJars();
         startAllNodes();
+        awaitAllHealthy(Duration.ofMinutes(3));
     }
 
     /// Waits until all nodes report healthy via /api/health.
@@ -105,6 +107,38 @@ public final class HetznerCloudCluster implements AutoCloseable {
         await().atMost(timeout)
                .pollInterval(Duration.ofSeconds(5))
                .untilAsserted(this::assertLeaderElected);
+    }
+
+    /// Uploads test slice artifacts to the cluster via management API.
+    /// Requires cluster to be healthy with a leader.
+    public void uploadTestArtifacts(Path projectRoot) {
+        log.info("Uploading test artifacts to cloud cluster...");
+        var version = System.getProperty("project.version", "0.20.0");
+        var echoSliceJar = projectRoot.resolve(
+            "aether/e2e-tests/echo-slice/target/echo-slice-echo-service-" + version + ".jar");
+
+        if (!Files.exists(echoSliceJar)) {
+            echoSliceJar = Path.of(System.getProperty("user.home"), ".m2", "repository",
+                "org/pragmatica-lite/aether/test", "echo-slice-echo-service", version,
+                "echo-slice-echo-service-" + version + ".jar");
+        }
+
+        if (!Files.exists(echoSliceJar)) {
+            log.warn("Echo slice JAR not found, skipping artifact upload");
+            return;
+        }
+
+        try {
+            var jarBytes = Files.readAllBytes(echoSliceJar);
+            var targetNode = nodes.getFirst();
+            var result = targetNode.uploadArtifact(
+                "org/pragmatica-lite/aether/test",
+                "echo-slice-echo-service", version, jarBytes);
+            result.onSuccess(r -> log.info("Test artifact uploaded successfully"))
+                  .onFailure(cause -> log.warn("Test artifact upload failed: {}", cause.message()));
+        } catch (Exception e) {
+            log.warn("Failed to read echo slice JAR: {}", e.getMessage());
+        }
     }
 
     @Override

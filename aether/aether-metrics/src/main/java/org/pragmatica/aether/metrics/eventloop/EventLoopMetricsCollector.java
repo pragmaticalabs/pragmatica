@@ -32,11 +32,10 @@ import static org.pragmatica.lang.Result.unitResult;
 public final class EventLoopMetricsCollector {
     private static final Logger log = LoggerFactory.getLogger(EventLoopMetricsCollector.class);
 
-    private static final long PROBE_INTERVAL_MS = 100;
-
-    // Probe every 100ms
+    private static final long DEFAULT_PROBE_INTERVAL_MS = 100;
     private static final long HEALTH_THRESHOLD_NS = EventLoopMetrics.DEFAULT_HEALTH_THRESHOLD_NS;
 
+    private final long probeIntervalMs;
     private final CopyOnWriteArrayList<EventLoopGroup> eventLoopGroups = new CopyOnWriteArrayList<>();
     private final AtomicLong maxLagNanos = new AtomicLong(0);
     private final AtomicInteger totalPendingTasks = new AtomicInteger(0);
@@ -46,10 +45,16 @@ public final class EventLoopMetricsCollector {
     private final AtomicReference<Option<ScheduledFuture<?>>> probeFuture = new AtomicReference<>(none());
     private volatile boolean started = false;
 
-    private EventLoopMetricsCollector() {}
+    private EventLoopMetricsCollector(long probeIntervalMs) {
+        this.probeIntervalMs = probeIntervalMs;
+    }
 
     public static EventLoopMetricsCollector eventLoopMetricsCollector() {
-        return new EventLoopMetricsCollector();
+        return new EventLoopMetricsCollector(DEFAULT_PROBE_INTERVAL_MS);
+    }
+
+    public static EventLoopMetricsCollector eventLoopMetricsCollector(long probeIntervalMs) {
+        return new EventLoopMetricsCollector(probeIntervalMs);
     }
 
     /// Register an EventLoopGroup to monitor.
@@ -72,8 +77,8 @@ public final class EventLoopMetricsCollector {
         this.scheduler = scheduler;
         started = true;
         probeFuture.set(some(scheduler.scheduleAtFixedRate(this::probe,
-                                                           PROBE_INTERVAL_MS,
-                                                           PROBE_INTERVAL_MS,
+                                                           probeIntervalMs,
+                                                           probeIntervalMs,
                                                            TimeUnit.MILLISECONDS)));
         log.info("Event loop metrics collection started");
         return unitResult();

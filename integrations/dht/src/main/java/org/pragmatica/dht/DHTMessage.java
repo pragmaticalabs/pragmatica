@@ -37,7 +37,7 @@ public sealed interface DHTMessage extends ProtocolMessage {
     record GetResponse(String requestId, NodeId sender, Option<byte[]> value) implements DHTMessage {}
 
     /// Request to put a value.
-    record PutRequest(String requestId, NodeId sender, byte[] key, byte[] value) implements DHTMessage {
+    record PutRequest(String requestId, NodeId sender, byte[] key, byte[] value, long version) implements DHTMessage {
         public PutRequest {
             key = key.clone();
             value = value.clone();
@@ -45,7 +45,7 @@ public sealed interface DHTMessage extends ProtocolMessage {
     }
 
     /// Response to a put request.
-    record PutResponse(String requestId, NodeId sender, boolean success) implements DHTMessage {}
+    record PutResponse(String requestId, NodeId sender, boolean success, boolean superseded) implements DHTMessage {}
 
     /// Request to remove a value.
     record RemoveRequest(String requestId, NodeId sender, byte[] key) implements DHTMessage {
@@ -67,8 +67,8 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// Response to exists request.
     record ExistsResponse(String requestId, NodeId sender, boolean exists) implements DHTMessage {}
 
-    /// A key-value pair used in migration data transfers.
-    record KeyValue(byte[] key, byte[] value) {
+    /// A key-value pair with version used in migration data transfers.
+    record KeyValue(byte[] key, byte[] value, long version) {
         public KeyValue {
             key = key.clone();
             value = value.clone();

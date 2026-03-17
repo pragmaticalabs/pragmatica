@@ -11,7 +11,7 @@ The E2E testing framework provides:
 
 ## Prerequisites
 
-- Podman running locally
+- Docker running locally
 - Maven with JDK 25
 - Built project JARs (`mvn package -DskipTests`)
 
@@ -470,14 +470,14 @@ E2E tests should NOT run in parallel due to container resource contention:
 
 ### Container Won't Start
 
-1. Check Podman is running: `podman ps`
-2. Check image builds: `podman build -f docker/aether-node/Dockerfile .`
+1. Check Docker is running: `docker ps`
+2. Check image builds: `docker build -f docker/aether-node/Dockerfile .`
 3. Check for port conflicts
 
 ### Quorum Not Forming
 
 1. Increase timeout: tests may need more time
-2. Check container logs: `podman logs <container>`
+2. Check container logs: `docker logs <container>`
 3. Verify network connectivity between containers
 
 ### Flaky Tests
