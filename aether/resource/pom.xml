@@ -26,6 +26,7 @@
         <module>http</module>
         <module>interceptors</module>
         <module>services</module>
+        <module>notification</module>
     </modules>
 
     <properties>
@@ -40,6 +41,16 @@
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>resource-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>smtp</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>email-http</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
