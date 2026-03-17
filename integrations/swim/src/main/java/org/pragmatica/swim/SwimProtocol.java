@@ -58,6 +58,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     private final InetSocketAddress selfAddress;
     private final Map<NodeId, SwimMember> members = new ConcurrentHashMap<>();
     private final Map<Long, PendingProbe> pendingProbes = new ConcurrentHashMap<>();
+    private final Map<Long, InetSocketAddress> pendingRelays = new ConcurrentHashMap<>();
     private final Map<NodeId, Long> suspectTimestamps = new ConcurrentHashMap<>();
     private final PiggybackBuffer piggybackBuffer;
     private final AtomicLong sequenceCounter = new AtomicLong(0);
@@ -190,6 +191,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         var suspectTimeoutMillis = config.suspectTimeout().toMillis();
 
         suspectTimestamps.forEach((nodeId, timestamp) -> expireSuspectIfOverdue(nodeId, timestamp, now, suspectTimeoutMillis));
+        // Clean up stale relays older than probe timeout (target never responded)
+        pendingRelays.keySet().removeIf(seq -> !pendingProbes.containsKey(seq));
     }
 
     private void expireSuspectIfOverdue(NodeId nodeId, long timestamp, long now, long suspectTimeoutMillis) {
@@ -300,6 +303,12 @@ public final class SwimProtocol implements SwimMessageHandler {
         processPiggyback(ack.piggyback());
         pendingProbes.remove(ack.sequence());
         markAliveIfNeeded(ack.from());
+        // Forward Ack to the original requester if this was a relayed probe
+        var requester = pendingRelays.remove(ack.sequence());
+        if (requester != null) {
+            var forwardAck = Ack.ack(ack.from(), ack.sequence(), ack.piggyback());
+            transport.send(requester, forwardAck);
+        }
     }
 
     private void handlePingReq(PingReq pingReq) {
@@ -307,6 +316,12 @@ public final class SwimProtocol implements SwimMessageHandler {
 
         if (target == null) {
             return;
+        }
+
+        // Resolve requester's address for Ack forwarding
+        var requester = members.get(pingReq.from());
+        if (requester != null) {
+            pendingRelays.put(pingReq.sequence(), requester.address());
         }
 
         var piggyback = piggybackBuffer.takeUpdates(config.maxPiggyback());
