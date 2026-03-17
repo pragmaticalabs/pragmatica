@@ -248,11 +248,12 @@ Part of Cloud Integration (#1). Per-provider status:
     - 57 tests (20 SMTP + 26 email-http + 11 notification)
     - **Phase 2 (future):** SMS (Twilio, AWS SNS), push (FCM, APNS), SMTP connection pooling, MX lookup
 
-4. **Canary & Blue-Green Deployment Strategies**
+4. **Canary & Blue-Green Deployment Strategies** — [design spec](../../specs/canary-blue-green-spec.md)
      - Current: Rolling updates with weighted routing exist
      - Add explicit canary deployment with automatic rollback on error threshold
      - Add blue-green deployment with instant switchover
      - A/B testing support with traffic splitting by criteria
+     - **Spec complete:** 5-stage canary progression, atomic blue-green switchover, A/B split rules, KV types, REST API, CLI, TOML config, failure handling. 5 phases (18-26 days)
 
 5. **RBAC Tier 2 — Per-Endpoint Role Authorization**
      - Per-endpoint role-based authorization rules (admin, operator, viewer)
