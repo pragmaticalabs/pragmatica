@@ -359,7 +359,7 @@ Part of Cloud Integration (#1). Per-provider status:
 
 - **LLM Integration (Layer 3)** — Claude/GPT API integration. Complex reasoning workflows. Multi-cloud decision support.
 
-- **Mini-Kafka (Message Streaming)** — Ordered message streaming with partitions (differs from pub/sub). In-memory storage (initial). Consumer group coordination. Retention policies.
+- **In-Memory Streams** — [design spec](../../specs/in-memory-streams-spec.md) — Ordered, replayable, consumer-paced streaming (Kafka-like primitive). Partition-based with DHT ownership, consumer groups with cursor tracking, time/size-based retention, configurable replication. Blueprint-declared streams as first-class resources. Status: Exploratory Draft.
 
 - **Cross-Slice Transaction Support (2PC)**
     - Distributed transactions via Transaction aspect
