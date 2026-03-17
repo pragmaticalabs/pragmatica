@@ -414,6 +414,13 @@ All infrastructure modules transition to unified `@ResourceQualifier(type, confi
 
 ---
 
+## Known Issues
+
+| Issue | Severity | Details |
+|-------|----------|---------|
+| **Rolling restart loses slice state** | High | After sequential restart of ALL nodes in a 3-node cluster, slices are NOT_FOUND despite blueprint surviving in KV-Store. Root cause: consensus state restore + CDM/NDM activation ordering during full membership turnover. Partial fixes applied (lifecycle race, LOAD tracking, NDM scan), but the core issue requires container-level debugging of the CDM reconcile path. `RollingRestartE2ETest` consistently fails. |
+| **SWIM indirect probe relay** | Medium | `SwimProtocol.handlePingReq()` does not relay Ack back to the requester. In-process forge tests with `killNode` trigger false SUSPECT cascades. Production (separate processes) is less affected. |
+
 ## Tech Debt — Hardcoded Values
 
 The following values are compile-time constants that should eventually be externalized to configuration (TOML or management API). Listed by module and priority.
