@@ -23,7 +23,9 @@ import static org.pragmatica.lang.Result.success;
 /// Serializes and deserializes KV-Store snapshots to/from TOML text format.
 ///
 /// Format: pipe-delimited values grouped by key-type sections.
-/// AppBlueprintKey/Value entries are skipped (ephemeral, re-deployable).
+/// Ephemeral control plane keys (node artifacts, routes, lifecycle, endpoints,
+/// activation directives, governor announcements) are excluded from both
+/// serialization and deserialization. See {@link EphemeralKeys}.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
 public final class KVStoreSerializer {
     private KVStoreSerializer() {}
@@ -54,7 +56,7 @@ public final class KVStoreSerializer {
                 currentSection = trimmed.substring(1, trimmed.length() - 1);
                 continue;
             }
-            if ("meta".equals(currentSection)) {
+            if ("meta".equals(currentSection) || EphemeralKeys.isEphemeralSection(currentSection)) {
                 continue;
             }
             results.add(parseEntry(currentSection, trimmed));
@@ -103,7 +105,7 @@ public final class KVStoreSerializer {
     private static Map<String, List<Map.Entry<AetherKey, AetherValue>>> groupBySection(Map<AetherKey, AetherValue> entries) {
         return entries.entrySet()
                       .stream()
-                      .filter(e -> !(e.getKey() instanceof AppBlueprintKey))
+                      .filter(e -> !EphemeralKeys.isEphemeral(e.getKey()))
                       .collect(Collectors.groupingBy(e -> sectionForKey(e.getKey()),
                                                      LinkedHashMap::new,
                                                      Collectors.toList()));

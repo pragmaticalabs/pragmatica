@@ -52,7 +52,7 @@ class KVStoreSerializerTest {
         }
 
         @Test
-        void toToml_nodeLifecycle_serializedCorrectly() {
+        void toToml_ephemeralNodeLifecycle_excluded() {
             var nodeId = NodeId.nodeId("node-abc123").unwrap();
             var key = NodeLifecycleKey.nodeLifecycleKey(nodeId);
             var value = NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, 1710072000000L);
@@ -60,8 +60,8 @@ class KVStoreSerializerTest {
             KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(toml -> {
-                                 assertThat(toml).contains("[node-lifecycle]");
-                                 assertThat(toml).contains("\"node-abc123\" = \"ON_DUTY|1710072000000\"");
+                                 assertThat(toml).doesNotContain("[node-lifecycle]");
+                                 assertThat(toml).doesNotContain("node-abc123");
                              });
         }
 
@@ -92,7 +92,7 @@ class KVStoreSerializerTest {
         }
 
         @Test
-        void toToml_governorAnnouncement_serializedCorrectly() {
+        void toToml_ephemeralGovernorAnnouncement_excluded() {
             var key = GovernorAnnouncementKey.forCommunity("prod:us-east-1");
             var members = List.of(NodeId.nodeId("worker-1").unwrap(), NodeId.nodeId("worker-2").unwrap());
             var value = new GovernorAnnouncementValue(
@@ -101,8 +101,8 @@ class KVStoreSerializerTest {
             KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(toml -> {
-                                 assertThat(toml).contains("[governor-announcement]");
-                                 assertThat(toml).contains("\"prod:us-east-1\" = \"governor-1|2|worker-1,worker-2|0.0.0.0:7201|1710072000000\"");
+                                 assertThat(toml).doesNotContain("[governor-announcement]");
+                                 assertThat(toml).doesNotContain("governor-1");
                              });
         }
 
@@ -138,6 +138,38 @@ class KVStoreSerializerTest {
                                  assertThat(toml).contains("\"com.example:app-b\" = \"1.0.0|4|3||2000|CORE_ONLY\"");
                                  // Only one section header
                                  assertThat(countOccurrences(toml, "[slice-target]")).isEqualTo(1);
+                             });
+        }
+
+        @Test
+        void toToml_mixedEphemeralAndPersistent_onlyPersistentSerialized() {
+            var entries = new LinkedHashMap<AetherKey, AetherValue>();
+
+            // Persistent: slice target
+            var ab = ArtifactBase.artifactBase("com.example:svc").unwrap();
+            var ver = Version.version("1.0.0").unwrap();
+            entries.put(SliceTargetKey.sliceTargetKey(ab),
+                        new SliceTargetValue(ver, 2, 1, Option.none(), "CORE_ONLY", 1000L));
+
+            // Ephemeral: node lifecycle
+            var nodeId = NodeId.nodeId("node-1").unwrap();
+            entries.put(NodeLifecycleKey.nodeLifecycleKey(nodeId),
+                        NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.ON_DUTY, 2000L));
+
+            // Ephemeral: activation directive
+            entries.put(ActivationDirectiveKey.activationDirectiveKey(nodeId),
+                        new ActivationDirectiveValue("CORE"));
+
+            // Persistent: config
+            entries.put(ConfigKey.forKey("timeout"), new ConfigValue("timeout", "5000", 3000L));
+
+            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(toml -> {
+                                 assertThat(toml).contains("[slice-target]");
+                                 assertThat(toml).contains("[config]");
+                                 assertThat(toml).doesNotContain("[node-lifecycle]");
+                                 assertThat(toml).doesNotContain("[activation]");
                              });
         }
     }
@@ -195,7 +227,7 @@ class KVStoreSerializerTest {
         }
 
         @Test
-        void fromToml_validToml_deserializesCorrectly() {
+        void fromToml_ephemeralSection_skippedOnRestore() {
             var toml = """
                        [meta]
                        phase = 100
@@ -203,18 +235,64 @@ class KVStoreSerializerTest {
 
                        [node-lifecycle]
                        "node-1" = "ON_DUTY|1710072000000"
+
+                       [config]
+                       "timeout" = "timeout|5000|3000"
                        """;
 
             KVStoreSerializer.fromToml(toml)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(map -> {
                                  assertThat(map).hasSize(1);
+                                 assertThat(map).containsKey(ConfigKey.forKey("timeout"));
+                                 // node-lifecycle is ephemeral — should not be restored
                                  var nodeId = NodeId.nodeId("node-1").unwrap();
-                                 var expectedKey = NodeLifecycleKey.nodeLifecycleKey(nodeId);
-                                 assertThat(map).containsKey(expectedKey);
-                                 var value = (NodeLifecycleValue) map.get(expectedKey);
-                                 assertThat(value.state()).isEqualTo(NodeLifecycleState.ON_DUTY);
-                                 assertThat(value.updatedAt()).isEqualTo(1710072000000L);
+                                 assertThat(map).doesNotContainKey(NodeLifecycleKey.nodeLifecycleKey(nodeId));
+                             });
+        }
+
+        @Test
+        void fromToml_multipleEphemeralSections_allSkipped() {
+            var toml = """
+                       [meta]
+                       phase = 100
+                       timestamp = "2026-03-10T12:00:00Z"
+
+                       [node-lifecycle]
+                       "node-1" = "ON_DUTY|1710072000000"
+
+                       [activation]
+                       "node-1" = "CORE"
+
+                       [governor-announcement]
+                       "prod:us-east-1" = "governor-1|2|worker-1,worker-2|0.0.0.0:7201|1710072000000"
+
+                       [slices]
+                       "worker-1/com.example:svc:1.0.0" = "ACTIVE||false"
+
+                       [endpoints]
+                       "com.example:svc:1.0.0/handle:0" = "node-1"
+
+                       [node-artifact]
+                       "node-1/com.example:svc:1.0.0" = "ACTIVE||false|0|handle"
+
+                       [node-routes]
+                       "node-1/com.example:svc:1.0.0" = "GET,/api/,handle,ACTIVE,100,1710072000000"
+
+                       [http-node-routes]
+                       "GET:/api/:node-1" = "com.example:svc:1.0.0|handle|ACTIVE|100|1710072000000"
+
+                       [slice-target]
+                       "com.example:svc" = "1.0.0|2|1||1000|CORE_ONLY"
+                       """;
+
+            KVStoreSerializer.fromToml(toml)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(map -> {
+                                 // Only the persistent slice-target entry should be restored
+                                 assertThat(map).hasSize(1);
+                                 var ab = ArtifactBase.artifactBase("com.example:svc").unwrap();
+                                 assertThat(map).containsKey(SliceTargetKey.sliceTargetKey(ab));
                              });
         }
     }
@@ -222,17 +300,13 @@ class KVStoreSerializerTest {
     @Nested
     class RoundTrip {
         @Test
-        void roundTrip_mixedTypes_preservesAllEntries() {
+        void roundTrip_persistentTypes_preservesAllEntries() {
             var entries = new LinkedHashMap<AetherKey, AetherValue>();
 
             var ab = ArtifactBase.artifactBase("com.example:svc").unwrap();
             var ver = Version.version("2.0.0").unwrap();
             entries.put(SliceTargetKey.sliceTargetKey(ab),
                         new SliceTargetValue(ver, 5, 3, Option.none(), "CORE_ONLY", 1000L));
-
-            var nodeId = NodeId.nodeId("node-x").unwrap();
-            entries.put(NodeLifecycleKey.nodeLifecycleKey(nodeId),
-                        NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING, 2000L));
 
             entries.put(ConfigKey.forKey("timeout-ms"),
                         new ConfigValue("timeout-ms", "3000", 3000L));
@@ -244,9 +318,8 @@ class KVStoreSerializerTest {
                              .flatMap(KVStoreSerializer::fromToml)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(restored -> {
-                                 assertThat(restored).hasSize(4);
+                                 assertThat(restored).hasSize(3);
                                  assertThat(restored).containsKey(SliceTargetKey.sliceTargetKey(ab));
-                                 assertThat(restored).containsKey(NodeLifecycleKey.nodeLifecycleKey(nodeId));
                                  assertThat(restored).containsKey(ConfigKey.forKey("timeout-ms"));
                                  assertThat(restored).containsKey(GossipKeyRotationKey.gossipKeyRotationKey());
 
@@ -254,10 +327,6 @@ class KVStoreSerializerTest {
                                  assertThat(st.targetInstances()).isEqualTo(5);
                                  assertThat(st.minInstances()).isEqualTo(3);
                                  assertThat(st.updatedAt()).isEqualTo(1000L);
-
-                                 var nl = (NodeLifecycleValue) restored.get(
-                                     NodeLifecycleKey.nodeLifecycleKey(nodeId));
-                                 assertThat(nl.state()).isEqualTo(NodeLifecycleState.DRAINING);
 
                                  var gk = (GossipKeyRotationValue) restored.get(
                                      GossipKeyRotationKey.gossipKeyRotationKey());
@@ -267,31 +336,32 @@ class KVStoreSerializerTest {
         }
 
         @Test
-        void roundTrip_governorAnnouncement_preservesFields() {
+        void roundTrip_ephemeralKeys_excludedFromOutput() {
             var entries = new LinkedHashMap<AetherKey, AetherValue>();
+
+            // Persistent
+            var ab = ArtifactBase.artifactBase("com.example:svc").unwrap();
+            var ver = Version.version("1.0.0").unwrap();
+            entries.put(SliceTargetKey.sliceTargetKey(ab),
+                        new SliceTargetValue(ver, 2, 1, Option.none(), "CORE_ONLY", 1000L));
+
+            // Ephemeral — should be filtered out
+            var nodeId = NodeId.nodeId("node-x").unwrap();
+            entries.put(NodeLifecycleKey.nodeLifecycleKey(nodeId),
+                        NodeLifecycleValue.nodeLifecycleValue(NodeLifecycleState.DRAINING, 2000L));
+
             var key = GovernorAnnouncementKey.forCommunity("prod:us-east-1");
-            var members = List.of(NodeId.nodeId("worker-a").unwrap(), NodeId.nodeId("worker-b").unwrap());
-            var value = new GovernorAnnouncementValue(
-                NodeId.nodeId("governor-1").unwrap(), 2, members, "10.0.1.5:7201", 5000L);
-            entries.put(key, value);
+            var members = List.of(NodeId.nodeId("worker-a").unwrap());
+            entries.put(key, new GovernorAnnouncementValue(
+                NodeId.nodeId("governor-1").unwrap(), 1, members, "10.0.1.5:7201", 5000L));
 
             KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
                              .flatMap(KVStoreSerializer::fromToml)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(restored -> {
+                                 // Only the persistent slice-target survives
                                  assertThat(restored).hasSize(1);
-                                 var restoredKey = restored.keySet().iterator().next();
-                                 assertThat(restoredKey).isInstanceOf(GovernorAnnouncementKey.class);
-                                 var gak = (GovernorAnnouncementKey) restoredKey;
-                                 assertThat(gak.communityId()).isEqualTo("prod:us-east-1");
-                                 var gav = (GovernorAnnouncementValue) restored.get(restoredKey);
-                                 assertThat(gav.governorId().id()).isEqualTo("governor-1");
-                                 assertThat(gav.memberCount()).isEqualTo(2);
-                                 assertThat(gav.members()).hasSize(2);
-                                 assertThat(gav.members().get(0).id()).isEqualTo("worker-a");
-                                 assertThat(gav.members().get(1).id()).isEqualTo("worker-b");
-                                 assertThat(gav.tcpAddress()).isEqualTo("10.0.1.5:7201");
-                                 assertThat(gav.announcedAt()).isEqualTo(5000L);
+                                 assertThat(restored).containsKey(SliceTargetKey.sliceTargetKey(ab));
                              });
         }
 
@@ -344,31 +414,78 @@ class KVStoreSerializerTest {
                                  assertThat(wdv.targetCommunity().isPresent()).isFalse();
                              });
         }
+    }
+
+    @Nested
+    class EphemeralKeyFiltering {
+        @Test
+        void isEphemeral_nodeArtifactKey_true() {
+            var nodeId = NodeId.nodeId("node-1").unwrap();
+            var artifact = org.pragmatica.aether.artifact.Artifact.artifact("com.example:svc:1.0.0").unwrap();
+            assertThat(EphemeralKeys.isEphemeral(NodeArtifactKey.nodeArtifactKey(nodeId, artifact))).isTrue();
+        }
 
         @Test
-        void roundTrip_sliceNodeKey_preservesNodeAndArtifact() {
-            var entries = new LinkedHashMap<AetherKey, AetherValue>();
-            var nodeId = NodeId.nodeId("worker-1").unwrap();
+        void isEphemeral_nodeRoutesKey_true() {
+            var nodeId = NodeId.nodeId("node-1").unwrap();
             var artifact = org.pragmatica.aether.artifact.Artifact.artifact("com.example:svc:1.0.0").unwrap();
+            assertThat(EphemeralKeys.isEphemeral(NodeRoutesKey.nodeRoutesKey(nodeId, artifact))).isTrue();
+        }
 
-            SliceNodeKey.sliceNodeKey("slices/" + nodeId.id() + "/" + artifact.asString())
-                        .onFailureRun(Assertions::fail)
-                        .onSuccess(key -> {
-                            entries.put(key, SliceNodeValue.sliceNodeValue(
-                                org.pragmatica.aether.slice.SliceState.ACTIVE));
+        @Test
+        void isEphemeral_nodeLifecycleKey_true() {
+            var nodeId = NodeId.nodeId("node-1").unwrap();
+            assertThat(EphemeralKeys.isEphemeral(NodeLifecycleKey.nodeLifecycleKey(nodeId))).isTrue();
+        }
 
-                            KVStoreSerializer.toToml(entries, TEST_PHASE, TEST_TIMESTAMP)
-                                             .flatMap(KVStoreSerializer::fromToml)
-                                             .onFailureRun(Assertions::fail)
-                                             .onSuccess(restored -> {
-                                                 assertThat(restored).hasSize(1);
-                                                 var restoredKey = restored.keySet().iterator().next();
-                                                 assertThat(restoredKey).isInstanceOf(SliceNodeKey.class);
-                                                 var snk = (SliceNodeKey) restoredKey;
-                                                 assertThat(snk.nodeId()).isEqualTo(nodeId);
-                                                 assertThat(snk.artifact()).isEqualTo(artifact);
-                                             });
-                        });
+        @Test
+        void isEphemeral_activationDirectiveKey_true() {
+            var nodeId = NodeId.nodeId("node-1").unwrap();
+            assertThat(EphemeralKeys.isEphemeral(ActivationDirectiveKey.activationDirectiveKey(nodeId))).isTrue();
+        }
+
+        @Test
+        void isEphemeral_governorAnnouncementKey_true() {
+            assertThat(EphemeralKeys.isEphemeral(GovernorAnnouncementKey.forCommunity("test"))).isTrue();
+        }
+
+        @Test
+        void isEphemeral_sliceTargetKey_false() {
+            var ab = ArtifactBase.artifactBase("com.example:svc").unwrap();
+            assertThat(EphemeralKeys.isEphemeral(SliceTargetKey.sliceTargetKey(ab))).isFalse();
+        }
+
+        @Test
+        void isEphemeral_configKey_false() {
+            assertThat(EphemeralKeys.isEphemeral(ConfigKey.forKey("timeout"))).isFalse();
+        }
+
+        @Test
+        void isEphemeral_gossipKeyRotationKey_false() {
+            assertThat(EphemeralKeys.isEphemeral(GossipKeyRotationKey.gossipKeyRotationKey())).isFalse();
+        }
+
+        @Test
+        void isEphemeralSection_ephemeralSections_true() {
+            assertThat(EphemeralKeys.isEphemeralSection("node-artifact")).isTrue();
+            assertThat(EphemeralKeys.isEphemeralSection("node-routes")).isTrue();
+            assertThat(EphemeralKeys.isEphemeralSection("node-lifecycle")).isTrue();
+            assertThat(EphemeralKeys.isEphemeralSection("endpoints")).isTrue();
+            assertThat(EphemeralKeys.isEphemeralSection("activation")).isTrue();
+            assertThat(EphemeralKeys.isEphemeralSection("governor-announcement")).isTrue();
+            assertThat(EphemeralKeys.isEphemeralSection("slices")).isTrue();
+            assertThat(EphemeralKeys.isEphemeralSection("http-node-routes")).isTrue();
+        }
+
+        @Test
+        void isEphemeralSection_persistentSections_false() {
+            assertThat(EphemeralKeys.isEphemeralSection("slice-target")).isFalse();
+            assertThat(EphemeralKeys.isEphemeralSection("config")).isFalse();
+            assertThat(EphemeralKeys.isEphemeralSection("gossip-key-rotation")).isFalse();
+            assertThat(EphemeralKeys.isEphemeralSection("scheduled-task")).isFalse();
+            assertThat(EphemeralKeys.isEphemeralSection("topic-sub")).isFalse();
+            assertThat(EphemeralKeys.isEphemeralSection("worker-directive")).isFalse();
+            assertThat(EphemeralKeys.isEphemeralSection("app-blueprint")).isFalse();
         }
     }
 
