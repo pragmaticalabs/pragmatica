@@ -328,21 +328,19 @@ Part of Cloud Integration (#1). Per-provider status:
      - Cluster-aware: distributed counters via consensus or per-node local limits
      - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
 
-9. **Per-Blueprint Artifact Scoping (Tier 2)** — When artifact exclusivity (Tier 1) becomes too restrictive for multi-tenant clusters, add per-blueprint SliceTargetKey scoping. Changes: `SliceTargetKey(BlueprintId, ArtifactBase)`, CDM `Map<BlueprintId, Map<Artifact, Blueprint>>`, SliceNodeValue `owningBlueprint` field, WorkerSliceDirectiveKey blueprint scoping, Management API `blueprintId` parameter on `/api/scale`. Instance count = sum of all blueprints' allocations. Rolling update guard: reject if artifact has multiple blueprint owners. Prerequisite: Tier 1 (multi-blueprint correctness).
-
-10. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
+9. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
     - Phases 1, 2a, 2b, 2b.5 complete in v0.19.3. Remaining work driven by real demand:
       - Phase 2c: Spot pool, spot-node exclusion from DHT ring
       - Phase 3: Multi-region, cross-region governors
     - **Architecture:** Small consensus core (5-7-9 active nodes) + self-organizing worker pools with elected governors. SWIM gossip for O(1) membership. Zone-aware grouping. Event-based community scaling.
     - **Research:** [10-system comparative analysis](../../internal/passive-worker-pool-research.md)
 
-11. **Observability Dashboard UI**
+10. **Observability Dashboard UI**
    - Wire `ObservabilityDepthRegistry` data to dashboard with UI for configuring per-method depth thresholds
    - Backend REST API (`/api/observability/depth`) and KV-store sync already implemented
    - Current state is functional; production value but no customers yet
 
-12. **Invocation Observability Dashboard Tab**
+11. **Invocation Observability Dashboard Tab**
    - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
    - Click-to-expand tree view showing invocation depth with input/output at each level
    - Waterfall view for multi-hop request visualization
@@ -358,6 +356,8 @@ Part of Cloud Integration (#1). Per-provider status:
 - **Cluster Expense Tracking** — Real-time cost visibility for cluster operations. Cloud billing API integration (AWS Cost Explorer, GCP Billing, Azure Cost Management). Cost per node/slice/request. Spot savings tracking. Budget alerts. **Prerequisite:** Cloud Integration (#1)
 
 - **LLM Integration (Layer 3)** — Claude/GPT API integration. Complex reasoning workflows. Multi-cloud decision support.
+
+- **Per-Blueprint Artifact Scoping (Tier 2)** — Tier 1 complete (ownership tracking, artifact exclusivity enforcement). Tier 2 would relax exclusivity for multi-tenant clusters: same artifact deployable by multiple blueprints with independent scaling. Deferred until a concrete multi-tenant use case arises.
 
 - **In-Memory Streams** — [design spec](../../specs/in-memory-streams-spec.md) — Ordered, replayable, consumer-paced streaming (Kafka-like primitive). Partition-based with DHT ownership, consumer groups with cursor tracking, time/size-based retention, configurable replication. Blueprint-declared streams as first-class resources. Status: Exploratory Draft.
 
