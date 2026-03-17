@@ -32,5 +32,6 @@
         <module>statemachine</module>
         <module>swim</module>
         <module>hlc</module>
+        <module>email-http</module>
     </modules>
 </project>

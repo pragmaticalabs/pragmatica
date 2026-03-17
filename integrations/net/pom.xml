@@ -20,5 +20,6 @@
         <module>http-server</module>
         <module>dns</module>
         <module>tcp</module>
+        <module>smtp</module>
     </modules>
 </project>
