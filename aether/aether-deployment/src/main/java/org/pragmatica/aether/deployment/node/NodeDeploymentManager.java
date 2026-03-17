@@ -1118,6 +1118,10 @@ public interface NodeDeploymentManager {
                             log.info("Node {} NodeDeploymentManager activated", self().id());
                             // Register ON_DUTY lifecycle state (always writes unless DECOMMISSIONED)
                             registerLifecycleOnDuty();
+                            // Process any pending LOAD commands that arrived before NDM activated.
+                            // CDM may issue LOAD via consensus before NDM transitions from Dormant,
+                            // causing the KV notification to be silently dropped.
+                            processPendingLoadCommands(activeState);
                             // Reactivate suspended slices if any
                             if (!suspended.isEmpty()) {
                                 log.info("Node {} has {} suspended slices to reactivate", self().id(), suspended.size());
@@ -1143,6 +1147,18 @@ public interface NodeDeploymentManager {
                         }
                     }
                 }
+            }
+
+            private void processPendingLoadCommands(NodeDeploymentState.ActiveNodeDeploymentState activeState) {
+                kvStore().forEach(NodeArtifactKey.class, NodeArtifactValue.class, (key, value) -> {
+                    if (key.isForNode(self()) && value.state() == SliceState.LOAD) {
+                        log.info("Node {} found pending LOAD command for {}, processing",
+                                 self().id(), key.artifact());
+                        var sliceKey = new SliceNodeKey(key.artifact(), key.nodeId());
+                        activeState.recordDeployment(sliceKey, SliceNodeValue.sliceNodeValue(value.state()));
+                        activeState.processStateTransition(sliceKey, value.state());
+                    }
+                });
             }
 
             private static final int MAX_LIFECYCLE_RETRIES = 60;
@@ -1212,7 +1228,8 @@ public interface NodeDeploymentManager {
             public void onNodeLifecycleRemove(ValueRemove<NodeLifecycleKey, NodeLifecycleValue> valueRemove) {
                 var key = valueRemove.cause()
                                      .key();
-                if (key.nodeId().equals(self()) && isActive()) {
+                if (key.nodeId()
+                       .equals(self()) && isActive()) {
                     log.warn("Node {} lifecycle key removed unexpectedly — re-registering ON_DUTY", self().id());
                     registerLifecycleOnDuty();
                 }
