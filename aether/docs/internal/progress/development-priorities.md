@@ -1,6 +1,6 @@
 # Development Priorities
 
-## Current Status (v0.20.0)
+## Current Status (v0.21.0)
 
 Release 0.18.0 delivered six major themes: unified invocation observability (RFC-0010), production-grade DHT (anti-entropy repair, re-replication, per-use-case config), pub-sub messaging infrastructure (RFC-0011), blueprint-only deployment model, node lifecycle with disruption budget and graceful drain, and pricing-engine multi-slice example with cross-slice invocations.
 
@@ -241,16 +241,12 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### MEDIUM PRIORITY - Developer Tooling & Deployment
 
-3. **Notification Resource**
-    - Unified notification facade with pluggable backends via SPI (same `@ResourceQualifier` pattern)
-    - **Channels:** Email, SMS, push notifications
-    - **Email backends (SPI):** SMTP, AWS SES, SendGrid, Mailgun
-    - **SMS backends (SPI):** Twilio, AWS SNS
-    - **Push backends (SPI):** Firebase Cloud Messaging, Apple Push Notification Service
-    - **API shape:** `NotificationSender` resource type with channel-specific configuration
-    - **Config:** per-backend TOML section (`[notifications.smtp]`, `[notifications.ses]`, `[notifications.twilio]`, etc.)
-    - **Scope exclusions:** no template engine (slices own their content), no mailing list management
-    - **Depends on:** Cloud Integration (#1) for SES/SNS/cloud-based backends; SMTP backend standalone
+3. ~~**Notification Resource**~~ → **Complete (v0.21.0, Phase 1 — Email)**
+    - `integrations/net/smtp` — async SMTP client on Netty (STARTTLS, IMPLICIT TLS, AUTH PLAIN, connection-per-send)
+    - `integrations/email-http` — HTTP email sender with SendGrid, Mailgun, Postmark, Resend via VendorMapping SPI
+    - `aether/resource/notification` — `NotificationSender` resource type, `NotificationSenderFactory`, `@Notify` qualifier, retry with exponential backoff
+    - 57 tests (20 SMTP + 26 email-http + 11 notification)
+    - **Phase 2 (future):** SMS (Twilio, AWS SNS), push (FCM, APNS), SMTP connection pooling, MX lookup
 
 4. **Canary & Blue-Green Deployment Strategies**
      - Current: Rolling updates with weighted routing exist
@@ -400,7 +396,7 @@ All infrastructure modules transition to unified `@ResourceQualifier(type, confi
 
 | Module | Target | Status |
 |--------|--------|--------|
-| infra-notifications | `@ResourceQualifier(type=NotificationSender.class)` | **Planned** — email + SMS + push (#4) |
+| infra-notifications | `@ResourceQualifier(type=NotificationSender.class)` | **Phase 1 Complete** (v0.21.0) — email via SMTP + HTTP vendors. Phase 2: SMS + push |
 | infra-config | Superseded by Dynamic Configuration via KV store | **Remove** |
 | infra-aspect | Fn1 composition utilities (`Aspects.withCaching()`, `@Key`, etc.) | **Keep** |
 

@@ -218,7 +218,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 67 | ~~TLS certificate management~~ | ~~Complete~~ | ~~Moved to Security section (features 88-91)~~ |
 | 69 | KV-Store state backup | Planned | Periodic KV-Store snapshots to durable storage (filesystem, S3). Disaster recovery when quorum permanently lost |
 | 70 | Aether runtime rolling upgrade | Planned | Upgrade Aether node software across running cluster without downtime. Node-by-node with health verification |
-| 71 | Email messaging resource | Planned | Facade with pluggable backends (SMTP, AWS SES, SendGrid). Sending (plain text + HTML, attachments) and receiving (automated conversations). SPI-based |
+| 71 | Email notification resource | Complete | Phase 1: `integrations/net/smtp` (async Netty SMTP client), `integrations/email-http` (HTTP sender with SendGrid/Mailgun/Postmark/Resend SPI), `aether/resource/notification` (ResourceFactory + @Notify qualifier). SMTP and HTTP backends with retry. 57 tests |
 | 103 | Per-blueprint artifact scoping (Tier 2) | Planned | Per-blueprint SliceTargetKey scoping for multi-tenant clusters. Blueprint-scoped CDM maps, WorkerSliceDirectiveKey blueprint scoping, Management API `blueprintId` parameter. Prerequisite: Tier 1 (#102) |
 
 ---
@@ -228,9 +228,9 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 24 |
-| Complete | 80 |
+| Complete | 81 |
 | Partial | 1 |
-| Planned | 12 |
+| Planned | 11 |
 | Total | 117 |
 
 **Battle-tested features (24):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), E2E test framework, Forge integration tests
@@ -254,9 +254,8 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Cluster expense tracking | Cloud Integration |
 | ~~KV-Store state backup~~ | ~~Complete in 0.19.3~~ |
 | Aether runtime rolling upgrade | Official container or binaries |
-| Email messaging resource | — |
 | Per-blueprint artifact scoping (Tier 2) | Multi-blueprint lifecycle Tier 1 (#102) |
 
 ---
 
-*Last updated: 2026-03-13 (v0.20.0)*
+*Last updated: 2026-03-17 (v0.21.0)*

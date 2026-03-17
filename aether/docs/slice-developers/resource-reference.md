@@ -6,12 +6,13 @@ Slices access infrastructure — databases, HTTP clients, caches — through **r
 
 ### Built-In Qualifiers
 
-Aether ships two built-in qualifiers:
+Aether ships three built-in qualifiers:
 
 | Annotation | Resource Type | Config Section |
 |------------|--------------|----------------|
 | `@Sql` | `SqlConnector` | `"database"` |
 | `@Http` | `HttpClient` | `"http"` |
+| `@Notify` | `NotificationSender` | `"notification"` |
 
 ```java
 import org.pragmatica.aether.resource.db.Sql;
@@ -424,6 +425,200 @@ jdbc_url = "jdbc:oracle:thin:@//oracle.corp:1521/LEGACY"
 username = "legacy_user"
 password = "${secrets:database/legacy/password}"
 ```
+
+---
+
+## Notification Sender
+
+**Resource type:** `NotificationSender`
+**Config prefix:** `notification`
+**Built-in qualifier:** `@Notify`
+**Factory:** `NotificationSenderFactory`
+
+### Configuration
+
+Two backends are supported: `smtp` (direct SMTP) and `http` (vendor API).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `backend` | `String` | required | Backend type: `"smtp"` or `"http"` |
+
+#### SMTP Backend
+
+Nested under `[notification.smtp]`:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `host` | `String` | required | SMTP server hostname |
+| `port` | `int` | `587` | SMTP server port |
+| `tls` | `SmtpTlsMode` | `STARTTLS` | TLS mode: `NONE`, `STARTTLS`, `IMPLICIT` |
+| `username` | `String` (optional) | none | AUTH PLAIN username |
+| `password` | `String` (optional) | none | AUTH PLAIN password |
+| `connect_timeout` | duration | `10s` | TCP connection timeout |
+| `command_timeout` | duration | `30s` | SMTP command timeout |
+
+#### HTTP Vendor Backend
+
+Nested under `[notification.http]`:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `provider` | `String` | required | Vendor: `"sendgrid"`, `"mailgun"`, `"postmark"`, `"resend"` |
+| `api_key` | `String` | required | Vendor API key |
+| `endpoint` | `String` (optional) | vendor default | Override API endpoint URL |
+| `from` | `String` (optional) | none | Default sender address |
+
+#### Retry Configuration
+
+Nested under `[notification.retry]`:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_attempts` | `int` | `3` | Maximum delivery attempts |
+| `initial_delay_ms` | `long` | `1000` | Initial retry delay in milliseconds |
+| `max_delay_ms` | `long` | `30000` | Maximum retry delay in milliseconds |
+| `backoff_multiplier` | `double` | `2.0` | Exponential backoff multiplier |
+
+### API
+
+`NotificationSender` provides a single method:
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `send` | `Promise<NotificationResult> send(Notification notification)` | Send a notification |
+
+`Notification` is a sealed interface. Phase 1 supports `Notification.Email`:
+
+```java
+var notification = Notification.Email.email(
+    "noreply@example.com",
+    List.of("user@example.com"),
+    "Order Confirmed",
+    NotificationBody.Text.text("Your order #1234 has been confirmed.")
+).withCc(List.of("admin@example.com"))
+ .withReplyTo("support@example.com");
+
+sender.send(notification)
+      .onSuccess(result -> log.info("Sent via {}: {}", result.backend(), result.messageId()));
+```
+
+`NotificationBody` is a sealed interface with two variants:
+
+| Variant | Factory | Description |
+|---------|---------|-------------|
+| `Text` | `NotificationBody.Text.text(content)` | Plain text body |
+| `Html` | `NotificationBody.Html.html(content)` or `html(content, fallback)` | HTML body with optional text fallback |
+
+### Error Handling
+
+`NotificationError` is a sealed interface with three variants:
+
+| Variant | When |
+|---------|------|
+| `BackendNotConfigured` | Unknown backend or missing backend-specific configuration |
+| `UnsupportedChannel` | Notification type not supported by this backend |
+| `DeliveryFailed` | All retry attempts exhausted |
+
+### TOML Examples
+
+**SMTP (direct):**
+```toml
+[notification]
+backend = "smtp"
+
+[notification.smtp]
+host = "smtp.example.com"
+port = 587
+tls = "STARTTLS"
+username = "noreply@example.com"
+password = "${secrets:smtp/password}"
+
+[notification.retry]
+max_attempts = 3
+```
+
+**SendGrid (HTTP vendor):**
+```toml
+[notification]
+backend = "http"
+
+[notification.http]
+provider = "sendgrid"
+api_key = "${secrets:sendgrid/api-key}"
+from = "noreply@example.com"
+
+[notification.retry]
+max_attempts = 5
+initial_delay_ms = 2000
+```
+
+**Mailgun (HTTP vendor):**
+```toml
+[notification]
+backend = "http"
+
+[notification.http]
+provider = "mailgun"
+api_key = "${secrets:mailgun/api-key}"
+```
+
+### Slice Usage
+
+```java
+import org.pragmatica.aether.resource.notification.Notify;
+import org.pragmatica.aether.resource.notification.NotificationSender;
+
+@Slice
+public interface AlertService {
+
+    record AlertRequest(String recipient, String subject, String message) {}
+
+    Promise<Unit> sendAlert(AlertRequest request);
+
+    static AlertService alertService(@Notify NotificationSender sender) {
+        record alertService(NotificationSender sender) implements AlertService {
+            @Override
+            public Promise<Unit> sendAlert(AlertRequest request) {
+                var notification = Notification.Email.email(
+                    "alerts@example.com",
+                    List.of(request.recipient()),
+                    request.subject(),
+                    NotificationBody.Text.text(request.message())
+                );
+                return sender.send(notification).map(_ -> Unit.unit());
+            }
+        }
+        return new alertService(sender);
+    }
+}
+```
+
+### Custom Qualifiers
+
+For multiple notification backends:
+
+```java
+@ResourceQualifier(type = NotificationSender.class, config = "notification.transactional")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+@interface TransactionalEmail {}
+
+@ResourceQualifier(type = NotificationSender.class, config = "notification.marketing")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+@interface MarketingEmail {}
+```
+
+### Supported HTTP Vendors
+
+| Vendor | ID | Auth | Format |
+|--------|----|------|--------|
+| SendGrid | `sendgrid` | Bearer token | JSON (`personalizations` array) |
+| Mailgun | `mailgun` | Basic auth (`api:<key>`) | Form-encoded |
+| Postmark | `postmark` | `X-Postmark-Server-Token` header | JSON |
+| Resend | `resend` | Bearer token | JSON |
+
+Custom vendors can be added via `VendorMapping` SPI (ServiceLoader in `integrations/email-http`).
 
 ---
 
