@@ -219,14 +219,14 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 
 Part of Cloud Integration (#1). Per-provider status:
 
-| Provider | Tier | Compute | Load Balancer | Discovery | Secrets | Status |
-|----------|------|---------|---------------|-----------|---------|--------|
-| Hetzner | 2 | ComputeProvider done | LoadBalancerProvider done | Label-based (planned) | — | **Partial** |
-| AWS | 1 | Planned | ALB/NLB | Tag-based | Secrets Manager | Planned |
-| GCP | 1 | Planned | Cloud LB | Label-based | Secret Manager | Planned |
-| Azure | 1 | Planned | Azure LB | Tag-based | Key Vault | Planned |
-| DigitalOcean | 2 | Planned | DO LB | Tag-based | — | Planned |
-| Vultr | 2 | Planned | Vultr LB | Tag-based | — | Planned |
+| Provider | Tier | Compute | Load Balancer | Discovery | Secrets | Spec | Status |
+|----------|------|---------|---------------|-----------|---------|------|--------|
+| Hetzner | 2 | ComputeProvider done | LoadBalancerProvider done | Label-based (planned) | — | [reference sheet](../../specs/cloud-integration-spi-spec.md#8-hetzner-provider-sheet-reference) | **Partial** |
+| AWS | 1 | Planned | ALB/NLB | Tag-based | Secrets Manager + SSM | [provider sheet](../../specs/cloud-provider-aws.md) | Planned |
+| GCP | 1 | Planned | Cloud LB / NEGs | Label-based | Secret Manager | [provider sheet](../../specs/cloud-provider-gcp.md) | Planned |
+| Azure | 1 | Planned | Azure LB / App Gateway | Resource Graph | Key Vault | [provider sheet](../../specs/cloud-provider-azure.md) | Planned |
+| DigitalOcean | 2 | Planned | DO LB | Tag-based | — | [provider sheet](../../specs/cloud-provider-digitalocean.md) | Planned |
+| Vultr | 2 | Planned | Vultr LB | Tag-based | — | — | Planned |
 
 **Cloud Testing Milestones** (initial provider: Hetzner):
 - Cloud cluster formation — code committed (`545300ce`), **not yet executed against real infrastructure**
