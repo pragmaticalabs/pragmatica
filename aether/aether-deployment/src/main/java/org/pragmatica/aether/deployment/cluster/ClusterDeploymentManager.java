@@ -1194,11 +1194,11 @@ public interface ClusterDeploymentManager {
                 log.debug("Issuing LOAD command for {}", sliceKey);
                 var timestamp = System.currentTimeMillis();
                 applyStateWrite(sliceKey, SliceState.LOAD).withSuccess(_ -> {
-                                                                         sliceStates.put(sliceKey, SliceState.LOAD);
-                                                                         router.route(DeploymentStarted.deploymentStarted(sliceKey.artifact(),
-                                                                                                                          sliceKey.nodeId(),
-                                                                                                                          timestamp));
-                                                                     })
+                                                                           sliceStates.put(sliceKey, SliceState.LOAD);
+                                                                           router.route(DeploymentStarted.deploymentStarted(sliceKey.artifact(),
+                                                                                                                            sliceKey.nodeId(),
+                                                                                                                            timestamp));
+                                                                       })
                                .onFailure(cause -> handleSliceNodeWriteFailure(sliceKey, cause));
             }
 

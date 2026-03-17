@@ -1150,15 +1150,19 @@ public interface NodeDeploymentManager {
             }
 
             private void processPendingLoadCommands(NodeDeploymentState.ActiveNodeDeploymentState activeState) {
-                kvStore().forEach(NodeArtifactKey.class, NodeArtifactValue.class, (key, value) -> {
-                    if (key.isForNode(self()) && value.state() == SliceState.LOAD) {
-                        log.info("Node {} found pending LOAD command for {}, processing",
-                                 self().id(), key.artifact());
-                        var sliceKey = new SliceNodeKey(key.artifact(), key.nodeId());
-                        activeState.recordDeployment(sliceKey, SliceNodeValue.sliceNodeValue(value.state()));
-                        activeState.processStateTransition(sliceKey, value.state());
-                    }
-                });
+                kvStore().forEach(NodeArtifactKey.class,
+                                  NodeArtifactValue.class,
+                                  (key, value) -> {
+                                      if (key.isForNode(self()) && value.state() == SliceState.LOAD) {
+                                          log.info("Node {} found pending LOAD command for {}, processing",
+                                                   self().id(),
+                                                   key.artifact());
+                                          var sliceKey = new SliceNodeKey(key.artifact(), key.nodeId());
+                                          activeState.recordDeployment(sliceKey,
+                                                                       SliceNodeValue.sliceNodeValue(value.state()));
+                                          activeState.processStateTransition(sliceKey, value.state());
+                                      }
+                                  });
             }
 
             private static final int MAX_LIFECYCLE_RETRIES = 60;
