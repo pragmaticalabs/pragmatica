@@ -7,7 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [0.21.0] - Unreleased
 
 ### Added
-- **Schema management API and CLI** — REST endpoints and CLI commands for datasource schema management: status queries (`GET /api/schema/status`, `GET /api/schema/status/{datasource}`), migration history, manual migration trigger, undo to target version, and baseline. CLI: `aether schema status|history|migrate|undo|baseline`
+- **Per-datasource schema migration engine** — full migration execution engine with Flyway-style versioned (V), repeatable (R), undo (U), and baseline (B) migration types. Schema history tracked in `aether_schema_history` table per datasource. Checksum validation, transactional per-script execution, configurable failure/failover policy
+- **Schema orchestration** — distributed coordination layer with consensus-based locking, artifact resolution, and status tracking (PENDING → MIGRATING → COMPLETED/FAILED). CDM integration gates slice deployment on schema readiness
+- **Schema management REST API and CLI** — REST endpoints (`/api/schema/status`, `/api/schema/migrate/{ds}`, `/api/schema/undo/{ds}`, `/api/schema/baseline/{ds}`) and CLI commands (`aether schema status|history|migrate|undo|baseline`)
+- **Blueprint artifact auto-packaging** — `generate-blueprint` goal now automatically packages the blueprint JAR (no need to add `package-blueprint` explicitly). Schema directory default changed to `${project.basedir}/schema`
+- **Forge artifact-based deployment** — `--blueprint` now accepts artifact coordinates (`groupId:artifactId:version`) instead of TOML file paths. Forge resolves from local Maven repo via `publishFromArtifact`. TOML deployment path removed
 - **Cloud providers — AWS, GCP, Azure** — complete cloud integration for all major providers:
   - `integrations/xml/jackson-xml` — XML mapper module (Jackson XML) mirroring `JsonMapper` pattern, needed for AWS EC2 XML responses
   - `integrations/cloud/aws` — AWS cloud client with SigV4 signing from scratch, EC2 (XML), ELBv2 (JSON), Secrets Manager (JSON). No AWS SDK

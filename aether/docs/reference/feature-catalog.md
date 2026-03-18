@@ -24,7 +24,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 102 | Multi-blueprint lifecycle independence | Complete | Blueprint-scoped artifact ownership (`owningBlueprint` in SliceTargetValue), artifact exclusivity enforcement (rejects duplicate artifact across blueprints), owner-filtered blueprint deletion (only removes owned artifacts), rolling update deletion guard, KV-Store restore with ownership. Tier 1 correctness for multi-blueprint clusters |
 | 126 | Blueprint Artifacts | Complete | Blueprint packaged as JAR with resources.toml and schema/ |
 | 127 | Config Separation | Complete | App config (blueprint) vs infra config (node) with hierarchical merge |
-| 128 | Schema Migration Prep | Partial | Schema files in blueprint, metadata in KV-Store, REST API (status/migrate/undo/baseline), CLI commands; actual migration execution pending |
+| 128 | Schema Migration Engine | Partial | Migration engine (V/R/U/B types), history table, checksum validation, orchestrator with consensus locking, CDM readiness gating, REST API, CLI. SqlConnector provisioning in orchestrator pending |
 | 129 | Endpoint Config | Complete | `[endpoints.*]` sections in aether.toml for infrastructure endpoints |
 
 ## Scaling & Control
@@ -236,7 +236,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 61 | Per-data-source DB schema management | Planned | Cluster-level schema migration managed by Aether runtime. Leader-driven execution via consensus. Readiness gate blocks traffic until schema current |
+| 61 | Per-data-source DB schema management | Partial | Migration engine (V/R/U/B), schema history table, consensus-locked orchestrator, CDM readiness gating, REST API, CLI. SqlConnector provisioning pending |
 | 62 | Canary & blue-green deployment | Planned | Canary with automatic rollback on error threshold, blue-green with instant switchover, A/B testing with traffic splitting |
 | 63 | RBAC Tier 2 — per-endpoint authorization | Planned | Per-endpoint role-based authorization rules (admin, operator, viewer). Route-level security policy from KV-Store. Auth failure rate limiting |
 | 64 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
@@ -267,13 +267,13 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Feature | Key Gap |
 |---------|---------|
 | TTM predictive scaling | Disabled by default, no live model training |
-| Schema Migration Prep | Schema files in blueprint, metadata in KV-Store, REST API + CLI; execution pending |
+| Schema Migration Engine | Migration engine + orchestrator + REST API + CLI complete; SqlConnector provisioning pending |
 
 **Planned features:**
 
 | Feature | Key Dependency |
 |---------|---------------|
-| Per-data-source DB schema management | Design spec ready |
+| Per-data-source DB schema management | SqlConnector provisioning in orchestrator |
 | Canary & blue-green deployment | — |
 | RBAC Tier 2 — per-endpoint authorization | RBAC Tier 1 complete |
 | ~~TLS certificate management~~ | ~~Complete in 0.19.3~~ |
