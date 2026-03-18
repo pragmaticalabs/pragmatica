@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run Ecommerce in Aether Forge (no load generator — use k6 scripts instead)
+# Run Ecommerce in Aether Forge
 #
 # Usage:
 #   ./run-forge.sh              Build + start Forge cluster
@@ -11,6 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 FORGE_JAR="$PROJECT_ROOT/aether/forge/forge-core/target/aether-forge.jar"
+BLUEPRINT_COORDS="org.pragmatica.aether.example:place-order:0.21.0"
 
 WITH_LOAD=false
 SKIP_BUILD=false
@@ -43,6 +44,7 @@ echo "Starting Aether Forge with Ecommerce..."
 echo "  Dashboard:  http://localhost:8888"
 echo "  App HTTP:   http://localhost:8070 (nodes: 8070-8076)"
 echo "  Management: http://localhost:5150"
+echo "  Blueprint:  $BLUEPRINT_COORDS"
 echo ""
 echo "Test:"
 echo '  curl -s -X POST http://localhost:8070/api/v1/orders/ \'
@@ -55,7 +57,7 @@ echo ""
 
 FORGE_ARGS=(
     --config "$SCRIPT_DIR/forge.toml"
-    --blueprint "$SCRIPT_DIR/target/blueprint.toml"
+    --blueprint "$BLUEPRINT_COORDS"
 )
 
 if [ "$WITH_LOAD" = true ]; then

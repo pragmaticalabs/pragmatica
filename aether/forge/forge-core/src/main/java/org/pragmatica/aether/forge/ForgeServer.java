@@ -32,10 +32,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.awt.Desktop;
-import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpRequest;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -53,7 +51,7 @@ import org.slf4j.LoggerFactory;
 /// CLI arguments:
 /// ```
 /// --config &lt;forge.toml&gt;       Forge cluster configuration
-/// --blueprint &lt;file.toml&gt;     Blueprint to deploy on startup
+/// --blueprint &lt;coords&gt;        Artifact coordinates to deploy (groupId:artifactId:version)
 /// --load-config &lt;file.toml&gt;   Load test configuration
 /// --auto-start                Start load generation after config loaded
 /// ```
@@ -61,7 +59,7 @@ import org.slf4j.LoggerFactory;
 /// Environment variables (override CLI args):
 /// ```
 /// FORGE_CONFIG        - Path to forge.toml
-/// FORGE_BLUEPRINT     - Path to blueprint file
+/// FORGE_BLUEPRINT     - Artifact coordinates (groupId:artifactId:version)
 /// FORGE_LOAD_CONFIG   - Path to load config file
 /// FORGE_AUTO_START    - Set to "true" to auto-start load
 /// FORGE_PORT          - Dashboard port (backwards compatible)
@@ -163,7 +161,7 @@ public final class ForgeServer {
         System.out.println();
         System.out.println("Options:");
         System.out.println("  --config <forge.toml>       Forge cluster configuration");
-        System.out.println("  --blueprint <file.toml>     Blueprint to deploy on startup");
+        System.out.println("  --blueprint <coords>        Artifact coordinates (groupId:artifactId:version)");
         System.out.println("  --load-config <file.toml>   Load test configuration");
         System.out.println("  --auto-start                Start load generation after config loaded");
         System.out.println("  -h, --help                  Show this help message");
@@ -171,7 +169,7 @@ public final class ForgeServer {
         System.out.println();
         System.out.println("Environment variables:");
         System.out.println("  FORGE_CONFIG        Path to forge.toml");
-        System.out.println("  FORGE_BLUEPRINT     Path to blueprint file");
+        System.out.println("  FORGE_BLUEPRINT     Artifact coordinates (groupId:artifactId:version)");
         System.out.println("  FORGE_LOAD_CONFIG   Path to load config file");
         System.out.println("  FORGE_AUTO_START    Set to \"true\" to auto-start load");
         System.out.println("  FORGE_PORT          Dashboard port (default: 8888)");
@@ -216,7 +214,7 @@ public final class ForgeServer {
                      : "in-memory");
         }
         startupConfig.blueprint()
-                     .onPresent(p -> log.info("  Blueprint: {}", p));
+                     .onPresent(coords -> log.info("  Blueprint: {}", coords));
         startupConfig.loadConfig()
                      .onPresent(p -> log.info("  Load config: {}", p));
         if (startupConfig.autoStart()) {
@@ -437,7 +435,7 @@ public final class ForgeServer {
 
     private void deployAndStartLoad() {
         startupConfig.blueprint()
-                     .onPresent(this::deployBlueprint);
+                     .onPresent(this::deployBlueprintFromArtifact);
         startupConfig.loadConfig()
                      .onPresent(this::loadLoadConfig);
         if (startupConfig.autoStart() && startupConfig.loadConfig()
@@ -458,39 +456,34 @@ public final class ForgeServer {
         }
     }
 
-    private void deployBlueprint(Path blueprintPath) {
-        log.info("Deploying blueprint from {}...", blueprintPath);
-        try{
-            var content = Files.readString(blueprintPath);
-            var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort)
-                                    .or(forgeConfig.managementPort());
-            var request = HttpRequest.newBuilder()
-                                     .uri(URI.create("http://localhost:" + leaderPort + "/api/blueprint"))
-                                     .header("Content-Type", "application/toml")
-                                     .POST(HttpRequest.BodyPublishers.ofString(content))
-                                     .build();
-            http.sendString(request)
-                .await(TimeSpan.timeSpan(10)
-                               .seconds())
-                .onSuccess(result -> handleBlueprintResponse(result, blueprintPath))
-                .onFailure(cause -> log.error("Failed to deploy blueprint: {}",
-                                              cause.message()));
-        } catch (IOException e) {
-            log.error("Failed to deploy blueprint: {}", e.getMessage());
-        }
+    private void deployBlueprintFromArtifact(String artifactCoords) {
+        log.info("Deploying blueprint artifact: {}...", artifactCoords);
+        var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort)
+                                .or(forgeConfig.managementPort());
+        var body = "{\"artifact\":\"" + artifactCoords + "\"}";
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + leaderPort + "/api/blueprint/deploy"))
+                                 .header("Content-Type", "application/json")
+                                 .POST(HttpRequest.BodyPublishers.ofString(body))
+                                 .build();
+        http.sendString(request)
+            .await(TimeSpan.timeSpan(10)
+                           .seconds())
+            .onSuccess(result -> handleArtifactDeployResponse(result, artifactCoords))
+            .onFailure(cause -> log.error("Failed to deploy blueprint: {}",
+                                          cause.message()));
     }
 
-    private void handleBlueprintResponse(org.pragmatica.http.HttpResult<String> result, Path blueprintPath) {
+    private void handleArtifactDeployResponse(org.pragmatica.http.HttpResult<String> result, String artifactCoords) {
         if (result.isSuccess()) {
-            log.info("Blueprint deployed");
+            log.info("Blueprint deployed from artifact: {}", artifactCoords);
             apiHandler.onPresent(h -> h.addEvent("BLUEPRINT_DEPLOYED",
-                                                 "Blueprint deployed from " + blueprintPath.getFileName()));
-            // Wait for deployment to propagate
+                                                 "Blueprint deployed from artifact " + artifactCoords));
             TimeSpan.timeSpan(1)
                     .seconds()
                     .sleep();
         } else {
-            log.error("Failed to deploy blueprint: {} - {}", result.statusCode(), result.body());
+            log.error("Blueprint deploy failed (HTTP {}): {}", result.statusCode(), result.body());
         }
     }
 

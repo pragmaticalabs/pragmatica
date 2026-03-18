@@ -13,7 +13,7 @@ import static org.pragmatica.lang.Option.option;
 /// Startup configuration merged from CLI arguments and environment variables.
 /// Priority: environment variables > CLI arguments > defaults.
 public record StartupConfig(Option<Path> forgeConfig,
-                            Option<Path> blueprint,
+                            Option<String> blueprint,
                             Option<Path> loadConfig,
                             boolean autoStart,
                             int port,
@@ -28,18 +28,23 @@ public record StartupConfig(Option<Path> forgeConfig,
         var parsed = parseArgs(args);
         // Apply env var overrides (highest priority)
         var forgeConfigPath = envOrArg("FORGE_CONFIG", parsed, "config");
-        var blueprintPath = envOrArg("FORGE_BLUEPRINT", parsed, "blueprint");
+        var blueprintCoords = envOrArg("FORGE_BLUEPRINT", parsed, "blueprint");
         var loadConfigPath = envOrArg("FORGE_LOAD_CONFIG", parsed, "load-config");
         var autoStart = envOrArgBool("FORGE_AUTO_START", parsed, "auto-start");
         // Cluster settings from env vars (backwards compatible)
         var port = envOrArgInt("FORGE_PORT", parsed, "port", DEFAULT_PORT);
         var clusterSize = envOrArgInt("CLUSTER_SIZE", parsed, "cluster-size", DEFAULT_CLUSTER_SIZE);
         var loadRate = envOrArgInt("LOAD_RATE", parsed, "load-rate", DEFAULT_LOAD_RATE);
-        // Validate paths exist
+        // Validate paths exist (blueprint is artifact coordinates, not a path)
         return validatePath(forgeConfigPath, "FORGE_CONFIG")
-        .flatMap(forgeConfig -> validatePath(blueprintPath, "FORGE_BLUEPRINT")
-        .flatMap(blueprint -> validatePath(loadConfigPath, "FORGE_LOAD_CONFIG")
-        .map(loadConfig -> new StartupConfig(forgeConfig, blueprint, loadConfig, autoStart, port, clusterSize, loadRate))));
+        .flatMap(forgeConfig -> validatePath(loadConfigPath, "FORGE_LOAD_CONFIG")
+        .map(loadConfig -> new StartupConfig(forgeConfig,
+                                             blueprintCoords,
+                                             loadConfig,
+                                             autoStart,
+                                             port,
+                                             clusterSize,
+                                             loadRate)));
     }
 
     private static Map<String, String> parseArgs(String[] args) {
