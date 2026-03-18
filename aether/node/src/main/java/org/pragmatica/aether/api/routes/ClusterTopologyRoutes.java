@@ -1,10 +1,16 @@
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.api.ManagementApiResponses.GovernorInfo;
+import org.pragmatica.aether.api.ManagementApiResponses.GovernorsResponse;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -25,7 +31,31 @@ public final class ClusterTopologyRoutes implements RouteSource {
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(Route.<ClusterTopologyStatusResponse> get("/api/cluster/topology")
-                              .toJson(this::buildTopologyStatus));
+                              .toJson(this::buildTopologyStatus),
+                         Route.<GovernorsResponse> get("/api/cluster/governors")
+                              .toJson(this::buildGovernorsResponse));
+    }
+
+    private GovernorsResponse buildGovernorsResponse() {
+        var node = nodeSupplier.get();
+        var governors = new ArrayList<GovernorInfo>();
+        node.kvStore()
+            .forEach(GovernorAnnouncementKey.class,
+                     GovernorAnnouncementValue.class,
+                     (key, value) -> governors.add(toGovernorInfo(key, value)));
+        return new GovernorsResponse(List.copyOf(governors));
+    }
+
+    private static GovernorInfo toGovernorInfo(GovernorAnnouncementKey key, GovernorAnnouncementValue value) {
+        var memberIds = value.members()
+                             .stream()
+                             .map(NodeId::id)
+                             .toList();
+        return new GovernorInfo(value.governorId()
+                                     .id(),
+                                key.communityId(),
+                                value.memberCount(),
+                                memberIds);
     }
 
     private ClusterTopologyStatusResponse buildTopologyStatus() {

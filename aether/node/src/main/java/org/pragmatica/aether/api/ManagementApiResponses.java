@@ -35,7 +35,11 @@ public sealed interface ManagementApiResponses {
                           double successRate,
                           double avgLatencyMs) {}
 
-    record NodesResponse(List<String> nodes) {}
+    record NodesResponse(List<EnrichedNodeInfo> nodes) {}
+
+    record EnrichedNodeInfo(String nodeId,
+                            String role,
+                            boolean isLeader) {}
 
     record HealthResponse(String status,
                           boolean ready,
@@ -305,6 +309,14 @@ public sealed interface ManagementApiResponses {
                                          int workerCount,
                                          int clusterSize,
                                          List<String> coreNodes) {}
+
+    // ===== Governor Routes =====
+    record GovernorsResponse(List<GovernorInfo> governors) {}
+
+    record GovernorInfo(String governorId,
+                        String community,
+                        int memberCount,
+                        List<String> members) {}
 
     // ===== Repository Routes =====
     record ArtifactInfoResponse(String artifact,
