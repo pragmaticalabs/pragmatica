@@ -156,6 +156,15 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 - **Comprehensive Forge Test Suite** - Tests use InventoryService (no slice dependencies)
 - **Docker E2E Infrastructure** - Hostname-based peer resolution, local Maven repo fallback for artifact resolution, CI timeout adaptation, leader election stabilization in containers
 
+### Blueprint Artifact Transition (v0.21.0)
+- **Blueprint artifacts** — blueprints packaged as deployable JAR artifacts containing `blueprint.toml`, optional `resources.toml` (app-level config), and optional `schema/` directory (database migration scripts)
+- **`PackageBlueprintMojo`** — new Maven plugin goal (`package-blueprint`) produces classifier `blueprint` JARs with `Blueprint-Id` and `Blueprint-Version` manifest entries
+- **`publishFromArtifact`** — new deployment path via `POST /api/blueprint/deploy` or `aether blueprint deploy <coords>`
+- **Config separation** — application config (`resources.toml`) at GLOBAL scope; infrastructure endpoints (`[endpoints.*]` in `aether.toml`) at NODE scope. ConfigService merges hierarchically (SLICE > NODE > GLOBAL)
+- **Schema migration prep** — blueprint artifacts carry `schema/{datasource}/*.sql` migration scripts. Schema metadata stored in KV-Store for future execution
+- **New KV types** — `BlueprintResourcesKey/Value`, `SchemaVersionKey/Value`, `SchemaMigrationLockKey/Value`
+- **CLI commands** — `blueprint deploy <coords>` and `blueprint upload <file>`
+
 ### Cloud Integration (v0.21.0)
 - **4-Provider Cloud Support** -- Hetzner, AWS, GCP, Azure with compute, load balancer, discovery, and secrets facets
 - **CloudConfig + TOML `[cloud]` section** -- generic string-map config with `${env:VAR}` interpolation, provider-agnostic parsing in ConfigLoader

@@ -347,6 +347,26 @@ Delete a published blueprint.
 }
 ```
 
+### POST /api/blueprint/deploy
+
+Deploy a blueprint from an artifact in the cluster's artifact repository.
+
+**Request Body:**
+```json
+{
+  "artifact": "org.example:my-app:1.0.0"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "deployed",
+  "blueprintId": "org.example:my-app:1.0.0",
+  "sliceCount": 5
+}
+```
+
 ### POST /api/blueprint/validate
 
 Validate a blueprint without applying it.
@@ -1621,6 +1641,7 @@ List all worker-hosted slice endpoints across all groups.
 | GET | `/api/blueprint/{id}` | Blueprint Management |
 | GET | `/api/blueprint/{id}/status` | Blueprint Management |
 | DELETE | `/api/blueprint/{id}` | Blueprint Management |
+| POST | `/api/blueprint/deploy` | Blueprint Management |
 | POST | `/api/blueprint/validate` | Blueprint Management |
 | GET | `/api/metrics` | Metrics |
 | GET | `/api/metrics/comprehensive` | Metrics |

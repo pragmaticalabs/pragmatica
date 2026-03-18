@@ -22,6 +22,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 6 | Manifest versioning | Complete | Envelope format versioning (v1-v6) for backward-compatible manifest evolution |
 | 66 | Compile-time serde | Complete | `@Codec` annotation processor generates `*Codec` classes for records, enums, and sealed interfaces with recursive nested type scanning. `SliceCodec` wire format with deterministic hash-based tags, VLQ encoding, zero runtime reflection. Replaces Fory/Kryo for slice boundary serialization |
 | 102 | Multi-blueprint lifecycle independence | Complete | Blueprint-scoped artifact ownership (`owningBlueprint` in SliceTargetValue), artifact exclusivity enforcement (rejects duplicate artifact across blueprints), owner-filtered blueprint deletion (only removes owned artifacts), rolling update deletion guard, KV-Store restore with ownership. Tier 1 correctness for multi-blueprint clusters |
+| 126 | Blueprint Artifacts | Complete | Blueprint packaged as JAR with resources.toml and schema/ |
+| 127 | Config Separation | Complete | App config (blueprint) vs infra config (node) with hierarchical merge |
+| 128 | Schema Migration Prep | Partial | Schema files in blueprint, metadata in KV-Store; execution pending |
+| 129 | Endpoint Config | Complete | `[endpoints.*]` sections in aether.toml for infrastructure endpoints |
 
 ## Scaling & Control
 
@@ -251,10 +255,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 24 |
-| Complete | 99 |
-| Partial | 1 |
+| Complete | 102 |
+| Partial | 2 |
 | Planned | 11 |
-| Total | 135 |
+| Total | 139 |
 
 **Battle-tested features (24):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), E2E test framework, Forge integration tests
 
@@ -263,6 +267,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Feature | Key Gap |
 |---------|---------|
 | TTM predictive scaling | Disabled by default, no live model training |
+| Schema Migration Prep | Schema files in blueprint, metadata in KV-Store; execution pending |
 
 **Planned features:**
 

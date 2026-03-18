@@ -264,6 +264,12 @@ aether blueprint validate <file.toml>
 
 # Delete a blueprint
 aether blueprint delete <blueprintId> [-f|--force]
+
+# Deploy a blueprint from an artifact in the cluster repository
+aether blueprint deploy <coords>
+
+# Upload a blueprint JAR file and deploy it
+aether blueprint upload <file> -g <groupId> -a <artifactId> -v <version>
 ```
 
 Example blueprint file (`order-system.toml`):
@@ -298,6 +304,12 @@ aether blueprint get order-system:1.0.0
 
 # Delete a blueprint (with force to skip confirmation)
 aether blueprint delete order-system:1.0.0 -f
+
+# Deploy from artifact coordinates
+aether blueprint deploy org.example:my-app:1.0.0
+
+# Upload a blueprint JAR and deploy it
+aether blueprint upload my-app-1.0.0-blueprint.jar -g org.example -a my-app -v 1.0.0
 ```
 
 #### update

@@ -395,6 +395,52 @@ poll_interval_ms = "15000"
 
 **Supported providers:** Hetzner, AWS, GCP, Azure. Each provider module registers via ServiceLoader. Provider-specific credential and compute keys are documented in the [Cloud Integration](cloud-integration.md) reference.
 
+## Blueprint Resources (`resources.toml`)
+
+Application-level configuration that travels with the blueprint artifact. Loaded into ConfigService at GLOBAL scope when the blueprint is deployed.
+
+Example:
+```toml
+[datasources.orders_db]
+database = "orders"
+schema_version = 12
+migrations = "schema/orders_db"
+pool.max_connections = 30
+
+[datasources.analytics_db]
+database = "analytics"
+pool.max_connections = 10
+```
+
+## Infrastructure Endpoints (`[endpoints.*]`)
+
+Node-level infrastructure endpoints configured in `aether.toml`. Loaded at NODE scope, overriding matching GLOBAL-scope keys from `resources.toml`.
+
+Example:
+```toml
+[endpoints.orders_db]
+host = "db.prod.internal"
+port = 5432
+username = "app"
+password = "${env:DB_ORDERS_PASSWORD}"
+
+[endpoints.analytics_db]
+host = "analytics.prod.internal"
+port = 5432
+username = "reader"
+password = "${env:DB_ANALYTICS_PASSWORD}"
+```
+
+### Config Merge Hierarchy
+
+When a slice requests configuration (e.g., `@Sql("orders_db")`), the ConfigService resolves values in priority order:
+
+1. **SLICE** scope — per-slice overrides (highest priority)
+2. **NODE** scope — from `aether.toml` `[endpoints.*]` sections
+3. **GLOBAL** scope — from blueprint's `resources.toml` `[datasources.*]` sections
+
+This allows blueprints to define "what" (database name, pool size, schema) while nodes define "where" (host, port, credentials).
+
 ## Configuration Best Practices
 
 ### Production
