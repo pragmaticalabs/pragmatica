@@ -1,0 +1,228 @@
+package org.pragmatica.aether.environment.azure;
+
+import org.pragmatica.aether.environment.DiscoveryProvider;
+import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.PeerInfo;
+import org.pragmatica.cloud.azure.AzureClient;
+import org.pragmatica.cloud.azure.api.ResourceRow;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Unit.unit;
+
+/// Azure Cloud implementation of the DiscoveryProvider SPI.
+/// Discovers peers by querying VMs with a specific `aether-cluster` tag via Azure Resource Graph.
+/// Watches for peer changes by polling at a configurable interval.
+public final class AzureDiscoveryProvider implements DiscoveryProvider {
+    private static final Logger log = LoggerFactory.getLogger(AzureDiscoveryProvider.class);
+
+    private static final int DEFAULT_PORT = 9100;
+    private static final String TAG_CLUSTER = "aether-cluster";
+    private static final String TAG_PORT = "aether-port";
+    private static final String TAG_ROLE = "aether-role";
+    private static final String DEFAULT_ROLE = "core";
+
+    private static final EnvironmentError NO_SELF_VM_NAME = EnvironmentError.operationNotSupported("registerSelf/deregisterSelf requires selfVmName");
+
+    private final AzureClient client;
+    private final String clusterName;
+    private final Option<String> selfVmName;
+    private final long pollIntervalMs;
+    private final AtomicReference<Thread> watchThread = new AtomicReference<>();
+
+    private AzureDiscoveryProvider(AzureClient client,
+                                    String clusterName,
+                                    Option<String> selfVmName,
+                                    long pollIntervalMs) {
+        this.client = client;
+        this.clusterName = clusterName;
+        this.selfVmName = selfVmName;
+        this.pollIntervalMs = pollIntervalMs;
+    }
+
+    /// Factory method for creating an AzureDiscoveryProvider from config.
+    public static AzureDiscoveryProvider azureDiscoveryProvider(AzureClient client,
+                                                                AzureEnvironmentConfig config) {
+        return new AzureDiscoveryProvider(client,
+                                          config.clusterName()
+                                                .or("default"),
+                                          config.selfVmName(),
+                                          config.discoveryPollIntervalMs());
+    }
+
+    @Override
+    public Promise<List<PeerInfo>> discoverPeers() {
+        return client.queryResources(clusterQuery())
+                     .map(AzureDiscoveryProvider::toPeerInfoList)
+                     .mapError(AzureDiscoveryProvider::toDiscoveryError);
+    }
+
+    @Override
+    public Promise<Unit> watchPeers(Consumer<List<PeerInfo>> onChange) {
+        var thread = Thread.ofVirtual()
+                           .name("azure-discovery-watcher")
+                           .start(() -> pollLoop(onChange));
+        watchThread.set(thread);
+        return Promise.success(unit());
+    }
+
+    @Override
+    public Promise<Unit> stopWatching() {
+        interruptWatchThread();
+        return Promise.success(unit());
+    }
+
+    @Override
+    public Promise<Unit> registerSelf(PeerInfo self) {
+        return selfVmName.map(name -> applyRegistrationTags(name, self))
+                         .or(NO_SELF_VM_NAME.promise());
+    }
+
+    @Override
+    public Promise<Unit> deregisterSelf() {
+        return selfVmName.map(this::clearTags)
+                         .or(NO_SELF_VM_NAME.promise());
+    }
+
+    // --- Leaf: build KQL query for cluster discovery ---
+    String clusterQuery() {
+        return "Resources | where type == \"microsoft.compute/virtualmachines\""
+               + " | where tags[\"" + TAG_CLUSTER + "\"] == \"" + clusterName + "\"";
+    }
+
+    // --- Leaf: apply registration tags to self VM ---
+    private Promise<Unit> applyRegistrationTags(String vmName, PeerInfo self) {
+        return client.updateTags(vmName, buildSelfTags(self))
+                     .mapToUnit();
+    }
+
+    // --- Leaf: clear aether tags from self VM ---
+    private Promise<Unit> clearTags(String vmName) {
+        return client.updateTags(vmName, Map.of())
+                     .mapToUnit();
+    }
+
+    // --- Leaf: build tag map for self-registration ---
+    private Map<String, String> buildSelfTags(PeerInfo self) {
+        return Map.of(TAG_CLUSTER,
+                      clusterName,
+                      TAG_PORT,
+                      String.valueOf(self.port()),
+                      TAG_ROLE,
+                      self.metadata()
+                          .getOrDefault("role", DEFAULT_ROLE));
+    }
+
+    // --- Leaf: map resource rows to peer info list ---
+    private static List<PeerInfo> toPeerInfoList(List<ResourceRow> rows) {
+        return rows.stream()
+                   .map(AzureDiscoveryProvider::rowToPeerInfo)
+                   .toList();
+    }
+
+    // --- Leaf: extract PeerInfo from a resource row ---
+    private static PeerInfo rowToPeerInfo(ResourceRow row) {
+        return new PeerInfo(extractHost(row), extractPort(row), extractMetadata(row));
+    }
+
+    // --- Leaf: extract host from resource row name (VM name as host fallback) ---
+    private static String extractHost(ResourceRow row) {
+        return row.name();
+    }
+
+    // --- Leaf: extract port from aether-port tag, default 9100 ---
+    private static int extractPort(ResourceRow row) {
+        return option(row.tags())
+            .flatMap(tags -> option(tags.get(TAG_PORT)))
+            .map(AzureDiscoveryProvider::parsePortOrDefault)
+            .or(DEFAULT_PORT);
+    }
+
+    // --- Leaf: parse port string to int, falling back to default ---
+    private static int parsePortOrDefault(String portStr) {
+        return org.pragmatica.lang.parse.Number.parseInt(portStr)
+                     .or(DEFAULT_PORT);
+    }
+
+    // --- Leaf: extract metadata from resource row tags ---
+    private static Map<String, String> extractMetadata(ResourceRow row) {
+        return option(row.tags()).or(Map.of());
+    }
+
+    // --- Leaf: poll loop for watching peers ---
+    private void pollLoop(Consumer<List<PeerInfo>> onChange) {
+        var previousPeers = new AtomicReference<Set<String>>(Set.of());
+        while (!Thread.currentThread()
+                      .isInterrupted()) {
+            pollOnce(onChange, previousPeers);
+            sleepOrExit();
+        }
+    }
+
+    // --- Leaf: execute a single poll cycle ---
+    private void pollOnce(Consumer<List<PeerInfo>> onChange, AtomicReference<Set<String>> previousPeers) {
+        discoverPeers().await()
+                     .onFailure(cause -> log.warn("Discovery poll failed: {}",
+                                                  cause.message()))
+                     .onSuccess(peers -> notifyIfChanged(peers, onChange, previousPeers));
+    }
+
+    // --- Leaf: notify onChange if peer set has changed ---
+    private static void notifyIfChanged(List<PeerInfo> peers,
+                                        Consumer<List<PeerInfo>> onChange,
+                                        AtomicReference<Set<String>> previousPeers) {
+        var currentKeys = toPeerKeys(peers);
+        if (!currentKeys.equals(previousPeers.get())) {
+            previousPeers.set(currentKeys);
+            onChange.accept(peers);
+        }
+    }
+
+    // --- Leaf: convert peer list to set of host:port keys for comparison ---
+    private static Set<String> toPeerKeys(List<PeerInfo> peers) {
+        return peers.stream()
+                    .map(AzureDiscoveryProvider::peerKey)
+                    .collect(Collectors.toSet());
+    }
+
+    // --- Leaf: format peer key for comparison ---
+    private static String peerKey(PeerInfo peer) {
+        return peer.host() + ":" + peer.port();
+    }
+
+    // --- Leaf: sleep for poll interval, exit on interrupt ---
+    private void sleepOrExit() {
+        try{
+            Thread.sleep(pollIntervalMs);
+        } catch (InterruptedException e) {
+            Thread.currentThread()
+                  .interrupt();
+        }
+    }
+
+    // --- Leaf: interrupt and clear the watch thread ---
+    private void interruptWatchThread() {
+        var thread = watchThread.getAndSet(null);
+        if (thread != null) {
+            thread.interrupt();
+        }
+    }
+
+    // --- Leaf: map cause to discovery error ---
+    private static EnvironmentError toDiscoveryError(Cause cause) {
+        return EnvironmentError.discoveryFailed("peer discovery", new RuntimeException(cause.message()));
+    }
+}

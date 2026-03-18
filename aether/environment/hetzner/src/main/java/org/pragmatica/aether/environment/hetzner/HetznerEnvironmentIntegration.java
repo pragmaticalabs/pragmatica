@@ -1,11 +1,13 @@
 package org.pragmatica.aether.environment.hetzner;
 
+import org.pragmatica.aether.environment.CachingSecretsProvider;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvSecretsProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.SecretsProvider;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -68,9 +70,10 @@ public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvid
                      .map(name -> hetznerDiscoveryProvider(client, config));
     }
 
-    // --- Leaf: resolve secrets provider (always available via env vars) ---
+    // --- Leaf: resolve secrets provider (env vars with TTL cache) ---
     private static Option<SecretsProvider> resolveSecretsProvider() {
-        return some(EnvSecretsProvider.envSecretsProvider());
+        return some(CachingSecretsProvider.cachingSecretsProvider(
+            EnvSecretsProvider.envSecretsProvider(), TimeSpan.timeSpan(5).minutes()));
     }
 
     @Override

@@ -16,6 +16,9 @@
     <description>Environment integration implementations for cloud providers</description>
 
     <modules>
+        <module>aws</module>
+        <module>azure</module>
+        <module>gcp</module>
         <module>hetzner</module>
     </modules>
 </project>

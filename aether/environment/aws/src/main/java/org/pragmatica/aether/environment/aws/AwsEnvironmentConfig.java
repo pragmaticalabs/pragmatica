@@ -1,0 +1,104 @@
+package org.pragmatica.aether.environment.aws;
+
+import org.pragmatica.cloud.aws.AwsConfig;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+
+import java.util.List;
+
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
+
+/// Configuration for the AWS environment integration.
+/// Contains AWS API credentials and default EC2 provisioning parameters.
+public record AwsEnvironmentConfig(AwsConfig awsConfig,
+                                   String amiId,
+                                   String instanceType,
+                                   Option<String> keyName,
+                                   List<String> securityGroupIds,
+                                   String subnetId,
+                                   String userData,
+                                   Option<AwsLbConfig> loadBalancer,
+                                   Option<String> clusterName,
+                                   long discoveryPollIntervalMs) {
+    private static final long DEFAULT_POLL_INTERVAL_MS = 30_000L;
+
+    /// Load balancer configuration for AWS environment.
+    public record AwsLbConfig(String targetGroupArn) {
+        /// Factory method for creating an AWS load balancer configuration.
+        public static Result<AwsLbConfig> awsLbConfig(String targetGroupArn) {
+            return success(new AwsLbConfig(targetGroupArn));
+        }
+    }
+
+    /// Factory method for creating an AWS environment configuration.
+    public static Result<AwsEnvironmentConfig> awsEnvironmentConfig(AwsConfig awsConfig,
+                                                                     String amiId,
+                                                                     String instanceType,
+                                                                     Option<String> keyName,
+                                                                     List<String> securityGroupIds,
+                                                                     String subnetId,
+                                                                     String userData) {
+        return success(new AwsEnvironmentConfig(awsConfig,
+                                                amiId,
+                                                instanceType,
+                                                keyName,
+                                                List.copyOf(securityGroupIds),
+                                                subnetId,
+                                                userData,
+                                                Option.empty(),
+                                                Option.empty(),
+                                                DEFAULT_POLL_INTERVAL_MS));
+    }
+
+    /// Factory method for creating an AWS environment configuration with load balancer.
+    public static Result<AwsEnvironmentConfig> awsEnvironmentConfig(AwsConfig awsConfig,
+                                                                     String amiId,
+                                                                     String instanceType,
+                                                                     Option<String> keyName,
+                                                                     List<String> securityGroupIds,
+                                                                     String subnetId,
+                                                                     String userData,
+                                                                     AwsLbConfig loadBalancer) {
+        return success(new AwsEnvironmentConfig(awsConfig,
+                                                amiId,
+                                                instanceType,
+                                                keyName,
+                                                List.copyOf(securityGroupIds),
+                                                subnetId,
+                                                userData,
+                                                some(loadBalancer),
+                                                Option.empty(),
+                                                DEFAULT_POLL_INTERVAL_MS));
+    }
+
+    /// Return a copy with discovery enabled for the specified cluster name.
+    @SuppressWarnings("JBCT-VO-02") // Copy-with-change builder — direct constructor is intentional
+    public AwsEnvironmentConfig withDiscovery(String clusterLabel) {
+        return new AwsEnvironmentConfig(awsConfig,
+                                        amiId,
+                                        instanceType,
+                                        keyName,
+                                        securityGroupIds,
+                                        subnetId,
+                                        userData,
+                                        loadBalancer,
+                                        some(clusterLabel),
+                                        discoveryPollIntervalMs);
+    }
+
+    /// Return a copy with the discovery poll interval set.
+    @SuppressWarnings("JBCT-VO-02") // Copy-with-change builder — direct constructor is intentional
+    public AwsEnvironmentConfig withDiscoveryPollInterval(long intervalMs) {
+        return new AwsEnvironmentConfig(awsConfig,
+                                        amiId,
+                                        instanceType,
+                                        keyName,
+                                        securityGroupIds,
+                                        subnetId,
+                                        userData,
+                                        loadBalancer,
+                                        clusterName,
+                                        intervalMs);
+    }
+}

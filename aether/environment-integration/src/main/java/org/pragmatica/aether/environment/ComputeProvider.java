@@ -36,6 +36,16 @@ public interface ComputeProvider {
         return listInstances().map(instances -> filterByTags(instances, tagFilter));
     }
 
+    /// Provision with detailed specification. Default delegates to provision(instanceType).
+    default Promise<InstanceInfo> provision(ProvisionSpec spec) {
+        return provision(spec.instanceType());
+    }
+
+    /// List instances filtered by TagSelector. Default delegates to listInstances(Map).
+    default Promise<List<InstanceInfo>> listInstances(TagSelector selector) {
+        return listInstances(selector.requiredTags());
+    }
+
     private static List<InstanceInfo> filterByTags(List<InstanceInfo> instances, Map<String, String> tagFilter) {
         return instances.stream()
                         .filter(instance -> matchesTags(instance, tagFilter))
