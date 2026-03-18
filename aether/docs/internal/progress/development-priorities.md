@@ -203,20 +203,7 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 
 ### HIGH PRIORITY - Core & Operations
 
-1. **Cloud Integration — Remaining Work** — [SPI architecture spec](../../specs/cloud-integration-spi-spec.md)
-   - **Core implementation complete** (v0.21.0): 4 providers (Hetzner, AWS, GCP, Azure) with compute, LB, discovery, secrets. See Completed section.
-   - Node pool support: core (on-demand) vs elastic (spot) pools
-   - Instance type parameter for spot/on-demand selection
-   - Health check endpoint configuration (path, interval, thresholds) — default methods exist, no provider overrides yet
-   - Weighted routing sync: Aether rolling update weights → cloud LB weights — default method exists, no provider overrides yet
-   - TLS termination configuration (certificate ARN/ID passthrough) — default method exists, no provider overrides yet
-   - HashiCorp Vault integration
-   - Pre-baked images (provider snapshot for instant boot)
-   - Multi-region cluster testing
-   - Disaster recovery testing
-   - **Enables:** Expense Tracking in FUTURE section
-
-2. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
+1. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
     - Cluster-level schema migration managed by Aether runtime, not individual nodes
     - Per-datasource lifecycle with independent history tables (`aether_schema_history`)
     - Leader-driven execution via Rabia consensus; exactly one node runs migrations
@@ -225,9 +212,26 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
     - Expand-contract support for zero-downtime schema changes
     - Lightweight `AetherSchemaManager` — plain JDBC, no Flyway/Liquibase dependency
 
+2. **Canary & Blue-Green Deployment Strategies** — [design spec](../../specs/canary-blue-green-spec.md)
+     - Current: Rolling updates with weighted routing exist
+     - Add explicit canary deployment with automatic rollback on error threshold
+     - Add blue-green deployment with instant switchover
+     - A/B testing support with traffic splitting by criteria
+     - **Spec complete:** 5-stage canary progression, atomic blue-green switchover, A/B split rules, KV types, REST API, CLI, TOML config, failure handling. 5 phases (18-26 days)
+
+3. **Cloud Integration — Remaining Work (demand-driven)** — [SPI architecture spec](../../specs/cloud-integration-spi-spec.md)
+   - **Core implementation complete** (v0.21.0): 4 providers (Hetzner, AWS, GCP, Azure) with compute, LB, discovery, secrets. See Completed section.
+   - Spot pool support: core (on-demand) vs elastic (spot/preemptible) pools
+   - LB provider overrides: health check config, weighted routing sync, TLS termination
+   - HashiCorp Vault integration
+   - Pre-baked images (provider snapshot for instant boot)
+   - Cloud testing: node failure, network partition, multi-region, disaster recovery
+   - DigitalOcean + Vultr providers (Tier 2)
+   - **Enables:** Expense Tracking in FUTURE section
+
 ### Cloud Provider Support
 
-Part of Cloud Integration (#1). Per-provider status:
+Part of Cloud Integration (#3). Per-provider status:
 
 | Provider | Tier | Compute | Load Balancer | Discovery | Secrets | Spec | Status |
 |----------|------|---------|---------------|-----------|---------|------|--------|
@@ -252,19 +256,12 @@ Part of Cloud Integration (#1). Per-provider status:
 
 ### MEDIUM PRIORITY - Developer Tooling & Deployment
 
-3. ~~**Notification Resource**~~ → **Complete (v0.21.0, Phase 1 — Email)**
+4. ~~**Notification Resource**~~ → **Complete (v0.21.0, Phase 1 — Email)**
     - `integrations/net/smtp` — async SMTP client on Netty (STARTTLS, IMPLICIT TLS, AUTH PLAIN, connection-per-send)
     - `integrations/email-http` — HTTP email sender with SendGrid, Mailgun, Postmark, Resend via VendorMapping SPI
     - `aether/resource/notification` — `NotificationSender` resource type, `NotificationSenderFactory`, `@Notify` qualifier, retry with exponential backoff
     - 57 tests (20 SMTP + 26 email-http + 11 notification)
     - **Phase 2 (future):** SMS (Twilio, AWS SNS), push (FCM, APNS), SMTP connection pooling, MX lookup
-
-4. **Canary & Blue-Green Deployment Strategies** — [design spec](../../specs/canary-blue-green-spec.md)
-     - Current: Rolling updates with weighted routing exist
-     - Add explicit canary deployment with automatic rollback on error threshold
-     - Add blue-green deployment with instant switchover
-     - A/B testing support with traffic splitting by criteria
-     - **Spec complete:** 5-stage canary progression, atomic blue-green switchover, A/B split rules, KV types, REST API, CLI, TOML config, failure handling. 5 phases (18-26 days)
 
 5. **RBAC Tier 2 — Per-Endpoint Role Authorization**
      - Per-endpoint role-based authorization rules (admin, operator, viewer)
