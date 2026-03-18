@@ -72,8 +72,9 @@ public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvid
 
     // --- Leaf: resolve secrets provider (env vars with TTL cache) ---
     private static Option<SecretsProvider> resolveSecretsProvider() {
-        return some(CachingSecretsProvider.cachingSecretsProvider(
-            EnvSecretsProvider.envSecretsProvider(), TimeSpan.timeSpan(5).minutes()));
+        return some(CachingSecretsProvider.cachingSecretsProvider(EnvSecretsProvider.envSecretsProvider(),
+                                                                  TimeSpan.timeSpan(5)
+                                                                          .minutes()));
     }
 
     @Override

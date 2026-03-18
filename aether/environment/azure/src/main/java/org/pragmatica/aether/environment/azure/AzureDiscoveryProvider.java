@@ -44,9 +44,9 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
     private final AtomicReference<Thread> watchThread = new AtomicReference<>();
 
     private AzureDiscoveryProvider(AzureClient client,
-                                    String clusterName,
-                                    Option<String> selfVmName,
-                                    long pollIntervalMs) {
+                                   String clusterName,
+                                   Option<String> selfVmName,
+                                   long pollIntervalMs) {
         this.client = client;
         this.clusterName = clusterName;
         this.selfVmName = selfVmName;
@@ -99,19 +99,21 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: build KQL query for cluster discovery ---
     String clusterQuery() {
-        return "Resources | where type == \"microsoft.compute/virtualmachines\""
-               + " | where tags[\"" + TAG_CLUSTER + "\"] == \"" + clusterName + "\"";
+        return "Resources | where type == \"microsoft.compute/virtualmachines\"" + " | where tags[\"" + TAG_CLUSTER
+               + "\"] == \"" + clusterName + "\"";
     }
 
     // --- Leaf: apply registration tags to self VM ---
     private Promise<Unit> applyRegistrationTags(String vmName, PeerInfo self) {
-        return client.updateTags(vmName, buildSelfTags(self))
+        return client.updateTags(vmName,
+                                 buildSelfTags(self))
                      .mapToUnit();
     }
 
     // --- Leaf: clear aether tags from self VM ---
     private Promise<Unit> clearTags(String vmName) {
-        return client.updateTags(vmName, Map.of())
+        return client.updateTags(vmName,
+                                 Map.of())
                      .mapToUnit();
     }
 
@@ -145,16 +147,15 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: extract port from aether-port tag, default 9100 ---
     private static int extractPort(ResourceRow row) {
-        return option(row.tags())
-            .flatMap(tags -> option(tags.get(TAG_PORT)))
-            .map(AzureDiscoveryProvider::parsePortOrDefault)
-            .or(DEFAULT_PORT);
+        return option(row.tags()).flatMap(tags -> option(tags.get(TAG_PORT)))
+                     .map(AzureDiscoveryProvider::parsePortOrDefault)
+                     .or(DEFAULT_PORT);
     }
 
     // --- Leaf: parse port string to int, falling back to default ---
     private static int parsePortOrDefault(String portStr) {
         return org.pragmatica.lang.parse.Number.parseInt(portStr)
-                     .or(DEFAULT_PORT);
+                  .or(DEFAULT_PORT);
     }
 
     // --- Leaf: extract metadata from resource row tags ---

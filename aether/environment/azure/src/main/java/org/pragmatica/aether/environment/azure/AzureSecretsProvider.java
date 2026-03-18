@@ -19,9 +19,9 @@ public record AzureSecretsProvider(AzureClient client) implements SecretsProvide
     @Override
     public Promise<String> resolveSecret(String secretPath) {
         return splitPath(secretPath).async()
-                     .flatMap(this::fetchSecret)
-                     .mapError(cause -> EnvironmentError.secretResolutionFailed(secretPath,
-                                                                                new RuntimeException(cause.message())));
+                        .flatMap(this::fetchSecret)
+                        .mapError(cause -> EnvironmentError.secretResolutionFailed(secretPath,
+                                                                                   new RuntimeException(cause.message())));
     }
 
     // --- Leaf: split secret path into vault name and secret name ---
@@ -32,8 +32,7 @@ public record AzureSecretsProvider(AzureClient client) implements SecretsProvide
                                                            new IllegalArgumentException("Path must be in format: vaultName/secretName"))
                                    .result();
         }
-        return success(new VaultAndSecret(path.substring(0, slashIndex),
-                                           path.substring(slashIndex + 1)));
+        return success(new VaultAndSecret(path.substring(0, slashIndex), path.substring(slashIndex + 1)));
     }
 
     // --- Leaf: fetch a secret from Key Vault ---

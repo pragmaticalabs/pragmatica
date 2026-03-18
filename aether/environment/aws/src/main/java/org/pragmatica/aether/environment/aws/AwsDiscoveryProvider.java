@@ -51,7 +51,7 @@ public final class AwsDiscoveryProvider implements DiscoveryProvider {
 
     /// Factory method for creating an AwsDiscoveryProvider from config.
     public static AwsDiscoveryProvider awsDiscoveryProvider(AwsClient client,
-                                                             AwsEnvironmentConfig config) {
+                                                            AwsEnvironmentConfig config) {
         return new AwsDiscoveryProvider(client,
                                         config.clusterName()
                                               .or("default"),
@@ -103,7 +103,8 @@ public final class AwsDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: check if instance is running ---
     private static boolean isRunning(Instance instance) {
-        return "running".equals(instance.instanceState().name());
+        return "running".equals(instance.instanceState()
+                                        .name());
     }
 
     // --- Leaf: extract PeerInfo from an instance ---
@@ -113,20 +114,19 @@ public final class AwsDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: extract host, preferring private IP ---
     private static String extractHost(Instance instance) {
-        return option(instance.privateIpAddress())
-                     .or(() -> option(instance.publicIpAddress()).or("0.0.0.0"));
+        return option(instance.privateIpAddress()).or(() -> option(instance.publicIpAddress()).or("0.0.0.0"));
     }
 
     // --- Leaf: extract port from aether-port tag, default 9100 ---
     private static int extractPort(Instance instance) {
         return tagValue(instance, TAG_PORT).map(AwsDiscoveryProvider::parsePortOrDefault)
-                     .or(DEFAULT_PORT);
+                       .or(DEFAULT_PORT);
     }
 
     // --- Leaf: parse port string to int, falling back to default ---
     private static int parsePortOrDefault(String portStr) {
         return org.pragmatica.lang.parse.Number.parseInt(portStr)
-                     .or(DEFAULT_PORT);
+                  .or(DEFAULT_PORT);
     }
 
     // --- Leaf: extract metadata from instance tags ---
@@ -191,7 +191,7 @@ public final class AwsDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: sleep for poll interval, exit on interrupt ---
     private void sleepOrExit() {
-        try {
+        try{
             Thread.sleep(pollIntervalMs);
         } catch (InterruptedException e) {
             Thread.currentThread()

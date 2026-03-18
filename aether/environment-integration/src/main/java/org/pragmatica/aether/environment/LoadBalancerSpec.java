@@ -17,16 +17,15 @@ public record LoadBalancerSpec(String name,
     /// A port mapping for load balancer traffic forwarding.
     public record ServicePort(String protocol, int listenPort, int destinationPort) {
         public static Result<ServicePort> servicePort(String protocol,
-                                                       int listenPort,
-                                                       int destinationPort) {
+                                                      int listenPort,
+                                                      int destinationPort) {
             return success(new ServicePort(protocol, listenPort, destinationPort));
         }
     }
 
     public static Result<LoadBalancerSpec> loadBalancerSpec(String name,
-                                                             String algorithm,
-                                                             List<ServicePort> servicePorts) {
-        return success(new LoadBalancerSpec(name, algorithm, List.copyOf(servicePorts),
-                                            Option.empty(), Map.of()));
+                                                            String algorithm,
+                                                            List<ServicePort> servicePorts) {
+        return success(new LoadBalancerSpec(name, algorithm, List.copyOf(servicePorts), Option.empty(), Map.of()));
     }
 }

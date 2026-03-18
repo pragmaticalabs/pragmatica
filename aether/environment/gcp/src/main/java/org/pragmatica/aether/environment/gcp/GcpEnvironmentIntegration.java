@@ -34,7 +34,7 @@ public record GcpEnvironmentIntegration(GcpComputeProvider computeProvider,
 
     /// Factory method for creating a GcpEnvironmentIntegration with a custom client.
     public static Result<GcpEnvironmentIntegration> gcpEnvironmentIntegration(GcpClient client,
-                                                                               GcpEnvironmentConfig config) {
+                                                                              GcpEnvironmentConfig config) {
         var compute = gcpComputeProvider(client, config);
         var lbProvider = resolveLbProvider(client, config);
         var discovery = resolveDiscoveryProvider(client, config);
@@ -45,7 +45,7 @@ public record GcpEnvironmentIntegration(GcpComputeProvider computeProvider,
 
     // --- Leaf: resolve optional load balancer provider ---
     private static Result<Option<LoadBalancerProvider>> resolveLbProvider(GcpClient client,
-                                                                           GcpEnvironmentConfig config) {
+                                                                          GcpEnvironmentConfig config) {
         return config.networkEndpointGroup()
                      .fold(() -> success(Option.empty()),
                            negConfig -> toNegOption(client, negConfig));
@@ -53,7 +53,7 @@ public record GcpEnvironmentIntegration(GcpComputeProvider computeProvider,
 
     // --- Leaf: create optional NEG provider from config ---
     private static Result<Option<LoadBalancerProvider>> toNegOption(GcpClient client,
-                                                                     GcpEnvironmentConfig.GcpNegConfig negConfig) {
+                                                                    GcpEnvironmentConfig.GcpNegConfig negConfig) {
         return gcpLoadBalancerProvider(client, negConfig.negName(), negConfig.port())
         .map(GcpEnvironmentIntegration::wrapInSome);
     }
@@ -65,15 +65,16 @@ public record GcpEnvironmentIntegration(GcpComputeProvider computeProvider,
 
     // --- Leaf: resolve optional discovery provider based on clusterName ---
     private static Option<DiscoveryProvider> resolveDiscoveryProvider(GcpClient client,
-                                                                       GcpEnvironmentConfig config) {
+                                                                      GcpEnvironmentConfig config) {
         return config.clusterName()
                      .map(name -> gcpDiscoveryProvider(client, config));
     }
 
     // --- Leaf: resolve secrets provider (GCP Secret Manager with TTL cache) ---
     private static Option<SecretsProvider> resolveSecretsProvider(GcpClient client) {
-        return some(CachingSecretsProvider.cachingSecretsProvider(
-            gcpSecretsProvider(client), TimeSpan.timeSpan(5).minutes()));
+        return some(CachingSecretsProvider.cachingSecretsProvider(gcpSecretsProvider(client),
+                                                                  TimeSpan.timeSpan(5)
+                                                                          .minutes()));
     }
 
     @Override

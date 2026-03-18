@@ -31,8 +31,8 @@ public record GcpLoadBalancerProvider(GcpClient client,
 
     /// Factory method for creating a GcpLoadBalancerProvider.
     public static Result<GcpLoadBalancerProvider> gcpLoadBalancerProvider(GcpClient client,
-                                                                           String negName,
-                                                                           int destinationPort) {
+                                                                          String negName,
+                                                                          int destinationPort) {
         return success(new GcpLoadBalancerProvider(client, negName, destinationPort));
     }
 
@@ -53,7 +53,8 @@ public record GcpLoadBalancerProvider(GcpClient client,
     @Override
     public Promise<Unit> onNodeRemoved(String nodeIp) {
         log.debug("Removing endpoint {} from NEG {}", nodeIp, negName);
-        return client.detachNetworkEndpoint(negName, toEndpoint(nodeIp))
+        return client.detachNetworkEndpoint(negName,
+                                            toEndpoint(nodeIp))
                      .mapToUnit();
     }
 
@@ -66,8 +67,10 @@ public record GcpLoadBalancerProvider(GcpClient client,
     // --- Leaf: map network endpoints to LoadBalancerInfo ---
     private LoadBalancerInfo toLoadBalancerInfo(List<NetworkEndpoint> endpoints) {
         var targetInfos = endpoints.stream()
-            .map(ep -> new LoadBalancerInfo.TargetInfo(ep.ipAddress(), "healthy", 1))
-            .toList();
+                                   .map(ep -> new LoadBalancerInfo.TargetInfo(ep.ipAddress(),
+                                                                              "healthy",
+                                                                              1))
+                                   .toList();
         return new LoadBalancerInfo(negName, negName, "", "active", targetInfos);
     }
 
@@ -85,17 +88,20 @@ public record GcpLoadBalancerProvider(GcpClient client,
 
     // --- Leaf: attach a single endpoint ---
     private Promise<Unit> attachEndpoint(String ip) {
-        return client.attachNetworkEndpoint(negName, toEndpoint(ip))
+        return client.attachNetworkEndpoint(negName,
+                                            toEndpoint(ip))
                      .mapToUnit();
     }
 
     // --- Leaf: detach a single endpoint ---
     private Promise<Unit> detachEndpoint(String ip) {
-        return client.detachNetworkEndpoint(negName, toEndpoint(ip))
+        return client.detachNetworkEndpoint(negName,
+                                            toEndpoint(ip))
                      .mapToUnit();
     }
 
     // --- Leaf: create a NetworkEndpoint from IP ---
+    @SuppressWarnings("JBCT-RET-03")
     private NetworkEndpoint toEndpoint(String ip) {
         return new NetworkEndpoint(ip, destinationPort, null);
     }

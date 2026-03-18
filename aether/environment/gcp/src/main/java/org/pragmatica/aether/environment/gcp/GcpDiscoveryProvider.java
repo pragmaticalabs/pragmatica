@@ -45,9 +45,9 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
     private final AtomicReference<Thread> watchThread = new AtomicReference<>();
 
     private GcpDiscoveryProvider(GcpClient client,
-                                  String clusterName,
-                                  Option<String> selfInstanceName,
-                                  long pollIntervalMs) {
+                                 String clusterName,
+                                 Option<String> selfInstanceName,
+                                 long pollIntervalMs) {
         this.client = client;
         this.clusterName = clusterName;
         this.selfInstanceName = selfInstanceName;
@@ -56,7 +56,7 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
 
     /// Factory method for creating a GcpDiscoveryProvider from config.
     public static GcpDiscoveryProvider gcpDiscoveryProvider(GcpClient client,
-                                                             GcpEnvironmentConfig config) {
+                                                            GcpEnvironmentConfig config) {
         return new GcpDiscoveryProvider(client,
                                         config.clusterName()
                                               .or("default"),
@@ -106,19 +106,24 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
     // --- Leaf: apply registration labels to self instance ---
     private Promise<Unit> applyRegistrationLabels(String instanceName, PeerInfo self) {
         return client.getInstance(instanceName)
-                     .flatMap(instance -> setLabelsOnSelf(instanceName, instance, buildSelfLabels(self)));
+                     .flatMap(instance -> setLabelsOnSelf(instanceName,
+                                                          instance,
+                                                          buildSelfLabels(self)));
     }
 
     // --- Leaf: set labels on self instance ---
     private Promise<Unit> setLabelsOnSelf(String instanceName, Instance instance, Map<String, String> labels) {
-        return client.setLabels(instanceName, new SetLabelsRequest(labels, ""))
+        return client.setLabels(instanceName,
+                                new SetLabelsRequest(labels, ""))
                      .mapToUnit();
     }
 
     // --- Leaf: clear labels on self instance ---
     private Promise<Unit> clearLabels(String instanceName) {
         return client.getInstance(instanceName)
-                     .flatMap(instance -> setLabelsOnSelf(instanceName, instance, Map.of()));
+                     .flatMap(instance -> setLabelsOnSelf(instanceName,
+                                                          instance,
+                                                          Map.of()));
     }
 
     // --- Leaf: build label map for self-registration ---
@@ -171,7 +176,7 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
     // --- Leaf: parse port string to int, falling back to default ---
     private static int parsePortOrDefault(String portStr) {
         return org.pragmatica.lang.parse.Number.parseInt(portStr)
-                     .or(DEFAULT_PORT);
+                  .or(DEFAULT_PORT);
     }
 
     // --- Leaf: extract metadata from instance labels ---
@@ -222,7 +227,7 @@ public final class GcpDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: sleep for poll interval, exit on interrupt ---
     private void sleepOrExit() {
-        try {
+        try{
             Thread.sleep(pollIntervalMs);
         } catch (InterruptedException e) {
             Thread.currentThread()

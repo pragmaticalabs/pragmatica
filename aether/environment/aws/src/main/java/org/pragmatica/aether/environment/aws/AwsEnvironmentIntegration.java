@@ -34,7 +34,7 @@ public record AwsEnvironmentIntegration(AwsComputeProvider computeProvider,
 
     /// Factory method for creating an AwsEnvironmentIntegration with a custom client.
     public static Result<AwsEnvironmentIntegration> awsEnvironmentIntegration(AwsClient client,
-                                                                               AwsEnvironmentConfig config) {
+                                                                              AwsEnvironmentConfig config) {
         var compute = awsComputeProvider(client, config);
         var lbProvider = resolveLbProvider(client, config);
         var discovery = resolveDiscoveryProvider(client, config);
@@ -54,8 +54,7 @@ public record AwsEnvironmentIntegration(AwsComputeProvider computeProvider,
     // --- Leaf: create optional LB provider from config ---
     private static Result<Option<LoadBalancerProvider>> toLbOption(AwsClient client,
                                                                    AwsEnvironmentConfig.AwsLbConfig lbConfig) {
-        return awsLoadBalancerProvider(client, lbConfig.targetGroupArn())
-        .map(AwsEnvironmentIntegration::wrapInSome);
+        return awsLoadBalancerProvider(client, lbConfig.targetGroupArn()).map(AwsEnvironmentIntegration::wrapInSome);
     }
 
     // --- Leaf: wrap a LoadBalancerProvider in Option.some ---
@@ -72,8 +71,9 @@ public record AwsEnvironmentIntegration(AwsComputeProvider computeProvider,
 
     // --- Leaf: resolve secrets provider (AWS Secrets Manager with TTL cache) ---
     private static Option<SecretsProvider> resolveSecretsProvider(AwsClient client) {
-        return some(CachingSecretsProvider.cachingSecretsProvider(
-            awsSecretsProvider(client).unwrap(), TimeSpan.timeSpan(5).minutes()));
+        return some(CachingSecretsProvider.cachingSecretsProvider(awsSecretsProvider(client).unwrap(),
+                                                                  TimeSpan.timeSpan(5)
+                                                                          .minutes()));
     }
 
     @Override

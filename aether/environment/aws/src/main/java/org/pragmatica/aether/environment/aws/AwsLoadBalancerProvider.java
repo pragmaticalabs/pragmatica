@@ -61,8 +61,10 @@ public record AwsLoadBalancerProvider(AwsClient client,
     // --- Leaf: map target health list to LoadBalancerInfo ---
     private LoadBalancerInfo toLoadBalancerInfo(List<TargetHealth> targets) {
         var targetInfos = targets.stream()
-            .map(t -> new LoadBalancerInfo.TargetInfo(t.targetId(), t.state(), 1))
-            .toList();
+                                 .map(t -> new LoadBalancerInfo.TargetInfo(t.targetId(),
+                                                                           t.state(),
+                                                                           1))
+                                 .toList();
         return new LoadBalancerInfo(targetGroupArn, targetGroupArn, "", "active", targetInfos);
     }
 
@@ -112,7 +114,8 @@ public record AwsLoadBalancerProvider(AwsClient client,
         log.debug("Reconciliation diff: {} to add, {} to remove", idsToRegister.size(), idsToDeregister.size());
         var registerOp = registerIfNotEmpty(idsToRegister);
         var deregisterOp = deregisterIfNotEmpty(idsToDeregister);
-        var all = Stream.concat(registerOp.stream(), deregisterOp.stream())
+        var all = Stream.concat(registerOp.stream(),
+                                deregisterOp.stream())
                         .toList();
         return combineAll(all);
     }

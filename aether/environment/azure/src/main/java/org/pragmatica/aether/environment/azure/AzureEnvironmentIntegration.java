@@ -23,9 +23,9 @@ import static org.pragmatica.lang.Result.success;
 /// Optionally provides load balancer management and tag-based discovery when configured.
 /// Provides Azure Key Vault secrets resolution.
 public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
-                                           Option<LoadBalancerProvider> loadBalancerProvider,
-                                           Option<DiscoveryProvider> discoveryProvider,
-                                           Option<SecretsProvider> secretsProvider) implements EnvironmentIntegration {
+                                          Option<LoadBalancerProvider> loadBalancerProvider,
+                                          Option<DiscoveryProvider> discoveryProvider,
+                                          Option<SecretsProvider> secretsProvider) implements EnvironmentIntegration {
     /// Factory method for creating an AzureEnvironmentIntegration from configuration.
     public static Result<AzureEnvironmentIntegration> azureEnvironmentIntegration(AzureEnvironmentConfig config) {
         var client = AzureClient.azureClient(config.azureConfig());
@@ -34,7 +34,7 @@ public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
 
     /// Factory method for creating an AzureEnvironmentIntegration with a custom client.
     public static Result<AzureEnvironmentIntegration> azureEnvironmentIntegration(AzureClient client,
-                                                                                   AzureEnvironmentConfig config) {
+                                                                                  AzureEnvironmentConfig config) {
         var compute = azureComputeProvider(client, config);
         var lbProvider = resolveLbProvider(client, config);
         var discovery = resolveDiscoveryProvider(client, config);
@@ -54,8 +54,11 @@ public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
     // --- Leaf: create optional LB provider from config ---
     private static Result<Option<LoadBalancerProvider>> toLbOption(AzureClient client,
                                                                    AzureEnvironmentConfig.AzureLbConfig lbConfig) {
-        return azureLoadBalancerProvider(client, lbConfig.loadBalancerName(), lbConfig.backendPoolName(), lbConfig.vnetId())
-            .map(AzureEnvironmentIntegration::wrapInSome);
+        return azureLoadBalancerProvider(client,
+                                         lbConfig.loadBalancerName(),
+                                         lbConfig.backendPoolName(),
+                                         lbConfig.vnetId())
+        .map(AzureEnvironmentIntegration::wrapInSome);
     }
 
     // --- Leaf: wrap a LoadBalancerProvider in Option.some ---
@@ -72,14 +75,15 @@ public record AzureEnvironmentIntegration(AzureComputeProvider computeProvider,
 
     // --- Leaf: resolve secrets provider (always available via Key Vault) ---
     private static Option<SecretsProvider> resolveSecretsProvider(AzureClient client) {
-        return azureSecretsProvider(client)
-            .map(AzureEnvironmentIntegration::wrapSecretInSome)
-            .or(Option.empty());
+        return azureSecretsProvider(client).map(AzureEnvironmentIntegration::wrapSecretInSome)
+                                   .or(Option.empty());
     }
 
     // --- Leaf: wrap a SecretsProvider with caching in Option.some ---
     private static Option<SecretsProvider> wrapSecretInSome(AzureSecretsProvider provider) {
-        return some(CachingSecretsProvider.cachingSecretsProvider(provider, TimeSpan.timeSpan(5).minutes()));
+        return some(CachingSecretsProvider.cachingSecretsProvider(provider,
+                                                                  TimeSpan.timeSpan(5)
+                                                                          .minutes()));
     }
 
     @Override

@@ -33,12 +33,12 @@ public record AwsEnvironmentConfig(AwsConfig awsConfig,
 
     /// Factory method for creating an AWS environment configuration.
     public static Result<AwsEnvironmentConfig> awsEnvironmentConfig(AwsConfig awsConfig,
-                                                                     String amiId,
-                                                                     String instanceType,
-                                                                     Option<String> keyName,
-                                                                     List<String> securityGroupIds,
-                                                                     String subnetId,
-                                                                     String userData) {
+                                                                    String amiId,
+                                                                    String instanceType,
+                                                                    Option<String> keyName,
+                                                                    List<String> securityGroupIds,
+                                                                    String subnetId,
+                                                                    String userData) {
         return success(new AwsEnvironmentConfig(awsConfig,
                                                 amiId,
                                                 instanceType,
@@ -53,13 +53,13 @@ public record AwsEnvironmentConfig(AwsConfig awsConfig,
 
     /// Factory method for creating an AWS environment configuration with load balancer.
     public static Result<AwsEnvironmentConfig> awsEnvironmentConfig(AwsConfig awsConfig,
-                                                                     String amiId,
-                                                                     String instanceType,
-                                                                     Option<String> keyName,
-                                                                     List<String> securityGroupIds,
-                                                                     String subnetId,
-                                                                     String userData,
-                                                                     AwsLbConfig loadBalancer) {
+                                                                    String amiId,
+                                                                    String instanceType,
+                                                                    Option<String> keyName,
+                                                                    List<String> securityGroupIds,
+                                                                    String subnetId,
+                                                                    String userData,
+                                                                    AwsLbConfig loadBalancer) {
         return success(new AwsEnvironmentConfig(awsConfig,
                                                 amiId,
                                                 instanceType,

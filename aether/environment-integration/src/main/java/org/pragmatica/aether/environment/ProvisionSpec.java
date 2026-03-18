@@ -16,17 +16,23 @@ public record ProvisionSpec(InstanceType instanceType,
                             Option<String> imageId,
                             Option<String> userData) {
     public static Result<ProvisionSpec> provisionSpec(InstanceType instanceType,
-                                                       String instanceSize,
-                                                       String pool,
-                                                       Map<String, String> tags) {
-        return success(new ProvisionSpec(instanceType, instanceSize, pool,
-                                         Map.copyOf(tags), Option.empty(), Option.empty()));
+                                                      String instanceSize,
+                                                      String pool,
+                                                      Map<String, String> tags) {
+        return success(new ProvisionSpec(instanceType,
+                                         instanceSize,
+                                         pool,
+                                         Map.copyOf(tags),
+                                         Option.empty(),
+                                         Option.empty()));
     }
 
+    @SuppressWarnings("JBCT-VO-02")
     public ProvisionSpec withImage(String imageId) {
         return new ProvisionSpec(instanceType, instanceSize, pool, tags, Option.some(imageId), userData);
     }
 
+    @SuppressWarnings("JBCT-VO-02")
     public ProvisionSpec withUserData(String userData) {
         return new ProvisionSpec(instanceType, instanceSize, pool, tags, imageId, Option.some(userData));
     }

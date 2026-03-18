@@ -35,7 +35,7 @@ public record AwsComputeProvider(AwsClient client,
 
     /// Factory method for creating an AwsComputeProvider.
     public static Result<AwsComputeProvider> awsComputeProvider(AwsClient client,
-                                                                 AwsEnvironmentConfig config) {
+                                                                AwsEnvironmentConfig config) {
         return success(new AwsComputeProvider(client, config));
     }
 
@@ -64,13 +64,15 @@ public record AwsComputeProvider(AwsClient client,
         return tagFilter.entrySet()
                         .stream()
                         .findFirst()
-                        .map(entry -> describeByTag(entry.getKey(), entry.getValue()))
+                        .map(entry -> describeByTag(entry.getKey(),
+                                                    entry.getValue()))
                         .orElseGet(this::listInstances);
     }
 
     @Override
     public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
-        return client.describeInstances("instance-id", instanceId.value())
+        return client.describeInstances("instance-id",
+                                        instanceId.value())
                      .map(AwsComputeProvider::firstInstanceOrThrow)
                      .mapError(AwsComputeProvider::toProvisionError);
     }
@@ -82,14 +84,17 @@ public record AwsComputeProvider(AwsClient client,
 
     @Override
     public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
-        return client.createTags(List.of(id.value()), tags);
+        return client.createTags(List.of(id.value()),
+                                 tags);
     }
 
     // --- Sequencer: tag the first launched instance and return its info ---
     private Promise<InstanceInfo> tagAndMapFirstInstance(RunInstancesResponse response) {
-        var instance = response.instances().getFirst();
+        var instance = response.instances()
+                               .getFirst();
         var instanceId = instance.instanceId();
-        return client.createTags(List.of(instanceId), Map.of(MANAGED_TAG_KEY, MANAGED_TAG_VALUE))
+        return client.createTags(List.of(instanceId),
+                                 Map.of(MANAGED_TAG_KEY, MANAGED_TAG_VALUE))
                      .map(unit -> toInstanceInfo(instance));
     }
 
@@ -115,7 +120,8 @@ public record AwsComputeProvider(AwsClient client,
     // --- Leaf: map EC2 Instance to InstanceInfo ---
     static InstanceInfo toInstanceInfo(Instance instance) {
         return new InstanceInfo(new InstanceId(instance.instanceId()),
-                                mapStatus(instance.instanceState().name()),
+                                mapStatus(instance.instanceState()
+                                                  .name()),
                                 collectAddresses(instance),
                                 InstanceType.ON_DEMAND,
                                 extractTags(instance));
@@ -123,7 +129,8 @@ public record AwsComputeProvider(AwsClient client,
 
     // --- Leaf: extract first instance from describe response ---
     private static InstanceInfo firstInstanceOrThrow(DescribeInstancesResponse response) {
-        return toInstanceInfo(response.allInstances().getFirst());
+        return toInstanceInfo(response.allInstances()
+                                      .getFirst());
     }
 
     // --- Leaf: map list of instances ---
@@ -149,7 +156,8 @@ public record AwsComputeProvider(AwsClient client,
     static List<String> collectAddresses(Instance instance) {
         var publicIp = option(instance.publicIpAddress());
         var privateIp = option(instance.privateIpAddress());
-        return Stream.concat(publicIp.stream(), privateIp.stream())
+        return Stream.concat(publicIp.stream(),
+                             privateIp.stream())
                      .toList();
     }
 

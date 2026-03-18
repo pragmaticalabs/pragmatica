@@ -39,7 +39,7 @@ public record GcpComputeProvider(GcpClient client,
 
     /// Factory method for creating a GcpComputeProvider.
     public static Result<GcpComputeProvider> gcpComputeProvider(GcpClient client,
-                                                                 GcpEnvironmentConfig config) {
+                                                                GcpEnvironmentConfig config) {
         return success(new GcpComputeProvider(client, config));
     }
 
@@ -86,13 +86,16 @@ public record GcpComputeProvider(GcpClient client,
     @Override
     public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
         return client.getInstance(id.value())
-                     .flatMap(instance -> setLabelsOnInstance(id.value(), instance, tags));
+                     .flatMap(instance -> setLabelsOnInstance(id.value(),
+                                                              instance,
+                                                              tags));
     }
 
     // --- Leaf: set labels on an instance using its current fingerprint ---
     private Promise<Unit> setLabelsOnInstance(String instanceName, Instance instance, Map<String, String> tags) {
         var fingerprint = extractLabelFingerprint(instance);
-        return client.setLabels(instanceName, new SetLabelsRequest(tags, fingerprint))
+        return client.setLabels(instanceName,
+                                new SetLabelsRequest(tags, fingerprint))
                      .mapToUnit();
     }
 
@@ -109,8 +112,7 @@ public record GcpComputeProvider(GcpClient client,
         var networkInterface = buildNetworkInterface();
         var labels = Map.of(MANAGED_LABEL_KEY, MANAGED_LABEL_VALUE);
         var metadata = buildMetadata();
-        return new InsertInstanceRequest(name, machineType, List.of(disk),
-                                         List.of(networkInterface), labels, metadata);
+        return new InsertInstanceRequest(name, machineType, List.of(disk), List.of(networkInterface), labels, metadata);
     }
 
     // --- Leaf: build boot disk configuration ---
@@ -120,7 +122,8 @@ public record GcpComputeProvider(GcpClient client,
 
     // --- Leaf: build network interface configuration ---
     private NetworkInterfaceConfig buildNetworkInterface() {
-        return new NetworkInterfaceConfig(config.network(), config.subnetwork(),
+        return new NetworkInterfaceConfig(config.network(),
+                                          config.subnetwork(),
                                           List.of(new AccessConfig("External NAT", "ONE_TO_ONE_NAT")));
     }
 

@@ -31,11 +31,11 @@ public record GcpEnvironmentConfig(GcpConfig gcpConfig,
 
     /// Factory method for creating a GCP environment configuration.
     public static Result<GcpEnvironmentConfig> gcpEnvironmentConfig(GcpConfig gcpConfig,
-                                                                     String machineType,
-                                                                     String sourceImage,
-                                                                     String network,
-                                                                     String subnetwork,
-                                                                     String userData) {
+                                                                    String machineType,
+                                                                    String sourceImage,
+                                                                    String network,
+                                                                    String subnetwork,
+                                                                    String userData) {
         return success(new GcpEnvironmentConfig(gcpConfig,
                                                 machineType,
                                                 sourceImage,
@@ -50,12 +50,12 @@ public record GcpEnvironmentConfig(GcpConfig gcpConfig,
 
     /// Factory method for creating a GCP environment configuration with NEG.
     public static Result<GcpEnvironmentConfig> gcpEnvironmentConfig(GcpConfig gcpConfig,
-                                                                     String machineType,
-                                                                     String sourceImage,
-                                                                     String network,
-                                                                     String subnetwork,
-                                                                     String userData,
-                                                                     GcpNegConfig negConfig) {
+                                                                    String machineType,
+                                                                    String sourceImage,
+                                                                    String network,
+                                                                    String subnetwork,
+                                                                    String userData,
+                                                                    GcpNegConfig negConfig) {
         return success(new GcpEnvironmentConfig(gcpConfig,
                                                 machineType,
                                                 sourceImage,

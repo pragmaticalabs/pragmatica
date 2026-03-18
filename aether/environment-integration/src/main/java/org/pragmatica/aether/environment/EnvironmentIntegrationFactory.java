@@ -37,14 +37,14 @@ public interface EnvironmentIntegrationFactory {
         return Option.from(ServiceLoader.load(EnvironmentIntegrationFactory.class)
                                         .stream()
                                         .map(ServiceLoader.Provider::get)
-                                        .filter(f -> f.providerName().equals(providerName))
+                                        .filter(f -> f.providerName()
+                                                      .equals(providerName))
                                         .findFirst());
     }
 
     /// Create an EnvironmentIntegration for the given CloudConfig by looking up the factory.
     static Result<EnvironmentIntegration> createFromConfig(CloudConfig config) {
-        return forProvider(config.provider())
-            .toResult(EnvironmentError.operationNotSupported("Unknown cloud provider: " + config.provider()))
-            .flatMap(factory -> factory.create(config));
+        return forProvider(config.provider()).toResult(EnvironmentError.operationNotSupported("Unknown cloud provider: " + config.provider()))
+                          .flatMap(factory -> factory.create(config));
     }
 }

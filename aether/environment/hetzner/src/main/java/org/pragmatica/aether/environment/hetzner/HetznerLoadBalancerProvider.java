@@ -66,8 +66,8 @@ public record HetznerLoadBalancerProvider(HetznerClient client,
     // --- Leaf: map Hetzner LB to LoadBalancerInfo ---
     private LoadBalancerInfo toLbInfo(LoadBalancer lb) {
         var targets = resolveCurrentIps(lb.targets()).stream()
-            .map(ip -> new LoadBalancerInfo.TargetInfo(ip, "healthy", 1))
-            .toList();
+                                       .map(ip -> new LoadBalancerInfo.TargetInfo(ip, "healthy", 1))
+                                       .toList();
         return new LoadBalancerInfo(String.valueOf(loadBalancerId), lb.name(), "", "active", targets);
     }
 

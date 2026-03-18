@@ -41,10 +41,10 @@ import static org.pragmatica.lang.Result.success;
 /// Delegates to AzureClient for VM lifecycle management and maps
 /// Azure VM models to the environment integration domain types.
 public record AzureComputeProvider(AzureClient client,
-                                    AzureEnvironmentConfig config) implements ComputeProvider {
+                                   AzureEnvironmentConfig config) implements ComputeProvider {
     /// Factory method for creating an AzureComputeProvider.
     public static Result<AzureComputeProvider> azureComputeProvider(AzureClient client,
-                                                                     AzureEnvironmentConfig config) {
+                                                                    AzureEnvironmentConfig config) {
         return success(new AzureComputeProvider(client, config));
     }
 
@@ -82,7 +82,8 @@ public record AzureComputeProvider(AzureClient client,
 
     @Override
     public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
-        return client.updateTags(id.value(), tags)
+        return client.updateTags(id.value(),
+                                 tags)
                      .mapToUnit();
     }
 
@@ -99,14 +100,17 @@ public record AzureComputeProvider(AzureClient client,
         var imageRef = parseImageUrn(config.image());
         var hardware = new HardwareProfile(config.vmSize());
         var storage = new StorageProfile(imageRef, new OsDisk("FromImage", new ManagedDisk("Standard_LRS")));
-        var sshKey = new SshPublicKey("/home/" + config.adminUsername() + "/.ssh/authorized_keys",
-                                      config.sshPublicKey());
+        var sshKey = new SshPublicKey("/home/" + config.adminUsername() + "/.ssh/authorized_keys", config.sshPublicKey());
         var linux = new LinuxConfiguration(true, new SshConfiguration(List.of(sshKey)));
         var os = new OsProfile(name, config.adminUsername(), linux);
         var network = new NetworkProfile(List.of(new NetworkInterfaceRef(config.vnetSubnetId())));
         var properties = new VmRequestProperties(hardware, storage, os, network);
         var tags = Map.of("aether-managed", "true");
-        return CreateVmRequest.createVmRequest(name, config.azureConfig().location(), tags, properties);
+        return CreateVmRequest.createVmRequest(name,
+                                               config.azureConfig()
+                                                     .location(),
+                                               tags,
+                                               properties);
     }
 
     // --- Leaf: generate a unique VM name ---
@@ -119,11 +123,18 @@ public record AzureComputeProvider(AzureClient client,
     // --- Leaf: parse image URN (publisher:offer:sku:version) ---
     static ImageReference parseImageUrn(String urn) {
         var parts = urn.split(":");
-        return new ImageReference(
-            parts.length > 0 ? parts[0] : "Canonical",
-            parts.length > 1 ? parts[1] : "0001-com-ubuntu-server-jammy",
-            parts.length > 2 ? parts[2] : "22_04-lts-gen2",
-            parts.length > 3 ? parts[3] : "latest");
+        return new ImageReference(parts.length > 0
+                                  ? parts[0]
+                                  : "Canonical",
+                                  parts.length > 1
+                                  ? parts[1]
+                                  : "0001-com-ubuntu-server-jammy",
+                                  parts.length > 2
+                                  ? parts[2]
+                                  : "22_04-lts-gen2",
+                                  parts.length > 3
+                                  ? parts[3]
+                                  : "latest");
     }
 
     // --- Leaf: map Azure VM to InstanceInfo ---
@@ -158,9 +169,9 @@ public record AzureComputeProvider(AzureClient client,
     static String buildTagFilterQuery(Map<String, String> tagFilter) {
         var baseQuery = "Resources | where type == \"microsoft.compute/virtualmachines\"";
         var tagClauses = tagFilter.entrySet()
-                                   .stream()
-                                   .map(AzureComputeProvider::toTagClause)
-                                   .collect(Collectors.joining(" "));
+                                  .stream()
+                                  .map(AzureComputeProvider::toTagClause)
+                                  .collect(Collectors.joining(" "));
         return baseQuery + tagClauses;
     }
 
@@ -185,17 +196,15 @@ public record AzureComputeProvider(AzureClient client,
 
     // --- Leaf: map Azure VM status to InstanceStatus ---
     static InstanceStatus mapStatus(VirtualMachine vm) {
-        return option(vm.properties())
-            .flatMap(AzureComputeProvider::extractPowerState)
-            .map(AzureComputeProvider::powerStateToStatus)
-            .or(provisioningStateToStatus(vm));
+        return option(vm.properties()).flatMap(AzureComputeProvider::extractPowerState)
+                     .map(AzureComputeProvider::powerStateToStatus)
+                     .or(provisioningStateToStatus(vm));
     }
 
     // --- Leaf: extract power state code from instance view ---
     private static Option<String> extractPowerState(VirtualMachine.VmProperties props) {
-        return option(props.instanceView())
-            .flatMap(iv -> option(iv.statuses()))
-            .flatMap(AzureComputeProvider::findPowerStateCode);
+        return option(props.instanceView()).flatMap(iv -> option(iv.statuses()))
+                     .flatMap(AzureComputeProvider::findPowerStateCode);
     }
 
     // --- Leaf: find the PowerState code in status list ---
@@ -226,7 +235,7 @@ public record AzureComputeProvider(AzureClient client,
     // --- Leaf: map provisioning state to InstanceStatus as fallback ---
     private static InstanceStatus provisioningStateToStatus(VirtualMachine vm) {
         var state = option(vm.properties()).map(VirtualMachine.VmProperties::provisioningState)
-                         .or("Unknown");
+                          .or("Unknown");
         return switch (state) {
             case "Succeeded" -> InstanceStatus.RUNNING;
             case "Creating", "Updating" -> InstanceStatus.PROVISIONING;

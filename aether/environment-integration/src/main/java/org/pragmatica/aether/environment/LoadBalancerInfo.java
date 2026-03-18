@@ -19,9 +19,11 @@ public record LoadBalancerInfo(String id,
         }
     }
 
-    public static Result<LoadBalancerInfo> loadBalancerInfo(String id, String name,
-                                                             String publicIp, String status,
-                                                             List<TargetInfo> targets) {
+    public static Result<LoadBalancerInfo> loadBalancerInfo(String id,
+                                                            String name,
+                                                            String publicIp,
+                                                            String status,
+                                                            List<TargetInfo> targets) {
         return success(new LoadBalancerInfo(id, name, publicIp, status, List.copyOf(targets)));
     }
 }
