@@ -19,6 +19,9 @@ import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
+import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
+import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
+import org.pragmatica.aether.deployment.schema.SchemaPolicy;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.dht.AetherMaps;
@@ -717,6 +720,14 @@ public interface AetherNode {
                                     .stream()
                                     .map(NodeInfo::id)
                                     .toList();
+        // Create schema migration engine and orchestrator
+        var schemaPolicy = SchemaPolicy.schemaPolicy();
+        var schemaManager = AetherSchemaManager.aetherSchemaManager(schemaPolicy);
+        var schemaOrchestrator = SchemaOrchestratorService.schemaOrchestratorService(clusterNode,
+                                                                                     kvStore,
+                                                                                     artifactStore,
+                                                                                     schemaManager,
+                                                                                     config.self());
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
@@ -731,7 +742,8 @@ public interface AetherNode {
                                                                                                .coreMax(),
                                                                                          config.timeouts()
                                                                                                .deployment()
-                                                                                               .reconciliationInterval());
+                                                                                               .reconciliationInterval(),
+                                                                                         schemaOrchestrator);
         // Create load balancer manager when provider is available
         var loadBalancerManager = config.environment()
                                         .flatMap(EnvironmentIntegration::loadBalancer)
@@ -1286,6 +1298,8 @@ public interface AetherNode {
                                                          clusterDeploymentManager::onGovernorAnnouncementPut)
                                                   .onRemove(AetherKey.GovernorAnnouncementKey.class,
                                                             clusterDeploymentManager::onGovernorAnnouncementRemove)
+                                                  .onPut(AetherKey.SchemaVersionKey.class,
+                                                         clusterDeploymentManager::onSchemaVersionPut)
                                                   .onPut(AetherKey.NodeArtifactKey.class,
                                                          nodeDeploymentManager::onNodeArtifactPut)
                                                   .onPut(AetherKey.NodeArtifactKey.class,

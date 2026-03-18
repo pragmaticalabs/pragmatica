@@ -24,7 +24,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 102 | Multi-blueprint lifecycle independence | Complete | Blueprint-scoped artifact ownership (`owningBlueprint` in SliceTargetValue), artifact exclusivity enforcement (rejects duplicate artifact across blueprints), owner-filtered blueprint deletion (only removes owned artifacts), rolling update deletion guard, KV-Store restore with ownership. Tier 1 correctness for multi-blueprint clusters |
 | 126 | Blueprint Artifacts | Complete | Blueprint packaged as JAR with resources.toml and schema/ |
 | 127 | Config Separation | Complete | App config (blueprint) vs infra config (node) with hierarchical merge |
-| 128 | Schema Migration Prep | Partial | Schema files in blueprint, metadata in KV-Store; execution pending |
+| 128 | Schema Migration Prep | Partial | Schema files in blueprint, metadata in KV-Store, REST API (status/migrate/undo/baseline), CLI commands; actual migration execution pending |
 | 129 | Endpoint Config | Complete | `[endpoints.*]` sections in aether.toml for infrastructure endpoints |
 
 ## Scaling & Control
@@ -267,7 +267,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Feature | Key Gap |
 |---------|---------|
 | TTM predictive scaling | Disabled by default, no live model training |
-| Schema Migration Prep | Schema files in blueprint, metadata in KV-Store; execution pending |
+| Schema Migration Prep | Schema files in blueprint, metadata in KV-Store, REST API + CLI; execution pending |
 
 **Planned features:**
 

@@ -78,7 +78,8 @@ AetherCli.EventsCommand.class,
 AetherCli.NodeCommand.class,
 AetherCli.TopologyStatusCommand.class,
 AetherCli.WorkersCommand.class,
-AetherCli.BackupCommand.class})
+AetherCli.BackupCommand.class,
+AetherCli.SchemaCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -2585,6 +2586,114 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var response = workersParent.parent.fetchFromNode("/api/workers/endpoints");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+    }
+
+    // ===== Schema Commands =====
+    @Command(name = "schema", description = "Manage datasource schemas",
+    subcommands = {SchemaCommand.StatusCommand.class,
+    SchemaCommand.HistoryCommand.class,
+    SchemaCommand.MigrateCommand.class,
+    SchemaCommand.UndoCommand.class,
+    SchemaCommand.BaselineCommand.class})
+    static class SchemaCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        @Command(name = "status", description = "Show schema status for all datasources")
+        static class StatusCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private SchemaCommand schemaParent;
+
+            @Parameters(index = "0", description = "Datasource name (optional)", arity = "0..1")
+            private String datasource;
+
+            @Override
+            public Integer call() {
+                var path = datasource != null
+                           ? "/api/schema/status/" + datasource
+                           : "/api/schema/status";
+                var response = schemaParent.parent.fetchFromNode(path);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "history", description = "Show migration history for a datasource")
+        static class HistoryCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private SchemaCommand schemaParent;
+
+            @Parameters(index = "0", description = "Datasource name")
+            private String datasource;
+
+            @Override
+            public Integer call() {
+                var response = schemaParent.parent.fetchFromNode("/api/schema/history/" + datasource);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "migrate", description = "Trigger manual migration for a datasource")
+        static class MigrateCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private SchemaCommand schemaParent;
+
+            @Parameters(index = "0", description = "Datasource name")
+            private String datasource;
+
+            @Override
+            public Integer call() {
+                var response = schemaParent.parent.postToNode("/api/schema/migrate/" + datasource, "{}");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "undo", description = "Undo migrations to target version")
+        static class UndoCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private SchemaCommand schemaParent;
+
+            @Parameters(index = "0", description = "Datasource name")
+            private String datasource;
+
+            @CommandLine.Option(names = {"-v", "--version"}, required = true, description = "Target version")
+            private int targetVersion;
+
+            @Override
+            public Integer call() {
+                var response = schemaParent.parent.postToNode("/api/schema/undo/" + datasource + "?targetVersion=" + targetVersion,
+                                                              "{}");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "baseline", description = "Baseline a datasource at a version")
+        static class BaselineCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private SchemaCommand schemaParent;
+
+            @Parameters(index = "0", description = "Datasource name")
+            private String datasource;
+
+            @CommandLine.Option(names = {"-v", "--version"}, required = true, description = "Baseline version")
+            private int version;
+
+            @Override
+            public Integer call() {
+                var response = schemaParent.parent.postToNode("/api/schema/baseline/" + datasource + "?version=" + version,
+                                                              "{}");
                 System.out.println(formatJson(response));
                 return 0;
             }

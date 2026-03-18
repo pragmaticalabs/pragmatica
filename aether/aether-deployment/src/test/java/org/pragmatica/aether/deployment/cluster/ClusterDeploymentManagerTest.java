@@ -3,6 +3,7 @@ package org.pragmatica.aether.deployment.cluster;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceId;
@@ -48,6 +49,26 @@ class ClusterDeploymentManagerTest {
     private static final NodeId NODE_3 = new NodeId("node-3");
     private static final NodeId DRAINING_NODE = new NodeId("node-drain");
     private static final InstanceId INSTANCE_ID = new InstanceId("instance-123");
+    private static final SchemaOrchestratorService NO_OP_SCHEMA_ORCHESTRATOR = noOpSchemaOrchestrator();
+
+    private static SchemaOrchestratorService noOpSchemaOrchestrator() {
+        return new SchemaOrchestratorService() {
+            @Override
+            public Promise<Unit> migrateIfNeeded(String datasourceName) {
+                return Promise.success(Unit.unit());
+            }
+
+            @Override
+            public Promise<Unit> undoTo(String datasourceName, int targetVersion) {
+                return Promise.success(Unit.unit());
+            }
+
+            @Override
+            public Promise<Unit> baseline(String datasourceName, int version) {
+                return Promise.success(Unit.unit());
+            }
+        };
+    }
 
     @Nested
     class DrainTerminationTests {
@@ -81,7 +102,8 @@ class ClusterDeploymentManagerTest {
                                                                      autoHealConfig,
                                                                      ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
                                                                      3,
-                                                                     timeSpan(300).seconds());
+                                                                     timeSpan(300).seconds(),
+                                                                     NO_OP_SCHEMA_ORCHESTRATOR);
         }
 
         @Test
@@ -132,7 +154,8 @@ class ClusterDeploymentManagerTest {
                                                                      autoHealConfig,
                                                                      ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING,
                                                                      3,
-                                                                     timeSpan(300).seconds());
+                                                                     timeSpan(300).seconds(),
+                                                                     NO_OP_SCHEMA_ORCHESTRATOR);
         }
 
         @Test

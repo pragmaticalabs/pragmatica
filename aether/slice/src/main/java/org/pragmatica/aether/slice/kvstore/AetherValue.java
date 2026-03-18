@@ -776,12 +776,28 @@ public sealed interface AetherValue {
     /// @param currentVersion current applied schema version number
     /// @param lastMigration filename of the last applied migration
     /// @param status current migration status
+    /// @param artifactCoords Maven coordinates of the artifact that defined this schema
     /// @param updatedAt timestamp of last update
     record SchemaVersionValue(String datasourceName,
                               int currentVersion,
                               String lastMigration,
                               SchemaStatus status,
+                              String artifactCoords,
                               long updatedAt) implements AetherValue {
+        public static SchemaVersionValue schemaVersionValue(String datasourceName,
+                                                            int currentVersion,
+                                                            String lastMigration,
+                                                            SchemaStatus status,
+                                                            String artifactCoords) {
+            return new SchemaVersionValue(datasourceName,
+                                          currentVersion,
+                                          lastMigration,
+                                          status,
+                                          artifactCoords,
+                                          System.currentTimeMillis());
+        }
+
+        /// Backward-compatible factory without artifact coordinates.
         public static SchemaVersionValue schemaVersionValue(String datasourceName,
                                                             int currentVersion,
                                                             String lastMigration,
@@ -790,6 +806,7 @@ public sealed interface AetherValue {
                                           currentVersion,
                                           lastMigration,
                                           status,
+                                          "",
                                           System.currentTimeMillis());
         }
     }

@@ -1967,6 +1967,92 @@ Restore from a specific backup.
 
 ## Error Responses
 
+## Schema Management
+
+Manage datasource schema migrations across the cluster.
+
+### GET /api/schema/status
+
+Returns schema migration status for all datasources.
+
+**Response:**
+```json
+{
+  "datasources": [
+    {
+      "datasource": "orders_db",
+      "currentVersion": 3,
+      "lastMigration": "V003__add_index.sql",
+      "status": "COMPLETED"
+    }
+  ]
+}
+```
+
+### GET /api/schema/status/{datasource}
+
+Returns schema status for a specific datasource.
+
+**Response:**
+```json
+{
+  "datasource": "orders_db",
+  "currentVersion": 3,
+  "lastMigration": "V003__add_index.sql",
+  "status": "COMPLETED"
+}
+```
+
+### GET /api/schema/history/{datasource}
+
+Returns migration history for a datasource (placeholder -- currently returns current status).
+
+### POST /api/schema/migrate/{datasource}
+
+Triggers manual schema migration for a datasource. Sets status to `MIGRATING`.
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Migration triggered for orders_db"
+}
+```
+
+### POST /api/schema/undo/{datasource}?targetVersion=N
+
+Undoes migrations to the specified target version. Sets status to `PENDING` at the target version.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `targetVersion` | int | yes | Version to undo to |
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Undo to version 2 initiated for orders_db"
+}
+```
+
+### POST /api/schema/baseline/{datasource}?version=N
+
+Baselines a datasource at the specified version (marks V001..V{N} as applied without executing).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `version` | int | yes | Version to baseline at |
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Baselined orders_db at version 3"
+}
+```
+
+---
+
 All errors return JSON with an `error` field:
 
 ```json

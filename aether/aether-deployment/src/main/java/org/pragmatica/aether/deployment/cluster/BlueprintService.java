@@ -176,7 +176,7 @@ class BlueprintServiceInstance implements BlueprintService {
     public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) {
         return artifactStore.async(ARTIFACT_STORE_NOT_CONFIGURED)
                             .flatMap(store -> resolveAndParseArtifact(store, artifactCoords))
-                            .flatMap(this::expandAndStoreArtifact)
+                            .flatMap(artifact -> expandAndStoreArtifact(artifact, artifactCoords))
                             .onFailure(cause -> log.warn("Failed to publish blueprint from artifact: {}",
                                                          cause.message()));
     }
@@ -215,7 +215,8 @@ class BlueprintServiceInstance implements BlueprintService {
         return BlueprintParser.parse(dsl);
     }
 
-    private Promise<ExpandedBlueprint> expandAndStoreArtifact(BlueprintArtifact blueprintArtifact) {
+    private Promise<ExpandedBlueprint> expandAndStoreArtifact(BlueprintArtifact blueprintArtifact,
+                                                              String artifactCoords) {
         return BlueprintExpander.expand(blueprintArtifact.blueprint(),
                                         repository)
                                 .flatMap(expanded -> applyResourcesConfig(expanded,
@@ -225,7 +226,8 @@ class BlueprintServiceInstance implements BlueprintService {
                                 .flatMap(stored -> storeResourcesConfig(stored,
                                                                         blueprintArtifact.resourcesConfig()))
                                 .flatMap(stored -> storeSchemaMigrations(stored,
-                                                                         blueprintArtifact.schemaMigrations()));
+                                                                         blueprintArtifact.schemaMigrations(),
+                                                                         artifactCoords));
     }
 
     private Promise<ExpandedBlueprint> applyResourcesConfig(ExpandedBlueprint expanded,
@@ -251,23 +253,26 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private Promise<ExpandedBlueprint> storeSchemaMigrations(ExpandedBlueprint expanded,
-                                                             Map<String, List<MigrationEntry>> migrations) {
+                                                             Map<String, List<MigrationEntry>> migrations,
+                                                             String artifactCoords) {
         if (migrations.isEmpty()) {
             return Promise.success(expanded);
         }
-        var commands = buildSchemaMigrationCommands(migrations);
+        var commands = buildSchemaMigrationCommands(migrations, artifactCoords);
         return cluster.apply(commands)
                       .map(_ -> expanded);
     }
 
-    private List<KVCommand<AetherKey>> buildSchemaMigrationCommands(Map<String, List<MigrationEntry>> migrations) {
+    private List<KVCommand<AetherKey>> buildSchemaMigrationCommands(Map<String, List<MigrationEntry>> migrations,
+                                                                    String artifactCoords) {
         return migrations.entrySet()
                          .stream()
-                         .map(this::buildMigrationCommand)
+                         .map(entry -> buildMigrationCommand(entry, artifactCoords))
                          .toList();
     }
 
-    private KVCommand<AetherKey> buildMigrationCommand(Map.Entry<String, List<MigrationEntry>> entry) {
+    private KVCommand<AetherKey> buildMigrationCommand(Map.Entry<String, List<MigrationEntry>> entry,
+                                                       String artifactCoords) {
         var datasource = entry.getKey();
         var migrationList = entry.getValue();
         var maxVersion = migrationList.stream()
@@ -281,7 +286,11 @@ class BlueprintServiceInstance implements BlueprintService {
                            : migrationList.getLast()
                                           .filename();
         var key = SchemaVersionKey.schemaVersionKey(datasource);
-        var value = SchemaVersionValue.schemaVersionValue(datasource, maxVersion, lastFilename, SchemaStatus.PENDING);
+        var value = SchemaVersionValue.schemaVersionValue(datasource,
+                                                          maxVersion,
+                                                          lastFilename,
+                                                          SchemaStatus.PENDING,
+                                                          artifactCoords);
         return new Put<>(key, value);
     }
 

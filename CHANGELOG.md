@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [0.21.0] - Unreleased
 
 ### Added
+- **Schema management API and CLI** — REST endpoints and CLI commands for datasource schema management: status queries (`GET /api/schema/status`, `GET /api/schema/status/{datasource}`), migration history, manual migration trigger, undo to target version, and baseline. CLI: `aether schema status|history|migrate|undo|baseline`
 - **Cloud providers — AWS, GCP, Azure** — complete cloud integration for all major providers:
   - `integrations/xml/jackson-xml` — XML mapper module (Jackson XML) mirroring `JsonMapper` pattern, needed for AWS EC2 XML responses
   - `integrations/cloud/aws` — AWS cloud client with SigV4 signing from scratch, EC2 (XML), ELBv2 (JSON), Secrets Manager (JSON). No AWS SDK

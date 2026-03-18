@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
@@ -25,6 +26,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
@@ -43,6 +45,7 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
+import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceInfo;
@@ -147,6 +150,10 @@ public interface ClusterDeploymentManager {
     @MessageReceiver
     void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
 
+    /// Handle SchemaVersionKey put — triggers schema migration orchestration.
+    @MessageReceiver
+    void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut);
+
     /// Controls whether multi-slice blueprint deployments are atomic.
     enum DeploymentAtomicity {
         /// Each slice deploys independently; failures don't affect siblings.
@@ -198,6 +205,8 @@ public interface ClusterDeploymentManager {
 
         default void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {}
 
+        default void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) {}
+
         /// Dormant state when node is NOT the leader.
         record Dormant() implements ClusterDeploymentState {}
 
@@ -220,6 +229,7 @@ public interface ClusterDeploymentManager {
                       TopologyManager topologyManager,
                       NodeLifecycleManager lifecycleManager,
                       AutoHealConfig autoHealConfig,
+                      SchemaOrchestratorService schemaOrchestrator,
                       Map<Artifact, Blueprint> blueprints,
                       Map<SliceNodeKey, SliceState> sliceStates,
                       Map<Artifact, Set<Artifact>> sliceDependencies,
@@ -473,6 +483,27 @@ public interface ClusterDeploymentManager {
                 var key = valueRemove.cause()
                                      .key();
                 handleSliceNodeRemoval(new SliceNodeKey(key.artifact(), key.nodeId()));
+            }
+
+            @Override
+            public void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) {
+                var value = valuePut.cause()
+                                    .value();
+                var datasource = value.datasourceName();
+                switch (value.status()) {
+                    case PENDING -> handleSchemaPending(datasource);
+                    case COMPLETED -> log.info("Schema migration completed for datasource: {}", datasource);
+                    case FAILED -> log.warn("Schema migration failed for datasource: {}", datasource);
+                    case MIGRATING -> log.debug("Schema migration in progress for datasource: {}", datasource);
+                }
+            }
+
+            private void handleSchemaPending(String datasource) {
+                log.info("Schema migration pending for datasource: {}", datasource);
+                schemaOrchestrator.migrateIfNeeded(datasource)
+                                  .onFailure(cause -> log.error("Schema migration failed for {}: {}",
+                                                                datasource,
+                                                                cause.message()));
             }
 
             @Override
@@ -2081,7 +2112,8 @@ public interface ClusterDeploymentManager {
                                                              Option<ComputeProvider> computeProvider,
                                                              AutoHealConfig autoHealConfig,
                                                              DeploymentAtomicity atomicity,
-                                                             int coreMax) {
+                                                             int coreMax,
+                                                             SchemaOrchestratorService schemaOrchestrator) {
         return clusterDeploymentManager(self,
                                         cluster,
                                         kvStore,
@@ -2092,7 +2124,8 @@ public interface ClusterDeploymentManager {
                                         autoHealConfig,
                                         atomicity,
                                         coreMax,
-                                        DEFAULT_RECONCILE_INTERVAL);
+                                        DEFAULT_RECONCILE_INTERVAL,
+                                        schemaOrchestrator);
     }
 
     static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
@@ -2105,7 +2138,8 @@ public interface ClusterDeploymentManager {
                                                              AutoHealConfig autoHealConfig,
                                                              DeploymentAtomicity atomicity,
                                                              int coreMax,
-                                                             TimeSpan reconcileInterval) {
+                                                             TimeSpan reconcileInterval,
+                                                             SchemaOrchestratorService schemaOrchestrator) {
         var lifecycleManager = NodeLifecycleManager.nodeLifecycleManager(computeProvider);
         record clusterDeploymentManager(NodeId self,
                                         ClusterNode<KVCommand<AetherKey>> cluster,
@@ -2117,6 +2151,7 @@ public interface ClusterDeploymentManager {
                                         DeploymentAtomicity atomicity,
                                         int coreMax,
                                         TimeSpan reconcileInterval,
+                                        SchemaOrchestratorService schemaOrchestrator,
                                         Set<NodeId> seedNodes,
                                         AtomicReference<ClusterDeploymentState> state,
                                         AtomicReference<List<NodeId>> topologyRef) implements ClusterDeploymentManager {
@@ -2136,6 +2171,7 @@ public interface ClusterDeploymentManager {
                                                                         topologyManager,
                                                                         lifecycleManager,
                                                                         autoHealConfig,
+                                                                        schemaOrchestrator,
                                                                         new ConcurrentHashMap<>(),
                                                                         new ConcurrentHashMap<>(),
                                                                         new ConcurrentHashMap<>(),
@@ -2285,6 +2321,12 @@ public interface ClusterDeploymentManager {
             }
 
             @Override
+            public void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut) {
+                state.get()
+                     .onSchemaVersionPut(valuePut);
+            }
+
+            @Override
             public void onTopologyChange(TopologyChangeNotification topologyChange) {
                 // Always update topology even when dormant, so we have current topology when becoming leader.
                 // Use atomic reference swap instead of non-atomic clear+addAll on CopyOnWriteArrayList.
@@ -2312,6 +2354,7 @@ public interface ClusterDeploymentManager {
                                             atomicity,
                                             coreMax,
                                             reconcileInterval,
+                                            schemaOrchestrator,
                                             new HashSet<>(initialTopology),
                                             new AtomicReference<>(new ClusterDeploymentState.Dormant()),
                                             new AtomicReference<>(List.copyOf(initialTopology)));

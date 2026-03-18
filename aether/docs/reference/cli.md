@@ -873,6 +873,58 @@ aether backup restore <commit-id>
 
 ---
 
+### schema
+
+Manage datasource schema migrations.
+
+```bash
+# Show schema status for all datasources
+aether schema status
+
+# Show schema status for a specific datasource
+aether schema status <datasource>
+
+# Show migration history for a datasource
+aether schema history <datasource>
+
+# Trigger manual migration
+aether schema migrate <datasource>
+
+# Undo migrations to a target version
+aether schema undo <datasource> -v <version>
+
+# Baseline a datasource at a version
+aether schema baseline <datasource> -v <version>
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `status [datasource]` | Show schema status (all or specific) |
+| `history <datasource>` | Show migration history |
+| `migrate <datasource>` | Trigger manual migration |
+| `undo <datasource> -v N` | Undo to target version |
+| `baseline <datasource> -v N` | Baseline at version |
+
+Example:
+```bash
+# Check all datasource schemas
+aether schema status
+
+# Check a specific datasource
+aether schema status orders_db
+
+# Trigger migration for a datasource
+aether schema migrate orders_db
+
+# Undo to version 2
+aether schema undo orders_db -v 2
+
+# Baseline at version 3
+aether schema baseline orders_db -v 3
+```
+
+---
+
 ## Exit Codes
 
 | Code | Meaning |
