@@ -4,6 +4,7 @@ import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.Environment;
 import org.pragmatica.aether.config.SliceConfig;
+import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.consensus.NodeId;
@@ -67,11 +68,22 @@ public record Main(String[] args) {
                                                        sliceConfig,
                                                        managementPort,
                                                        dhtConfig);
-        var finalConfig = wireTlsIfEnabled(config, aetherConfig);
+        var withTls = wireTlsIfEnabled(config, aetherConfig);
+        var finalConfig = wireCloudIfConfigured(withTls, aetherConfig);
         var node = AetherNode.aetherNode(finalConfig)
                              .unwrap();
         registerShutdownHook(node);
         startNodeAndWait(node, nodeId);
+    }
+
+    private AetherNodeConfig wireCloudIfConfigured(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
+        return aetherConfig.flatMap(AetherConfig::cloud)
+                           .flatMap(cloudConfig -> EnvironmentIntegrationFactory.createFromConfig(cloudConfig)
+                                                       .onFailure(cause -> log.error("Failed to create cloud environment: {}",
+                                                                                     cause.message()))
+                                                       .option())
+                           .map(config::withEnvironment)
+                           .or(config);
     }
 
     private AetherNodeConfig wireTlsIfEnabled(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {

@@ -98,8 +98,10 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
+import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.PeerInfo;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
@@ -467,6 +469,8 @@ public interface AetherNode {
                            .triggerElection();
                                                  // Register with discovery provider after cluster is ready
                 discoveryProvider.onPresent(this::registerWithDiscovery);
+                // Apply aether-node-id tag to self instance for cloud scale-down lookup
+                applyNodeIdTag();
                                              })
                                   .onSuccess(_ -> printStartupBanner())
                                   .onFailure(cause -> log.error("Cluster formation failed: {}",
@@ -493,6 +497,47 @@ public interface AetherNode {
                                                .onSuccess(_ -> log.info("Registered self with discovery provider"))
                                                .onFailure(cause -> log.warn("Failed to register with discovery: {}",
                                                                             cause.message())));
+            }
+
+            /// Apply the aether-node-id tag to the self instance via ComputeProvider.
+            /// This enables tag-based instance lookup during cloud scale-down termination.
+            private void applyNodeIdTag() {
+                config.environment()
+                      .flatMap(EnvironmentIntegration::compute)
+                      .onPresent(this::tagSelfInstance);
+            }
+
+            private void tagSelfInstance(ComputeProvider provider) {
+                provider.listInstances()
+                        .onSuccess(instances -> tagMatchingInstance(provider, instances))
+                        .onFailure(cause -> log.warn("Failed to list instances for self-tagging: {}",
+                                                     cause.message()));
+            }
+
+            private void tagMatchingInstance(ComputeProvider provider, List<InstanceInfo> instances) {
+                findSelfInstance(instances).onPresent(
+                    instance -> provider.applyTags(instance.id(), Map.of("aether-node-id", self().id()))
+                                        .onSuccess(_ -> log.info("Applied aether-node-id tag to instance {}",
+                                                                  instance.id().value()))
+                                        .onFailure(cause -> log.warn("Failed to apply aether-node-id tag: {}",
+                                                                     cause.message()))
+                );
+            }
+
+            private Option<InstanceInfo> findSelfInstance(List<InstanceInfo> instances) {
+                return selfAddress()
+                    .flatMap(selfIp -> Option.from(instances.stream()
+                                                            .filter(i -> i.addresses().contains(selfIp))
+                                                            .findFirst()));
+            }
+
+            private Option<String> selfAddress() {
+                return Option.from(config.topology()
+                                        .coreNodes()
+                                        .stream()
+                                        .filter(n -> n.id().equals(self()))
+                                        .map(n -> n.address().host())
+                                        .findFirst());
             }
 
             private void deregisterFromDiscovery(DiscoveryProvider dp) {

@@ -1,5 +1,6 @@
 package org.pragmatica.aether.config;
 
+import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -56,7 +57,8 @@ public record AetherConfig(ClusterConfig cluster,
                            AppHttpConfig appHttp,
                            BackupConfig backup,
                            DhtReplicationConfig dhtReplication,
-                           TimeoutsConfig timeouts) {
+                           TimeoutsConfig timeouts,
+                           Option<CloudConfig> cloud) {
     /// Factory method following JBCT naming convention.
     public static Result<AetherConfig> aetherConfig(ClusterConfig cluster,
                                                     NodeConfig node,
@@ -79,7 +81,8 @@ public record AetherConfig(ClusterConfig cluster,
                                         appHttp,
                                         backup,
                                         dhtReplication,
-                                        timeouts));
+                                        timeouts,
+                                        none()));
     }
 
     /// Create configuration with defaults for specified environment.
@@ -152,6 +155,7 @@ public record AetherConfig(ClusterConfig cluster,
         private BackupConfig backupConfig;
         private DhtReplicationConfig dhtReplicationConfig;
         private TimeoutsConfig timeoutsConfig;
+        private CloudConfig cloudConfig;
 
         @SuppressWarnings("JBCT-NAM-01")
         public Builder withEnvironment(Environment environment) {
@@ -229,6 +233,11 @@ public record AetherConfig(ClusterConfig cluster,
             return this;
         }
 
+        public Builder cloud(CloudConfig cloudConfig) {
+            this.cloudConfig = cloudConfig;
+            return this;
+        }
+
         public AetherConfig build() {
             var base = AetherConfig.aetherConfig(environment);
             var clusterConfig = applyClusterOverrides(base.cluster());
@@ -242,7 +251,7 @@ public record AetherConfig(ClusterConfig cluster,
             var finalBackup = backupFor();
             var finalDhtReplication = dhtReplicationFor();
             var finalTimeouts = timeoutsFor();
-            return AetherConfig.aetherConfig(clusterConfig,
+            var config = AetherConfig.aetherConfig(clusterConfig,
                                              nodeConfig,
                                              finalTls,
                                              finalDocker,
@@ -254,6 +263,12 @@ public record AetherConfig(ClusterConfig cluster,
                                              finalDhtReplication,
                                              finalTimeouts)
                                .unwrap();
+            return option(cloudConfig).fold(() -> config,
+                                            cc -> new AetherConfig(config.cluster(), config.node(), config.tls(),
+                                                                    config.docker(), config.kubernetes(), config.ttm(),
+                                                                    config.slice(), config.appHttp(), config.backup(),
+                                                                    config.dhtReplication(), config.timeouts(),
+                                                                    some(cc)));
         }
 
         private ClusterConfig applyClusterOverrides(ClusterConfig base) {

@@ -45,6 +45,9 @@ import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.InstanceInfo;
+import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Cause;
@@ -215,7 +218,7 @@ public interface ClusterDeploymentManager {
                       KVStore<AetherKey, AetherValue> kvStore,
                       MessageRouter router,
                       TopologyManager topologyManager,
-                      Option<ComputeProvider> computeProvider,
+                      NodeLifecycleManager lifecycleManager,
                       AutoHealConfig autoHealConfig,
                       Map<Artifact, Blueprint> blueprints,
                       Map<SliceNodeKey, SliceState> sliceStates,
@@ -797,7 +800,8 @@ public interface ClusterDeploymentManager {
                 }
             }
 
-            /// Complete drain: all slices evacuated. Write DECOMMISSIONED lifecycle state.
+            /// Complete drain: all slices evacuated. Write DECOMMISSIONED lifecycle state,
+            /// then terminate the cloud instance if a ComputeProvider is available.
             private void completeDrain(NodeId drainingNode) {
                 drainingNodes.remove(drainingNode);
                 log.info("Drain complete for node {}, writing DECOMMISSIONED state", drainingNode);
@@ -806,7 +810,19 @@ public interface ClusterDeploymentManager {
                 cluster.apply(List.of(command))
                        .onFailure(cause -> log.error("Failed to write DECOMMISSIONED for {}: {}",
                                                      drainingNode,
-                                                     cause.message()));
+                                                     cause.message()))
+                       .onSuccess(_ -> terminateInstance(drainingNode));
+            }
+
+            /// Terminate the cloud instance associated with the given node ID.
+            /// Delegates to NodeLifecycleManager for tag-based lookup and termination.
+            /// Fire-and-forget: logs results but never fails the drain.
+            private void terminateInstance(NodeId nodeId) {
+                if (lifecycleManager.isCloudManaged()) {
+                    lifecycleManager.terminateNode(nodeId)
+                                    .onFailure(cause -> log.warn("Failed to terminate cloud instance for node {}: {}",
+                                                                 nodeId, cause.message()));
+                }
             }
 
             /// Compute cluster deficit: target size minus currently connected active nodes.
@@ -819,15 +835,17 @@ public interface ClusterDeploymentManager {
                                                                  .size();
             }
 
-            /// Provision replacement nodes for the given deficit via ComputeProvider.
+            /// Provision replacement nodes for the given deficit via NodeLifecycleManager.
             private void provisionReplacements(int deficit) {
-                computeProvider.onPresent(provider -> {
-                                              for (int i = 0; i < deficit; i++) {
-                                                  provider.provision(InstanceType.ON_DEMAND)
-                                                          .onFailure(cause -> log.warn("AUTO-HEAL: Provisioning failed: {}",
-                                                                                       cause.message()));
-                                              }
-                                          });
+                if (lifecycleManager.isCloudManaged()) {
+                    var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", Map.of())
+                                           .unwrap();
+                    for (int i = 0; i < deficit; i++) {
+                        lifecycleManager.provisionNode(spec)
+                                        .onFailure(cause -> log.warn("AUTO-HEAL: Provisioning failed: {}",
+                                                                     cause.message()));
+                    }
+                }
             }
 
             /// Schedule periodic auto-heal recheck if not already scheduled.
@@ -842,7 +860,7 @@ public interface ClusterDeploymentManager {
             /// Check if cluster is below target size and schedule auto-healing if a ComputeProvider is present.
             /// Cancels periodic recheck when cluster reaches target size.
             void checkAndScheduleAutoHeal() {
-                if (computeProvider.isEmpty()) {
+                if (!lifecycleManager.isCloudManaged()) {
                     return;
                 }
                 var deficit = computeAutoHealDeficit();
@@ -2084,12 +2102,13 @@ public interface ClusterDeploymentManager {
                                                              DeploymentAtomicity atomicity,
                                                              int coreMax,
                                                              TimeSpan reconcileInterval) {
+        var lifecycleManager = NodeLifecycleManager.nodeLifecycleManager(computeProvider);
         record clusterDeploymentManager(NodeId self,
                                         ClusterNode<KVCommand<AetherKey>> cluster,
                                         KVStore<AetherKey, AetherValue> kvStore,
                                         MessageRouter router,
                                         TopologyManager topologyManager,
-                                        Option<ComputeProvider> computeProvider,
+                                        NodeLifecycleManager lifecycleManager,
                                         AutoHealConfig autoHealConfig,
                                         DeploymentAtomicity atomicity,
                                         int coreMax,
@@ -2111,7 +2130,7 @@ public interface ClusterDeploymentManager {
                                                                         kvStore,
                                                                         router,
                                                                         topologyManager,
-                                                                        computeProvider,
+                                                                        lifecycleManager,
                                                                         autoHealConfig,
                                                                         new ConcurrentHashMap<>(),
                                                                         new ConcurrentHashMap<>(),
@@ -2284,7 +2303,7 @@ public interface ClusterDeploymentManager {
                                             kvStore,
                                             router,
                                             topologyManager,
-                                            computeProvider,
+                                            lifecycleManager,
                                             autoHealConfig,
                                             atomicity,
                                             coreMax,
