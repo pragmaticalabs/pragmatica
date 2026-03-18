@@ -351,6 +351,50 @@ target_rf = 3
 | `cooldown_rate` | int | `10000` | Max entries/sec during replication warmup |
 | `target_rf` | int | `3` | Target replication factor (0 = full replication) |
 
+## Cloud Configuration
+
+Cloud provider integration is configured via the `[cloud]` TOML section. See [Cloud Integration](cloud-integration.md) for the full operator guide.
+
+```toml
+[cloud]
+provider = "hetzner"                          # Required: hetzner | aws | gcp | azure
+
+[cloud.credentials]                            # Provider-specific authentication
+api_token = "${env:HETZNER_API_TOKEN}"         # Supports ${env:VAR} interpolation
+
+[cloud.compute]                                # Instance provisioning parameters
+server_type = "cx22"
+image = "ubuntu-24.04"
+region = "fsn1"
+user_data = "#!/bin/bash\n..."
+ssh_key_ids = "12345,67890"                    # Comma-separated lists
+network_ids = "11111"
+firewall_ids = "22222"
+
+[cloud.load_balancer]                          # Optional: LB target registration
+load_balancer_id = "99999"
+destination_port = "8090"
+
+[cloud.discovery]                              # Optional: tag/label-based peer discovery
+cluster_name = "production"
+poll_interval_ms = "15000"
+
+[cloud.secrets]                                # Optional: secrets backend config
+```
+
+| Section | Purpose | Required |
+|---------|---------|----------|
+| `[cloud]` | Provider selection | Yes (if using cloud) |
+| `[cloud.credentials]` | Authentication keys | Yes |
+| `[cloud.compute]` | VM/instance parameters | Yes |
+| `[cloud.load_balancer]` | Load balancer integration | No |
+| `[cloud.discovery]` | Peer auto-discovery | No |
+| `[cloud.secrets]` | Secrets resolution backend | No |
+
+**Environment variable interpolation:** Any value matching `${env:VAR_NAME}` in credentials or compute sections is resolved from the process environment at config load time.
+
+**Supported providers:** Hetzner, AWS, GCP, Azure. Each provider module registers via ServiceLoader. Provider-specific credential and compute keys are documented in the [Cloud Integration](cloud-integration.md) reference.
+
 ## Configuration Best Practices
 
 ### Production

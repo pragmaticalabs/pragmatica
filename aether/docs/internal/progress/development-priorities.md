@@ -156,6 +156,21 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 - **Comprehensive Forge Test Suite** - Tests use InventoryService (no slice dependencies)
 - **Docker E2E Infrastructure** - Hostname-based peer resolution, local Maven repo fallback for artifact resolution, CI timeout adaptation, leader election stabilization in containers
 
+### Cloud Integration (v0.21.0)
+- **4-Provider Cloud Support** -- Hetzner, AWS, GCP, Azure with compute, load balancer, discovery, and secrets facets
+- **CloudConfig + TOML `[cloud]` section** -- generic string-map config with `${env:VAR}` interpolation, provider-agnostic parsing in ConfigLoader
+- **EnvironmentIntegrationFactory SPI** -- ServiceLoader-based provider selection; each provider module registers its factory
+- **ComputeProvider** -- instance creation (with tagging, user data, network config), restart, termination, tag-based lookup for all 4 providers
+- **LoadBalancerProvider** -- automatic target registration/deregistration on node join/leave; Hetzner LB, AWS ELBv2 target groups, GCP NEGs, Azure backend pools
+- **DiscoveryProvider** -- tag/label-based peer discovery replacing static peer lists; configurable poll interval; all 4 providers
+- **SecretsProvider** -- `${secrets:path}` resolution; Hetzner env vars (`AETHER_SECRET_*`), AWS Secrets Manager, GCP Secret Manager, Azure Key Vault (path: `vaultName/secretName`)
+- **CachingSecretsProvider** -- in-memory TTL cache wrapping any secrets backend
+- **NodeLifecycleManager.executeAction(NodeAction)** -- CDM executes StartNode/StopNode decisions via cloud provider
+- **CDM terminate-on-drain** -- automatic cloud instance termination after graceful drain completes
+- **loadBalancerInfo()** -- LB state query for all providers
+- **Drain with deregistration** -- AWS `deregisterWithDrain` for connection draining before target removal
+- **Reference docs** -- [Cloud Integration guide](../../reference/cloud-integration.md), [Configuration reference](../../reference/configuration.md)
+
 ### Documentation
 - **CLI Reference** - Complete command documentation
 - **Management API** - Full HTTP API reference
@@ -188,22 +203,17 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 
 ### HIGH PRIORITY - Core & Operations
 
-1. **Cloud Integration** — [SPI architecture spec](../../specs/cloud-integration-spi-spec.md)
-   - Implement `NodeLifecycleManager.executeAction(NodeAction)`
-   - Cloud provider adapters: Hetzner (primary), AWS, GCP, Azure
-   - Execute `StartNode`, `StopNode`, `MigrateSlices` decisions from controller
-   - Node auto-discovery and registration
+1. **Cloud Integration — Remaining Work** — [SPI architecture spec](../../specs/cloud-integration-spi-spec.md)
+   - **Core implementation complete** (v0.21.0): 4 providers (Hetzner, AWS, GCP, Azure) with compute, LB, discovery, secrets. See Completed section.
    - Node pool support: core (on-demand) vs elastic (spot) pools
    - Instance type parameter for spot/on-demand selection
-   - **Secrets management:** HashiCorp Vault integration, AWS Secrets Manager / Azure Key Vault support (basic `${secrets:...}` resolution already works via ConfigurationProvider)
-   - **Cloud Load Balancer Configuration:**
-     - Automatic target group registration/deregistration on node join/leave
-     - Health check endpoint configuration (path, interval, thresholds)
-     - AWS ALB/NLB, GCP Cloud Load Balancing, Azure Load Balancer adapters
-     - Weighted routing sync: Aether rolling update weights → cloud LB weights
-     - Drain connections before node removal (graceful deregistration delay)
-     - TLS termination configuration (certificate ARN/ID passthrough)
-   - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
+   - Health check endpoint configuration (path, interval, thresholds) — default methods exist, no provider overrides yet
+   - Weighted routing sync: Aether rolling update weights → cloud LB weights — default method exists, no provider overrides yet
+   - TLS termination configuration (certificate ARN/ID passthrough) — default method exists, no provider overrides yet
+   - HashiCorp Vault integration
+   - Pre-baked images (provider snapshot for instant boot)
+   - Multi-region cluster testing
+   - Disaster recovery testing
    - **Enables:** Expense Tracking in FUTURE section
 
 2. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
@@ -221,22 +231,23 @@ Part of Cloud Integration (#1). Per-provider status:
 
 | Provider | Tier | Compute | Load Balancer | Discovery | Secrets | Spec | Status |
 |----------|------|---------|---------------|-----------|---------|------|--------|
-| Hetzner | 2 | ComputeProvider done (restart, tags, filtered list) | LoadBalancerProvider done | Label-based discovery done | EnvSecretsProvider done | [reference sheet](../../specs/cloud-integration-spi-spec.md#8-hetzner-provider-sheet-reference) | **Complete** |
-| AWS | 1 | Planned | ALB/NLB | Tag-based | Secrets Manager + SSM | [provider sheet](../../specs/cloud-provider-aws.md) | Planned |
-| GCP | 1 | Planned | Cloud LB / NEGs | Label-based | Secret Manager | [provider sheet](../../specs/cloud-provider-gcp.md) | Planned |
-| Azure | 1 | Planned | Azure LB / App Gateway | Resource Graph | Key Vault | [provider sheet](../../specs/cloud-provider-azure.md) | Planned |
+| Hetzner | 2 | ComputeProvider (restart, tags, filtered list) | LoadBalancerProvider (L4 targets) | Label-based | EnvSecretsProvider (`AETHER_SECRET_*`) | [reference sheet](../../specs/cloud-integration-spi-spec.md#8-hetzner-provider-sheet-reference) | **Complete** |
+| AWS | 1 | EC2 (create, terminate, restart, tags) | ELBv2 target groups (with drain) | Tag-based | Secrets Manager | [provider sheet](../../specs/cloud-provider-aws.md) | **Complete** |
+| GCP | 1 | Compute Engine (create, delete, reset, labels) | NEG endpoints | Label-based | Secret Manager | [provider sheet](../../specs/cloud-provider-gcp.md) | **Complete** |
+| Azure | 1 | VM (create, delete, restart, tags) | ARM LB backend pools | Resource Graph | Key Vault (`vaultName/secretName`) | [provider sheet](../../specs/cloud-provider-azure.md) | **Complete** |
 | DigitalOcean | 2 | Planned | DO LB | Tag-based | — | [provider sheet](../../specs/cloud-provider-digitalocean.md) | Planned |
 | Vultr | 2 | Planned | Vultr LB | Tag-based | — | — | Planned |
 
 **Cloud Testing Milestones** (initial provider: Hetzner):
-- Cloud cluster formation — code committed (`545300ce`), Hetzner integration complete (v0.21.0): discovery, secrets, compute extensions
-- Load balancer integration — create LB, add servers as targets, verify traffic distribution
+- ~~Cloud cluster formation~~ **Done (v0.21.0)** — code committed (`545300ce`), Hetzner integration complete: discovery, secrets, compute extensions
+- ~~Cloud-native discovery~~ **Done (v0.21.0)** — HetznerDiscoveryProvider with AetherNode bootstrap wiring; AWS/GCP/Azure discovery providers added
+- ~~Load balancer integration~~ **Done (v0.21.0)** — all 4 providers: target registration/deregistration, loadBalancerInfo(), LB reconciliation on leader change
+- ~~Secrets management~~ **Done (v0.21.0)** — Hetzner env vars, AWS SM, GCP SM, Azure KV; CachingSecretsProvider with TTL
 - Node failure + re-election — kill servers, verify quorum maintained and new leader elected
 - Network partition — manipulate firewall rules to block traffic between nodes
 - Slice deployment — deploy via management API, verify ACTIVE on all nodes
 - Pre-baked images — provider snapshot with Java + JAR for instant boot (~30s vs ~3min)
 - Multi-region cluster — test consensus over higher-latency links
-- ~~Cloud-native discovery — label/tag-based peer discovery (eliminates static peer list)~~ **Done (v0.21.0)** — HetznerDiscoveryProvider with AetherNode bootstrap wiring
 - Disaster recovery — terminate majority, bring up replacements, verify state recovery via Rabia sync
 
 ### MEDIUM PRIORITY - Developer Tooling & Deployment
