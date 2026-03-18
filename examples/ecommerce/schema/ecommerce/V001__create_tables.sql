@@ -1,4 +1,5 @@
--- Ecommerce schema for Aether Forge benchmarking
+-- Ecommerce Schema (PostgreSQL)
+
 -- Inventory
 CREATE TABLE IF NOT EXISTS products (
     product_id VARCHAR(20) PRIMARY KEY,
@@ -19,17 +20,6 @@ CREATE TABLE IF NOT EXISTS reservation_items (
     quantity INT NOT NULL,
     PRIMARY KEY (reservation_id, product_id)
 );
-
-INSERT INTO products (product_id, stock, price_cents) VALUES
-    ('LAPTOP-PRO', 50, 99999),
-    ('MOUSE-WIRELESS', 200, 4999),
-    ('KEYBOARD-MECH', 100, 14999),
-    ('MONITOR-4K', 30, 59999),
-    ('HEADSET-BT', 75, 7999),
-    ('WEBCAM-HD', 60, 8999),
-    ('USB-HUB', 150, 2999),
-    ('CHARGER-65W', 120, 3999)
-ON CONFLICT (product_id) DO NOTHING;
 
 -- Payment
 CREATE TABLE IF NOT EXISTS transactions (

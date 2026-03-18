@@ -1,5 +1,4 @@
--- URL Shortener Schema
--- PostgreSQL initialization script
+-- URL Shortener Schema (PostgreSQL)
 
 CREATE TABLE IF NOT EXISTS urls (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

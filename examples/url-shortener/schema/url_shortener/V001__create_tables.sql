@@ -1,5 +1,4 @@
--- URL Shortener Schema
--- Initialization script for H2 database
+-- URL Shortener Schema (H2)
 
 CREATE TABLE IF NOT EXISTS urls (
     id IDENTITY PRIMARY KEY,
