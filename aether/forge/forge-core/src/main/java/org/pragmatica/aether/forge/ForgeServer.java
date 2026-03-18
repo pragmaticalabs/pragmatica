@@ -28,12 +28,14 @@ import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.aether.slice.repository.maven.MavenLocalRepoLocator;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.awt.Desktop;
 import java.net.URI;
 import java.net.http.HttpRequest;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -52,6 +54,7 @@ import org.slf4j.LoggerFactory;
 /// ```
 /// --config &lt;forge.toml&gt;       Forge cluster configuration
 /// --blueprint &lt;coords&gt;        Artifact coordinates to deploy (groupId:artifactId:version)
+///                              Reads JAR from ~/.m2/repository, uploads to cluster DHT, then deploys
 /// --load-config &lt;file.toml&gt;   Load test configuration
 /// --auto-start                Start load generation after config loaded
 /// ```
@@ -162,6 +165,7 @@ public final class ForgeServer {
         System.out.println("Options:");
         System.out.println("  --config <forge.toml>       Forge cluster configuration");
         System.out.println("  --blueprint <coords>        Artifact coordinates (groupId:artifactId:version)");
+        System.out.println("                              Reads JAR from local Maven repo, uploads to cluster DHT, then deploys");
         System.out.println("  --load-config <file.toml>   Load test configuration");
         System.out.println("  --auto-start                Start load generation after config loaded");
         System.out.println("  -h, --help                  Show this help message");
@@ -248,7 +252,8 @@ public final class ForgeServer {
                                                         forgeConfig.appHttpPort(),
                                                         "node",
                                                         configProvider,
-                                                        forgeConfig.observability());
+                                                        forgeConfig.observability(),
+                                                        forgeConfig.coreMax());
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
         Supplier<List<Integer>> portSupplier = forgeConfig.lbEnabled()
                                                ? () -> List.of(forgeConfig.lbPort())
@@ -456,8 +461,81 @@ public final class ForgeServer {
         }
     }
 
+    /// Deploy a blueprint from local Maven repository to the cluster.
+    ///
+    /// Flow:
+    /// 1. Parse artifact coordinates (groupId:artifactId:version)
+    /// 2. Locate the blueprint JAR in local Maven repo (~/.m2/repository)
+    /// 3. Upload the JAR to the cluster's Maven protocol endpoint (DHT)
+    /// 4. Deploy the blueprint by artifact coordinates
     private void deployBlueprintFromArtifact(String artifactCoords) {
         log.info("Deploying blueprint artifact: {}...", artifactCoords);
+        var parts = artifactCoords.split(":");
+        if (parts.length != 3) {
+            log.error("Invalid artifact coordinates '{}': expected format groupId:artifactId:version", artifactCoords);
+            return;
+        }
+        var groupId = parts[0];
+        var artifactId = parts[1];
+        var version = parts[2];
+        var jarPath = resolveLocalMavenJar(groupId, artifactId, version);
+        if (!Files.exists(jarPath)) {
+            log.error("Blueprint JAR not found at: {}", jarPath);
+            return;
+        }
+        log.info("Found blueprint JAR: {}", jarPath);
+        uploadJarToCluster(jarPath, groupId, artifactId, version);
+        deployByCoordinates(artifactCoords);
+    }
+
+    private static Path resolveLocalMavenJar(String groupId, String artifactId, String version) {
+        var repoRoot = Path.of(MavenLocalRepoLocator.findLocalRepository());
+        var groupPath = groupId.replace('.', '/');
+        var fileName = artifactId + "-" + version + "-blueprint.jar";
+        return repoRoot.resolve(groupPath)
+                       .resolve(artifactId)
+                       .resolve(version)
+                       .resolve(fileName);
+    }
+
+    private void uploadJarToCluster(Path jarPath, String groupId, String artifactId, String version) {
+        var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort)
+                                .or(forgeConfig.managementPort());
+        var groupPath = groupId.replace('.', '/');
+        var fileName = artifactId + "-" + version + "-blueprint.jar";
+        var uploadUri = "http://localhost:" + leaderPort + "/api/repository/" + groupPath + "/" + artifactId + "/" + version
+                        + "/" + fileName;
+        log.info("Uploading blueprint JAR to cluster: PUT {}", uploadUri);
+        try{
+            var jarBytes = Files.readAllBytes(jarPath);
+            var request = HttpRequest.newBuilder()
+                                     .uri(URI.create(uploadUri))
+                                     .header("Content-Type", "application/java-archive")
+                                     .PUT(HttpRequest.BodyPublishers.ofByteArray(jarBytes))
+                                     .build();
+            http.sendString(request)
+                .await(TimeSpan.timeSpan(30)
+                               .seconds())
+                .onSuccess(result -> handleUploadResponse(result, uploadUri))
+                .onFailure(cause -> log.error("Failed to upload JAR to cluster: {}",
+                                              cause.message()));
+        } catch (Exception e) {
+            log.error("Failed to read blueprint JAR from {}: {}", jarPath, e.getMessage());
+        }
+    }
+
+    private static void handleUploadResponse(org.pragmatica.http.HttpResult<String> result, String uploadUri) {
+        if (result.isSuccess()) {
+            log.info("Blueprint JAR uploaded successfully to cluster");
+        } else {
+            log.error("Blueprint JAR upload failed (HTTP {}): {} — URI: {}",
+                      result.statusCode(),
+                      result.body(),
+                      uploadUri);
+        }
+    }
+
+    private void deployByCoordinates(String artifactCoords) {
         var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort)
                                 .or(forgeConfig.managementPort());
         var body = "{\"artifact\":\"" + artifactCoords + "\"}";
@@ -466,15 +544,16 @@ public final class ForgeServer {
                                  .header("Content-Type", "application/json")
                                  .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .build();
+        log.info("Deploying blueprint by coordinates: POST /api/blueprint/deploy — {}", artifactCoords);
         http.sendString(request)
             .await(TimeSpan.timeSpan(10)
                            .seconds())
-            .onSuccess(result -> handleArtifactDeployResponse(result, artifactCoords))
+            .onSuccess(result -> handleDeployResponse(result, artifactCoords))
             .onFailure(cause -> log.error("Failed to deploy blueprint: {}",
                                           cause.message()));
     }
 
-    private void handleArtifactDeployResponse(org.pragmatica.http.HttpResult<String> result, String artifactCoords) {
+    private void handleDeployResponse(org.pragmatica.http.HttpResult<String> result, String artifactCoords) {
         if (result.isSuccess()) {
             log.info("Blueprint deployed from artifact: {}", artifactCoords);
             apiHandler.onPresent(h -> h.addEvent("BLUEPRINT_DEPLOYED",
