@@ -125,6 +125,17 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 112 | Hetzner Cloud discovery | Complete | `HetznerDiscoveryProvider` — label-based peer discovery via `aether-cluster` server labels. Polling-based watch with configurable interval. Self-registration/deregistration via label updates |
 | 113 | Hetzner Cloud load balancer | Complete | `HetznerLoadBalancerProvider` — IP-based target management on pre-existing Hetzner LB. Route-change sync, node removal, reconciliation with diff-based add/remove |
 | 114 | Hetzner REST client | Complete | Promise-based async Hetzner Cloud API client. Servers (CRUD + labels + reboot), SSH keys, networks, firewalls, load balancers (CRUD + IP targets). Rate limit handling, typed errors |
+| 115 | AWS REST client | Complete | Promise-based async AWS API client. EC2 (RunInstances, TerminateInstances, DescribeInstances, RebootInstances, CreateTags) via Query API + XML responses, ELBv2 (RegisterTargets, DeregisterTargets, DescribeTargetHealth) via JSON, Secrets Manager via JSON. SigV4 signing from scratch — no AWS SDK |
+| 116 | AWS environment integration | Complete | `AwsComputeProvider` (EC2 lifecycle, tag-based filtering), `AwsLoadBalancerProvider` (ELBv2 target groups), `AwsDiscoveryProvider` (tag-based peer discovery), `AwsSecretsProvider` (Secrets Manager) |
+| 117 | GCP REST client | Complete | Promise-based async GCP API client. Compute Engine (instances CRUD, labels, reset), Network Endpoint Groups (attach/detach/list), Secret Manager (access with base64 decode). RS256 JWT token management with caching — no GCP SDK |
+| 118 | GCP environment integration | Complete | `GcpComputeProvider` (instance lifecycle, label filtering), `GcpLoadBalancerProvider` (NEG-based), `GcpDiscoveryProvider` (label-based), `GcpSecretsProvider` (Secret Manager) |
+| 119 | Azure REST client | Complete | Promise-based async Azure ARM API client. VMs (CRUD, restart, tags), Load Balancers (backend pool management), Resource Graph (KQL queries), Key Vault (secrets). Dual OAuth2 tokens (management + vault) — no Azure SDK |
+| 120 | Azure environment integration | Complete | `AzureComputeProvider` (VM lifecycle, Resource Graph filtering), `AzureLoadBalancerProvider` (backend address pools), `AzureDiscoveryProvider` (Resource Graph KQL), `AzureSecretsProvider` (Key Vault) |
+| 121 | XML mapper integration | Complete | `integrations/xml/jackson-xml` — `XmlMapper` interface mirroring `JsonMapper` pattern backed by Jackson XML. Used for AWS EC2 XML response parsing |
+| 122 | CDM cloud VM termination | Complete | `completeDrain()` now calls `ComputeProvider.terminate()` via tag-based instance lookup (`aether-node-id`). Prevents billing on drained cloud VMs. Fire-and-forget after DECOMMISSIONED state. Works uniformly for all providers |
+| 123 | ComputeProvider SPI extensions | Complete | `provision(ProvisionSpec)` for detailed specs with pool/tags/image/userData, `listInstances(TagSelector)` typed filter. Backward-compatible defaults |
+| 124 | LoadBalancerProvider SPI extensions | Complete | 7 new default methods: `createLoadBalancer`, `deleteLoadBalancer`, `loadBalancerInfo`, `configureHealthCheck`, `syncWeights`, `deregisterWithDrain(drainTimeout)`, `configureTls`. Plus `LoadBalancerSpec`, `LoadBalancerInfo`, `HealthCheckConfig`, `TlsTerminationConfig` types |
+| 125 | SecretsProvider SPI extensions | Complete | `resolveSecretWithMetadata` (version/expiry), `resolveSecrets` (batch via `Promise.allOf`), `watchRotation` (rotation callback). Plus `SecretValue`, `SecretRotationCallback`, `CachingSecretsProvider` (TTL cache) |
 
 ## Management
 
@@ -240,10 +251,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 24 |
-| Complete | 88 |
+| Complete | 99 |
 | Partial | 1 |
 | Planned | 11 |
-| Total | 124 |
+| Total | 135 |
 
 **Battle-tested features (24):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), E2E test framework, Forge integration tests
 
@@ -270,4 +281,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-03-17 (v0.21.0)*
+*Last updated: 2026-03-18 (v0.21.0)*
