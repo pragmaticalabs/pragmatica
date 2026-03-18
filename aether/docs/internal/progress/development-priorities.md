@@ -221,7 +221,7 @@ Part of Cloud Integration (#1). Per-provider status:
 
 | Provider | Tier | Compute | Load Balancer | Discovery | Secrets | Spec | Status |
 |----------|------|---------|---------------|-----------|---------|------|--------|
-| Hetzner | 2 | ComputeProvider done | LoadBalancerProvider done | Label-based (planned) | — | [reference sheet](../../specs/cloud-integration-spi-spec.md#8-hetzner-provider-sheet-reference) | **Partial** |
+| Hetzner | 2 | ComputeProvider done (restart, tags, filtered list) | LoadBalancerProvider done | Label-based discovery done | EnvSecretsProvider done | [reference sheet](../../specs/cloud-integration-spi-spec.md#8-hetzner-provider-sheet-reference) | **Complete** |
 | AWS | 1 | Planned | ALB/NLB | Tag-based | Secrets Manager + SSM | [provider sheet](../../specs/cloud-provider-aws.md) | Planned |
 | GCP | 1 | Planned | Cloud LB / NEGs | Label-based | Secret Manager | [provider sheet](../../specs/cloud-provider-gcp.md) | Planned |
 | Azure | 1 | Planned | Azure LB / App Gateway | Resource Graph | Key Vault | [provider sheet](../../specs/cloud-provider-azure.md) | Planned |
@@ -229,14 +229,14 @@ Part of Cloud Integration (#1). Per-provider status:
 | Vultr | 2 | Planned | Vultr LB | Tag-based | — | — | Planned |
 
 **Cloud Testing Milestones** (initial provider: Hetzner):
-- Cloud cluster formation — code committed (`545300ce`), **not yet executed against real infrastructure**
+- Cloud cluster formation — code committed (`545300ce`), Hetzner integration complete (v0.21.0): discovery, secrets, compute extensions
 - Load balancer integration — create LB, add servers as targets, verify traffic distribution
 - Node failure + re-election — kill servers, verify quorum maintained and new leader elected
 - Network partition — manipulate firewall rules to block traffic between nodes
 - Slice deployment — deploy via management API, verify ACTIVE on all nodes
 - Pre-baked images — provider snapshot with Java + JAR for instant boot (~30s vs ~3min)
 - Multi-region cluster — test consensus over higher-latency links
-- Cloud-native discovery — label/tag-based peer discovery (eliminates static peer list)
+- ~~Cloud-native discovery — label/tag-based peer discovery (eliminates static peer list)~~ **Done (v0.21.0)** — HetznerDiscoveryProvider with AetherNode bootstrap wiring
 - Disaster recovery — terminate majority, bring up replacements, verify state recovery via Rabia sync
 
 ### MEDIUM PRIORITY - Developer Tooling & Deployment
