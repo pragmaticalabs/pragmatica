@@ -85,7 +85,6 @@
                         <goals>
                             <goal>package-slices</goal>
                             <goal>generate-blueprint</goal>
-                            <goal>package-blueprint</goal>
                         </goals>
                     </execution>
                     <execution>

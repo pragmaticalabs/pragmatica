@@ -52,7 +52,7 @@ public class PackageBlueprintMojo extends AbstractMojo {
     @Parameter(defaultValue = "${project.basedir}/src/main/resources/resources.toml")
     private File resourcesTomlFile;
 
-    @Parameter(defaultValue = "${project.basedir}/src/main/resources/schema")
+    @Parameter(defaultValue = "${project.basedir}/schema")
     private File schemaDirectory;
 
     @Parameter(property = "jbct.skip", defaultValue = "false")
