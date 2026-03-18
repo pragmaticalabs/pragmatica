@@ -79,6 +79,7 @@ Every node runs the same components. Leader-only components activate when a node
 | **Scaling** | DecisionTreeController, TTMManager | ControlLoop |
 | **Messaging** | TopicSubscriptionRegistry, TopicPublisher, ScheduledTaskManager | - |
 | **Resources** | ResourceProvider (SPI: DB, HTTP client, config) | - |
+| **Cloud** | EnvironmentIntegration, NodeLifecycleManager, DiscoveryProvider | - |
 
 ## Communication Paths
 
@@ -182,6 +183,7 @@ See [05-worker-pools.md](05-worker-pools.md) for details.
 | [10-security.md](10-security.md) | mTLS, gossip encryption, RBAC, API keys |
 | [11-slice-container.md](11-slice-container.md) | ClassLoader isolation, dependency materialization, lifecycle hooks |
 | [12-management.md](12-management.md) | CLI, Management API, Forge simulator, dashboard |
+| [13-cloud-integration.md](13-cloud-integration.md) | Cloud providers, SPI facets, NodeLifecycleManager, auto-heal |
 
 ## Performance Characteristics (v0.20.0)
 
