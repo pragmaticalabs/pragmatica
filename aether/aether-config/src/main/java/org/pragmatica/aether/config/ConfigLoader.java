@@ -130,6 +130,8 @@ public final class ConfigLoader {
         doc.getString("cluster", "tls")
            .map(ConfigLoader::toBooleanValue)
            .onPresent(builder::tls);
+        doc.getInt("cluster", "core_max")
+           .onPresent(builder::coreMax);
         builder.ports(portsFromDocument(doc));
     }
 

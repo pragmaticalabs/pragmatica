@@ -194,6 +194,7 @@ public record AetherConfig(ClusterConfig cluster,
         private BackupConfig backupConfig;
         private DhtReplicationConfig dhtReplicationConfig;
         private TimeoutsConfig timeoutsConfig;
+        private Integer coreMax;
         private CloudConfig cloudConfig;
         private Map<String, EndpointConfig> endpointsConfig;
 
@@ -273,6 +274,11 @@ public record AetherConfig(ClusterConfig cluster,
             return this;
         }
 
+        public Builder coreMax(int coreMax) {
+            this.coreMax = coreMax;
+            return this;
+        }
+
         public Builder cloud(CloudConfig cloudConfig) {
             this.cloudConfig = cloudConfig;
             return this;
@@ -320,8 +326,10 @@ public record AetherConfig(ClusterConfig cluster,
                                   .or(base);
             var withTls = option(tls).map(withNodes::withTls)
                                 .or(withNodes);
-            return option(ports).map(withTls::withPorts)
-                         .or(withTls);
+            var withPorts = option(ports).map(withTls::withPorts)
+                                  .or(withTls);
+            return option(coreMax).map(withPorts::withCoreMax)
+                         .or(withPorts);
         }
 
         private NodeConfig applyNodeOverrides(NodeConfig base) {

@@ -61,13 +61,15 @@ public record Main(String[] args) {
         var sliceConfig = parseSliceConfig(aetherConfig);
         var dhtConfig = parseDhtConfig(aetherConfig);
         logStartupInfo(nodeId, port, managementPort, peers, aetherConfig, sliceConfig);
+        var coreMax = parseCoreMax(aetherConfig);
         var config = AetherNodeConfig.aetherNodeConfig(nodeId,
                                                        port,
                                                        peers,
                                                        AetherNodeConfig.defaultSliceActionConfig(),
                                                        sliceConfig,
                                                        managementPort,
-                                                       dhtConfig);
+                                                       dhtConfig,
+                                                       coreMax);
         var withTls = wireTlsIfEnabled(config, aetherConfig);
         var finalConfig = wireCloudIfConfigured(withTls, aetherConfig);
         var node = AetherNode.aetherNode(finalConfig)
@@ -243,6 +245,12 @@ public record Main(String[] args) {
         return findArg("--management-port=").map(Integer::parseInt)
                       .orElse(findEnv("MANAGEMENT_PORT").map(Integer::parseInt))
                       .or(() -> managementPortFromConfig(aetherConfig));
+    }
+
+    private int parseCoreMax(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(cfg -> cfg.cluster()
+                                          .coreMax())
+                           .or(0);
     }
 
     private int managementPortFromConfig(Option<AetherConfig> aetherConfig) {

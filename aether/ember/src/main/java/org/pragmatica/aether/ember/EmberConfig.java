@@ -28,13 +28,15 @@ public record EmberConfig(int nodes,
                           EmberH2Config h2Config,
                           ObservabilityConfig observability,
                           boolean lbEnabled,
-                          int lbPort) {
+                          int lbPort,
+                          int coreMax) {
     public static final int DEFAULT_NODES = 5;
     public static final int DEFAULT_MANAGEMENT_PORT = 5150;
     public static final int DEFAULT_DASHBOARD_PORT = 8888;
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
     public static final boolean DEFAULT_LB_ENABLED = true;
     public static final int DEFAULT_LB_PORT = 8080;
+    public static final int DEFAULT_CORE_MAX = 0;
 
     /// Default configuration.
     @SuppressWarnings("JBCT-VO-02")
@@ -45,7 +47,8 @@ public record EmberConfig(int nodes,
                                                               EmberH2Config.disabled(),
                                                               ObservabilityConfig.DEFAULT,
                                                               DEFAULT_LB_ENABLED,
-                                                              DEFAULT_LB_PORT);
+                                                              DEFAULT_LB_PORT,
+                                                              DEFAULT_CORE_MAX);
 
     /// Create configuration with specified values and validation.
     public static Result<EmberConfig> emberConfig(int nodes, int managementPort, int dashboardPort) {
@@ -56,7 +59,8 @@ public record EmberConfig(int nodes,
                            EmberH2Config.disabled(),
                            ObservabilityConfig.DEFAULT,
                            DEFAULT_LB_ENABLED,
-                           DEFAULT_LB_PORT);
+                           DEFAULT_LB_PORT,
+                           DEFAULT_CORE_MAX);
     }
 
     /// Create configuration with specified values and validation.
@@ -68,7 +72,8 @@ public record EmberConfig(int nodes,
                            EmberH2Config.disabled(),
                            ObservabilityConfig.DEFAULT,
                            DEFAULT_LB_ENABLED,
-                           DEFAULT_LB_PORT);
+                           DEFAULT_LB_PORT,
+                           DEFAULT_CORE_MAX);
     }
 
     /// Create configuration with specified values and validation.
@@ -84,7 +89,8 @@ public record EmberConfig(int nodes,
                            h2Config,
                            ObservabilityConfig.DEFAULT,
                            DEFAULT_LB_ENABLED,
-                           DEFAULT_LB_PORT);
+                           DEFAULT_LB_PORT,
+                           DEFAULT_CORE_MAX);
     }
 
     /// Create configuration with specified values and validation.
@@ -101,7 +107,28 @@ public record EmberConfig(int nodes,
                            h2Config,
                            observability,
                            DEFAULT_LB_ENABLED,
-                           DEFAULT_LB_PORT);
+                           DEFAULT_LB_PORT,
+                           DEFAULT_CORE_MAX);
+    }
+
+    /// Create configuration with LB values and validation (backwards compatible).
+    public static Result<EmberConfig> emberConfig(int nodes,
+                                                  int managementPort,
+                                                  int dashboardPort,
+                                                  int appHttpPort,
+                                                  EmberH2Config h2Config,
+                                                  ObservabilityConfig observability,
+                                                  boolean lbEnabled,
+                                                  int lbPort) {
+        return emberConfig(nodes,
+                           managementPort,
+                           dashboardPort,
+                           appHttpPort,
+                           h2Config,
+                           observability,
+                           lbEnabled,
+                           lbPort,
+                           DEFAULT_CORE_MAX);
     }
 
     /// Create configuration with all values and validation.
@@ -112,7 +139,8 @@ public record EmberConfig(int nodes,
                                                   EmberH2Config h2Config,
                                                   ObservabilityConfig observability,
                                                   boolean lbEnabled,
-                                                  int lbPort) {
+                                                  int lbPort,
+                                                  int coreMax) {
         if (nodes < 1) {
             return EmberConfigError.invalidValue("nodes", nodes, "must be at least 1")
                                    .result();
@@ -148,7 +176,8 @@ public record EmberConfig(int nodes,
                                               h2Config,
                                               observability,
                                               lbEnabled,
-                                              lbPort));
+                                              lbPort,
+                                              coreMax));
     }
 
     /// Load configuration from file path.
@@ -189,7 +218,17 @@ public record EmberConfig(int nodes,
                                .or(DEFAULT_LB_ENABLED);
         int lbPort = doc.getInt("lb", "port")
                         .or(DEFAULT_LB_PORT);
-        return emberConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config, observability, lbEnabled, lbPort);
+        int coreMax = doc.getInt("cluster", "core_max")
+                         .or(DEFAULT_CORE_MAX);
+        return emberConfig(nodes,
+                           managementPort,
+                           dashboardPort,
+                           appHttpPort,
+                           h2Config,
+                           observability,
+                           lbEnabled,
+                           lbPort,
+                           coreMax);
     }
 
     private static ObservabilityConfig parseObservabilityConfig(org.pragmatica.config.toml.TomlDocument doc) {

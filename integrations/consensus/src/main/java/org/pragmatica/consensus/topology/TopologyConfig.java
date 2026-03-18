@@ -39,8 +39,8 @@ public record TopologyConfig(NodeId self,
         coreNodes = List.copyOf(coreNodes);
     }
 
-    private static final TimeSpan DEFAULT_HELLO_TIMEOUT = TimeSpan.timeSpan(5)
-                                                                 .seconds();
+    public static final TimeSpan DEFAULT_HELLO_TIMEOUT = TimeSpan.timeSpan(5)
+                                                                .seconds();
 
     /// Create TopologyConfig without TLS and default hello timeout.
     public TopologyConfig(NodeId self,

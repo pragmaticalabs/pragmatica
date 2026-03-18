@@ -100,6 +100,9 @@ public final class EmberCluster {
     // Observability configuration for nodes
     private final ObservabilityConfig observability;
 
+    // Maximum number of core consensus nodes (0 = unlimited)
+    private final int coreMax;
+
     // Environment integration for auto-healing (CDM provisions replacements via compute facet)
     private final EnvironmentIntegration emberEnvironment;
 
@@ -150,7 +153,8 @@ public final class EmberCluster {
                          int baseAppHttpPort,
                          String nodeIdPrefix,
                          Option<ConfigurationProvider> configProvider,
-                         ObservabilityConfig observability) {
+                         ObservabilityConfig observability,
+                         int coreMax) {
         this.initialClusterSize = initialClusterSize;
         this.basePort = basePort;
         this.baseMgmtPort = baseMgmtPort;
@@ -160,6 +164,7 @@ public final class EmberCluster {
         this.effectiveSize = new AtomicInteger(initialClusterSize);
         this.configProvider = configProvider;
         this.observability = observability;
+        this.coreMax = coreMax;
         this.emberEnvironment = EnvironmentIntegration.withCompute(new EmberComputeProvider());
     }
 
@@ -174,7 +179,8 @@ public final class EmberCluster {
                                 DEFAULT_BASE_APP_HTTP_PORT,
                                 "node",
                                 Option.empty(),
-                                ObservabilityConfig.DEFAULT);
+                                ObservabilityConfig.DEFAULT,
+                                0);
     }
 
     /// Create an EmberCluster with custom port ranges.
@@ -190,7 +196,8 @@ public final class EmberCluster {
                                 DEFAULT_BASE_APP_HTTP_PORT,
                                 "node",
                                 Option.empty(),
-                                ObservabilityConfig.DEFAULT);
+                                ObservabilityConfig.DEFAULT,
+                                0);
     }
 
     /// Create an EmberCluster with custom port ranges and node ID prefix.
@@ -207,7 +214,8 @@ public final class EmberCluster {
                                 DEFAULT_BASE_APP_HTTP_PORT,
                                 nodeIdPrefix,
                                 Option.empty(),
-                                ObservabilityConfig.DEFAULT);
+                                ObservabilityConfig.DEFAULT,
+                                0);
     }
 
     /// Create an EmberCluster with custom port ranges including app HTTP.
@@ -228,7 +236,8 @@ public final class EmberCluster {
                             baseAppHttpPort,
                             nodeIdPrefix,
                             Option.empty(),
-                            ObservabilityConfig.DEFAULT);
+                            ObservabilityConfig.DEFAULT,
+                            0);
     }
 
     /// Create an EmberCluster with ConfigurationProvider for node configuration.
@@ -251,7 +260,8 @@ public final class EmberCluster {
                             baseAppHttpPort,
                             nodeIdPrefix,
                             configProvider,
-                            ObservabilityConfig.DEFAULT);
+                            ObservabilityConfig.DEFAULT,
+                            0);
     }
 
     /// Create an EmberCluster with ConfigurationProvider and ObservabilityConfig.
@@ -270,13 +280,42 @@ public final class EmberCluster {
                                             String nodeIdPrefix,
                                             Option<ConfigurationProvider> configProvider,
                                             ObservabilityConfig observability) {
+        return emberCluster(initialSize,
+                            basePort,
+                            baseMgmtPort,
+                            baseAppHttpPort,
+                            nodeIdPrefix,
+                            configProvider,
+                            observability,
+                            0);
+    }
+
+    /// Create an EmberCluster with all parameters including coreMax.
+    ///
+    /// @param initialSize        Number of nodes to start with
+    /// @param basePort           Base port for cluster communication
+    /// @param baseMgmtPort       Base port for management HTTP API
+    /// @param baseAppHttpPort    Base port for application HTTP API (slice endpoints)
+    /// @param nodeIdPrefix       Prefix for node IDs
+    /// @param configProvider     Configuration provider for all nodes (shared)
+    /// @param observability      Observability configuration for all nodes
+    /// @param coreMax            Maximum number of core consensus nodes (0 = unlimited)
+    public static EmberCluster emberCluster(int initialSize,
+                                            int basePort,
+                                            int baseMgmtPort,
+                                            int baseAppHttpPort,
+                                            String nodeIdPrefix,
+                                            Option<ConfigurationProvider> configProvider,
+                                            ObservabilityConfig observability,
+                                            int coreMax) {
         return new EmberCluster(initialSize,
                                 basePort,
                                 baseMgmtPort,
                                 baseAppHttpPort,
                                 nodeIdPrefix,
                                 configProvider,
-                                observability);
+                                observability,
+                                coreMax);
     }
 
     /// Start the initial cluster with configured number of nodes.
@@ -596,7 +635,12 @@ public final class EmberCluster {
                                           targetClusterSize,
                                           timeSpan(1).seconds(),
                                           timeSpan(10).seconds(),
-                                          coreNodes);
+                                          TopologyConfig.DEFAULT_HELLO_TIMEOUT,
+                                          coreNodes,
+                                          Option.empty(),
+                                          org.pragmatica.consensus.topology.BackoffConfig.DEFAULT,
+                                          coreMax,
+                                          targetClusterSize);
         // Use forgeDefaults() for controller config - disables CPU-based scaling in simulation
         var config = new AetherNodeConfig(topology,
                                           ProtocolConfig.testConfig(),

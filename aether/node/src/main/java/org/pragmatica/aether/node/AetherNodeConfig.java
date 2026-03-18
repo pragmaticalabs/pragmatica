@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.rabia.ProtocolConfig;
+import org.pragmatica.consensus.topology.BackoffConfig;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
@@ -86,7 +87,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                 defaultSliceActionConfig(),
                                 SliceConfig.sliceConfig(),
                                 DEFAULT_MANAGEMENT_PORT,
-                                DHTConfig.DEFAULT);
+                                DHTConfig.DEFAULT,
+                                0);
     }
 
     public static AetherNodeConfig aetherNodeConfig(NodeId self,
@@ -99,7 +101,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                 sliceActionConfig,
                                 SliceConfig.sliceConfig(),
                                 DEFAULT_MANAGEMENT_PORT,
-                                DHTConfig.DEFAULT);
+                                DHTConfig.DEFAULT,
+                                0);
     }
 
     public static AetherNodeConfig aetherNodeConfig(NodeId self,
@@ -113,7 +116,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                 sliceActionConfig,
                                 SliceConfig.sliceConfig(),
                                 managementPort,
-                                DHTConfig.DEFAULT);
+                                DHTConfig.DEFAULT,
+                                0);
     }
 
     public static AetherNodeConfig aetherNodeConfig(NodeId self,
@@ -123,11 +127,34 @@ public record AetherNodeConfig(TopologyConfig topology,
                                                     SliceConfig sliceConfig,
                                                     int managementPort,
                                                     DHTConfig artifactRepoConfig) {
+        return aetherNodeConfig(self,
+                                port,
+                                coreNodes,
+                                sliceActionConfig,
+                                sliceConfig,
+                                managementPort,
+                                artifactRepoConfig,
+                                0);
+    }
+
+    public static AetherNodeConfig aetherNodeConfig(NodeId self,
+                                                    int port,
+                                                    List<NodeInfo> coreNodes,
+                                                    SliceActionConfig sliceActionConfig,
+                                                    SliceConfig sliceConfig,
+                                                    int managementPort,
+                                                    DHTConfig artifactRepoConfig,
+                                                    int coreMax) {
         var topology = new TopologyConfig(self,
                                           coreNodes.size(),
                                           timeSpan(5).seconds(),
                                           timeSpan(1).seconds(),
-                                          coreNodes);
+                                          TopologyConfig.DEFAULT_HELLO_TIMEOUT,
+                                          coreNodes,
+                                          Option.empty(),
+                                          BackoffConfig.DEFAULT,
+                                          coreMax,
+                                          coreNodes.size());
         return new AetherNodeConfig(topology,
                                     ProtocolConfig.defaultConfig(),
                                     sliceActionConfig,
@@ -220,7 +247,10 @@ public record AetherNodeConfig(TopologyConfig topology,
                                              topology.pingInterval(),
                                              topology.helloTimeout(),
                                              topology.coreNodes(),
-                                             tlsOption);
+                                             tlsOption,
+                                             topology.backoff(),
+                                             topology.coreMax(),
+                                             topology.coreMin());
         return new AetherNodeConfig(newTopology,
                                     protocol,
                                     sliceAction,
