@@ -821,7 +821,8 @@ public interface ClusterDeploymentManager {
                 if (lifecycleManager.isCloudManaged()) {
                     lifecycleManager.terminateNode(nodeId)
                                     .onFailure(cause -> log.warn("Failed to terminate cloud instance for node {}: {}",
-                                                                 nodeId, cause.message()));
+                                                                 nodeId,
+                                                                 cause.message()));
                 }
             }
 
@@ -838,8 +839,11 @@ public interface ClusterDeploymentManager {
             /// Provision replacement nodes for the given deficit via NodeLifecycleManager.
             private void provisionReplacements(int deficit) {
                 if (lifecycleManager.isCloudManaged()) {
-                    var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "default", "core", Map.of())
-                                           .unwrap();
+                    var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
+                                                           "default",
+                                                           "core",
+                                                           Map.of())
+                                            .unwrap();
                     for (int i = 0; i < deficit; i++) {
                         lifecycleManager.provisionNode(spec)
                                         .onFailure(cause -> log.warn("AUTO-HEAL: Provisioning failed: {}",

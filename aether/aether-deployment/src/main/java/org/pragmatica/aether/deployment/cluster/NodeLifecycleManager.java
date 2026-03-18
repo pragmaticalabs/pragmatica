@@ -25,11 +25,12 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /// Encapsulates cloud instance lifecycle operations (provision, terminate, restart).
 /// CDM delegates cloud operations through this interface instead of calling ComputeProvider directly.
@@ -65,39 +66,40 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
     @Override
     public Promise<ActionResult> executeAction(NodeAction action) {
         return switch (action) {
-            case NodeAction.StartNode startNode -> provisionNode(startNode.spec())
-                .map(ActionResult.NodeStarted::new);
+            case NodeAction.StartNode startNode -> provisionNode(startNode.spec()).map(ActionResult.NodeStarted::new);
             case NodeAction.StopNode stopNode -> terminateNode(stopNode.nodeId())
-                .map(_ -> new ActionResult.NodeStopped(stopNode.nodeId()));
+            .map(_ -> new ActionResult.NodeStopped(stopNode.nodeId()));
             case NodeAction.RestartNode restartNode -> restartNode(restartNode.nodeId())
-                .map(_ -> new ActionResult.NodeRestarted(restartNode.nodeId()));
+            .map(_ -> new ActionResult.NodeRestarted(restartNode.nodeId()));
             case NodeAction.MigrateSlices _ -> EnvironmentError.operationNotSupported("migrateSlices")
-                .promise();
+                                                               .promise();
         };
     }
 
     @Override
     public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
-        return computeProvider.fold(
-            () -> EnvironmentError.operationNotSupported("provisionNode: no ComputeProvider").promise(),
-            provider -> {
-                log.info("Provisioning new instance: size={}, pool={}", spec.instanceSize(), spec.pool());
-                return provider.provision(spec);
-            });
+        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("provisionNode: no ComputeProvider")
+                                                          .promise(),
+                                    provider -> {
+                                        log.info("Provisioning new instance: size={}, pool={}",
+                                                 spec.instanceSize(),
+                                                 spec.pool());
+                                        return provider.provision(spec);
+                                    });
     }
 
     @Override
     public Promise<Unit> terminateNode(NodeId nodeId) {
-        return computeProvider.fold(
-            () -> EnvironmentError.operationNotSupported("terminateNode: no ComputeProvider").promise(),
-            provider -> lookupAndTerminate(provider, nodeId));
+        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("terminateNode: no ComputeProvider")
+                                                          .promise(),
+                                    provider -> lookupAndTerminate(provider, nodeId));
     }
 
     @Override
     public Promise<Unit> restartNode(NodeId nodeId) {
-        return computeProvider.fold(
-            () -> EnvironmentError.operationNotSupported("restartNode: no ComputeProvider").promise(),
-            provider -> lookupAndRestart(provider, nodeId));
+        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("restartNode: no ComputeProvider")
+                                                          .promise(),
+                                    provider -> lookupAndRestart(provider, nodeId));
     }
 
     @Override
@@ -107,40 +109,50 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
 
     // --- Leaf: look up instance by aether-node-id tag and terminate ---
     private Promise<Unit> lookupAndTerminate(ComputeProvider provider, NodeId nodeId) {
-        return provider.listInstances(Map.of(NODE_ID_TAG, nodeId.id()))
+        return provider.listInstances(Map.of(NODE_ID_TAG,
+                                             nodeId.id()))
                        .flatMap(instances -> terminateMatchedInstance(provider, nodeId, instances))
                        .onFailure(cause -> log.warn("Failed to look up cloud instance for node {}: {}",
-                                                    nodeId, cause.message()));
+                                                    nodeId,
+                                                    cause.message()));
     }
 
     // --- Leaf: look up instance by aether-node-id tag and restart ---
     private Promise<Unit> lookupAndRestart(ComputeProvider provider, NodeId nodeId) {
-        return provider.listInstances(Map.of(NODE_ID_TAG, nodeId.id()))
+        return provider.listInstances(Map.of(NODE_ID_TAG,
+                                             nodeId.id()))
                        .flatMap(instances -> restartMatchedInstance(provider, nodeId, instances))
                        .onFailure(cause -> log.warn("Failed to look up cloud instance for restart of node {}: {}",
-                                                    nodeId, cause.message()));
+                                                    nodeId,
+                                                    cause.message()));
     }
 
     // --- Leaf: terminate a single matched instance ---
-    private Promise<Unit> terminateMatchedInstance(ComputeProvider provider, NodeId nodeId,
-                                                    List<InstanceInfo> instances) {
+    private Promise<Unit> terminateMatchedInstance(ComputeProvider provider,
+                                                   NodeId nodeId,
+                                                   List<InstanceInfo> instances) {
         if (instances.size() == 1) {
-            var instanceId = instances.getFirst().id();
+            var instanceId = instances.getFirst()
+                                      .id();
             log.info("Terminating cloud instance {} for node {}", instanceId.value(), nodeId);
             return provider.terminate(instanceId)
-                           .onSuccess(_ -> log.info("Cloud instance {} terminated successfully", instanceId.value()));
+                           .onSuccess(_ -> log.info("Cloud instance {} terminated successfully",
+                                                    instanceId.value()));
         }
         return logMismatch("terminate", nodeId, instances.size());
     }
 
     // --- Leaf: restart a single matched instance ---
-    private Promise<Unit> restartMatchedInstance(ComputeProvider provider, NodeId nodeId,
-                                                  List<InstanceInfo> instances) {
+    private Promise<Unit> restartMatchedInstance(ComputeProvider provider,
+                                                 NodeId nodeId,
+                                                 List<InstanceInfo> instances) {
         if (instances.size() == 1) {
-            var instanceId = instances.getFirst().id();
+            var instanceId = instances.getFirst()
+                                      .id();
             log.info("Restarting cloud instance {} for node {}", instanceId.value(), nodeId);
             return provider.restart(instanceId)
-                           .onSuccess(_ -> log.info("Cloud instance {} restarted successfully", instanceId.value()));
+                           .onSuccess(_ -> log.info("Cloud instance {} restarted successfully",
+                                                    instanceId.value()));
         }
         return logMismatch("restart", nodeId, instances.size());
     }
@@ -151,7 +163,10 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider) imple
             log.warn("No cloud instance found with tag {}={} — skipping {}", NODE_ID_TAG, nodeId.id(), operation);
         } else {
             log.warn("Found {} cloud instances with tag {}={} — expected 1, skipping {}",
-                     count, NODE_ID_TAG, nodeId.id(), operation);
+                     count,
+                     NODE_ID_TAG,
+                     nodeId.id(),
+                     operation);
         }
         return Promise.success(Unit.unit());
     }

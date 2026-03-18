@@ -79,9 +79,9 @@ public record Main(String[] args) {
     private AetherNodeConfig wireCloudIfConfigured(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
         return aetherConfig.flatMap(AetherConfig::cloud)
                            .flatMap(cloudConfig -> EnvironmentIntegrationFactory.createFromConfig(cloudConfig)
-                                                       .onFailure(cause -> log.error("Failed to create cloud environment: {}",
-                                                                                     cause.message()))
-                                                       .option())
+                                                                                .onFailure(cause -> log.error("Failed to create cloud environment: {}",
+                                                                                                              cause.message()))
+                                                                                .option())
                            .map(config::withEnvironment)
                            .or(config);
     }
