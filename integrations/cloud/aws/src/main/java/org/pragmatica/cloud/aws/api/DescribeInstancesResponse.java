@@ -1,0 +1,61 @@
+/*
+ *  Copyright (c) 2025 Sergiy Yevtushenko.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ */
+
+package org.pragmatica.cloud.aws.api;
+
+import java.util.List;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
+import tools.jackson.dataformat.xml.annotation.JacksonXmlElementWrapper;
+import tools.jackson.dataformat.xml.annotation.JacksonXmlProperty;
+import tools.jackson.dataformat.xml.annotation.JacksonXmlRootElement;
+
+/// EC2 DescribeInstances XML response wrapper.
+@JacksonXmlRootElement(localName = "DescribeInstancesResponse")
+@JsonIgnoreProperties(ignoreUnknown = true)
+public record DescribeInstancesResponse(
+    @JacksonXmlProperty(localName = "reservationSet") ReservationSet reservationSet
+) {
+    /// Container for reservations.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ReservationSet(
+        @JacksonXmlElementWrapper(useWrapping = false)
+        @JacksonXmlProperty(localName = "item") List<Reservation> items
+    ) {}
+
+    /// EC2 reservation containing instances.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record Reservation(
+        @JacksonXmlProperty(localName = "reservationId") String reservationId,
+        @JacksonXmlProperty(localName = "instancesSet") InstancesSet instancesSet
+    ) {}
+
+    /// Container for instances within a reservation.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record InstancesSet(
+        @JacksonXmlElementWrapper(useWrapping = false)
+        @JacksonXmlProperty(localName = "item") List<Instance> items
+    ) {}
+
+    /// Flattens all instances across all reservations.
+    public List<Instance> allInstances() {
+        return reservationSet.items().stream()
+                             .flatMap(r -> r.instancesSet().items().stream())
+                             .toList();
+    }
+}

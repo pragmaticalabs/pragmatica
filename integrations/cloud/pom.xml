@@ -17,5 +17,8 @@
 
     <modules>
         <module>hetzner</module>
+        <module>azure</module>
+        <module>gcp</module>
+        <module>aws</module>
     </modules>
 </project>

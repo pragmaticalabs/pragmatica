@@ -213,6 +213,21 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
+                <artifactId>azure</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>gcp</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>aws</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
                 <artifactId>swim</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -224,6 +239,11 @@
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>email-http</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jackson-xml</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -282,7 +302,22 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>environment-gcp</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>environment-hetzner</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>environment-azure</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>environment-aws</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -406,6 +441,11 @@
             <dependency>
                 <groupId>tools.jackson.core</groupId>
                 <artifactId>jackson-databind</artifactId>
+                <version>${jackson.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>tools.jackson.dataformat</groupId>
+                <artifactId>jackson-dataformat-xml</artifactId>
                 <version>${jackson.version}</version>
             </dependency>
             <dependency>

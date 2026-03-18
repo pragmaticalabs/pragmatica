@@ -33,5 +33,6 @@
         <module>swim</module>
         <module>hlc</module>
         <module>email-http</module>
+        <module>xml</module>
     </modules>
 </project>
