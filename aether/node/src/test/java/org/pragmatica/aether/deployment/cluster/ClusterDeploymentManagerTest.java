@@ -4,6 +4,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.InstanceId;
+import org.pragmatica.aether.environment.InstanceInfo;
+import org.pragmatica.aether.environment.InstanceStatus;
+import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -38,6 +43,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -1087,7 +1093,7 @@ class ClusterDeploymentManagerTest {
         }
     }
 
-    static class TestComputeProvider implements org.pragmatica.aether.environment.ComputeProvider {
+    static class TestComputeProvider implements ComputeProvider {
         private final AtomicInteger provisionCount;
 
         TestComputeProvider(AtomicInteger provisionCount) {
@@ -1095,33 +1101,35 @@ class ClusterDeploymentManagerTest {
         }
 
         @Override
-        public Promise<org.pragmatica.aether.environment.InstanceInfo> provision(org.pragmatica.aether.environment.InstanceType instanceType) {
-            var id = new org.pragmatica.aether.environment.InstanceId("test-" + provisionCount.incrementAndGet());
-            var info = new org.pragmatica.aether.environment.InstanceInfo(
+        public Promise<InstanceInfo> provision(InstanceType instanceType) {
+            var id = new InstanceId("test-" + provisionCount.incrementAndGet());
+            var info = new InstanceInfo(
                 id,
-                org.pragmatica.aether.environment.InstanceStatus.RUNNING,
+                InstanceStatus.RUNNING,
                 List.of("localhost:9999"),
-                instanceType);
+                instanceType,
+                Map.of());
             return Promise.success(info);
         }
 
         @Override
-        public Promise<Unit> terminate(org.pragmatica.aether.environment.InstanceId instanceId) {
+        public Promise<Unit> terminate(InstanceId instanceId) {
             return Promise.success(Unit.unit());
         }
 
         @Override
-        public Promise<List<org.pragmatica.aether.environment.InstanceInfo>> listInstances() {
+        public Promise<List<InstanceInfo>> listInstances() {
             return Promise.success(List.of());
         }
 
         @Override
-        public Promise<org.pragmatica.aether.environment.InstanceInfo> instanceStatus(org.pragmatica.aether.environment.InstanceId instanceId) {
-            return Promise.success(new org.pragmatica.aether.environment.InstanceInfo(
+        public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
+            return Promise.success(new InstanceInfo(
                 instanceId,
-                org.pragmatica.aether.environment.InstanceStatus.RUNNING,
+                InstanceStatus.RUNNING,
                 List.of("localhost:9999"),
-                org.pragmatica.aether.environment.InstanceType.ON_DEMAND));
+                InstanceType.ON_DEMAND,
+                Map.of()));
         }
     }
 }

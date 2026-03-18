@@ -114,6 +114,18 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 47 | Interceptor framework | Complete | Method-level interceptors: retry, circuit breaker, rate limit, logging, metrics. Runtime enable/disable |
 | 48 | Runtime extensions | Complete | `registerExtension()` for injecting runtime components into resource factories |
 
+## Cloud Integration
+
+| # | Feature | Status | Description |
+|---|---------|--------|-------------|
+| 108 | Environment integration SPI | Complete | Faceted SPI (`EnvironmentIntegration`) with 4 optional facets: compute, secrets, load balancer, discovery. ServiceLoader discovery. Used by CDM for auto-heal, node bootstrap for peer discovery |
+| 109 | SecretsProvider implementations | Complete | `EnvSecretsProvider` (AETHER_SECRET_* env vars), `FileSecretsProvider` (/run/secrets files), `CompositeSecretsProvider` (first-success chain). Zero-dependency, works in any environment |
+| 110 | DiscoveryProvider SPI | Complete | Peer discovery interface: `discoverPeers()`, `watchPeers()`, `registerSelf()`/`deregisterSelf()`. Wired into AetherNode bootstrap — registers on start, deregisters on shutdown |
+| 111 | Hetzner Cloud compute | Complete | `HetznerComputeProvider` — provision, terminate, list, status, restart, tag management, label-filtered listing. Maps Hetzner server lifecycle to InstanceInfo |
+| 112 | Hetzner Cloud discovery | Complete | `HetznerDiscoveryProvider` — label-based peer discovery via `aether-cluster` server labels. Polling-based watch with configurable interval. Self-registration/deregistration via label updates |
+| 113 | Hetzner Cloud load balancer | Complete | `HetznerLoadBalancerProvider` — IP-based target management on pre-existing Hetzner LB. Route-change sync, node removal, reconciliation with diff-based add/remove |
+| 114 | Hetzner REST client | Complete | Promise-based async Hetzner Cloud API client. Servers (CRUD + labels + reboot), SSH keys, networks, firewalls, load balancers (CRUD + IP targets). Rate limit handling, typed errors |
+
 ## Management
 
 | # | Feature | Status | Description |
@@ -228,10 +240,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 24 |
-| Complete | 81 |
+| Complete | 88 |
 | Partial | 1 |
 | Planned | 11 |
-| Total | 117 |
+| Total | 124 |
 
 **Battle-tested features (24):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), E2E test framework, Forge integration tests
 
@@ -250,8 +262,8 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | RBAC Tier 2 — per-endpoint authorization | RBAC Tier 1 complete |
 | ~~TLS certificate management~~ | ~~Complete in 0.19.3~~ |
 | Per-route rate limiting | — |
-| Spot instance support | Cloud Integration |
-| Cluster expense tracking | Cloud Integration |
+| Spot instance support | Cloud Integration (complete) |
+| Cluster expense tracking | Cloud Integration (complete) |
 | ~~KV-Store state backup~~ | ~~Complete in 0.19.3~~ |
 | Aether runtime rolling upgrade | Official container or binaries |
 | Per-blueprint artifact scoping (Tier 2) | Multi-blueprint lifecycle Tier 1 (#102) |

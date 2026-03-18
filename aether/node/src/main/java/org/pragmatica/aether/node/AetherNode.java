@@ -98,7 +98,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
+import org.pragmatica.aether.environment.PeerInfo;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
@@ -116,6 +118,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.slf4j.Logger;
@@ -388,6 +391,7 @@ public interface AetherNode {
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
                           Option<ManagementServer> managementServer,
+                          Option<DiscoveryProvider> discoveryProvider,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
@@ -427,7 +431,9 @@ public interface AetherNode {
                 SliceRuntime.clear();
                 // 4. Stop SWIM health detector
                 swimHealthDetector.stop();
-                // 5. Stop servers and network
+                // 5. Deregister from discovery provider
+                discoveryProvider.onPresent(this::deregisterFromDiscovery);
+                // 6. Stop servers and network
                 return managementServer.map(ManagementServer::stop)
                                        .or(Promise.unitPromise())
                                        .flatMap(_ -> appHttpServer.stop())
@@ -459,10 +465,45 @@ public interface AetherNode {
                 // to prevent livelock from simultaneous proposals.
                 clusterNode.leaderManager()
                            .triggerElection();
+                                                 // Register with discovery provider after cluster is ready
+                discoveryProvider.onPresent(this::registerWithDiscovery);
                                              })
                                   .onSuccess(_ -> printStartupBanner())
                                   .onFailure(cause -> log.error("Cluster formation failed: {}",
                                                                 cause.message()));
+            }
+
+            private void registerWithDiscovery(DiscoveryProvider dp) {
+                Option.from(config.topology()
+                                  .coreNodes()
+                                  .stream()
+                                  .filter(n -> n.id()
+                                                .equals(self()))
+                                  .findFirst())
+                      .map(n -> new PeerInfo(n.address()
+                                              .host(),
+                                             n.address()
+                                              .port(),
+                                             Map.of("role",
+                                                    "core",
+                                                    "nodeId",
+                                                    self().id())))
+                      .onPresent(peerInfo -> dp.registerSelf(peerInfo)
+                                               .await()
+                                               .onSuccess(_ -> log.info("Registered self with discovery provider"))
+                                               .onFailure(cause -> log.warn("Failed to register with discovery: {}",
+                                                                            cause.message())));
+            }
+
+            private void deregisterFromDiscovery(DiscoveryProvider dp) {
+                dp.stopWatching()
+                  .await()
+                  .onFailure(cause -> log.warn("Failed to stop discovery watching: {}",
+                                               cause.message()));
+                dp.deregisterSelf()
+                  .await()
+                  .onFailure(cause -> log.warn("Failed to deregister from discovery: {}",
+                                               cause.message()));
             }
 
             private void printStartupBanner() {
@@ -508,6 +549,10 @@ public interface AetherNode {
                                                       ? "enabled"
                                                       : "disabled", 46) + "|");
                 log.info("|  TLS:            {}", pad(tlsEnabled
+                                                      ? "enabled"
+                                                      : "disabled", 46) + "|");
+                var discoveryEnabled = discoveryProvider.isPresent();
+                log.info("|  Discovery:      {}", pad(discoveryEnabled
                                                       ? "enabled"
                                                       : "disabled", 46) + "|");
                 log.info("{}", "+-----------------------------------------------------------------+");
@@ -647,6 +692,9 @@ public interface AetherNode {
                                                                                                  provider,
                                                                                                  config.appHttp()
                                                                                                        .port()));
+        // Extract discovery provider when available
+        var discoveryProvider = config.environment()
+                                      .flatMap(EnvironmentIntegration::discovery);
         // Create endpoint registry
         var endpointRegistry = EndpointRegistry.endpointRegistry();
         // Create topic subscription registry for pub/sub messaging
@@ -954,6 +1002,7 @@ public interface AetherNode {
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
                                   Option.empty(),
+                                  discoveryProvider,
                                   startTimeMs);
         // Wire remote shutdown: when SHUTTING_DOWN lifecycle is received, stop the node
         nodeDeploymentManager.setShutdownCallback(node::stop);
@@ -1024,6 +1073,7 @@ public interface AetherNode {
                                                            eventLoopMetricsCollector,
                                                            swimHealthDetector,
                                                            Option.some(managementServer),
+                                                           discoveryProvider,
                                                            startTimeMs);
                                  }
                                  return node;

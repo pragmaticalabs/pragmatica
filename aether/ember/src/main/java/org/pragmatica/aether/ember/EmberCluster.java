@@ -136,7 +136,11 @@ public final class EmberCluster {
                                   .map(info -> List.of("localhost:" + info.address()
                                                                          .port()))
                                   .or(List.of());
-            return new InstanceInfo(new InstanceId(nodeIdStr), InstanceStatus.RUNNING, addresses, InstanceType.ON_DEMAND);
+            return new InstanceInfo(new InstanceId(nodeIdStr),
+                                    InstanceStatus.RUNNING,
+                                    addresses,
+                                    InstanceType.ON_DEMAND,
+                                    Map.of());
         }
     }
 
