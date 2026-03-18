@@ -17,7 +17,6 @@ public record NotificationConfig(String backend,
                                  Option<SmtpConfig> smtpConfig,
                                  Option<HttpEmailConfig> httpConfig,
                                  Option<RetryConfig> retryConfig) {
-
     /// Create a notification config for the given backend with no backend-specific config.
     public static NotificationConfig notificationConfig(String backend) {
         return new NotificationConfig(backend, none(), none(), none());

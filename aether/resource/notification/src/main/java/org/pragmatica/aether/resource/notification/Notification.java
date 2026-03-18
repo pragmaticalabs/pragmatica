@@ -16,7 +16,6 @@ public sealed interface Notification {
                  List<String> cc,
                  List<String> bcc,
                  Option<String> replyTo) implements Notification {
-
         /// Create an email notification with required fields and sensible defaults.
         public static Email email(String from, List<String> to, String subject, NotificationBody body) {
             return new Email(from, to, subject, body, List.of(), List.of(), none());

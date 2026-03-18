@@ -1,5 +1,4 @@
 package org.pragmatica.aether.resource.notification;
-
 /// Result of a notification delivery.
 ///
 /// @param messageId Identifier assigned by the backend (SMTP queue ID or HTTP API response ID)

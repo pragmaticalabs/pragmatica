@@ -14,30 +14,25 @@ import java.util.Set;
 /// operator-defined desired state that must survive cluster restarts.
 @SuppressWarnings("JBCT-UTIL-02")
 public sealed interface EphemeralKeys {
-
     /// Key types that are rebuilt automatically and must NOT be backed up.
-    Set<Class<? extends AetherKey>> EPHEMERAL_KEY_TYPES = Set.of(
-        NodeArtifactKey.class,
-        NodeRoutesKey.class,
-        NodeLifecycleKey.class,
-        EndpointKey.class,
-        ActivationDirectiveKey.class,
-        GovernorAnnouncementKey.class,
-        SliceNodeKey.class,
-        HttpNodeRouteKey.class
-    );
+    Set<Class<? extends AetherKey>> EPHEMERAL_KEY_TYPES = Set.of(NodeArtifactKey.class,
+                                                                 NodeRoutesKey.class,
+                                                                 NodeLifecycleKey.class,
+                                                                 EndpointKey.class,
+                                                                 ActivationDirectiveKey.class,
+                                                                 GovernorAnnouncementKey.class,
+                                                                 SliceNodeKey.class,
+                                                                 HttpNodeRouteKey.class);
 
     /// TOML section names corresponding to ephemeral key types.
-    Set<String> EPHEMERAL_SECTIONS = Set.of(
-        "node-artifact",
-        "node-routes",
-        "node-lifecycle",
-        "endpoints",
-        "activation",
-        "governor-announcement",
-        "slices",
-        "http-node-routes"
-    );
+    Set<String> EPHEMERAL_SECTIONS = Set.of("node-artifact",
+                                            "node-routes",
+                                            "node-lifecycle",
+                                            "endpoints",
+                                            "activation",
+                                            "governor-announcement",
+                                            "slices",
+                                            "http-node-routes");
 
     /// Returns true if the given key is ephemeral and should be excluded from backup.
     static boolean isEphemeral(AetherKey key) {
