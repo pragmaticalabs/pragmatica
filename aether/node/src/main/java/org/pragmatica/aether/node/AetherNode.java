@@ -469,7 +469,7 @@ public interface AetherNode {
                            .triggerElection();
                                                  // Register with discovery provider after cluster is ready
                 discoveryProvider.onPresent(this::registerWithDiscovery);
-                // Apply aether-node-id tag to self instance for cloud scale-down lookup
+                                                 // Apply aether-node-id tag to self instance for cloud scale-down lookup
                 applyNodeIdTag();
                                              })
                                   .onSuccess(_ -> printStartupBanner())
@@ -515,29 +515,33 @@ public interface AetherNode {
             }
 
             private void tagMatchingInstance(ComputeProvider provider, List<InstanceInfo> instances) {
-                findSelfInstance(instances).onPresent(
-                    instance -> provider.applyTags(instance.id(), Map.of("aether-node-id", self().id()))
-                                        .onSuccess(_ -> log.info("Applied aether-node-id tag to instance {}",
-                                                                  instance.id().value()))
-                                        .onFailure(cause -> log.warn("Failed to apply aether-node-id tag: {}",
-                                                                     cause.message()))
-                );
+                findSelfInstance(instances).onPresent(instance -> provider.applyTags(instance.id(),
+                                                                                     Map.of("aether-node-id",
+                                                                                            self().id()))
+                                                                          .onSuccess(_ -> log.info("Applied aether-node-id tag to instance {}",
+                                                                                                   instance.id()
+                                                                                                           .value()))
+                                                                          .onFailure(cause -> log.warn("Failed to apply aether-node-id tag: {}",
+                                                                                                       cause.message())));
             }
 
             private Option<InstanceInfo> findSelfInstance(List<InstanceInfo> instances) {
                 return selfAddress()
-                    .flatMap(selfIp -> Option.from(instances.stream()
-                                                            .filter(i -> i.addresses().contains(selfIp))
-                                                            .findFirst()));
+                .flatMap(selfIp -> Option.from(instances.stream()
+                                                        .filter(i -> i.addresses()
+                                                                      .contains(selfIp))
+                                                        .findFirst()));
             }
 
             private Option<String> selfAddress() {
                 return Option.from(config.topology()
-                                        .coreNodes()
-                                        .stream()
-                                        .filter(n -> n.id().equals(self()))
-                                        .map(n -> n.address().host())
-                                        .findFirst());
+                                         .coreNodes()
+                                         .stream()
+                                         .filter(n -> n.id()
+                                                       .equals(self()))
+                                         .map(n -> n.address()
+                                                    .host())
+                                         .findFirst());
             }
 
             private void deregisterFromDiscovery(DiscoveryProvider dp) {
@@ -763,7 +767,10 @@ public interface AetherNode {
         // Create base decision tree controller (uses node config — Forge disables CPU-based scaling)
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         // Create blueprint service using composite repository from configuration
-        var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, compositeRepository(repositories));
+        var blueprintService = BlueprintService.blueprintService(clusterNode,
+                                                                 kvStore,
+                                                                 compositeRepository(repositories),
+                                                                 artifactStore);
         // Create Maven protocol handler from artifact store (DHT created in createNode)
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         // Create rolling update manager
@@ -1315,7 +1322,9 @@ public interface AetherNode {
                                                                       lbm::onNodeRoutesRemove));
         // Dynamic config manager (optional)
         dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
-                                                             .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
+                                                             .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove)
+                                                             .onPut(AetherKey.BlueprintResourcesKey.class,
+                                                                    dcm::onBlueprintResourcesPut));
         // Load balancer manager HTTP route events now come from DHT subscription (wired above)
         entries.addAll(kvRouterBuilder.build()
                                       .asRouteEntries());

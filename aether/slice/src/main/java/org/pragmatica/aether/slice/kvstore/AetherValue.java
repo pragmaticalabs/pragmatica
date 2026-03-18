@@ -760,4 +760,67 @@ public sealed interface AetherValue {
             return new NodeRoutesValue(List.copyOf(routes));
         }
     }
+
+    /// Blueprint resources configuration stored in consensus.
+    ///
+    /// @param tomlContent raw TOML content from resources.toml
+    record BlueprintResourcesValue(String tomlContent) implements AetherValue {
+        public static BlueprintResourcesValue blueprintResourcesValue(String tomlContent) {
+            return new BlueprintResourcesValue(tomlContent);
+        }
+    }
+
+    /// Schema version tracking for a datasource.
+    ///
+    /// @param datasourceName the datasource this tracks
+    /// @param currentVersion current applied schema version number
+    /// @param lastMigration filename of the last applied migration
+    /// @param status current migration status
+    /// @param updatedAt timestamp of last update
+    record SchemaVersionValue(String datasourceName,
+                              int currentVersion,
+                              String lastMigration,
+                              SchemaStatus status,
+                              long updatedAt) implements AetherValue {
+        public static SchemaVersionValue schemaVersionValue(String datasourceName,
+                                                            int currentVersion,
+                                                            String lastMigration,
+                                                            SchemaStatus status) {
+            return new SchemaVersionValue(datasourceName,
+                                          currentVersion,
+                                          lastMigration,
+                                          status,
+                                          System.currentTimeMillis());
+        }
+    }
+
+    /// Schema migration lock for distributed coordination.
+    ///
+    /// @param datasourceName the datasource being migrated
+    /// @param heldBy NodeId of the node holding the lock
+    /// @param acquiredAt timestamp when lock was acquired
+    /// @param expiresAt timestamp when lock expires (prevents deadlocks)
+    record SchemaMigrationLockValue(String datasourceName,
+                                    NodeId heldBy,
+                                    long acquiredAt,
+                                    long expiresAt) implements AetherValue {
+        public static SchemaMigrationLockValue schemaMigrationLockValue(String datasourceName,
+                                                                        NodeId heldBy,
+                                                                        long ttlMs) {
+            var now = System.currentTimeMillis();
+            return new SchemaMigrationLockValue(datasourceName, heldBy, now, now + ttlMs);
+        }
+
+        public boolean isExpired() {
+            return System.currentTimeMillis() > expiresAt;
+        }
+    }
+
+    /// Schema migration status.
+    enum SchemaStatus {
+        PENDING,
+        MIGRATING,
+        COMPLETED,
+        FAILED
+    }
 }

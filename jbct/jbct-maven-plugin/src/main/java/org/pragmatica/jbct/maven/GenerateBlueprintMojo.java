@@ -304,6 +304,9 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         sb.append("# Regenerate with: mvn jbct:generate-blueprint\n\n");
         sb.append("id = \"")
           .append(id)
+          .append("\"\n");
+        sb.append("version = \"")
+          .append(project.getVersion())
           .append("\"\n\n");
         for (var entry : orderedSlices) {
             sb.append("[[slices]]\n");

@@ -22,7 +22,8 @@ public sealed interface EphemeralKeys {
                                                                  ActivationDirectiveKey.class,
                                                                  GovernorAnnouncementKey.class,
                                                                  SliceNodeKey.class,
-                                                                 HttpNodeRouteKey.class);
+                                                                 HttpNodeRouteKey.class,
+                                                                 SchemaMigrationLockKey.class);
 
     /// TOML section names corresponding to ephemeral key types.
     Set<String> EPHEMERAL_SECTIONS = Set.of("node-artifact",
@@ -32,7 +33,8 @@ public sealed interface EphemeralKeys {
                                             "activation",
                                             "governor-announcement",
                                             "slices",
-                                            "http-node-routes");
+                                            "http-node-routes",
+                                            "schema-lock");
 
     /// Returns true if the given key is ephemeral and should be excluded from backup.
     static boolean isEphemeral(AetherKey key) {

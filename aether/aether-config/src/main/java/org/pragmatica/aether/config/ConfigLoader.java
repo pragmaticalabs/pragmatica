@@ -100,6 +100,7 @@ public final class ConfigLoader {
         populateDhtReplicationConfig(doc, builder);
         populateTimeoutsConfig(doc, builder);
         populateCloudConfig(doc, builder);
+        populateEndpointsConfig(doc, builder);
         return builder;
     }
 
@@ -318,19 +319,58 @@ public final class ConfigLoader {
 
     private static void populateCloudConfig(TomlDocument doc, AetherConfig.Builder builder) {
         doc.getString("cloud", "provider")
-           .onPresent(provider -> {
-               var credentials = doc.getSection("cloud.credentials");
-               var compute = doc.getSection("cloud.compute");
-               var cc = CloudConfig.cloudConfig(provider, resolveEnvVars(credentials), resolveEnvVars(compute))
-                                   .unwrap();
-               var lb = doc.getSection("cloud.load_balancer");
-               var discovery = doc.getSection("cloud.discovery");
-               var secrets = doc.getSection("cloud.secrets");
-               var withLb = lb.isEmpty() ? cc : cc.withLoadBalancer(lb);
-               var withDiscovery = discovery.isEmpty() ? withLb : withLb.withDiscovery(discovery);
-               var withSecrets = secrets.isEmpty() ? withDiscovery : withDiscovery.withSecrets(secrets);
-               builder.cloud(withSecrets);
-           });
+           .onPresent(provider -> applyCloudConfig(doc, builder, provider));
+    }
+
+    private static void applyCloudConfig(TomlDocument doc, AetherConfig.Builder builder, String provider) {
+        var credentials = doc.getSection("cloud.credentials");
+        var compute = doc.getSection("cloud.compute");
+        var cc = CloudConfig.cloudConfig(provider,
+                                         resolveEnvVars(credentials),
+                                         resolveEnvVars(compute))
+                            .unwrap();
+        var lb = doc.getSection("cloud.load_balancer");
+        var discovery = doc.getSection("cloud.discovery");
+        var secrets = doc.getSection("cloud.secrets");
+        var withLb = lb.isEmpty()
+                     ? cc
+                     : cc.withLoadBalancer(lb);
+        var withDiscovery = discovery.isEmpty()
+                            ? withLb
+                            : withLb.withDiscovery(discovery);
+        var withSecrets = secrets.isEmpty()
+                          ? withDiscovery
+                          : withDiscovery.withSecrets(secrets);
+        builder.cloud(withSecrets);
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private static void populateEndpointsConfig(TomlDocument doc, AetherConfig.Builder builder) {
+        var endpoints = new HashMap<String, EndpointConfig>();
+        for (var sectionName : doc.sectionNames()) {
+            if (sectionName.startsWith("endpoints.")) {
+                var endpointName = sectionName.substring("endpoints.".length());
+                if (!endpointName.isEmpty()) {
+                    endpoints.put(endpointName, endpointFromSection(doc, sectionName));
+                }
+            }
+        }
+        if (!endpoints.isEmpty()) {
+            builder.endpoints(Map.copyOf(endpoints));
+        }
+    }
+
+    private static EndpointConfig endpointFromSection(TomlDocument doc, String sectionName) {
+        var host = doc.getString(sectionName, "host")
+                      .or("localhost");
+        var port = doc.getInt(sectionName, "port")
+                      .or(5432);
+        var username = doc.getString(sectionName, "username")
+                          .or("");
+        var password = doc.getString(sectionName, "password")
+                          .map(ConfigLoader::resolveEnvVar)
+                          .or("");
+        return EndpointConfig.endpointConfig(host, port, username, password);
     }
 
     private static Map<String, String> resolveEnvVars(Map<String, String> map) {
@@ -342,8 +382,8 @@ public final class ConfigLoader {
     private static String resolveEnvVar(String value) {
         if (value.startsWith("${env:") && value.endsWith("}")) {
             var envName = value.substring(6, value.length() - 1);
-            var envValue = System.getenv(envName);
-            return envValue != null ? envValue : value;
+            return Option.option(System.getenv(envName))
+                         .or(value);
         }
         return value;
     }

@@ -92,7 +92,7 @@ public class AetherCli implements Runnable {
     private Path configPath;
 
     @CommandLine.Option(names = {"--api-key", "-k"},
-    description = "API key for authenticated access")
+    description = "API key for authenticated access (prefer AETHER_API_KEY env var to avoid process list exposure)")
     private String apiKey;
 
     private final HttpOperations httpOps = JdkHttpOperations.jdkHttpOperations();
@@ -478,12 +478,12 @@ public class AetherCli implements Runnable {
         }
 
         private String buildScaleBody() {
-            var sb = new StringBuilder("{\"artifact\":\"").append(artifact)
+            var sb = new StringBuilder("{\"artifact\":\"").append(escapeJsonValue(artifact))
                                                           .append("\",\"instances\":")
                                                           .append(instances);
             if (placement != null) {
                 sb.append(",\"placement\":\"")
-                  .append(placement)
+                  .append(escapeJsonValue(placement))
                   .append("\"");
             }
             return sb.append("}")
@@ -725,7 +725,9 @@ public class AetherCli implements Runnable {
     BlueprintCommand.GetCommand.class,
     BlueprintCommand.DeleteCommand.class,
     BlueprintCommand.StatusCommand.class,
-    BlueprintCommand.ValidateCommand.class})
+    BlueprintCommand.ValidateCommand.class,
+    BlueprintCommand.DeployArtifactCommand.class,
+    BlueprintCommand.UploadCommand.class})
     static class BlueprintCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -1138,6 +1140,83 @@ public class AetherCli implements Runnable {
                 }
             }
             return objects;
+        }
+
+        @Command(name = "deploy", description = "Deploy a blueprint from an artifact in the cluster repository")
+        static class DeployArtifactCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BlueprintCommand blueprintParent;
+
+            @Parameters(index = "0", description = "Artifact coordinates (groupId:artifactId:version)")
+            private String coords;
+
+            @Override
+            @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"})
+            public Integer call() {
+                var body = "{\"artifact\":\"" + escapeJsonValue(coords) + "\"}";
+                var response = blueprintParent.parent.postToNode("/api/blueprint/deploy", body);
+                if (response.contains("\"error\":")) {
+                    System.out.println("Failed to deploy blueprint: " + response);
+                    return 1;
+                }
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "upload", description = "Upload a blueprint JAR file to the cluster")
+        static class UploadCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BlueprintCommand blueprintParent;
+
+            @Parameters(index = "0", description = "Path to the blueprint JAR file")
+            private Path blueprintJarPath;
+
+            @CommandLine.Option(names = {"-g", "--group"}, description = "Group ID", required = true)
+            private String groupId;
+
+            @CommandLine.Option(names = {"-a", "--artifact"}, description = "Artifact ID", required = true)
+            private String artifactId;
+
+            @CommandLine.Option(names = {"-v", "--version"}, description = "Version", required = true)
+            private String version;
+
+            @Override
+            @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"})
+            public Integer call() {
+                try{
+                    if (!Files.exists(blueprintJarPath)) {
+                        System.err.println("File not found: " + blueprintJarPath);
+                        return 1;
+                    }
+                    var fileSize = Files.size(blueprintJarPath);
+                    if (fileSize > 500 * 1024 * 1024) {
+                        System.err.println("File too large: " + fileSize + " bytes (max 500MB)");
+                        return 1;
+                    }
+                    var content = Files.readAllBytes(blueprintJarPath);
+                    var coordinates = groupId + ":" + artifactId + ":" + version;
+                    var repoPath = "/api/repository/" + groupId.replace('.', '/') + "/" + artifactId + "/" + version
+                                   + "/" + artifactId + "-" + version + "-blueprint.jar";
+                    var uploadResponse = blueprintParent.parent.putToNode(repoPath, content, "application/java-archive");
+                    if (uploadResponse.startsWith("{\"error\":")) {
+                        System.out.println("Failed to upload: " + uploadResponse);
+                        return 1;
+                    }
+                    var deployBody = "{\"artifact\":\"" + escapeJsonValue(coordinates) + "\"}";
+                    var deployResponse = blueprintParent.parent.postToNode("/api/blueprint/deploy", deployBody);
+                    if (deployResponse.contains("\"error\":")) {
+                        System.out.println("Failed to deploy: " + deployResponse);
+                        return 1;
+                    }
+                    System.out.println("Uploaded and deployed " + coordinates);
+                    System.out.println(formatJson(deployResponse));
+                    return 0;
+                } catch (IOException e) {
+                    System.err.println("Error reading file: " + e.getMessage());
+                    return 1;
+                }
+            }
         }
     }
 
@@ -2316,6 +2395,15 @@ public class AetherCli implements Runnable {
             if (end == start) return "0";
             return json.substring(start, end);
         }
+    }
+
+    private static String escapeJsonValue(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
     }
 
     // Simple JSON formatter for readability

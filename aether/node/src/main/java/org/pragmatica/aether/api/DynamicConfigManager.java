@@ -1,9 +1,12 @@
 package org.pragmatica.aether.api;
 
 import org.pragmatica.config.DynamicConfigurationProvider;
+import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintResourcesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintResourcesValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -76,7 +79,9 @@ public class DynamicConfigManager {
 
     private void applyLoadedConfig(ConfigValue value) {
         provider.put(value.key(), value.value());
-        log.debug("Loaded config from KV-Store: {}={}", value.key(), value.value());
+        log.debug("Loaded config from KV-Store: {}={}",
+                  value.key(),
+                  redactIfSensitive(value.key(), value.value()));
     }
 
     /// Handle KV-Store update notification for config changes from other nodes.
@@ -91,7 +96,9 @@ public class DynamicConfigManager {
                                   .value();
         if (shouldApply(configKey)) {
             provider.put(configValue.key(), configValue.value());
-            log.debug("Config updated from cluster: {}={}", configValue.key(), configValue.value());
+            log.debug("Config updated from cluster: {}={}",
+                      configValue.key(),
+                      redactIfSensitive(configValue.key(), configValue.value()));
         }
     }
 
@@ -105,6 +112,44 @@ public class DynamicConfigManager {
             provider.remove(configKey.key());
             log.debug("Config removed from cluster: {}", configKey.key());
         }
+    }
+
+    /// Handle BlueprintResourcesKey put — loads resources.toml endpoint config into overlay.
+    ///
+    /// Parses the TOML content from the blueprint resources and extracts [endpoints.*] sections,
+    /// making them available for slice resource provisioning via the configuration hierarchy.
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    public void onBlueprintResourcesPut(ValuePut<BlueprintResourcesKey, BlueprintResourcesValue> valuePut) {
+        var tomlContent = valuePut.cause()
+                                  .value()
+                                  .tomlContent();
+        TomlParser.parse(tomlContent)
+                  .onSuccess(this::applyBlueprintEndpoints)
+                  .onFailure(cause -> log.error("Failed to parse blueprint resources TOML: {}",
+                                                cause.message()));
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private void applyBlueprintEndpoints(org.pragmatica.config.toml.TomlDocument doc) {
+        for (var sectionName : doc.sectionNames()) {
+            if (sectionName.startsWith("endpoints.")) {
+                loadEndpointSection(doc, sectionName);
+            }
+        }
+        log.info("Blueprint resources loaded into configuration overlay");
+    }
+
+    private void loadEndpointSection(org.pragmatica.config.toml.TomlDocument doc, String sectionName) {
+        doc.getString(sectionName, "host")
+           .onPresent(v -> provider.put(sectionName + ".host", v));
+        doc.getInt(sectionName, "port")
+           .onPresent(v -> provider.put(sectionName + ".port",
+                                        String.valueOf(v)));
+        doc.getString(sectionName, "username")
+           .onPresent(v -> provider.put(sectionName + ".username", v));
+        doc.getString(sectionName, "password")
+           .onPresent(v -> provider.put(sectionName + ".password", v));
     }
 
     /// Set a cluster-wide configuration value and persist to KV-Store.
@@ -184,7 +229,7 @@ public class DynamicConfigManager {
 
     private Unit applyClusterConfig(String key, String value) {
         provider.put(key, value);
-        log.info("Config set and persisted: {}={}", key, value);
+        log.info("Config set and persisted: {}={}", key, redactIfSensitive(key, value));
         return Unit.unit();
     }
 
@@ -192,7 +237,7 @@ public class DynamicConfigManager {
         if (nodeId.equals(self)) {
             provider.put(key, value);
         }
-        log.info("Node config set and persisted: {}={} for node {}", key, value, nodeId.id());
+        log.info("Node config set and persisted: {}={} for node {}", key, redactIfSensitive(key, value), nodeId.id());
         return Unit.unit();
     }
 
@@ -228,7 +273,8 @@ public class DynamicConfigManager {
             sb.append("\"")
               .append(escapeJson(entry.getKey()))
               .append("\":\"")
-              .append(escapeJson(entry.getValue()))
+              .append(escapeJson(redactIfSensitive(entry.getKey(),
+                                                   entry.getValue())))
               .append("\"");
             first = false;
         }
@@ -242,6 +288,16 @@ public class DynamicConfigManager {
                 .replace("\"", "\\\"")
                 .replace("\n", "\\n")
                 .replace("\r", "\\r")
-                .replace("\t", "\\t");
+                .replace("\t", "\\t")
+                .replace("\b", "\\b")
+                .replace("\f", "\\f");
+    }
+
+    private static String redactIfSensitive(String key, String value) {
+        var lower = key.toLowerCase();
+        if (lower.contains("password") || lower.contains("secret") || lower.contains("key") || lower.contains("token")) {
+            return "***REDACTED***";
+        }
+        return value;
     }
 }

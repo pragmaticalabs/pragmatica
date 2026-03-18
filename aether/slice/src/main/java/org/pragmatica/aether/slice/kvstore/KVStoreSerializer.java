@@ -154,6 +154,9 @@ public final class KVStoreSerializer {
             case GovernorAnnouncementKey _ -> "governor-announcement";
             case NodeArtifactKey _ -> "node-artifact";
             case NodeRoutesKey _ -> "node-routes";
+            case BlueprintResourcesKey _ -> "blueprint-resources";
+            case SchemaVersionKey _ -> "schema-version";
+            case SchemaMigrationLockKey _ -> "schema-lock";
         };
     }
 
@@ -201,6 +204,9 @@ public final class KVStoreSerializer {
             case NodeArtifactValue v -> serializeNodeArtifact(v);
             case NodeRoutesValue v -> serializeNodeRoutes(v);
             case AppBlueprintValue _ -> "";
+            case BlueprintResourcesValue v -> v.tomlContent();
+            case SchemaVersionValue v -> serializeSchemaVersion(v);
+            case SchemaMigrationLockValue v -> serializeSchemaMigrationLock(v);
         };
     }
 
@@ -347,6 +353,9 @@ public final class KVStoreSerializer {
             case "governor-announcement" -> parseGovernorAnnouncementEntry(identity, rawValue);
             case "node-artifact" -> parseNodeArtifactEntry(identity, rawValue);
             case "node-routes" -> parseNodeRoutesEntry(identity, rawValue);
+            case "blueprint-resources" -> parseBlueprintResourcesEntry(identity, rawValue);
+            case "schema-version" -> parseSchemaVersionEntry(identity, rawValue);
+            case "schema-lock" -> parseSchemaMigrationLockEntry(identity, rawValue);
             default -> new SerializationError.UnknownKeyType(section).result();
         };
     }
@@ -712,6 +721,51 @@ public final class KVStoreSerializer {
                                                                                 Integer.parseInt(parts[2]),
                                                                                 parts[3],
                                                                                 Long.parseLong(parts[4]))));
+    }
+
+    private static String serializeSchemaVersion(SchemaVersionValue v) {
+        return v.datasourceName() + PIPE + v.currentVersion() + PIPE + v.lastMigration() + PIPE + v.status()
+                                                                                                  .name() + PIPE + v.updatedAt();
+    }
+
+    private static String serializeSchemaMigrationLock(SchemaMigrationLockValue v) {
+        return v.datasourceName() + PIPE + v.heldBy()
+                                           .id() + PIPE + v.acquiredAt() + PIPE + v.expiresAt();
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseBlueprintResourcesEntry(String identity, String raw) {
+        return BlueprintResourcesKey.blueprintResourcesKey("blueprint-resources/" + identity)
+                                    .map(key -> entry(key,
+                                                      new BlueprintResourcesValue(raw)));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaVersionEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 5) {
+            return parseFailure("schema-version value requires 5 fields, got " + parts.length);
+        }
+        return SchemaVersionKey.schemaVersionKey("schema-version/" + identity, true)
+                               .map(key -> entry(key,
+                                                 new SchemaVersionValue(parts[0],
+                                                                        Integer.parseInt(parts[1]),
+                                                                        parts[2],
+                                                                        SchemaStatus.valueOf(parts[3]),
+                                                                        Long.parseLong(parts[4]))));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaMigrationLockEntry(String identity,
+                                                                                           String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 4) {
+            return parseFailure("schema-lock value requires 4 fields, got " + parts.length);
+        }
+        return SchemaMigrationLockKey.schemaMigrationLockKey("schema-lock/" + identity, true)
+                                     .flatMap(key -> NodeId.nodeId(parts[1])
+                                                           .map(nodeId -> entry(key,
+                                                                                new SchemaMigrationLockValue(parts[0],
+                                                                                                             nodeId,
+                                                                                                             Long.parseLong(parts[2]),
+                                                                                                             Long.parseLong(parts[3])))));
     }
 
     // --- Utility helpers ---

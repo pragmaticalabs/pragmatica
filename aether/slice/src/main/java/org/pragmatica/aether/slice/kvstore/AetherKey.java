@@ -811,6 +811,114 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Blueprint resources key format:
+    /// ```
+    /// blueprint-resources/{blueprintId}
+    /// ```
+    /// Stores the raw resources.toml content for a deployed blueprint.
+    record BlueprintResourcesKey(BlueprintId blueprintId) implements AetherKey {
+        private static final String PREFIX = "blueprint-resources/";
+
+        @Override
+        public String asString() {
+            return PREFIX + blueprintId.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static BlueprintResourcesKey blueprintResourcesKey(BlueprintId blueprintId) {
+            return new BlueprintResourcesKey(blueprintId);
+        }
+
+        public static Result<BlueprintResourcesKey> blueprintResourcesKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return BLUEPRINT_RESOURCES_KEY_FORMAT_ERROR.apply(key)
+                                                           .result();
+            }
+            var idPart = key.substring(PREFIX.length());
+            return BlueprintId.blueprintId(idPart)
+                              .map(BlueprintResourcesKey::new);
+        }
+    }
+
+    /// Schema version key format:
+    /// ```
+    /// schema-version/{datasourceName}
+    /// ```
+    /// Tracks the current schema version for a datasource.
+    record SchemaVersionKey(String datasourceName) implements AetherKey {
+        private static final String PREFIX = "schema-version/";
+
+        @Override
+        public String asString() {
+            return PREFIX + datasourceName;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static SchemaVersionKey schemaVersionKey(String datasourceName) {
+            return new SchemaVersionKey(datasourceName);
+        }
+
+        public static Result<SchemaVersionKey> schemaVersionKey(String key, boolean isKey) {
+            if (!key.startsWith(PREFIX)) {
+                return SCHEMA_VERSION_KEY_FORMAT_ERROR.apply(key)
+                                                      .result();
+            }
+            var name = key.substring(PREFIX.length());
+            if (name.isEmpty()) {
+                return SCHEMA_VERSION_KEY_FORMAT_ERROR.apply(key)
+                                                      .result();
+            }
+            return success(new SchemaVersionKey(name));
+        }
+    }
+
+    /// Schema migration lock key format:
+    /// ```
+    /// schema-lock/{datasourceName}
+    /// ```
+    /// Distributed lock for schema migration execution (prevents concurrent migrations).
+    record SchemaMigrationLockKey(String datasourceName) implements AetherKey {
+        private static final String PREFIX = "schema-lock/";
+
+        @Override
+        public String asString() {
+            return PREFIX + datasourceName;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static SchemaMigrationLockKey schemaMigrationLockKey(String datasourceName) {
+            return new SchemaMigrationLockKey(datasourceName);
+        }
+
+        public static Result<SchemaMigrationLockKey> schemaMigrationLockKey(String key, boolean isKey) {
+            if (!key.startsWith(PREFIX)) {
+                return SCHEMA_MIGRATION_LOCK_KEY_FORMAT_ERROR.apply(key)
+                                                             .result();
+            }
+            var name = key.substring(PREFIX.length());
+            if (name.isEmpty()) {
+                return SCHEMA_MIGRATION_LOCK_KEY_FORMAT_ERROR.apply(key)
+                                                             .result();
+            }
+            return success(new SchemaMigrationLockKey(name));
+        }
+    }
+
     /// Gossip key rotation key format:
     /// ```
     /// gossip-key-rotation
@@ -999,4 +1107,7 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> NODE_LIFECYCLE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-lifecycle key format: %s");
     Fn1<Cause, String> WORKER_DIRECTIVE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid worker-directive key format: %s");
     Fn1<Cause, String> ACTIVATION_DIRECTIVE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid activation key format: %s");
+    Fn1<Cause, String> BLUEPRINT_RESOURCES_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid blueprint-resources key format: %s");
+    Fn1<Cause, String> SCHEMA_VERSION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid schema-version key format: %s");
+    Fn1<Cause, String> SCHEMA_MIGRATION_LOCK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid schema-lock key format: %s");
 }
