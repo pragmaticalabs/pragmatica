@@ -418,15 +418,13 @@ public interface NodeDeploymentManager {
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, artifact);
                 var nodeArtifactValue = NodeArtifactValue.activeNodeArtifactValue(instanceNumber, methodNames);
                 KVCommand<AetherKey> command = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
-                return cluster.apply(List.of(command))
-                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
-                              .mapToUnit()
-                              .onSuccess(_ -> log.debug("Published {} endpoints for slice {}",
-                                                        methods.size(),
-                                                        artifact))
-                              .onFailure(cause -> log.error("Failed to publish endpoints for {}: {}",
-                                                            artifact,
-                                                            cause.message()));
+                return applyWithRetry(List.of(command),
+                                      0).onSuccess(_ -> log.debug("Published {} endpoints for slice {}",
+                                                                  methods.size(),
+                                                                  artifact))
+                                     .onFailure(cause -> log.error("Failed to publish endpoints for {}: {}",
+                                                                   artifact,
+                                                                   cause.message()));
             }
 
             private void handleDeactivating(SliceNodeKey sliceKey) {
@@ -488,15 +486,13 @@ public interface NodeDeploymentManager {
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, artifact);
                 var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
                 KVCommand<AetherKey> command = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
-                return cluster.apply(List.of(command))
-                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
-                              .mapToUnit()
-                              .onSuccess(_ -> log.debug("Unpublished {} endpoints for slice {}",
-                                                        methods.size(),
-                                                        artifact))
-                              .onFailure(cause -> log.error("Failed to unpublish endpoints for {}: {}",
-                                                            artifact,
-                                                            cause.message()));
+                return applyWithRetry(List.of(command),
+                                      0).onSuccess(_ -> log.debug("Unpublished {} endpoints for slice {}",
+                                                                  methods.size(),
+                                                                  artifact))
+                                     .onFailure(cause -> log.error("Failed to unpublish endpoints for {}: {}",
+                                                                   artifact,
+                                                                   cause.message()));
             }
 
             // --- Topic subscription publish/unpublish ---
@@ -517,15 +513,12 @@ public interface NodeDeploymentManager {
                                       .<KVCommand<AetherKey>> map(entry -> buildTopicSubscriptionPutCommand(artifact,
                                                                                                             entry))
                                       .toList();
-                return cluster.apply(commands)
-                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
-                              .mapToUnit()
-                              .onSuccess(_ -> log.debug("Published {} topic subscriptions for {}",
-                                                        entries.size(),
-                                                        artifact))
-                              .onFailure(cause -> log.error("Failed to publish topic subscriptions for {}: {}",
-                                                            artifact,
-                                                            cause.message()));
+                return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Published {} topic subscriptions for {}",
+                                                                            entries.size(),
+                                                                            artifact))
+                                     .onFailure(cause -> log.error("Failed to publish topic subscriptions for {}: {}",
+                                                                   artifact,
+                                                                   cause.message()));
             }
 
             private KVCommand<AetherKey> buildTopicSubscriptionPutCommand(Artifact artifact,
@@ -552,15 +545,12 @@ public interface NodeDeploymentManager {
                                       .<KVCommand<AetherKey>> map(entry -> buildTopicSubscriptionRemoveCommand(artifact,
                                                                                                                entry))
                                       .toList();
-                return cluster.apply(commands)
-                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
-                              .mapToUnit()
-                              .onSuccess(_ -> log.debug("Unpublished {} topic subscriptions for {}",
-                                                        entries.size(),
-                                                        artifact))
-                              .onFailure(cause -> log.error("Failed to unpublish topic subscriptions for {}: {}",
-                                                            artifact,
-                                                            cause.message()));
+                return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Unpublished {} topic subscriptions for {}",
+                                                                            entries.size(),
+                                                                            artifact))
+                                     .onFailure(cause -> log.error("Failed to unpublish topic subscriptions for {}: {}",
+                                                                   artifact,
+                                                                   cause.message()));
             }
 
             private KVCommand<AetherKey> buildTopicSubscriptionRemoveCommand(Artifact artifact,
@@ -649,15 +639,12 @@ public interface NodeDeploymentManager {
                 if (commands.isEmpty()) {
                     return Promise.unitPromise();
                 }
-                return cluster.apply(commands)
-                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
-                              .mapToUnit()
-                              .onSuccess(_ -> log.debug("Published {} scheduled tasks for {}",
-                                                        commands.size(),
-                                                        artifact))
-                              .onFailure(cause -> log.error("Failed to publish scheduled tasks for {}: {}",
-                                                            artifact,
-                                                            cause.message()));
+                return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Published {} scheduled tasks for {}",
+                                                                            commands.size(),
+                                                                            artifact))
+                                     .onFailure(cause -> log.error("Failed to publish scheduled tasks for {}: {}",
+                                                                   artifact,
+                                                                   cause.message()));
             }
 
             private KVCommand<AetherKey> buildScheduledTaskPutCommand(Artifact artifact,
@@ -688,15 +675,12 @@ public interface NodeDeploymentManager {
                                       .<KVCommand<AetherKey>> map(entry -> buildScheduledTaskRemoveCommand(artifact,
                                                                                                            entry))
                                       .toList();
-                return cluster.apply(commands)
-                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
-                              .mapToUnit()
-                              .onSuccess(_ -> log.debug("Unpublished {} scheduled tasks for {}",
-                                                        entries.size(),
-                                                        artifact))
-                              .onFailure(cause -> log.error("Failed to unpublish scheduled tasks for {}: {}",
-                                                            artifact,
-                                                            cause.message()));
+                return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Unpublished {} scheduled tasks for {}",
+                                                                            entries.size(),
+                                                                            artifact))
+                                     .onFailure(cause -> log.error("Failed to unpublish scheduled tasks for {}: {}",
+                                                                   artifact,
+                                                                   cause.message()));
             }
 
             private KVCommand<AetherKey> buildScheduledTaskRemoveCommand(Artifact artifact,
@@ -797,9 +781,10 @@ public interface NodeDeploymentManager {
             private Promise<SliceNodeKey> deleteSliceNodeKey(SliceNodeKey sliceKey) {
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, sliceKey.artifact());
                 KVCommand<AetherKey> removeArtifact = new KVCommand.Remove<>(nodeArtifactKey);
-                return cluster.apply(List.of(removeArtifact))
-                              .map(_ -> sliceKey)
-                              .onSuccess(_ -> log.debug("Deleted node-artifact-key {} from KV-Store", nodeArtifactKey));
+                return applyWithRetry(List.of(removeArtifact),
+                                      0).map(_ -> sliceKey)
+                                     .onSuccess(_ -> log.debug("Deleted node-artifact-key {} from KV-Store",
+                                                               nodeArtifactKey));
             }
 
             private void executeWithStateTransition(SliceNodeKey sliceKey,
@@ -924,6 +909,28 @@ public interface NodeDeploymentManager {
                           value.state(),
                           attempt + 1);
                 return updateSliceStateWithRetry(sliceKey, value, attempt + 1);
+            }
+
+            private Promise<Unit> applyWithRetry(List<KVCommand<AetherKey>> commands, int attempt) {
+                return cluster.apply(commands)
+                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
+                              .mapToUnit()
+                              .orElse(() -> retryApply(commands, attempt));
+            }
+
+            private Promise<Unit> retryApply(List<KVCommand<AetherKey>> commands, int attempt) {
+                if (attempt >= CONSENSUS_MAX_RETRIES) {
+                    log.warn("Consensus batch failed after {} retries ({} commands)",
+                             CONSENSUS_MAX_RETRIES,
+                             commands.size());
+                    return Causes.cause("Consensus batch timed out after " + CONSENSUS_MAX_RETRIES + " retries")
+                                 .promise();
+                }
+                log.debug("Retrying consensus batch ({} commands, attempt {}/{})",
+                          commands.size(),
+                          attempt + 1,
+                          CONSENSUS_MAX_RETRIES);
+                return applyWithRetry(commands, attempt + 1);
             }
 
             private void logStateUpdateFailure(SliceNodeKey sliceKey, Cause cause) {
