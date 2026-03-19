@@ -4,7 +4,34 @@ Build self-contained, independently deployable business capabilities with Aether
 
 ## Overview
 
-A **slice** is a microservice-like unit that exposes a single-responsibility API via a Java interface, communicates asynchronously using `Promise<T>`, declares dependencies explicitly through a factory method, and can be deployed, scaled, and updated independently.
+A **slice** is a service -- a typed Java interface with a factory method for dependencies, deployed and managed by the Aether runtime. If you have written a Spring `@Service`, you already know the programming model. Slices use request/response via `Promise<T>`, declare dependencies through factory method parameters (the equivalent of constructor injection), and can be deployed, scaled, and updated independently.
+
+## Slices Are Services, Not Actors
+
+A common first reaction from architects is "so you implemented actors." This is incorrect and the mental model is limiting. Slices are services -- the same programming model you already use.
+
+| Dimension | Actors (Akka/Erlang) | Slices |
+|-----------|---------------------|--------|
+| Communication | Untyped message passing, fire-and-forget | Typed method calls, request/response (`Promise<T>`) |
+| Interface | Receive handler with pattern matching | Standard Java interface with methods |
+| Dependencies | Actor references, message routing | Interface parameters in factory method (dependency injection) |
+| State model | Mutable private state, behavior switching | Stateless by design (state in DB/KV-Store) |
+| HTTP | Requires adapter layer | Native HTTP route declaration via `routes.toml` |
+| Paradigm shift | Fundamental (message-driven thinking) | None (service-oriented thinking) |
+| Learning curve | Steep (supervision, mailboxes, dead letters) | Minimal (it's a Java interface) |
+
+**What slices map to:**
+
+| You know this... | Slice equivalent |
+|-----------------|-----------------|
+| `@Service` class | `@Slice` interface |
+| `@Autowired` / constructor injection | Factory method parameters |
+| Service method call | `Promise<T>` method call (local or remote, transparent) |
+| `@RestController` | `routes.toml` (declarative HTTP routing) |
+| Kubernetes Deployment YAML | Blueprint TOML |
+| HPA (Horizontal Pod Autoscaler) | Built-in reactive + predictive scaling |
+
+There is no message passing, no mailbox, no behavior switching, no supervision tree. Your existing service-based designs, API contracts, domain decomposition, and interaction patterns transfer directly.
 
 ```java
 @Slice
@@ -38,6 +65,7 @@ public interface OrderService {
 | [Forge Guide](forge-guide.md) | Local development with Forge |
 | [Troubleshooting](troubleshooting.md) | Common issues and solutions |
 | [Migration Guide](migration-guide.md) | Moving from monolith to slices |
+| [FAQ](faq.md) | Common questions (actors vs slices, Spring comparison, migration) |
 | [Demos](demos.md) | Example applications and walkthroughs |
 
 ## Key Concepts

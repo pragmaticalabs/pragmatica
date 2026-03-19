@@ -4,7 +4,7 @@ Distributed runtime for Java -- scale horizontally without microservices complex
 
 ## Overview
 
-Aether lets you deploy Java business logic as **slices** and handles distribution, scaling, and resilience automatically. Write simple use cases, and Aether manages deployment across nodes, automatic scaling based on CPU/latency/request rate, failure recovery, and load balancing.
+Aether lets you deploy Java services as **slices** and handles distribution, scaling, and resilience automatically. A slice is a typed Java interface with dependency injection via factory method parameters -- the same service model as Spring `@Service`, without the infrastructure overhead. Write services, and Aether manages deployment across nodes, automatic scaling based on CPU/latency/request rate, failure recovery, and load balancing. No actors, no message passing, no new paradigm to learn.
 
 ```java
 @Slice
@@ -63,7 +63,7 @@ cd aether && mvn package -DskipTests
 
 | Category | Documents |
 |----------|-----------|
-| **Start Here** | [What is Aether?](docs/aether-overview.md), [Introduction](docs/articles/aether-introduction.md), [Getting Started](docs/slice-developers/getting-started.md), [Migration Guide](docs/slice-developers/migration-guide.md) |
+| **Start Here** | [What is Aether?](docs/aether-overview.md), [Introduction](docs/articles/aether-introduction.md), [Getting Started](docs/slice-developers/getting-started.md), [Migration Guide](docs/slice-developers/migration-guide.md), [FAQ](docs/slice-developers/faq.md) |
 | **Core Concepts** | [Scaling](docs/operators/scaling.md), [Slice Lifecycle](docs/contributors/slice-lifecycle.md), [Architecture](docs/contributors/architecture.md) |
 | **Reference** | [CLI Reference](docs/reference/cli.md), [Forge Guide](docs/slice-developers/forge-guide.md), [Configuration](docs/reference/configuration.md), [Management API](docs/reference/management-api.md) |
 | **Operations** | [Rolling Updates](docs/operators/rolling-updates.md), [Monitoring](docs/operators/monitoring.md), [Docker](docs/operators/docker-deployment.md) |
