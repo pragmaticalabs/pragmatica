@@ -6,9 +6,9 @@ import org.pragmatica.lang.Promise;
 public interface Repository {
     Promise<Location> locate(Artifact artifact);
 
-    /// Locate a blueprint-classifier artifact ({artifactId}-{version}-blueprint.jar).
-    /// Default delegates to locate() — repositories that support classifiers should override.
-    default Promise<Location> locateBlueprint(Artifact artifact) {
+    /// Locate an artifact with a Maven classifier (e.g., "blueprint" → {artifactId}-{version}-blueprint.jar).
+    /// Default delegates to locate() ignoring classifier — repositories that support classifiers should override.
+    default Promise<Location> locate(Artifact artifact, String classifier) {
         return locate(artifact);
     }
 }

@@ -46,8 +46,11 @@ public interface LocalRepository extends Repository {
             }
 
             @Override
-            public Promise<Location> locateBlueprint(Artifact artifact) {
-                return resolveLocation(artifact, "-blueprint").async()
+            public Promise<Location> locate(Artifact artifact, String classifier) {
+                var suffix = classifier.isEmpty()
+                             ? ""
+                             : "-" + classifier;
+                return resolveLocation(artifact, suffix).async()
                                       .timeout(locateTimeout);
             }
 

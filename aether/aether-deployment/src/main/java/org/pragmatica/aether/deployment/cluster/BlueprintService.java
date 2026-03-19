@@ -175,22 +175,34 @@ class BlueprintServiceInstance implements BlueprintService {
 
     @Override
     public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) {
-        return Artifact.artifact(artifactCoords)
-                       .async()
-                       .flatMap(this::resolveArtifactBytes)
-                       .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes)
-                                                                   .async())
-                       .flatMap(artifact -> expandAndStoreArtifact(artifact, artifactCoords))
-                       .onFailure(cause -> log.warn("Failed to publish blueprint from artifact: {}",
-                                                    cause.message()));
+        var parsed = parseArtifactWithClassifier(artifactCoords);
+        return parsed.artifact()
+                     .async()
+                     .flatMap(artifact -> resolveArtifactBytes(artifact,
+                                                               parsed.classifier()))
+                     .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes)
+                                                                 .async())
+                     .flatMap(artifact -> expandAndStoreArtifact(artifact,
+                                                                 parsed.baseCoords()))
+                     .onFailure(cause -> log.warn("Failed to publish blueprint from artifact: {}",
+                                                  cause.message()));
     }
 
-    private Promise<byte[]> resolveArtifactBytes(Artifact artifact) {
-        return repository.locateBlueprint(artifact)
+    private Promise<byte[]> resolveArtifactBytes(Artifact artifact, String classifier) {
+        return repository.locate(artifact, classifier)
                          .flatMap(BlueprintServiceInstance::readLocationBytes)
-                         .orElse(() -> repository.locate(artifact)
-                                                 .flatMap(BlueprintServiceInstance::readLocationBytes))
                          .orElse(() -> resolveFromArtifactStore(artifact));
+    }
+
+    private record ParsedArtifactCoords(Result<Artifact> artifact, String classifier, String baseCoords) {}
+
+    private static ParsedArtifactCoords parseArtifactWithClassifier(String coords) {
+        var parts = coords.split(":");
+        if (parts.length == 4) {
+            var baseCoords = parts[0] + ":" + parts[1] + ":" + parts[2];
+            return new ParsedArtifactCoords(Artifact.artifact(baseCoords), parts[3], baseCoords);
+        }
+        return new ParsedArtifactCoords(Artifact.artifact(coords), "", coords);
     }
 
     private Promise<byte[]> resolveFromArtifactStore(Artifact artifact) {
