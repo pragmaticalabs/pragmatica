@@ -484,8 +484,9 @@ public final class ForgeServer {
             return;
         }
         log.info("Found blueprint JAR: {}", jarPath);
-        uploadJarToCluster(jarPath, groupId, artifactId, version);
-        deployByCoordinates(artifactCoords);
+        if (uploadJarToCluster(jarPath, groupId, artifactId, version)) {
+            deployByCoordinates(artifactCoords);
+        }
     }
 
     private static Path resolveLocalMavenJar(String groupId, String artifactId, String version) {
@@ -498,12 +499,12 @@ public final class ForgeServer {
                        .resolve(fileName);
     }
 
-    private void uploadJarToCluster(Path jarPath, String groupId, String artifactId, String version) {
+    private boolean uploadJarToCluster(Path jarPath, String groupId, String artifactId, String version) {
         var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort)
                                 .or(forgeConfig.managementPort());
         var groupPath = groupId.replace('.', '/');
         var fileName = artifactId + "-" + version + "-blueprint.jar";
-        var uploadUri = "http://localhost:" + leaderPort + "/api/repository/" + groupPath + "/" + artifactId + "/" + version
+        var uploadUri = "http://localhost:" + leaderPort + "/repository/" + groupPath + "/" + artifactId + "/" + version
                         + "/" + fileName;
         log.info("Uploading blueprint JAR to cluster: PUT {}", uploadUri);
         try{
@@ -513,25 +514,23 @@ public final class ForgeServer {
                                      .header("Content-Type", "application/java-archive")
                                      .PUT(HttpRequest.BodyPublishers.ofByteArray(jarBytes))
                                      .build();
-            http.sendString(request)
-                .await(TimeSpan.timeSpan(30)
-                               .seconds())
-                .onSuccess(result -> handleUploadResponse(result, uploadUri))
-                .onFailure(cause -> log.error("Failed to upload JAR to cluster: {}",
-                                              cause.message()));
+            var result = http.sendString(request)
+                             .await(TimeSpan.timeSpan(30)
+                                            .seconds());
+            if (result.isSuccess() && result.unwrap()
+                                            .isSuccess()) {
+                log.info("Blueprint JAR uploaded successfully to cluster");
+                return true;
+            }
+            result.onSuccess(r -> log.error("Blueprint JAR upload failed (HTTP {}): {}",
+                                            r.statusCode(),
+                                            r.body()))
+                  .onFailure(cause -> log.error("Failed to upload JAR to cluster: {}",
+                                                cause.message()));
+            return false;
         } catch (Exception e) {
             log.error("Failed to read blueprint JAR from {}: {}", jarPath, e.getMessage());
-        }
-    }
-
-    private static void handleUploadResponse(org.pragmatica.http.HttpResult<String> result, String uploadUri) {
-        if (result.isSuccess()) {
-            log.info("Blueprint JAR uploaded successfully to cluster");
-        } else {
-            log.error("Blueprint JAR upload failed (HTTP {}): {} — URI: {}",
-                      result.statusCode(),
-                      result.body(),
-                      uploadUri);
+            return false;
         }
     }
 
