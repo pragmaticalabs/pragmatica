@@ -57,6 +57,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -153,6 +154,13 @@ public interface ClusterDeploymentManager {
     /// Handle SchemaVersionKey put — triggers schema migration orchestration.
     @MessageReceiver
     void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut);
+
+    /// Emitted when reconciliation adjusts slice instance count.
+    record ReconciliationAdjustment(Artifact artifact, int currentInstances, int desiredInstances) implements Message.Local {
+        public static ReconciliationAdjustment reconciliationAdjustment(Artifact artifact, int currentInstances, int desiredInstances) {
+            return new ReconciliationAdjustment(artifact, currentInstances, desiredInstances);
+        }
+    }
 
     /// Controls whether multi-slice blueprint deployments are atomic.
     enum DeploymentAtomicity {
@@ -1961,6 +1969,7 @@ public interface ClusterDeploymentManager {
                                  artifact,
                                  currentInstances.size(),
                                  desiredInstances);
+                        emitScalingEvent(artifact, currentInstances.size(), desiredInstances);
                         issueAllocationCommands(artifact, desiredInstances);
                         reconciled++;
                     }
@@ -1971,6 +1980,10 @@ public interface ClusterDeploymentManager {
                 cleanupOrphanedSliceEntries();
                 cleanupStaleNodeRoutes();
                 detectStuckTransitionalStates();
+            }
+
+            private void emitScalingEvent(Artifact artifact, int currentCount, int desiredCount) {
+                router.route(ReconciliationAdjustment.reconciliationAdjustment(artifact, currentCount, desiredCount));
             }
 
             /// Track a slice becoming ACTIVE in its parent blueprint.

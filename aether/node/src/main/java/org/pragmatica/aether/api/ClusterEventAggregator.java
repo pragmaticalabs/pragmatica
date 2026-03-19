@@ -3,6 +3,7 @@ package org.pragmatica.aether.api;
 import org.pragmatica.aether.api.ClusterEvent.EventType;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.controller.ScalingEvent;
+import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
 import org.pragmatica.consensus.leader.LeaderNotification;
@@ -235,6 +236,25 @@ public final class ClusterEventAggregator {
                                                     String.valueOf(event.previousInstances()),
                                                     "newInstances",
                                                     String.valueOf(event.newInstances()))));
+    }
+
+    public void onReconciliationAdjustment(ClusterDeploymentManager.ReconciliationAdjustment event) {
+        var direction = event.currentInstances() < event.desiredInstances() ? "up" : "down";
+        var eventType = event.currentInstances() < event.desiredInstances() ? EventType.SCALE_UP : EventType.SCALE_DOWN;
+        buffer.add(ClusterEvent.clusterEvent(eventType,
+                                             Severity.INFO,
+                                             "Reconciliation: " + event.artifact()
+                                                                       .asString() + " adjusted " + direction
+                                             + " from " + event.currentInstances() + " to " + event.desiredInstances() + " instances",
+                                             Map.of("artifact",
+                                                    event.artifact()
+                                                         .asString(),
+                                                    "previousInstances",
+                                                    String.valueOf(event.currentInstances()),
+                                                    "desiredInstances",
+                                                    String.valueOf(event.desiredInstances()),
+                                                    "trigger",
+                                                    "reconciliation")));
     }
 
     public void onConnectionEstablished(NetworkServiceMessage.ConnectionEstablished event) {
