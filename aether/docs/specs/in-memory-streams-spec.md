@@ -28,6 +28,7 @@
 14. [Design Decisions](#14-design-decisions)
 15. [Prior Art Comparison](#15-prior-art-comparison)
 16. [Open Questions](#16-open-questions)
+17. [Persistence Path](#17-persistence-path)
 
 ---
 
@@ -851,6 +852,69 @@ Northguard and Aether streams are not competing designs — they target differen
 | OQ-6 | **Exactly-once semantics:** For `strong` consistency streams, can we guarantee exactly-once produce and consume? Rabia's idempotent command application handles produce dedup. Consumer-side exactly-once requires transactional cursor commit + side-effect. | Phase 2 | Produce-side exactly-once is achievable via Rabia dedup. Consumer-side is harder — requires application-level idempotency or a transaction model spanning cursor commit and KV-Store mutation. |
 | OQ-7 | **Memory accounting:** How is stream memory accounted for in CDM's resource tracking? Should streams have per-node memory budgets? | Phase 1 | Governor health reports already include memory metrics. Stream memory is part of the node's total memory. Explicit per-stream budgets prevent a single stream from starving slices. |
 | OQ-8 | **Compression:** Should events be compressed in the ring buffer (reducing memory footprint at CPU cost)? Batch compression (like Kafka's record batch compression) amortizes overhead. | Phase 2 | In-memory streams are already bounded. Compression extends effective capacity at the cost of produce/consume latency. Configurable per stream. |
+
+---
+
+## 17. Persistence Path
+
+### 17.1 Transparent Storage Upgrade
+
+The in-memory ring buffer is a deliberate Phase 1 scope constraint, not an architectural limitation. The governor already owns the partition, sequences events, and manages replication. Adding a persistent backend behind the ring buffer is a configuration change, not an architecture change.
+
+```toml
+[streams.order-events]
+partitions = 6
+retention = "time"
+retention-value = "7d"
+storage = "persistent"       # ring buffer backed by persistent storage
+buffer-size = 100000         # in-memory read cache (most recent events)
+```
+
+In this model:
+- The governor writes to persistent storage after sequencing (append-only, sequential writes).
+- The ring buffer becomes a **read cache** in front of the persistent log.
+- Consumers reading recent events hit memory. Consumers replaying from earlier offsets fall back to storage.
+- The slice API does not change. Producer and consumer code is identical for in-memory and persistent streams.
+
+### 17.2 PostgreSQL as Persistent Backend
+
+Aether already has an async PostgreSQL driver with built-in pipelining. Stream partitions map naturally to database tables (one table per partition, append-only inserts). The pipelining driver makes sequential appends efficient — multiple partition writes in flight over a single connection.
+
+This opens a critical capability: **transactional cursor commits alongside application state mutations**.
+
+```
+Consumer Slice                  PostgreSQL
+     |                              |
+     |  BEGIN                       |
+     |--[INSERT INTO results]------>|   (application side effect)
+     |--[UPDATE stream_cursors]--->|   (cursor commit)
+     |  COMMIT                      |
+     |                              |
+```
+
+Consumer offset and business side effect in one transaction. If the transaction fails, both roll back. If it commits, both are durable. This is **exactly-once consumer semantics** without requiring application-level idempotency — the hardest problem in stream processing, solved by the database's existing ACID guarantees.
+
+### 17.3 Infrastructure Elimination Progression
+
+Each phase eliminates external infrastructure for a broader class of streaming use cases:
+
+| Phase | Capability | Eliminates |
+|-------|-----------|------------|
+| **Phase 1: In-memory** | Real-time windowed processing, analytics pipelines, async communication | Kafka for non-durable use cases, Redis Streams |
+| **Phase 2: Persistent** | Durable event sourcing, unbounded replay, long-retention audit logs | Kafka for durable streaming, Pulsar |
+| **Phase 3: Transactional** | Exactly-once processing, transactional outbox, CDC | Kafka + Debezium + Kafka Connect, transactional outbox libraries |
+
+At the end of this progression, the entire event-driven architecture stack — Kafka, ZooKeeper/KRaft, Schema Registry, Kafka Connect, Debezium, consumer frameworks — collapses into Aether + PostgreSQL.
+
+### 17.4 Design Constraints for Phase 1
+
+The in-memory Phase 1 design must not preclude the persistence path. Key constraints to preserve:
+
+1. **Governor sequencing is authoritative.** Offsets are assigned by the governor before any storage write. Persistent storage is append-only — it never assigns offsets.
+2. **Ring buffer interface is abstract.** The ring buffer implementation must be swappable. Phase 1 uses `InMemoryRingBuffer`. Phase 2 introduces `PersistentRingBuffer` that writes through to storage and uses the in-memory buffer as a read cache.
+3. **Cursor commit is a separate operation.** Cursor storage (consensus KV-Store in Phase 1) must be replaceable with database-transactional commits in Phase 3 without changing the consumer API.
+4. **Event serialization is opaque bytes.** The ring buffer stores `byte[]` payloads. Persistent storage writes the same bytes. No format coupling between the buffer layer and the storage layer.
+5. **Retention policy is storage-aware.** Time/count/size retention applies regardless of backend. Persistent storage adds a `compact` retention mode (keep latest per key) — log compaction, Phase 2+.
 
 ---
 
