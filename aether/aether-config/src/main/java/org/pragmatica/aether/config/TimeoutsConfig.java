@@ -67,7 +67,7 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
                                           timeSpan(1).minutes(),
                                           timeSpan(30).seconds(),
                                           timeSpan(2).minutes(),
-                                          timeSpan(5).minutes(),
+                                          timeSpan(90).seconds(),
                                           timeSpan(2).seconds(),
                                           timeSpan(30).seconds(),
                                           60);
