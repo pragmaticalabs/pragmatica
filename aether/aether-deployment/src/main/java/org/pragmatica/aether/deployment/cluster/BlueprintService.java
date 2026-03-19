@@ -20,6 +20,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintResourcesValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.slice.topology.SliceTopology;
 import org.pragmatica.aether.slice.topology.TopologyParser;
@@ -174,19 +175,35 @@ class BlueprintServiceInstance implements BlueprintService {
 
     @Override
     public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) {
-        return artifactStore.async(ARTIFACT_STORE_NOT_CONFIGURED)
-                            .flatMap(store -> resolveAndParseArtifact(store, artifactCoords))
-                            .flatMap(artifact -> expandAndStoreArtifact(artifact, artifactCoords))
-                            .onFailure(cause -> log.warn("Failed to publish blueprint from artifact: {}",
-                                                         cause.message()));
-    }
-
-    private Promise<BlueprintArtifact> resolveAndParseArtifact(ArtifactStore store, String artifactCoords) {
         return Artifact.artifact(artifactCoords)
                        .async()
-                       .flatMap(store::resolve)
+                       .flatMap(this::resolveArtifactBytes)
                        .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes)
-                                                                   .async());
+                                                                   .async())
+                       .flatMap(artifact -> expandAndStoreArtifact(artifact, artifactCoords))
+                       .onFailure(cause -> log.warn("Failed to publish blueprint from artifact: {}",
+                                                    cause.message()));
+    }
+
+    private Promise<byte[]> resolveArtifactBytes(Artifact artifact) {
+        return repository.locate(artifact)
+                         .flatMap(BlueprintServiceInstance::readLocationBytes)
+                         .orElse(() -> resolveFromArtifactStore(artifact));
+    }
+
+    private Promise<byte[]> resolveFromArtifactStore(Artifact artifact) {
+        return artifactStore.async(ARTIFACT_STORE_NOT_CONFIGURED)
+                            .flatMap(store -> store.resolve(artifact));
+    }
+
+    private static Promise<byte[]> readLocationBytes(Location location) {
+        return Promise.lift(Causes::fromThrowable,
+                            () -> {
+                                try (var stream = location.url()
+                                                          .openStream()) {
+                                    return stream.readAllBytes();
+                                }
+                            });
     }
 
     @Override
