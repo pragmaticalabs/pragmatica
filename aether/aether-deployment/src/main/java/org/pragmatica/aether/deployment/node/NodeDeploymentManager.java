@@ -123,8 +123,9 @@ public interface NodeDeploymentManager {
                                          TimeSpan transitionRetryDelay) implements NodeDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(ActiveNodeDeploymentState.class);
 
-            private static final TimeSpan CONSENSUS_OPERATION_TIMEOUT = TimeSpan.timeSpan(15)
+            private static final TimeSpan CONSENSUS_OPERATION_TIMEOUT = TimeSpan.timeSpan(30)
                                                                                .seconds();
+            private static final int CONSENSUS_MAX_RETRIES = 2;
 
             private static final Fn1<Cause, SliceNodeKey> CLEANUP_FAILED = Causes.forOneValue("Failed to cleanup slice %s during abrupt removal");
 
@@ -871,9 +872,14 @@ public interface NodeDeploymentManager {
             }
 
             private Promise<SliceNodeKey> updateSliceState(SliceNodeKey sliceKey, SliceNodeValue value) {
-                log.debug("updateSliceState: {} -> {}",
+                return updateSliceStateWithRetry(sliceKey, value, 0);
+            }
+
+            private Promise<SliceNodeKey> updateSliceStateWithRetry(SliceNodeKey sliceKey, SliceNodeValue value, int attempt) {
+                log.debug("updateSliceState: {} -> {} (attempt {})",
                           sliceKey,
-                          value.state());
+                          value.state(),
+                          attempt);
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, sliceKey.artifact());
                 var nodeArtifactValue = value.state() == SliceState.FAILED
                                         ? NodeArtifactValue.failedNodeArtifactValue(Causes.cause(value.failureReason()
@@ -886,7 +892,23 @@ public interface NodeDeploymentManager {
                               .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
                                                         sliceKey.artifact(),
                                                         value.state()))
-                              .onFailure(cause -> logStateUpdateFailure(sliceKey, cause));
+                              .orElse(() -> retryConsensusOperation(sliceKey, value, attempt));
+            }
+
+            private Promise<SliceNodeKey> retryConsensusOperation(SliceNodeKey sliceKey, SliceNodeValue value, int attempt) {
+                if (attempt >= CONSENSUS_MAX_RETRIES) {
+                    log.warn("Consensus operation failed after {} retries for {} -> {}",
+                             CONSENSUS_MAX_RETRIES,
+                             sliceKey.artifact(),
+                             value.state());
+                    return Causes.cause("Consensus operation timed out after " + CONSENSUS_MAX_RETRIES + " retries")
+                                .promise();
+                }
+                log.debug("Retrying consensus operation for {} -> {} (attempt {})",
+                          sliceKey.artifact(),
+                          value.state(),
+                          attempt + 1);
+                return updateSliceStateWithRetry(sliceKey, value, attempt + 1);
             }
 
             private void logStateUpdateFailure(SliceNodeKey sliceKey, Cause cause) {
