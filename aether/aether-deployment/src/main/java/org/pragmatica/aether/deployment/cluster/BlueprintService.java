@@ -196,13 +196,16 @@ class BlueprintServiceInstance implements BlueprintService {
 
     private record ParsedArtifactCoords(Result<Artifact> artifact, String classifier, String baseCoords) {}
 
+    private static final Cause MISSING_CLASSIFIER = Causes.cause(
+        "Invalid artifact coordinates: expected groupId:artifactId:version:classifier (e.g., org.example:my-app:1.0.0:blueprint)");
+
     private static ParsedArtifactCoords parseArtifactWithClassifier(String coords) {
         var parts = coords.split(":");
         if (parts.length == 4) {
             var baseCoords = parts[0] + ":" + parts[1] + ":" + parts[2];
             return new ParsedArtifactCoords(Artifact.artifact(baseCoords), parts[3], baseCoords);
         }
-        return new ParsedArtifactCoords(Artifact.artifact(coords), "", coords);
+        return new ParsedArtifactCoords(MISSING_CLASSIFIER.result(), "", coords);
     }
 
     private Promise<byte[]> resolveFromArtifactStore(Artifact artifact) {
