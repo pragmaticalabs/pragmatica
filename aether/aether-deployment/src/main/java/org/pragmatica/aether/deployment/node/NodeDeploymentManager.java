@@ -243,7 +243,7 @@ public interface NodeDeploymentManager {
                 // 1. Write LOADING to KV first - wait for consensus before starting load
                 transitionTo(sliceKey, SliceState.LOADING).flatMap(_ -> loadSliceWithTimeout(sliceKey))
                             .flatMap(_ -> transitionTo(sliceKey, SliceState.LOADED))
-                            .onFailure(cause -> handleLoadingFailure(sliceKey, cause));
+                            .withFailure(cause -> handleLoadingFailure(sliceKey, cause));
             }
 
             private Promise<SliceStore.LoadedSlice> loadSliceWithTimeout(SliceNodeKey sliceKey) {
@@ -292,7 +292,7 @@ public interface NodeDeploymentManager {
                             .flatMap(_ -> transitionTo(sliceKey, SliceState.ACTIVE))
                             .flatMap(_ -> publishEndpointsAndRoutes(sliceKey))
                             .timeout(activationChainTimeout)
-                            .onFailure(cause -> handleActivationFailure(sliceKey, cause));
+                            .withFailure(cause -> handleActivationFailure(sliceKey, cause));
             }
 
             private Promise<Unit> activateSliceWithTimeout(SliceNodeKey sliceKey) {
@@ -431,10 +431,10 @@ public interface NodeDeploymentManager {
                             .flatMap(_ -> unpublishTopicSubscriptions(sliceKey))
                             .flatMap(_ -> unpublishScheduledTasks(sliceKey))
                             .flatMap(_ -> unpublishHttpRoutes(sliceKey))
-                            .onSuccessRun(() -> unregisterSliceFromInvocation(sliceKey))
+                            .withSuccess(_ -> unregisterSliceFromInvocation(sliceKey))
                             .flatMap(_ -> deactivateSliceWithTimeout(sliceKey))
                             .flatMap(_ -> transitionTo(sliceKey, SliceState.LOADED))
-                            .onFailure(cause -> handleDeactivationFailure(sliceKey, cause));
+                            .withFailure(cause -> handleDeactivationFailure(sliceKey, cause));
             }
 
             private Promise<Unit> deactivateSliceWithTimeout(SliceNodeKey sliceKey) {
@@ -744,11 +744,11 @@ public interface NodeDeploymentManager {
                             .flatMap(_ -> unpublishTopicSubscriptions(sliceKey))
                             .flatMap(_ -> unpublishScheduledTasks(sliceKey))
                             .flatMap(_ -> unpublishHttpRoutes(sliceKey))
-                            .onSuccessRun(() -> unregisterSliceFromInvocation(sliceKey))
+                            .withSuccess(_ -> unregisterSliceFromInvocation(sliceKey))
                             .flatMap(_ -> unloadSliceWithTimeout(sliceKey))
                             .flatMap(_ -> deleteSliceNodeKey(sliceKey))
-                            .onSuccess(_ -> removeFromDeployments(sliceKey))
-                            .onFailure(cause -> handleUnloadFailure(sliceKey, cause));
+                            .withSuccess(_ -> removeFromDeployments(sliceKey))
+                            .withFailure(cause -> handleUnloadFailure(sliceKey, cause));
             }
 
             private Promise<Unit> unloadSliceWithTimeout(SliceNodeKey sliceKey) {
