@@ -186,8 +186,10 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private Promise<byte[]> resolveArtifactBytes(Artifact artifact) {
-        return repository.locate(artifact)
+        return repository.locateBlueprint(artifact)
                          .flatMap(BlueprintServiceInstance::readLocationBytes)
+                         .orElse(() -> repository.locate(artifact)
+                                                 .flatMap(BlueprintServiceInstance::readLocationBytes))
                          .orElse(() -> resolveFromArtifactStore(artifact));
     }
 
