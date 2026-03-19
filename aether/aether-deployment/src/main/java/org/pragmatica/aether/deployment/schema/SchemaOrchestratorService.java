@@ -16,8 +16,11 @@ import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Remove;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import java.util.List;
 
@@ -103,19 +106,50 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private Promise<Unit> executeMigrationFlow(String datasourceName, SchemaVersionValue value) {
-        return acquireLock(datasourceName).flatMap(_ -> updateStatus(datasourceName, value, SchemaStatus.MIGRATING))
-                          .flatMap(_ -> resolveAndParseMigrations(datasourceName, value))
-                          .flatMap(_ -> markCompleted(datasourceName, value))
-                          .onFailure(cause -> handleMigrationFailure(datasourceName, value, cause))
-                          .flatMap(_ -> releaseLock(datasourceName));
+        return acquireLock(datasourceName).flatMap(_ -> runMigration(datasourceName, value))
+                          .flatMap(_ -> releaseLock(datasourceName))
+                          .onFailure(_ -> releaseLockSilently(datasourceName));
     }
+
+    private Promise<Unit> runMigration(String datasourceName, SchemaVersionValue value) {
+        return updateStatus(datasourceName, value, SchemaStatus.MIGRATING).flatMap(_ -> resolveAndParseMigrations(datasourceName,
+                                                                                                                  value))
+                           .flatMap(_ -> markCompleted(datasourceName, value))
+                           .onFailure(cause -> logMigrationFailure(datasourceName, value, cause));
+    }
+
+    private void logMigrationFailure(String datasourceName, SchemaVersionValue value, Cause cause) {
+        log.error("Schema migration failed for datasource '{}': {}", datasourceName, cause.message());
+        updateStatus(datasourceName, value, SchemaStatus.FAILED)
+        .onFailure(c -> log.error("Failed to update status to FAILED for '{}': {}", datasourceName, c.message()));
+    }
+
+    private void releaseLockSilently(String datasourceName) {
+        releaseLock(datasourceName)
+        .onFailure(c -> log.error("Failed to release lock for '{}': {}", datasourceName, c.message()));
+    }
+
+    private static final Cause LOCK_HELD = Causes.cause("Schema migration lock held by another node");
 
     private Promise<Unit> acquireLock(String datasourceName) {
         var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
+        if (isLockHeldByAnotherNode(lockKey)) {
+            return LOCK_HELD.promise();
+        }
         var lockValue = SchemaMigrationLockValue.schemaMigrationLockValue(datasourceName, self, LOCK_TTL_MS);
         KVCommand<AetherKey> command = new Put<>(lockKey, lockValue);
         return cluster.apply(List.of(command))
                       .mapToUnit();
+    }
+
+    private boolean isLockHeldByAnotherNode(SchemaMigrationLockKey lockKey) {
+        return kvStore.get(lockKey)
+                      .filter(SchemaMigrationLockValue.class::isInstance)
+                      .map(SchemaMigrationLockValue.class::cast)
+                      .filter(lock -> !lock.heldBy()
+                                           .equals(self))
+                      .filter(lock -> !lock.isExpired())
+                      .isPresent();
     }
 
     private Promise<Unit> releaseLock(String datasourceName) {
@@ -138,11 +172,13 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private Promise<Unit> resolveAndParseMigrations(String datasourceName, SchemaVersionValue value) {
-        var artifactCoords = value.artifactCoords();
-        if (artifactCoords == null || artifactCoords.isEmpty()) {
-            log.warn("No artifact coordinates for datasource: {}, skipping migration", datasourceName);
-            return Promise.success(unit());
-        }
+        return Option.option(value.artifactCoords())
+                     .filter(s -> !s.isEmpty())
+                     .map(coords -> resolveArtifactAndLog(datasourceName, coords))
+                     .or(logNoArtifactCoords(datasourceName));
+    }
+
+    private Promise<Unit> resolveArtifactAndLog(String datasourceName, String artifactCoords) {
         return Artifact.artifact(artifactCoords)
                        .async()
                        .flatMap(artifactStore::resolve)
@@ -151,32 +187,25 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                        .flatMap(artifact -> logMigrationsFound(datasourceName, artifact));
     }
 
+    private Promise<Unit> logNoArtifactCoords(String datasourceName) {
+        log.warn("No artifact coordinates for datasource: {}, skipping migration", datasourceName);
+        return Promise.success(unit());
+    }
+
     private static Promise<Unit> logMigrationsFound(String datasourceName,
                                                     org.pragmatica.aether.slice.blueprint.BlueprintArtifact artifact) {
-        var migrations = artifact.schemaMigrations()
-                                 .get(datasourceName);
-        if (migrations == null || migrations.isEmpty()) {
-            log.warn("No migrations found for datasource '{}' in artifact", datasourceName);
-        } else {
-            log.info("Found {} migration scripts for datasource '{}' — "
-                     + "skipping execution (SqlConnector not yet provisioned in orchestrator)",
-                     migrations.size(),
-                     datasourceName);
-        }
+        Option.option(artifact.schemaMigrations()
+                              .get(datasourceName))
+              .filter(list -> !list.isEmpty())
+              .onEmpty(() -> log.warn("No migrations found for datasource '{}' in artifact", datasourceName))
+              .onPresent(list -> log.info("Found {} migration scripts for datasource '{}' — "
+                                          + "skipping execution (SqlConnector not yet provisioned in orchestrator)",
+                                          list.size(),
+                                          datasourceName));
         return Promise.success(unit());
     }
 
     private Promise<Unit> markCompleted(String datasourceName, SchemaVersionValue value) {
         return updateStatus(datasourceName, value, SchemaStatus.COMPLETED);
-    }
-
-    private void handleMigrationFailure(String datasourceName,
-                                        SchemaVersionValue value,
-                                        org.pragmatica.lang.Cause cause) {
-        log.error("Schema migration failed for datasource '{}': {}", datasourceName, cause.message());
-        updateStatus(datasourceName, value, SchemaStatus.FAILED).flatMap(_ -> releaseLock(datasourceName))
-                    .onFailure(c -> log.error("Failed to update status/release lock for '{}': {}",
-                                              datasourceName,
-                                              c.message()));
     }
 }

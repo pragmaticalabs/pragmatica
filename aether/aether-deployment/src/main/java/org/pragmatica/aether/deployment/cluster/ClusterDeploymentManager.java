@@ -26,6 +26,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
@@ -265,7 +266,7 @@ public interface ClusterDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
             private static final int MAX_RETRIES = 5;
             private static final long MAX_RETRY_DELAY_SECONDS = 30;
-            private static final int STUCK_TIMEOUT_MULTIPLIER = 2;
+            private static final int STUCK_TIMEOUT_MULTIPLIER = 3;
 
             /// Tracks an in-flight blueprint deployment for atomicity enforcement.
             record InFlightBlueprint(BlueprintId id,
@@ -293,20 +294,19 @@ public interface ClusterDeploymentManager {
 
             /// Start periodic reconciliation to detect and remediate stuck transitional states.
             void startReconcileTimer() {
-                var future = SharedScheduler.scheduleAtFixedRate(() -> {
-                                                                     if (!deactivated.get()) {
-                                                                         reconcile();
-                                                                     }
-                                                                 },
-                                                                 reconcileInterval);
+                var future = SharedScheduler.scheduleAtFixedRate(this::reconcileIfActive, reconcileInterval);
                 reconcileTimer.set(future);
             }
 
-            private void cancelReconcileTimer() {
-                var future = reconcileTimer.getAndSet(null);
-                if (future != null) {
-                    future.cancel(false);
+            private void reconcileIfActive() {
+                if (!deactivated.get()) {
+                    reconcile();
                 }
+            }
+
+            private void cancelReconcileTimer() {
+                Option.option(reconcileTimer.getAndSet(null))
+                      .onPresent(future -> future.cancel(false));
             }
 
             /// Start auto-heal cooldown for initial cluster formation.
@@ -316,15 +316,16 @@ public interface ClusterDeploymentManager {
                 log.info("AUTO-HEAL: Starting {}ms cooldown for initial cluster formation",
                          autoHealConfig.startupCooldown()
                                        .millis());
-                SharedScheduler.schedule(() -> {
-                                             if (deactivated.get()) {
-                                                 return;
-                                             }
-                                             cooldownActive.set(false);
-                                             log.info("AUTO-HEAL: Cooldown expired, checking cluster health");
-                                             checkAndScheduleAutoHeal();
-                                         },
-                                         autoHealConfig.startupCooldown());
+                SharedScheduler.schedule(this::onCooldownExpired, autoHealConfig.startupCooldown());
+            }
+
+            private void onCooldownExpired() {
+                if (deactivated.get()) {
+                    return;
+                }
+                cooldownActive.set(false);
+                log.info("AUTO-HEAL: Cooldown expired, checking cluster health");
+                checkAndScheduleAutoHeal();
             }
 
             /// Rebuild state from KVStore snapshot on leader activation.
@@ -443,7 +444,7 @@ public interface ClusterDeploymentManager {
             }
 
             private void restoreSliceStateFromNodeArtifact(NodeArtifactKey key, NodeArtifactValue value) {
-                var sliceKey = new SliceNodeKey(key.artifact(), key.nodeId());
+                var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
                 sliceStates.put(sliceKey, value.state());
                 updateTransitionalTimestamp(sliceKey, value.state());
             }
@@ -496,7 +497,7 @@ public interface ClusterDeploymentManager {
                                   .key();
                 var value = valuePut.cause()
                                     .value();
-                trackSliceState(new SliceNodeKey(key.artifact(), key.nodeId()),
+                trackSliceState(SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId()),
                                 new SliceNodeValue(value.state(), value.failureReason(), value.fatal()));
             }
 
@@ -504,7 +505,7 @@ public interface ClusterDeploymentManager {
             public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
                 var key = valueRemove.cause()
                                      .key();
-                handleSliceNodeRemoval(new SliceNodeKey(key.artifact(), key.nodeId()));
+                handleSliceNodeRemoval(SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId()));
             }
 
             @Override
@@ -514,7 +515,7 @@ public interface ClusterDeploymentManager {
                 var datasource = value.datasourceName();
                 switch (value.status()) {
                     case PENDING -> handleSchemaPending(datasource);
-                    case COMPLETED -> log.info("Schema migration completed for datasource: {}", datasource);
+                    case COMPLETED -> handleSchemaCompleted(datasource);
                     case FAILED -> log.warn("Schema migration failed for datasource: {}", datasource);
                     case MIGRATING -> log.debug("Schema migration in progress for datasource: {}", datasource);
                 }
@@ -526,6 +527,16 @@ public interface ClusterDeploymentManager {
                                   .onFailure(cause -> log.error("Schema migration failed for {}: {}",
                                                                 datasource,
                                                                 cause.message()));
+            }
+
+            private void handleSchemaCompleted(String datasource) {
+                log.info("Schema migration completed for datasource: {}", datasource);
+                sliceStates.entrySet()
+                           .stream()
+                           .filter(entry -> entry.getValue() == SliceState.LOADED)
+                           .map(Map.Entry::getKey)
+                           .toList()
+                           .forEach(this::tryActivateIfDependenciesReady);
             }
 
             @Override
@@ -959,11 +970,13 @@ public interface ClusterDeploymentManager {
             }
 
             private void cancelAutoHeal() {
-                var future = autoHealFuture.getAndSet(null);
-                if (future != null) {
-                    future.cancel(false);
-                    log.trace("AUTO-HEAL: Cancelled periodic recheck");
-                }
+                Option.option(autoHealFuture.getAndSet(null))
+                      .onPresent(this::cancelAutoHealFuture);
+            }
+
+            private void cancelAutoHealFuture(ScheduledFuture<?> future) {
+                future.cancel(false);
+                log.trace("AUTO-HEAL: Cancelled periodic recheck");
             }
 
             private void handleSliceTargetChange(SliceTargetKey key, SliceTargetValue value) {
@@ -1023,7 +1036,8 @@ public interface ClusterDeploymentManager {
                                       expanded.id()
                                               .asString(),
                                       slice.artifact(),
-                                      conflict.fold(() -> "", BlueprintId::asString));
+                                      conflict.map(BlueprintId::asString)
+                                              .or(""));
                             return;
                         }
                     }
@@ -1129,8 +1143,7 @@ public interface ClusterDeploymentManager {
                 }
                 // When slice becomes ACTIVE, check if any dependent slices can now be activated
                 if (state == SliceState.ACTIVE) {
-                    retryCounters.remove(sliceKey.artifact()
-                                                 .asString());
+                    retryCounters.remove(sliceKey.asString());
                     activateDependentSlices(sliceKey.artifact());
                     // Track active slices for in-flight blueprints
                     trackBlueprintSliceActive(sliceKey.artifact());
@@ -1175,18 +1188,14 @@ public interface ClusterDeploymentManager {
             }
 
             private void handleTransientFailure(SliceNodeKey sliceKey, String failureReason) {
-                var retryCount = retryCounters.merge(sliceKey.artifact()
-                                                             .asString(),
-                                                     1,
-                                                     Integer::sum);
+                var retryCount = retryCounters.merge(sliceKey.asString(), 1, Integer::sum);
                 if (retryCount > MAX_RETRIES) {
                     log.error("Max retries ({}) exceeded for {} on {}: {} — giving up",
                               MAX_RETRIES,
                               sliceKey.artifact(),
                               sliceKey.nodeId(),
                               failureReason);
-                    retryCounters.remove(sliceKey.artifact()
-                                                 .asString());
+                    retryCounters.remove(sliceKey.asString());
                     router.route(DeploymentFailed.deploymentFailed(sliceKey.artifact(),
                                                                    sliceKey.nodeId(),
                                                                    SliceState.FAILED,
@@ -1205,9 +1214,28 @@ public interface ClusterDeploymentManager {
                 SharedScheduler.schedule(this::reconcile, timeSpan(delaySeconds).seconds());
             }
 
-            /// Try to activate a slice if all its dependencies are ACTIVE.
+            /// Check if all schema migrations are complete (not PENDING or MIGRATING).
+            private boolean areSchemasReady(SliceNodeKey sliceKey) {
+                var schemasReady = new AtomicBoolean(true);
+                kvStore.forEach(SchemaVersionKey.class,
+                                SchemaVersionValue.class,
+                                (_, value) -> checkSchemaBlocking(value, schemasReady));
+                return schemasReady.get();
+            }
+
+            private static void checkSchemaBlocking(SchemaVersionValue value, AtomicBoolean schemasReady) {
+                if (value.status() == SchemaStatus.PENDING || value.status() == SchemaStatus.MIGRATING) {
+                    schemasReady.set(false);
+                }
+            }
+
+            /// Try to activate a slice if all its dependencies are ACTIVE and schemas are ready.
             private void tryActivateIfDependenciesReady(SliceNodeKey sliceKey) {
                 var artifact = sliceKey.artifact();
+                if (!areSchemasReady(sliceKey)) {
+                    log.debug("Slice {} waiting for schema migrations to complete", artifact);
+                    return;
+                }
                 var dependencies = sliceDependencies.getOrDefault(artifact, Set.of());
                 if (dependencies.isEmpty()) {
                     log.debug("Slice {} has no dependencies, activating immediately", artifact);
@@ -1267,12 +1295,9 @@ public interface ClusterDeploymentManager {
             private void issueLoadCommand(SliceNodeKey sliceKey) {
                 log.debug("Issuing LOAD command for {}", sliceKey);
                 var timestamp = System.currentTimeMillis();
-                applyStateWrite(sliceKey, SliceState.LOAD).withSuccess(_ -> {
-                                                                           sliceStates.put(sliceKey, SliceState.LOAD);
-                                                                           router.route(DeploymentStarted.deploymentStarted(sliceKey.artifact(),
-                                                                                                                            sliceKey.nodeId(),
-                                                                                                                            timestamp));
-                                                                       })
+                applyStateWrite(sliceKey, SliceState.LOAD).withSuccess(_ -> router.route(DeploymentStarted.deploymentStarted(sliceKey.artifact(),
+                                                                                                                             sliceKey.nodeId(),
+                                                                                                                             timestamp)))
                                .onFailure(cause -> handleSliceNodeWriteFailure(sliceKey, cause));
             }
 
@@ -1627,7 +1652,7 @@ public interface ClusterDeploymentManager {
             }
 
             private boolean tryAllocate(Artifact artifact, NodeId node) {
-                var sliceKey = new SliceNodeKey(artifact, node);
+                var sliceKey = SliceNodeKey.sliceNodeKey(artifact, node);
                 var alreadyExists = sliceStates.containsKey(sliceKey);
                 log.debug("tryAllocate: artifact={}, node={}, sliceKey={}, alreadyExists={}",
                           artifact,
@@ -1647,12 +1672,17 @@ public interface ClusterDeploymentManager {
                     return;
                 }
                 var nodes = allocatableNodes();
+                if (nodes.isEmpty()) {
+                    log.warn("No allocatable nodes for round-robin allocation of {}", artifact);
+                    return;
+                }
+                var nodeCount = nodes.size();
                 var allocated = 0;
                 var attempts = 0;
-                var maxAttempts = nodes.size() * 2;
+                var maxAttempts = nodeCount * 2;
                 // Prevent infinite loop
                 while (allocated < remaining && attempts < maxAttempts) {
-                    var nodeIndex = Math.floorMod(allocationIndex.getAndIncrement(), nodes.size());
+                    var nodeIndex = Math.floorMod(allocationIndex.getAndIncrement(), nodeCount);
                     var node = nodes.get(nodeIndex);
                     if (tryAllocate(artifact, node)) {
                         allocated++;
@@ -1671,10 +1701,9 @@ public interface ClusterDeploymentManager {
             private void issueScaleDownCommands(Artifact artifact,
                                                 int toRemove,
                                                 List<SliceNodeKey> existingInstances) {
-                var blueprint = blueprints.get(artifact);
-                var minInstances = blueprint != null
-                                   ? blueprint.minInstances()
-                                   : 1;
+                var minInstances = Option.option(blueprints.get(artifact))
+                                         .map(Blueprint::minInstances)
+                                         .or(1);
                 var activeCount = existingInstances.size();
                 // Enforce budget: do not scale below minInstances
                 var maxRemovable = Math.max(0, activeCount - minInstances);
@@ -1745,13 +1774,11 @@ public interface ClusterDeploymentManager {
 
             /// Check whether a slice has exceeded 2x its transitional state timeout.
             private boolean isStuckTransitional(SliceNodeKey sliceKey, long enteredAt, long now) {
-                var state = sliceStates.get(sliceKey);
-                if (state == null || !state.isTransitional()) {
-                    return false;
-                }
-                return state.timeout()
-                            .filter(timeout -> (now - enteredAt) > timeout.millis() * STUCK_TIMEOUT_MULTIPLIER)
-                            .isPresent();
+                return Option.option(sliceStates.get(sliceKey))
+                             .filter(SliceState::isTransitional)
+                             .flatMap(SliceState::timeout)
+                             .filter(timeout -> (now - enteredAt) > timeout.millis() * STUCK_TIMEOUT_MULTIPLIER)
+                             .isPresent();
             }
 
             /// Issue the appropriate remediation command for a stuck slice via DHT.
@@ -1759,10 +1786,11 @@ public interface ClusterDeploymentManager {
             /// DEACTIVATING/UNLOADING: force-remove from DHT to clean up.
             @SuppressWarnings("JBCT-RET-01") // DHT fire-and-forget writes
             private void issueStuckRemediationCommand(SliceNodeKey sliceKey) {
-                var state = sliceStates.get(sliceKey);
-                if (state == null) {
-                    return;
-                }
+                Option.option(sliceStates.get(sliceKey))
+                      .onPresent(state -> executeStuckRemediation(sliceKey, state));
+            }
+
+            private void executeStuckRemediation(SliceNodeKey sliceKey, SliceState state) {
                 transitionalStateTimestamps.remove(sliceKey);
                 switch (state) {
                     case LOADING, ACTIVATING -> {
@@ -1970,9 +1998,13 @@ public interface ClusterDeploymentManager {
                           activeNodes.get()
                                      .size());
                 var reconciled = 0;
-                for (var blueprint : blueprints.values()) {
+                var blueprintSnapshot = List.copyOf(blueprints.values());
+                for (var blueprint : blueprintSnapshot) {
                     var artifact = blueprint.artifact();
                     if (permanentlyFailed.contains(artifact)) {
+                        continue;
+                    }
+                    if (hasInstancesOnDrainingNodes(artifact)) {
                         continue;
                     }
                     var desiredInstances = blueprint.instances();
@@ -1993,6 +2025,13 @@ public interface ClusterDeploymentManager {
                 cleanupOrphanedSliceEntries();
                 cleanupStaleNodeRoutes();
                 detectStuckTransitionalStates();
+            }
+
+            private boolean hasInstancesOnDrainingNodes(Artifact artifact) {
+                return sliceStates.keySet()
+                                  .stream()
+                                  .anyMatch(key -> key.artifact()
+                                                      .equals(artifact) && drainingNodes.contains(key.nodeId()));
             }
 
             private void emitScalingEvent(Artifact artifact, int currentCount, int desiredCount) {
@@ -2017,6 +2056,7 @@ public interface ClusterDeploymentManager {
                                              .size());
                             inFlightBlueprints.remove(entry.getKey());
                         }
+                        break;
                     }
                 }
             }
@@ -2061,7 +2101,7 @@ public interface ClusterDeploymentManager {
                     consensusCommands.add(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(artifact.base())));
                 }
                 // Remove the app blueprint from KV-Store
-                var bpKey = new AppBlueprintKey(inflight.id());
+                var bpKey = AppBlueprintKey.appBlueprintKey(inflight.id());
                 consensusCommands.add(new KVCommand.Remove<>(bpKey));
                 log.info("ALL_OR_NOTHING: Unloading {} slices from failed blueprint {}",
                          allSlices.size(),
@@ -2077,8 +2117,8 @@ public interface ClusterDeploymentManager {
                          blueprintId.asString(),
                          previous.loadOrder()
                                  .size());
-                var bpKey = new AppBlueprintKey(blueprintId);
-                var bpValue = new AppBlueprintValue(previous);
+                var bpKey = AppBlueprintKey.appBlueprintKey(blueprintId);
+                var bpValue = AppBlueprintValue.appBlueprintValue(previous);
                 var command = new KVCommand.Put<AetherKey, AetherValue>(bpKey, bpValue);
                 cluster.apply(List.of(command))
                        .onSuccess(_ -> SharedScheduler.schedule(() -> restoringBlueprints.remove(blueprintId),
@@ -2246,13 +2286,7 @@ public interface ClusterDeploymentManager {
                     }
                     // Defense in depth: schedule a deferred recheck to catch any topology events
                     // still in-flight during the activation window.
-                    SharedScheduler.schedule(() -> {
-                                                 if (!activeState.deactivated()
-                                                                 .get()) {
-                                                     activeNodes.set(topologyRef.get());
-                                                     activeState.checkAndScheduleAutoHeal();
-                                                 }
-                                             },
+                    SharedScheduler.schedule(() -> deferredTopologyRecheck(activeState, activeNodes),
                                              timeSpan(2).seconds());
                 } else {
                     log.info("Node {} is not leader, deactivating cluster deployment manager", self);
@@ -2260,6 +2294,16 @@ public interface ClusterDeploymentManager {
                     deactivateCurrentState();
                     state.set(new ClusterDeploymentState.Dormant());
                 }
+            }
+
+            private void deferredTopologyRecheck(ClusterDeploymentState.Active activeState,
+                                                 AtomicReference<List<NodeId>> activeNodes) {
+                if (activeState.deactivated()
+                               .get()) {
+                    return;
+                }
+                activeNodes.set(topologyRef.get());
+                activeState.checkAndScheduleAutoHeal();
             }
 
             private void deactivateCurrentState() {
@@ -2381,7 +2425,7 @@ public interface ClusterDeploymentManager {
                                             coreMax,
                                             reconcileInterval,
                                             schemaOrchestrator,
-                                            new HashSet<>(initialTopology),
+                                            Set.copyOf(initialTopology),
                                             new AtomicReference<>(new ClusterDeploymentState.Dormant()),
                                             new AtomicReference<>(List.copyOf(initialTopology)));
     }

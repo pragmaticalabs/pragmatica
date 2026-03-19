@@ -194,7 +194,13 @@ class BlueprintServiceInstance implements BlueprintService {
                          .orElse(() -> resolveFromArtifactStore(artifact));
     }
 
-    private record ParsedArtifactCoords(Result<Artifact> artifact, String classifier, String baseCoords) {}
+    private record ParsedArtifactCoords(Result<Artifact> artifact, String classifier, String baseCoords) {
+        static ParsedArtifactCoords parsedArtifactCoords(Result<Artifact> artifact,
+                                                         String classifier,
+                                                         String baseCoords) {
+            return new ParsedArtifactCoords(artifact, classifier, baseCoords);
+        }
+    }
 
     private static final Cause MISSING_CLASSIFIER = Causes.cause("Invalid artifact coordinates: expected groupId:artifactId:version:classifier (e.g., org.example:my-app:1.0.0:blueprint)");
 
@@ -202,9 +208,9 @@ class BlueprintServiceInstance implements BlueprintService {
         var parts = coords.split(":");
         if (parts.length == 4) {
             var baseCoords = parts[0] + ":" + parts[1] + ":" + parts[2];
-            return new ParsedArtifactCoords(Artifact.artifact(baseCoords), parts[3], baseCoords);
+            return ParsedArtifactCoords.parsedArtifactCoords(Artifact.artifact(baseCoords), parts[3], baseCoords);
         }
-        return new ParsedArtifactCoords(MISSING_CLASSIFIER.result(), "", coords);
+        return ParsedArtifactCoords.parsedArtifactCoords(MISSING_CLASSIFIER.result(), "", coords);
     }
 
     private Promise<byte[]> resolveFromArtifactStore(Artifact artifact) {
@@ -212,14 +218,17 @@ class BlueprintServiceInstance implements BlueprintService {
                             .flatMap(store -> store.resolve(artifact));
     }
 
+    @SuppressWarnings("JBCT-EX-01") // Infrastructure I/O: URL stream reading
     private static Promise<byte[]> readLocationBytes(Location location) {
-        return Promise.lift(Causes::fromThrowable,
-                            () -> {
-                                try (var stream = location.url()
-                                                          .openStream()) {
-                                    return stream.readAllBytes();
-                                }
-                            });
+        return Promise.lift(Causes::fromThrowable, () -> readStreamBytes(location));
+    }
+
+    @SuppressWarnings("JBCT-EX-01") // Adapter boundary: called within Promise.lift
+    private static byte[] readStreamBytes(Location location) throws Exception {
+        try (var stream = location.url()
+                                  .openStream()) {
+            return stream.readAllBytes();
+        }
     }
 
     @Override
@@ -255,12 +264,42 @@ class BlueprintServiceInstance implements BlueprintService {
                                 .flatMap(expanded -> applyResourcesConfig(expanded,
                                                                           blueprintArtifact.resourcesConfig()))
                                 .flatMap(this::validatePubSub)
-                                .flatMap(this::storeBlueprint)
-                                .flatMap(stored -> storeResourcesConfig(stored,
-                                                                        blueprintArtifact.resourcesConfig()))
-                                .flatMap(stored -> storeSchemaMigrations(stored,
-                                                                         blueprintArtifact.schemaMigrations(),
-                                                                         artifactCoords));
+                                .flatMap(expanded -> storeAllInSingleBatch(expanded,
+                                                                           blueprintArtifact.resourcesConfig(),
+                                                                           blueprintArtifact.schemaMigrations(),
+                                                                           artifactCoords));
+    }
+
+    private Promise<ExpandedBlueprint> storeAllInSingleBatch(ExpandedBlueprint expanded,
+                                                             Option<String> resourcesConfig,
+                                                             Map<String, List<MigrationEntry>> migrations,
+                                                             String artifactCoords) {
+        var commands = buildAllCommands(expanded, resourcesConfig, migrations, artifactCoords);
+        return cluster.apply(commands)
+                      .map(_ -> expanded);
+    }
+
+    private List<KVCommand<AetherKey>> buildAllCommands(ExpandedBlueprint expanded,
+                                                        Option<String> resourcesConfig,
+                                                        Map<String, List<MigrationEntry>> migrations,
+                                                        String artifactCoords) {
+        var commands = new ArrayList<KVCommand<AetherKey>>();
+        commands.add(buildBlueprintPutCommand(expanded));
+        resourcesConfig.onPresent(content -> commands.add(buildResourcesPutCommand(expanded, content)));
+        if (!migrations.isEmpty()) {
+            commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords));
+        }
+        return commands;
+    }
+
+    private static KVCommand<AetherKey> buildBlueprintPutCommand(ExpandedBlueprint expanded) {
+        return new Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
+                         AppBlueprintValue.appBlueprintValue(expanded));
+    }
+
+    private static KVCommand<AetherKey> buildResourcesPutCommand(ExpandedBlueprint expanded, String content) {
+        return new Put<>(BlueprintResourcesKey.blueprintResourcesKey(expanded.id()),
+                         BlueprintResourcesValue.blueprintResourcesValue(content));
     }
 
     private Promise<ExpandedBlueprint> applyResourcesConfig(ExpandedBlueprint expanded,
@@ -269,31 +308,6 @@ class BlueprintServiceInstance implements BlueprintService {
                                                                                              expanded.loadOrder(),
                                                                                              Option.some(rc)))
                                               .or(expanded));
-    }
-
-    private Promise<ExpandedBlueprint> storeResourcesConfig(ExpandedBlueprint expanded,
-                                                            Option<String> resourcesConfig) {
-        return resourcesConfig.map(content -> storeResourcesEntry(expanded, content))
-                              .or(Promise.success(expanded));
-    }
-
-    private Promise<ExpandedBlueprint> storeResourcesEntry(ExpandedBlueprint expanded, String content) {
-        var key = BlueprintResourcesKey.blueprintResourcesKey(expanded.id());
-        var value = BlueprintResourcesValue.blueprintResourcesValue(content);
-        KVCommand<AetherKey> command = new Put<>(key, value);
-        return cluster.apply(List.of(command))
-                      .map(_ -> expanded);
-    }
-
-    private Promise<ExpandedBlueprint> storeSchemaMigrations(ExpandedBlueprint expanded,
-                                                             Map<String, List<MigrationEntry>> migrations,
-                                                             String artifactCoords) {
-        if (migrations.isEmpty()) {
-            return Promise.success(expanded);
-        }
-        var commands = buildSchemaMigrationCommands(migrations, artifactCoords);
-        return cluster.apply(commands)
-                      .map(_ -> expanded);
     }
 
     private List<KVCommand<AetherKey>> buildSchemaMigrationCommands(Map<String, List<MigrationEntry>> migrations,

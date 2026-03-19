@@ -63,7 +63,11 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 @SuppressWarnings("JBCT-RET-01") // MessageReceiver callbacks — void required by messaging framework
 public interface NodeDeploymentManager {
-    record SliceDeployment(SliceNodeKey key, SliceState state, long timestamp) {}
+    record SliceDeployment(SliceNodeKey key, SliceState state, long timestamp) {
+        static SliceDeployment sliceDeployment(SliceNodeKey key, SliceState state, long timestamp) {
+            return new SliceDeployment(key, state, timestamp);
+        }
+    }
 
     @MessageReceiver
     void onQuorumStateChange(QuorumStateNotification quorumStateNotification);
@@ -92,7 +96,11 @@ public interface NodeDeploymentManager {
 
     /// Information about a suspended slice that can be reactivated.
     /// Tracks the slice key and the original deployment state.
-    record SuspendedSlice(SliceNodeKey key, SliceDeployment deployment) {}
+    record SuspendedSlice(SliceNodeKey key, SliceDeployment deployment) {
+        static SuspendedSlice suspendedSlice(SliceNodeKey key, SliceDeployment deployment) {
+            return new SuspendedSlice(key, deployment);
+        }
+    }
 
     sealed interface NodeDeploymentState {
         default void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut) {}
@@ -148,7 +156,7 @@ public interface NodeDeploymentManager {
                 if (key.isForNode(self)) {
                     var value = valuePut.cause()
                                         .value();
-                    var sliceKey = new SliceNodeKey(key.artifact(), key.nodeId());
+                    var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
                     var sliceNodeValue = SliceNodeValue.sliceNodeValue(value.state());
                     log.debug("NodeArtifactKey put received for key: {}, state: {}", key, value.state());
                     recordDeployment(sliceKey, sliceNodeValue);
@@ -161,7 +169,7 @@ public interface NodeDeploymentManager {
                 var key = valueRemove.cause()
                                      .key();
                 if (key.isForNode(self)) {
-                    var sliceKey = new SliceNodeKey(key.artifact(), key.nodeId());
+                    var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
                     handleSliceValueRemove(sliceKey);
                 }
             }
@@ -182,7 +190,7 @@ public interface NodeDeploymentManager {
                 var timestamp = System.currentTimeMillis();
                 var previousDeployment = Option.option(deployments.get(sliceKey));
                 var previousState = previousDeployment.map(SliceDeployment::state);
-                var deployment = new SliceDeployment(sliceKey, state, timestamp);
+                var deployment = SliceDeployment.sliceDeployment(sliceKey, state, timestamp);
                 deployments.put(sliceKey, deployment);
                 // Emit state transition event for metrics via MessageRouter
                 // For initial LOAD, use LOAD as both from and to (captures loadTime)
@@ -506,8 +514,8 @@ public interface NodeDeploymentManager {
                     return Promise.unitPromise();
                 }
                 var commands = entries.stream()
-                                      .<KVCommand<AetherKey>> map(entry -> createTopicSubscriptionPutCommand(artifact,
-                                                                                                             entry))
+                                      .<KVCommand<AetherKey>> map(entry -> buildTopicSubscriptionPutCommand(artifact,
+                                                                                                            entry))
                                       .toList();
                 return cluster.apply(commands)
                               .timeout(CONSENSUS_OPERATION_TIMEOUT)
@@ -520,8 +528,8 @@ public interface NodeDeploymentManager {
                                                             cause.message()));
             }
 
-            private KVCommand<AetherKey> createTopicSubscriptionPutCommand(Artifact artifact,
-                                                                           SubscriptionManifestEntry entry) {
+            private KVCommand<AetherKey> buildTopicSubscriptionPutCommand(Artifact artifact,
+                                                                          SubscriptionManifestEntry entry) {
                 var key = TopicSubscriptionKey.topicSubscriptionKey(entry.topicName(), artifact, entry.methodName());
                 var value = TopicSubscriptionValue.topicSubscriptionValue(self);
                 return new KVCommand.Put<>(key, value);
@@ -541,8 +549,8 @@ public interface NodeDeploymentManager {
                     return Promise.unitPromise();
                 }
                 var commands = entries.stream()
-                                      .<KVCommand<AetherKey>> map(entry -> createTopicSubscriptionRemoveCommand(artifact,
-                                                                                                                entry))
+                                      .<KVCommand<AetherKey>> map(entry -> buildTopicSubscriptionRemoveCommand(artifact,
+                                                                                                               entry))
                                       .toList();
                 return cluster.apply(commands)
                               .timeout(CONSENSUS_OPERATION_TIMEOUT)
@@ -555,8 +563,8 @@ public interface NodeDeploymentManager {
                                                             cause.message()));
             }
 
-            private KVCommand<AetherKey> createTopicSubscriptionRemoveCommand(Artifact artifact,
-                                                                              SubscriptionManifestEntry entry) {
+            private KVCommand<AetherKey> buildTopicSubscriptionRemoveCommand(Artifact artifact,
+                                                                             SubscriptionManifestEntry entry) {
                 var key = TopicSubscriptionKey.topicSubscriptionKey(entry.topicName(), artifact, entry.methodName());
                 return new KVCommand.Remove<>(key);
             }
@@ -636,7 +644,7 @@ public interface NodeDeploymentManager {
                 var commands = new ArrayList<KVCommand<AetherKey>>();
                 for (var entry : entries) {
                     resolveScheduleConfig(entry.configSection())
-                    .onPresent(config -> commands.add(createScheduledTaskPutCommand(artifact, entry, config)));
+                    .onPresent(config -> commands.add(buildScheduledTaskPutCommand(artifact, entry, config)));
                 }
                 if (commands.isEmpty()) {
                     return Promise.unitPromise();
@@ -652,9 +660,9 @@ public interface NodeDeploymentManager {
                                                             cause.message()));
             }
 
-            private KVCommand<AetherKey> createScheduledTaskPutCommand(Artifact artifact,
-                                                                       ScheduledTaskManifestEntry entry,
-                                                                       ScheduleConfig config) {
+            private KVCommand<AetherKey> buildScheduledTaskPutCommand(Artifact artifact,
+                                                                      ScheduledTaskManifestEntry entry,
+                                                                      ScheduleConfig config) {
                 var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
                 var value = config.interval()
                                   .isEmpty()
@@ -677,8 +685,8 @@ public interface NodeDeploymentManager {
                     return Promise.unitPromise();
                 }
                 var commands = entries.stream()
-                                      .<KVCommand<AetherKey>> map(entry -> createScheduledTaskRemoveCommand(artifact,
-                                                                                                            entry))
+                                      .<KVCommand<AetherKey>> map(entry -> buildScheduledTaskRemoveCommand(artifact,
+                                                                                                           entry))
                                       .toList();
                 return cluster.apply(commands)
                               .timeout(CONSENSUS_OPERATION_TIMEOUT)
@@ -691,8 +699,8 @@ public interface NodeDeploymentManager {
                                                             cause.message()));
             }
 
-            private KVCommand<AetherKey> createScheduledTaskRemoveCommand(Artifact artifact,
-                                                                          ScheduledTaskManifestEntry entry) {
+            private KVCommand<AetherKey> buildScheduledTaskRemoveCommand(Artifact artifact,
+                                                                         ScheduledTaskManifestEntry entry) {
                 var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
                 return new KVCommand.Remove<>(key);
             }
@@ -875,7 +883,9 @@ public interface NodeDeploymentManager {
                 return updateSliceStateWithRetry(sliceKey, value, 0);
             }
 
-            private Promise<SliceNodeKey> updateSliceStateWithRetry(SliceNodeKey sliceKey, SliceNodeValue value, int attempt) {
+            private Promise<SliceNodeKey> updateSliceStateWithRetry(SliceNodeKey sliceKey,
+                                                                    SliceNodeValue value,
+                                                                    int attempt) {
                 log.debug("updateSliceState: {} -> {} (attempt {})",
                           sliceKey,
                           value.state(),
@@ -895,14 +905,16 @@ public interface NodeDeploymentManager {
                               .orElse(() -> retryConsensusOperation(sliceKey, value, attempt));
             }
 
-            private Promise<SliceNodeKey> retryConsensusOperation(SliceNodeKey sliceKey, SliceNodeValue value, int attempt) {
+            private Promise<SliceNodeKey> retryConsensusOperation(SliceNodeKey sliceKey,
+                                                                  SliceNodeValue value,
+                                                                  int attempt) {
                 if (attempt >= CONSENSUS_MAX_RETRIES) {
                     log.warn("Consensus operation failed after {} retries for {} -> {}",
                              CONSENSUS_MAX_RETRIES,
                              sliceKey.artifact(),
                              value.state());
                     return Causes.cause("Consensus operation timed out after " + CONSENSUS_MAX_RETRIES + " retries")
-                                .promise();
+                                 .promise();
                 }
                 log.debug("Retrying consensus operation for {} -> {} (attempt {})",
                           sliceKey.artifact(),
@@ -945,7 +957,7 @@ public interface NodeDeploymentManager {
                         log.debug("Suspending active slice {}", sliceKey.artifact());
                         // Unpublish routes and endpoints (local state only - KV won't commit without quorum)
                         suspendSlice(sliceKey);
-                        suspended.add(new SuspendedSlice(sliceKey, deployment));
+                        suspended.add(SuspendedSlice.suspendedSlice(sliceKey, deployment));
                     } else {
                         log.debug("Slice {} in state {} - not suspending", sliceKey.artifact(), deployment.state());
                     }
@@ -1139,73 +1151,72 @@ public interface NodeDeploymentManager {
                 }
                 log.info("Node {} received QuorumStateNotification: {}", self().id(), quorumStateNotification);
                 switch (quorumStateNotification.state()) {
-                    case ESTABLISHED -> {
-                        // Check if we have suspended slices to reactivate
-                        if (state().get() instanceof NodeDeploymentState.DormantNodeDeploymentState dormant) {
-                            var suspended = dormant.suspendedSlices();
-                            // Create new active state with fresh deployments map
-                            var activeState = new NodeDeploymentState.ActiveNodeDeploymentState(self(),
-                                                                                                sliceStore(),
-                                                                                                configuration(),
-                                                                                                nodeCodec(),
-                                                                                                cluster(),
-                                                                                                kvStore(),
-                                                                                                invocationHandler(),
-                                                                                                router(),
-                                                                                                new ConcurrentHashMap<>(),
-                                                                                                httpRoutePublisher(),
-                                                                                                sliceInvokerFacade(),
-                                                                                                activationChainTimeout(),
-                                                                                                transitionRetryDelay());
-                            state().set(activeState);
-                            log.info("Node {} NodeDeploymentManager activated", self().id());
-                            // Register ON_DUTY lifecycle state (always writes unless DECOMMISSIONED)
-                            registerLifecycleOnDuty();
-                            // Process any pending LOAD commands that arrived before NDM activated.
-                            // CDM may issue LOAD via consensus before NDM transitions from Dormant,
-                            // causing the KV notification to be silently dropped.
-                            processPendingLoadCommands(activeState);
-                            // Reactivate suspended slices if any
-                            if (!suspended.isEmpty()) {
-                                log.info("Node {} has {} suspended slices to reactivate", self().id(), suspended.size());
-                                activeState.reactivateSuspendedSlices(suspended);
-                            }
-                        }
-                    }
-                    case DISAPPEARED -> {
-                        // Suspend slices (keep in memory) before going dormant
-                        var suspended = List.<SuspendedSlice>of();
-                        if (state().get() instanceof NodeDeploymentState.ActiveNodeDeploymentState activeState) {
-                            suspended = activeState.suspendSlices();
-                        }
-                        // Only go dormant if no newer notification arrived during cleanup
-                        if (quorumSequence.get() == quorumStateNotification.sequence()) {
-                            state().set(new NodeDeploymentState.DormantNodeDeploymentState(suspended));
-                            log.info("Node {} NodeDeploymentManager deactivated with {} suspended slices",
-                                     self().id(),
-                                     suspended.size());
-                        } else {
-                            log.info("Node {} ignoring stale DISAPPEARED (newer notification arrived during cleanup)",
-                                     self().id());
-                        }
-                    }
+                    case ESTABLISHED -> handleQuorumEstablished();
+                    case DISAPPEARED -> handleQuorumDisappeared(quorumStateNotification);
+                }
+            }
+
+            private void handleQuorumEstablished() {
+                if (! (state().get() instanceof NodeDeploymentState.DormantNodeDeploymentState dormant)) {
+                    return;
+                }
+                var suspended = dormant.suspendedSlices();
+                var activeState = new NodeDeploymentState.ActiveNodeDeploymentState(self(),
+                                                                                    sliceStore(),
+                                                                                    configuration(),
+                                                                                    nodeCodec(),
+                                                                                    cluster(),
+                                                                                    kvStore(),
+                                                                                    invocationHandler(),
+                                                                                    router(),
+                                                                                    new ConcurrentHashMap<>(),
+                                                                                    httpRoutePublisher(),
+                                                                                    sliceInvokerFacade(),
+                                                                                    activationChainTimeout(),
+                                                                                    transitionRetryDelay());
+                state().set(activeState);
+                log.info("Node {} NodeDeploymentManager activated", self().id());
+                registerLifecycleOnDuty();
+                processPendingLoadCommands(activeState);
+                if (!suspended.isEmpty()) {
+                    log.info("Node {} has {} suspended slices to reactivate", self().id(), suspended.size());
+                    activeState.reactivateSuspendedSlices(suspended);
+                }
+            }
+
+            private void handleQuorumDisappeared(QuorumStateNotification notification) {
+                var suspended = List.<SuspendedSlice>of();
+                if (state().get() instanceof NodeDeploymentState.ActiveNodeDeploymentState activeState) {
+                    suspended = activeState.suspendSlices();
+                }
+                if (quorumSequence.get() == notification.sequence()) {
+                    state().set(new NodeDeploymentState.DormantNodeDeploymentState(suspended));
+                    log.info("Node {} NodeDeploymentManager deactivated with {} suspended slices",
+                             self().id(),
+                             suspended.size());
+                } else {
+                    log.info("Node {} ignoring stale DISAPPEARED (newer notification arrived during cleanup)",
+                             self().id());
                 }
             }
 
             private void processPendingLoadCommands(NodeDeploymentState.ActiveNodeDeploymentState activeState) {
                 kvStore().forEach(NodeArtifactKey.class,
                                   NodeArtifactValue.class,
-                                  (key, value) -> {
-                                      if (key.isForNode(self()) && value.state() == SliceState.LOAD) {
-                                          log.info("Node {} found pending LOAD command for {}, processing",
-                                                   self().id(),
-                                                   key.artifact());
-                                          var sliceKey = new SliceNodeKey(key.artifact(), key.nodeId());
-                                          activeState.recordDeployment(sliceKey,
-                                                                       SliceNodeValue.sliceNodeValue(value.state()));
-                                          activeState.processStateTransition(sliceKey, value.state());
-                                      }
-                                  });
+                                  (key, value) -> processPendingLoadEntry(activeState, key, value));
+            }
+
+            private void processPendingLoadEntry(NodeDeploymentState.ActiveNodeDeploymentState activeState,
+                                                 NodeArtifactKey key,
+                                                 NodeArtifactValue value) {
+                if (!key.isForNode(self()) || value.state() != SliceState.LOAD) {
+                    return;
+                }
+                log.info("Node {} found pending LOAD command for {}, processing", self().id(), key.artifact());
+                var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
+                activeState.recordDeployment(sliceKey,
+                                             SliceNodeValue.sliceNodeValue(value.state()));
+                activeState.processStateTransition(sliceKey, value.state());
             }
 
             private static final int MAX_LIFECYCLE_RETRIES = 60;
@@ -1243,7 +1254,7 @@ public interface NodeDeploymentManager {
                     log.debug("Node {} skipping ON_DUTY retry — no longer active", self().id());
                     return;
                 }
-                log.warn("Node {} failed to register lifecycle ON_DUTY (attempt {}/{}): {} — retrying in 1s",
+                log.warn("Node {} failed to register lifecycle ON_DUTY (attempt {}/{}): {} — retrying in 2s",
                          self().id(),
                          attempt,
                          MAX_LIFECYCLE_RETRIES,

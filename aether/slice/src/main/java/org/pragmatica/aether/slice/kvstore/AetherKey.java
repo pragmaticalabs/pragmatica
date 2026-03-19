@@ -111,6 +111,11 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
+        @SuppressWarnings("JBCT-VO-02")
+        public static SliceNodeKey sliceNodeKey(Artifact artifact, NodeId nodeId) {
+            return new SliceNodeKey(artifact, nodeId);
+        }
+
         public static Result<SliceNodeKey> sliceNodeKey(String key) {
             var parts = key.split("/");
             if (parts.length != 3) {
