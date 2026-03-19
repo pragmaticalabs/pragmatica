@@ -196,8 +196,7 @@ class BlueprintServiceInstance implements BlueprintService {
 
     private record ParsedArtifactCoords(Result<Artifact> artifact, String classifier, String baseCoords) {}
 
-    private static final Cause MISSING_CLASSIFIER = Causes.cause(
-        "Invalid artifact coordinates: expected groupId:artifactId:version:classifier (e.g., org.example:my-app:1.0.0:blueprint)");
+    private static final Cause MISSING_CLASSIFIER = Causes.cause("Invalid artifact coordinates: expected groupId:artifactId:version:classifier (e.g., org.example:my-app:1.0.0:blueprint)");
 
     private static ParsedArtifactCoords parseArtifactWithClassifier(String coords) {
         var parts = coords.split(":");
