@@ -112,14 +112,20 @@ Components checked:
 
 ### GET /api/nodes
 
-List all known cluster node IDs.
+List all known cluster nodes with role and leader status.
 
 **Response:**
 ```json
 {
-  "nodes": ["node-1", "node-2", "node-3"]
+  "nodes": [
+    {"nodeId": "node-1", "role": "CORE", "isLeader": true},
+    {"nodeId": "node-2", "role": "CORE", "isLeader": false},
+    {"nodeId": "node-3", "role": "WORKER", "isLeader": false}
+  ]
 }
 ```
+
+- `role`: `"CORE"` (consensus participant) or `"WORKER"` (passive compute). Defaults to `"CORE"` if no `ActivationDirective` exists.
 
 ### GET /api/events
 
@@ -1340,6 +1346,46 @@ Complete the rolling update (finalize new version, decommission old). Requires l
 Rollback to old version. Requires leader node.
 
 **Response:** Same as `GET /api/rolling-update/{updateId}`.
+
+---
+
+## Cluster Topology
+
+### GET /api/cluster/topology
+
+Get cluster topology summary with core/worker node counts.
+
+**Response:**
+```json
+{
+  "coreCount": 5,
+  "coreMax": 5,
+  "coreMin": 5,
+  "workerCount": 7,
+  "clusterSize": 12,
+  "coreNodes": ["node-1", "node-2", "node-3", "node-4", "node-5"]
+}
+```
+
+### GET /api/cluster/governors
+
+List active community governors (worker pool leaders elected via SWIM).
+
+**Response:**
+```json
+{
+  "governors": [
+    {
+      "governorId": "node-6",
+      "community": "default:local:0",
+      "memberCount": 4,
+      "members": ["node-6", "node-7", "node-8", "node-9"]
+    }
+  ]
+}
+```
+
+Returns empty list if no worker communities exist (all nodes are core).
 
 ---
 

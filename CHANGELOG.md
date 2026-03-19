@@ -11,7 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Schema orchestration** — distributed coordination layer with consensus-based locking, artifact resolution, and status tracking (PENDING → MIGRATING → COMPLETED/FAILED). CDM integration gates slice deployment on schema readiness
 - **Schema management REST API and CLI** — REST endpoints (`/api/schema/status`, `/api/schema/migrate/{ds}`, `/api/schema/undo/{ds}`, `/api/schema/baseline/{ds}`) and CLI commands (`aether schema status|history|migrate|undo|baseline`)
 - **Blueprint artifact auto-packaging** — `generate-blueprint` goal now automatically packages the blueprint JAR (no need to add `package-blueprint` explicitly). Schema directory default changed to `${project.basedir}/schema`
-- **Forge artifact-based deployment** — `--blueprint` now accepts artifact coordinates (`groupId:artifactId:version`) instead of TOML file paths. Forge resolves from local Maven repo via `publishFromArtifact`. TOML deployment path removed
+- **Forge artifact-based deployment** — `--blueprint` now accepts artifact coordinates (`groupId:artifactId:version`) instead of TOML file paths. Forge reads blueprint JAR from local Maven repo, uploads to cluster DHT, then deploys. TOML deployment path removed
+- **Enriched `/api/nodes` endpoint** — now returns role (CORE/WORKER) and isLeader flag per node, with role sourced from `ActivationDirectiveValue` in KV-Store
+- **`GET /api/cluster/governors` endpoint** — exposes governor announcements from KV-Store: governor ID, community, member count, and member list
+
+### Fixed
+- **`coreMax` config wiring** — `core_max` from TOML `[cluster]` section now threaded through ConfigLoader → AetherConfig → AetherNodeConfig → TopologyConfig. Previously always defaulted to 0 (unlimited), preventing worker node assignment
+- **Forge blueprint deployment** — Forge now reads blueprint JAR from local Maven repo and uploads to cluster DHT before deploying, fixing the broken artifact-coordinate deployment path
 - **Cloud providers — AWS, GCP, Azure** — complete cloud integration for all major providers:
   - `integrations/xml/jackson-xml` — XML mapper module (Jackson XML) mirroring `JsonMapper` pattern, needed for AWS EC2 XML responses
   - `integrations/cloud/aws` — AWS cloud client with SigV4 signing from scratch, EC2 (XML), ELBv2 (JSON), Secrets Manager (JSON). No AWS SDK
