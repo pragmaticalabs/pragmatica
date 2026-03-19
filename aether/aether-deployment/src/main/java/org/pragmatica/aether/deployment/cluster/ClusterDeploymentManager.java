@@ -463,6 +463,18 @@ public interface ClusterDeploymentManager {
             }
 
             @Override
+            public void onSliceTargetRemove(ValueRemove<SliceTargetKey, SliceTargetValue> valueRemove) {
+                var key = valueRemove.cause()
+                                     .key();
+                var artifactBase = key.artifactBase();
+                blueprints.keySet()
+                          .stream()
+                          .filter(artifactBase::matches)
+                          .toList()
+                          .forEach(this::issueDeallocationCommands);
+            }
+
+            @Override
             public void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {
                 var routingKey = valuePut.cause()
                                          .key();
@@ -561,8 +573,7 @@ public interface ClusterDeploymentManager {
                 var consensusCommands = new ArrayList<KVCommand<AetherKey>>();
                 for (var artifact : artifactsToRemove) {
                     blueprints.remove(artifact);
-                    issueDeallocationCommands(artifact);
-                    // Remove SliceTargetKey to clean up desired-state tracking
+                    // Deallocation happens via onSliceTargetRemove when this Remove is committed
                     consensusCommands.add(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(artifact.base())));
                 }
                 submitBatch(consensusCommands);
