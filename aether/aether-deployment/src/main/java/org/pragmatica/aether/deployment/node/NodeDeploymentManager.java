@@ -123,6 +123,8 @@ public interface NodeDeploymentManager {
                                          TimeSpan transitionRetryDelay) implements NodeDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(ActiveNodeDeploymentState.class);
 
+            private static final TimeSpan CONSENSUS_OPERATION_TIMEOUT = TimeSpan.timeSpan(15).seconds();
+
             private static final Fn1<Cause, SliceNodeKey> CLEANUP_FAILED = Causes.forOneValue("Failed to cleanup slice %s during abrupt removal");
 
             private static final Fn1<Cause, SliceNodeKey> STATE_UPDATE_FAILED = Causes.forOneValue("Failed to update slice state for %s");
@@ -405,6 +407,7 @@ public interface NodeDeploymentManager {
                 var nodeArtifactValue = NodeArtifactValue.activeNodeArtifactValue(instanceNumber, methodNames);
                 KVCommand<AetherKey> command = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
                 return cluster.apply(List.of(command))
+                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
                               .mapToUnit()
                               .onSuccess(_ -> log.debug("Published {} endpoints for slice {}",
                                                         methods.size(),
@@ -472,6 +475,7 @@ public interface NodeDeploymentManager {
                 var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
                 KVCommand<AetherKey> command = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
                 return cluster.apply(List.of(command))
+                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
                               .mapToUnit()
                               .onSuccess(_ -> log.debug("Unpublished {} endpoints for slice {}",
                                                         methods.size(),
@@ -499,6 +503,7 @@ public interface NodeDeploymentManager {
                                                                                                              entry))
                                       .toList();
                 return cluster.apply(commands)
+                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
                               .mapToUnit()
                               .onSuccess(_ -> log.debug("Published {} topic subscriptions for {}",
                                                         entries.size(),
@@ -532,6 +537,7 @@ public interface NodeDeploymentManager {
                                                                                                                 entry))
                                       .toList();
                 return cluster.apply(commands)
+                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
                               .mapToUnit()
                               .onSuccess(_ -> log.debug("Unpublished {} topic subscriptions for {}",
                                                         entries.size(),
@@ -627,6 +633,7 @@ public interface NodeDeploymentManager {
                     return Promise.unitPromise();
                 }
                 return cluster.apply(commands)
+                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
                               .mapToUnit()
                               .onSuccess(_ -> log.debug("Published {} scheduled tasks for {}",
                                                         commands.size(),
@@ -664,6 +671,7 @@ public interface NodeDeploymentManager {
                                                                                                             entry))
                                       .toList();
                 return cluster.apply(commands)
+                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
                               .mapToUnit()
                               .onSuccess(_ -> log.debug("Unpublished {} scheduled tasks for {}",
                                                         entries.size(),
@@ -861,6 +869,7 @@ public interface NodeDeploymentManager {
                                         : NodeArtifactValue.nodeArtifactValue(value.state());
                 KVCommand<AetherKey> putArtifact = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
                 return cluster.apply(List.of(putArtifact))
+                              .timeout(CONSENSUS_OPERATION_TIMEOUT)
                               .mapToUnit()
                               .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
                                                         sliceKey.artifact(),
