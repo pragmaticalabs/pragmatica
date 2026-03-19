@@ -24,7 +24,9 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 102 | Multi-blueprint lifecycle independence | Complete | Blueprint-scoped artifact ownership (`owningBlueprint` in SliceTargetValue), artifact exclusivity enforcement (rejects duplicate artifact across blueprints), owner-filtered blueprint deletion (only removes owned artifacts), rolling update deletion guard, KV-Store restore with ownership. Tier 1 correctness for multi-blueprint clusters |
 | 126 | Blueprint Artifacts | Complete | Blueprint packaged as JAR with resources.toml and schema/ |
 | 127 | Config Separation | Complete | App config (blueprint) vs infra config (node) with hierarchical merge |
-| 128 | Schema Migration Engine | Partial | Migration engine (V/R/U/B types), history table, checksum validation, orchestrator with consensus locking, CDM readiness gating, REST API, CLI. SqlConnector provisioning in orchestrator pending |
+| 128 | Schema Migration Engine | Partial | Migration engine (V/R/U/B types), history table, checksum validation, orchestrator with exclusive consensus locking, CDM readiness gating (blocks ACTIVATE until COMPLETED), REST API, CLI. SqlConnector provisioning in orchestrator pending |
+| 130 | Deployment State Machine (RFC-0014) | Complete | Documented CDM/NDM handoff protocol, 11-state lifecycle, schema migration gate, dependency-gated activation, failure classification (fatal/transient), quorum loss/restoration, reconciliation algorithm, blueprint atomicity, drain eviction protocol |
+| 131 | Consensus Operation Retry | Complete | All NDM consensus operations (state transitions, topic subscriptions, scheduled tasks, endpoints) use unified `applyWithRetry` with 30s timeout × 2 retries. Prevents activation failures under consensus pipeline saturation |
 | 129 | Endpoint Config | Complete | `[endpoints.*]` sections in aether.toml for infrastructure endpoints |
 
 ## Scaling & Control
