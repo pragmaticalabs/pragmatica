@@ -892,8 +892,11 @@ public interface NodeDeploymentManager {
                           attempt);
                 var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(self, sliceKey.artifact());
                 var nodeArtifactValue = value.state() == SliceState.FAILED
-                                        ? NodeArtifactValue.failedNodeArtifactValue(Causes.cause(value.failureReason()
-                                                                                                      .or("Unknown failure")))
+                                        ? new NodeArtifactValue(SliceState.FAILED,
+                                                                value.failureReason(),
+                                                                value.fatal(),
+                                                                0,
+                                                                List.of())
                                         : NodeArtifactValue.nodeArtifactValue(value.state());
                 KVCommand<AetherKey> putArtifact = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
                 return cluster.apply(List.of(putArtifact))
