@@ -1032,13 +1032,13 @@ public interface ClusterDeploymentManager {
                                                        requestedInstances,
                                                        slice.minAvailable(),
                                                        Option.some(expanded.id())));
-                    // Create SliceTargetKey so rolling updates can find the current version
+                    // Create SliceTargetKey — allocation happens via onSliceTargetPut notification
+                    // when this command is committed by consensus
                     consensusCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
                                                               SliceTargetValue.sliceTargetValue(artifact.version(),
                                                                                                 requestedInstances,
                                                                                                 slice.minAvailable(),
                                                                                                 Option.some(expanded.id()))));
-                    issueAllocationCommandsWithPlacement(artifact, requestedInstances, lookupPlacement(artifact));
                 }
                 submitBatch(consensusCommands);
                 // Track in-flight blueprint for atomicity enforcement
