@@ -157,7 +157,9 @@ public interface ClusterDeploymentManager {
 
     /// Emitted when reconciliation adjusts slice instance count.
     record ReconciliationAdjustment(Artifact artifact, int currentInstances, int desiredInstances) implements Message.Local {
-        public static ReconciliationAdjustment reconciliationAdjustment(Artifact artifact, int currentInstances, int desiredInstances) {
+        public static ReconciliationAdjustment reconciliationAdjustment(Artifact artifact,
+                                                                        int currentInstances,
+                                                                        int desiredInstances) {
             return new ReconciliationAdjustment(artifact, currentInstances, desiredInstances);
         }
     }

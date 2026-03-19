@@ -239,13 +239,17 @@ public final class ClusterEventAggregator {
     }
 
     public void onReconciliationAdjustment(ClusterDeploymentManager.ReconciliationAdjustment event) {
-        var direction = event.currentInstances() < event.desiredInstances() ? "up" : "down";
-        var eventType = event.currentInstances() < event.desiredInstances() ? EventType.SCALE_UP : EventType.SCALE_DOWN;
+        var direction = event.currentInstances() < event.desiredInstances()
+                        ? "up"
+                        : "down";
+        var eventType = event.currentInstances() < event.desiredInstances()
+                        ? EventType.SCALE_UP
+                        : EventType.SCALE_DOWN;
         buffer.add(ClusterEvent.clusterEvent(eventType,
                                              Severity.INFO,
                                              "Reconciliation: " + event.artifact()
-                                                                       .asString() + " adjusted " + direction
-                                             + " from " + event.currentInstances() + " to " + event.desiredInstances() + " instances",
+                                                                       .asString() + " adjusted " + direction + " from " + event.currentInstances()
+                                             + " to " + event.desiredInstances() + " instances",
                                              Map.of("artifact",
                                                     event.artifact()
                                                          .asString(),
