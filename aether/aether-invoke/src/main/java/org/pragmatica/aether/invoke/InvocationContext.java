@@ -42,6 +42,7 @@ public final class InvocationContext {
     private static final ScopedValue<String> ORIGIN_NODE = ScopedValue.newInstance();
     private static final ScopedValue<Integer> DEPTH = ScopedValue.newInstance();
     private static final ScopedValue<Boolean> SAMPLED = ScopedValue.newInstance();
+    private static final ScopedValue<String> AB_VARIANT = ScopedValue.newInstance();
 
     private static final String MDC_KEY = "requestId";
     private static final String MDC_PRINCIPAL = "principal";
@@ -96,6 +97,27 @@ public final class InvocationContext {
     /// Check if the current request is sampled for tracing.
     public static boolean isSampled() {
         return SAMPLED.isBound() && SAMPLED.get();
+    }
+
+    /// Get the current A/B test variant if set.
+    ///
+    /// @return Option containing the variant name, or empty if not in an A/B test context
+    public static Option<String> currentVariant() {
+        return AB_VARIANT.isBound()
+               ? Option.option(AB_VARIANT.get())
+               : Option.empty();
+    }
+
+    /// Run a supplier within an A/B test variant scope.
+    ///
+    /// @param variant  the variant name to set for this scope
+    /// @param supplier the supplier to execute within the scope
+    /// @param <T>      the return type
+    ///
+    /// @return the result of the supplier
+    public static <T> T runWithVariant(String variant, Supplier<T> supplier) {
+        return ScopedValue.where(AB_VARIANT, variant)
+                          .call(supplier::get);
     }
 
     /// Run a supplier within a request ID scope.
@@ -220,7 +242,8 @@ public final class InvocationContext {
                                    currentPrincipal().or((String) null),
                                    currentOriginNode().or((String) null),
                                    currentDepth(),
-                                   isSampled());
+                                   isSampled(),
+                                   currentVariant().or((String) null));
     }
 
     /// Generate a new request ID using KSUID.
@@ -239,7 +262,13 @@ public final class InvocationContext {
     /// @param originNode the origin node identifier (null if no context was active)
     /// @param depth      the invocation depth at capture time
     /// @param sampled    whether the request was sampled at capture time
-    public record ContextSnapshot(String requestId, String principal, String originNode, int depth, boolean sampled) {
+    /// @param variant    the A/B test variant (null if not in an A/B test context)
+    public record ContextSnapshot(String requestId,
+                                  String principal,
+                                  String originNode,
+                                  int depth,
+                                  boolean sampled,
+                                  String variant) {
         /// Run a supplier with the captured context restored.
         ///
         /// @param supplier the supplier to execute
@@ -248,9 +277,14 @@ public final class InvocationContext {
         /// @return the result of the supplier
         public <T> T runWithCaptured(Supplier<T> supplier) {
             if (requestId == null) {
-                return supplier.get();
+                return runWithVariantIfPresent(supplier);
             }
-            return runWithContext(requestId, principal, originNode, depth, sampled, supplier);
+            return runWithContext(requestId,
+                                  principal,
+                                  originNode,
+                                  depth,
+                                  sampled,
+                                  () -> runWithVariantIfPresent(supplier));
         }
 
         /// Run a runnable with the captured context restored.
@@ -259,10 +293,27 @@ public final class InvocationContext {
         @SuppressWarnings("JBCT-RET-01") // Delegates to Runnable-based API
         public void runWithCaptured(Runnable runnable) {
             if (requestId == null) {
-                runnable.run();
+                runWithVariantIfPresent(runnable);
                 return;
             }
-            runWithContext(requestId, principal, originNode, depth, sampled, runnable);
+            runWithContext(requestId, principal, originNode, depth, sampled, () -> runWithVariantIfPresent(runnable));
+        }
+
+        @SuppressWarnings("JBCT-RET-03") // Delegates to supplier — null safety is caller's responsibility
+        private <T> T runWithVariantIfPresent(Supplier<T> supplier) {
+            return variant != null
+                   ? runWithVariant(variant, supplier)
+                   : supplier.get();
+        }
+
+        @SuppressWarnings("JBCT-RET-01") // Void wrapper for variant scoping
+        private void runWithVariantIfPresent(Runnable runnable) {
+            if (variant != null) {
+                ScopedValue.where(AB_VARIANT, variant)
+                           .run(runnable);
+            } else {
+                runnable.run();
+            }
         }
     }
 }

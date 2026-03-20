@@ -246,6 +246,68 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Canary deployment key format:
+    /// ```
+    /// canary-deployment/{canaryId}
+    /// ```
+    record CanaryDeploymentKey(String canaryId) implements AetherKey {
+        private static final String PREFIX = "canary-deployment/";
+
+        @Override
+        public String asString() {
+            return PREFIX + canaryId;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static Result<CanaryDeploymentKey> canaryDeploymentKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return CANARY_DEPLOYMENT_KEY_FORMAT_ERROR.apply(key)
+                                                         .result();
+            }
+            var canaryId = key.substring(PREFIX.length());
+            if (canaryId.isEmpty()) {
+                return CANARY_DEPLOYMENT_KEY_FORMAT_ERROR.apply(key)
+                                                         .result();
+            }
+            return success(new CanaryDeploymentKey(canaryId));
+        }
+    }
+
+    /// Blue-green deployment key format:
+    /// ```
+    /// blue-green-deployment/{deploymentId}
+    /// ```
+    record BlueGreenDeploymentKey(String deploymentId) implements AetherKey {
+        private static final String PREFIX = "blue-green-deployment/";
+
+        @Override
+        public String asString() {
+            return PREFIX + deploymentId;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static Result<BlueGreenDeploymentKey> blueGreenDeploymentKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return BLUE_GREEN_DEPLOYMENT_KEY_FORMAT_ERROR.apply(key)
+                                                             .result();
+            }
+            var id = key.substring(PREFIX.length());
+            if (id.isEmpty()) {
+                return BLUE_GREEN_DEPLOYMENT_KEY_FORMAT_ERROR.apply(key)
+                                                             .result();
+            }
+            return success(new BlueGreenDeploymentKey(id));
+        }
+    }
+
     /// Previous version key format:
     /// ```
     /// previous-version/{groupId}:{artifactId}
@@ -995,6 +1057,72 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// A/B test key format:
+    /// ```
+    /// ab-test/{testId}
+    /// ```
+    /// Stores A/B test deployment state.
+    record ABTestKey(String testId) implements AetherKey {
+        private static final String PREFIX = "ab-test/";
+
+        @Override
+        public String asString() {
+            return PREFIX + testId;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static Result<ABTestKey> abTestKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return AB_TEST_KEY_FORMAT_ERROR.apply(key)
+                                               .result();
+            }
+            var id = key.substring(PREFIX.length());
+            if (id.isEmpty()) {
+                return AB_TEST_KEY_FORMAT_ERROR.apply(key)
+                                               .result();
+            }
+            return success(new ABTestKey(id));
+        }
+    }
+
+    /// A/B test routing key format:
+    /// ```
+    /// ab-test-routing/{groupId}:{artifactId}
+    /// ```
+    /// Stores routing configuration for A/B test traffic splitting.
+    record ABTestRoutingKey(ArtifactBase artifactBase) implements AetherKey {
+        private static final String PREFIX = "ab-test-routing/";
+
+        @Override
+        public String asString() {
+            return PREFIX + artifactBase.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static ABTestRoutingKey abTestRoutingKey(ArtifactBase artifactBase) {
+            return new ABTestRoutingKey(artifactBase);
+        }
+
+        public static Result<ABTestRoutingKey> abTestRoutingKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return AB_TEST_ROUTING_KEY_FORMAT_ERROR.apply(key)
+                                                       .result();
+            }
+            var artifactBasePart = key.substring(PREFIX.length());
+            return ArtifactBase.artifactBase(artifactBasePart)
+                               .map(ABTestRoutingKey::new);
+        }
+    }
+
     /// Node-artifact key format:
     /// ```
     /// node-artifact/{nodeId}/{groupId}:{artifactId}:{version}
@@ -1102,6 +1230,8 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> ENDPOINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid endpoint key format: %s");
     Fn1<Cause, String> VERSION_ROUTING_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid version-routing key format: %s");
     Fn1<Cause, String> ROLLING_UPDATE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid rolling-update key format: %s");
+    Fn1<Cause, String> CANARY_DEPLOYMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid canary-deployment key format: %s");
+    Fn1<Cause, String> BLUE_GREEN_DEPLOYMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid blue-green-deployment key format: %s");
     Fn1<Cause, String> PREVIOUS_VERSION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid previous-version key format: %s");
     Fn1<Cause, String> HTTP_NODE_ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid http-node-routes key format: %s");
     Fn1<Cause, String> ALERT_THRESHOLD_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid alert-threshold key format: %s");
@@ -1115,4 +1245,6 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> BLUEPRINT_RESOURCES_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid blueprint-resources key format: %s");
     Fn1<Cause, String> SCHEMA_VERSION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid schema-version key format: %s");
     Fn1<Cause, String> SCHEMA_MIGRATION_LOCK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid schema-lock key format: %s");
+    Fn1<Cause, String> AB_TEST_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid ab-test key format: %s");
+    Fn1<Cause, String> AB_TEST_ROUTING_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid ab-test-routing key format: %s");
 }

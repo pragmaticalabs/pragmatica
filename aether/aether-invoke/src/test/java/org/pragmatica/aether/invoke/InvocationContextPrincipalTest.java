@@ -113,7 +113,7 @@ class InvocationContextPrincipalTest {
 
     @Test
     void contextSnapshot_runWithCaptured_nullRequestId_executesDirectly() {
-        var snapshot = new InvocationContext.ContextSnapshot(null, null, null, 0, false);
+        var snapshot = new InvocationContext.ContextSnapshot(null, null, null, 0, false, null);
 
         var result = snapshot.runWithCaptured(() -> "executed");
 

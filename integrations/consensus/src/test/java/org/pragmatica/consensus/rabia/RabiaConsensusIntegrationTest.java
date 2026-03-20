@@ -465,15 +465,19 @@ class RabiaConsensusIntegrationTest {
 
             // Activate node-2
             cluster.activateNode(NODE_2);
-            Thread.sleep(100);
 
-            // After activation, node-2 should process accumulated batches
-            // and broadcast a Propose for the first pending batch
-            var node2Messages = cluster.networks.get(NODE_2).getAllMessages();
-            var proposals = node2Messages.stream()
-                .filter(m -> m instanceof Propose<?>)
-                .count();
-            assertThat(proposals).as("Activated node must process accumulated batches").isPositive();
+            // Poll for proposals with timeout — activation and phase start are async
+            long proposalCount = 0;
+            for (int attempt = 0; attempt < 40; attempt++) {
+                Thread.sleep(50);
+                proposalCount = cluster.networks.get(NODE_2).getAllMessages().stream()
+                    .filter(m -> m instanceof Propose<?>)
+                    .count();
+                if (proposalCount > 0) {
+                    break;
+                }
+            }
+            assertThat(proposalCount).as("Activated node must process accumulated batches").isPositive();
         }
     }
 

@@ -355,6 +355,94 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Persisted canary deployment state.
+    record CanaryDeploymentValue(String canaryId,
+                                 ArtifactBase artifactBase,
+                                 Version oldVersion,
+                                 Version newVersion,
+                                 String state,
+                                 String stagesJson,
+                                 int currentStageIndex,
+                                 long stageEnteredAt,
+                                 int newWeight,
+                                 int oldWeight,
+                                 int newInstances,
+                                 double maxErrorRate,
+                                 long maxLatencyMs,
+                                 boolean requireManualApproval,
+                                 String analysisMode,
+                                 int relativeThresholdPercent,
+                                 String cleanupPolicy,
+                                 String blueprintId,
+                                 String artifactsJson,
+                                 long createdAt,
+                                 long updatedAt) implements AetherValue {
+        public static CanaryDeploymentValue canaryDeploymentValue(String canaryId,
+                                                                  ArtifactBase artifactBase,
+                                                                  Version oldVersion,
+                                                                  Version newVersion,
+                                                                  String state,
+                                                                  String stagesJson,
+                                                                  int currentStageIndex,
+                                                                  long stageEnteredAt,
+                                                                  int newWeight,
+                                                                  int oldWeight,
+                                                                  int newInstances,
+                                                                  double maxErrorRate,
+                                                                  long maxLatencyMs,
+                                                                  boolean requireManualApproval,
+                                                                  String analysisMode,
+                                                                  int relativeThresholdPercent,
+                                                                  String cleanupPolicy,
+                                                                  String blueprintId,
+                                                                  String artifactsJson,
+                                                                  long createdAt,
+                                                                  long updatedAt) {
+            return new CanaryDeploymentValue(canaryId,
+                                             artifactBase,
+                                             oldVersion,
+                                             newVersion,
+                                             state,
+                                             stagesJson,
+                                             currentStageIndex,
+                                             stageEnteredAt,
+                                             newWeight,
+                                             oldWeight,
+                                             newInstances,
+                                             maxErrorRate,
+                                             maxLatencyMs,
+                                             requireManualApproval,
+                                             analysisMode,
+                                             relativeThresholdPercent,
+                                             cleanupPolicy,
+                                             blueprintId,
+                                             artifactsJson,
+                                             createdAt,
+                                             updatedAt);
+        }
+    }
+
+    /// Persisted blue-green deployment state.
+    record BlueGreenDeploymentValue(String deploymentId,
+                                    ArtifactBase artifactBase,
+                                    Version blueVersion,
+                                    Version greenVersion,
+                                    String state,
+                                    String activeEnvironment,
+                                    int blueInstances,
+                                    int greenInstances,
+                                    long drainTimeoutMs,
+                                    double maxErrorRate,
+                                    long maxLatencyMs,
+                                    boolean requireManualApproval,
+                                    String cleanupPolicy,
+                                    int newWeight,
+                                    int oldWeight,
+                                    String blueprintId,
+                                    String artifactsJson,
+                                    long createdAt,
+                                    long updatedAt) implements AetherValue {}
+
     /// Previous version tracking for rollback support.
     /// Stores the previous version of an artifact before a deployment update.
     ///
@@ -839,5 +927,70 @@ public sealed interface AetherValue {
         MIGRATING,
         COMPLETED,
         FAILED
+    }
+
+    /// Persisted A/B test deployment state.
+    ///
+    /// @param testId unique identifier for this A/B test
+    /// @param artifactBase the artifact being tested (version-agnostic)
+    /// @param baselineVersion current baseline version
+    /// @param variantVersionsJson serialized variant name to version mapping
+    /// @param state current state name (stored as string for serialization)
+    /// @param splitRuleJson serialized split rule configuration
+    /// @param newWeight current traffic weight for new versions
+    /// @param oldWeight current traffic weight for baseline
+    /// @param blueprintId optional blueprint identifier
+    /// @param createdAt timestamp when test was created
+    /// @param updatedAt timestamp of last state change
+    record ABTestValue(String testId,
+                       ArtifactBase artifactBase,
+                       Version baselineVersion,
+                       String variantVersionsJson,
+                       String state,
+                       String splitRuleJson,
+                       int newWeight,
+                       int oldWeight,
+                       String blueprintId,
+                       long createdAt,
+                       long updatedAt) implements AetherValue {
+        public static ABTestValue abTestValue(String testId,
+                                              ArtifactBase artifactBase,
+                                              Version baselineVersion,
+                                              String variantVersionsJson,
+                                              String state,
+                                              String splitRuleJson,
+                                              int newWeight,
+                                              int oldWeight,
+                                              String blueprintId,
+                                              long createdAt,
+                                              long updatedAt) {
+            return new ABTestValue(testId,
+                                   artifactBase,
+                                   baselineVersion,
+                                   variantVersionsJson,
+                                   state,
+                                   splitRuleJson,
+                                   newWeight,
+                                   oldWeight,
+                                   blueprintId,
+                                   createdAt,
+                                   updatedAt);
+        }
+    }
+
+    /// A/B test routing configuration stored in consensus.
+    /// Stores the split rule and variant versions for traffic routing decisions.
+    ///
+    /// @param testId the A/B test this routing belongs to
+    /// @param splitRuleJson serialized split rule configuration
+    /// @param variantVersionsJson serialized variant name to version mapping
+    record ABTestRoutingValue(String testId,
+                              String splitRuleJson,
+                              String variantVersionsJson) implements AetherValue {
+        public static ABTestRoutingValue abTestRoutingValue(String testId,
+                                                            String splitRuleJson,
+                                                            String variantVersionsJson) {
+            return new ABTestRoutingValue(testId, splitRuleJson, variantVersionsJson);
+        }
     }
 }

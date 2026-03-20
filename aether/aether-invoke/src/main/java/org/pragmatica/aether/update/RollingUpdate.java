@@ -41,7 +41,7 @@ public record RollingUpdate(String updateId,
                             CleanupPolicy cleanupPolicy,
                             int newInstances,
                             long createdAt,
-                            long updatedAt) {
+                            long updatedAt) implements DeploymentStrategy {
     private static final Fn1<Cause, String> INVALID_TRANSITION = Causes.forOneValue("Invalid state transition: %s");
 
     /// Creates a new rolling update in PENDING state.
@@ -119,12 +119,19 @@ public record RollingUpdate(String updateId,
                                  System.currentTimeMillis());
     }
 
+    @Override
+    public String strategyId() {
+        return updateId;
+    }
+
     /// Checks if this update is in a terminal state.
+    @Override
     public boolean isTerminal() {
         return state.isTerminal();
     }
 
     /// Checks if this update is active (not terminal).
+    @Override
     public boolean isActive() {
         return ! isTerminal();
     }

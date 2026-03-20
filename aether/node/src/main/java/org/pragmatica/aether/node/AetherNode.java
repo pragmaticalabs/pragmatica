@@ -67,6 +67,10 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
 import org.pragmatica.aether.ttm.TTMManager;
+import org.pragmatica.aether.update.ABTestManager;
+import org.pragmatica.aether.update.BlueGreenDeploymentManager;
+import org.pragmatica.aether.update.CanaryDeploymentManager;
+import org.pragmatica.aether.update.DeploymentStrategyCoordinator;
 import org.pragmatica.aether.update.RollingUpdateManager;
 import org.pragmatica.aether.worker.bootstrap.WorkerBootstrap;
 import org.pragmatica.aether.worker.deployment.WorkerDeploymentManager;
@@ -877,7 +881,22 @@ public interface AetherNode {
                                     .enabled()
                               ? RollbackManager.rollbackManager(config.self(), config.rollback(), clusterNode, kvStore)
                               : RollbackManager.disabled();
-        // Create slice invoker (needs rollingUpdateManager for weighted routing during rolling updates)
+        // Create canary deployment manager
+        var canaryDeploymentManager = CanaryDeploymentManager.canaryDeploymentManager(clusterNode,
+                                                                                      kvStore,
+                                                                                      invocationMetrics);
+        // Create blue-green deployment manager
+        var blueGreenDeploymentManager = BlueGreenDeploymentManager.blueGreenDeploymentManager(clusterNode,
+                                                                                               kvStore,
+                                                                                               invocationMetrics);
+        // Create A/B test manager
+        var abTestManager = ABTestManager.abTestManager(clusterNode, kvStore, invocationMetrics);
+        // Create strategy coordinator for deployment routing decisions
+        var strategyCoordinator = DeploymentStrategyCoordinator.deploymentStrategyCoordinator(rollingUpdateManager,
+                                                                                              Option.some(canaryDeploymentManager),
+                                                                                              Option.some(blueGreenDeploymentManager),
+                                                                                              Option.some(abTestManager));
+        // Create slice invoker (needs strategyCoordinator for weighted routing during deployments)
         var sliceInvoker = SliceInvoker.sliceInvoker(config.self(),
                                                      clusterNode.network(),
                                                      endpointRegistry,
@@ -892,7 +911,7 @@ public interface AetherNode {
                                                            .observability()
                                                            .invocationCleanup()
                                                            .millis(),
-                                                     rollingUpdateManager,
+                                                     strategyCoordinator,
                                                      observabilityInterceptor);
         // Wire the deferred invoker facade to the actual SliceInvoker
         deferredInvoker.setDelegate(sliceInvoker);
@@ -942,7 +961,8 @@ public interface AetherNode {
                                                         config.tls(),
                                                         Option.some(invocationMetrics),
                                                         serverBossGroup,
-                                                        serverWorkerGroup);
+                                                        serverWorkerGroup,
+                                                        Option.some(strategyCoordinator));
         // DHT subscriptions removed — all control plane state flows through KV-Store notifications
         // Collect all route entries from RabiaNode and AetherNode components
         var aetherEntries = collectRouteEntries(kvStore,
@@ -968,6 +988,9 @@ public interface AetherNode {
                                                 ttmManager,
                                                 rabiaMetricsCollector,
                                                 rollingUpdateManager,
+                                                canaryDeploymentManager,
+                                                blueGreenDeploymentManager,
+                                                abTestManager,
                                                 rollbackManager,
                                                 artifactMetricsCollector,
                                                 deploymentMap,
@@ -1368,6 +1391,9 @@ public interface AetherNode {
                                                                     TTMManager ttmManager,
                                                                     RabiaMetricsCollector rabiaMetricsCollector,
                                                                     RollingUpdateManager rollingUpdateManager,
+                                                                    CanaryDeploymentManager canaryDeploymentManager,
+                                                                    BlueGreenDeploymentManager blueGreenDeploymentManager,
+                                                                    ABTestManager abTestManager,
                                                                     RollbackManager rollbackManager,
                                                                     ArtifactMetricsCollector artifactMetricsCollector,
                                                                     DeploymentMap deploymentMap,
@@ -1501,6 +1527,11 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, ttmManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               rollingUpdateManager::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              canaryDeploymentManager::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              blueGreenDeploymentManager::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, abTestManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, rollbackManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               scheduledTaskManager::onLeaderChange));
@@ -1582,6 +1613,11 @@ public interface AetherNode {
                                               eventAggregator::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
                                               rollingUpdateManager::onDeploymentFailed));
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
+                                              canaryDeploymentManager::onDeploymentFailed));
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
+                                              blueGreenDeploymentManager::onDeploymentFailed));
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               eventAggregator::onSliceFailure));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledUp.class, eventAggregator::onScaledUp));
