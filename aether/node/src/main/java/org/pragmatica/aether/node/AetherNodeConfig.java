@@ -149,7 +149,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                                     DHTConfig artifactRepoConfig,
                                                     int coreMax) {
         // When coreMax > 0, quorum is calculated against core nodes only (not total nodes)
-        var effectiveClusterSize = coreMax > 0 ? coreMax : coreNodes.size();
+        var effectiveClusterSize = coreMax > 0
+                                   ? coreMax
+                                   : coreNodes.size();
         var topology = new TopologyConfig(self,
                                           effectiveClusterSize,
                                           timeSpan(5).seconds(),
