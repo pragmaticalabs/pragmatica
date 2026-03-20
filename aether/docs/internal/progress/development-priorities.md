@@ -156,6 +156,13 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 - **Comprehensive Forge Test Suite** - Tests use InventoryService (no slice dependencies)
 - **Docker E2E Infrastructure** - Hostname-based peer resolution, local Maven repo fallback for artifact resolution, CI timeout adaptation, leader election stabilization in containers
 
+### Per-Data-Source Schema Management (v0.21.0)
+- **Schema migration engine** — Flyway-style versioned (V), repeatable (R), undo (U), and baseline (B) migration types. Per-datasource history tables (`aether_schema_history`). Checksum validation, transactional per-script execution
+- **Schema orchestration** — distributed coordination with exclusive consensus locking, artifact resolution, status tracking (PENDING → MIGRATING → COMPLETED/FAILED). CDM readiness gate blocks slice ACTIVATE until schemas ready
+- **Deployment flow audit** — comprehensive CDM/NDM handoff audit: schema migration gate, lock exclusivity, allocation safety, state consistency fixes. RFC-0014 documents the deployment state machine
+- **REST API and CLI** — `/api/schema/status`, `/api/schema/migrate/{ds}`, `/api/schema/undo/{ds}`, `/api/schema/baseline/{ds}` + CLI commands
+- **Remaining:** SqlConnector provisioning in orchestrator (connects engine to actual database execution)
+
 ### Blueprint Artifact Transition (v0.21.0)
 - **Blueprint artifacts** — blueprints packaged as deployable JAR artifacts containing `blueprint.toml`, optional `resources.toml` (app-level config), and optional `schema/` directory (database migration scripts)
 - **`PackageBlueprintMojo`** — new Maven plugin goal (`package-blueprint`) produces classifier `blueprint` JARs with `Blueprint-Id` and `Blueprint-Version` manifest entries
@@ -212,14 +219,18 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 
 ### HIGH PRIORITY - Core & Operations
 
-1. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
-    - Cluster-level schema migration managed by Aether runtime, not individual nodes
-    - Per-datasource lifecycle with independent history tables (`aether_schema_history`)
-    - Leader-driven execution via Rabia consensus; exactly one node runs migrations
-    - TOML-declared schema versions in service descriptors; versioned SQL scripts (`V001__*.sql`)
-    - Readiness gate: traffic only routed after all datasources reach declared version
-    - Expand-contract support for zero-downtime schema changes
-    - Lightweight `AetherSchemaManager` — plain JDBC, no Flyway/Liquibase dependency
+1. **Streaming** — [implementation spec](../../specs/streaming-spec.md), [exploratory design](../../specs/in-memory-streams-spec.md)
+    - Ordered, replayable, consumer-paced streaming as a first-class Aether resource
+    - Typed streams with compile-time codec generation; off-heap ring buffers (`MemorySegment`)
+    - API follows pub/sub pattern: `StreamPublisher<T>` (parameter annotation), `StreamSubscriber` (method annotation), `StreamAccess<T>` (advanced)
+    - Governor-local sequencing (standard) or Rabia path (strong consistency)
+    - Consumer groups with partition assignment, configurable processing (ordered/parallel), error handling (retry/skip/stall + dead-letter)
+    - Governor-local cursor tracking with periodic consensus checkpoint
+    - CDM auto-scaling on consumer lag
+    - CDC adapter: KV-Store change notifications → typed stream
+    - **Phase 1:** Core streaming (produce, consume, ring buffer, consumer groups) — 6-8 weeks
+    - **Phase 2:** Replication, governor failover recovery — 3-4 weeks
+    - **Phase 3:** PostgreSQL persistent backend, transactional cursors, compaction — 4-6 weeks
 
 2. **Canary & Blue-Green Deployment Strategies** — [design spec](../../specs/canary-blue-green-spec.md)
      - Current: Rolling updates with weighted routing exist
@@ -372,8 +383,6 @@ Part of Cloud Integration (#3). Per-provider status:
 - **LLM Integration (Layer 3)** — Claude/GPT API integration. Complex reasoning workflows. Multi-cloud decision support.
 
 - **Per-Blueprint Artifact Scoping (Tier 2)** — Tier 1 complete (ownership tracking, artifact exclusivity enforcement). Tier 2 would relax exclusivity for multi-tenant clusters: same artifact deployable by multiple blueprints with independent scaling. Deferred until a concrete multi-tenant use case arises.
-
-- **In-Memory Streams** — [design spec](../../specs/in-memory-streams-spec.md) — Ordered, replayable, consumer-paced streaming (Kafka-like primitive). Partition-based with DHT ownership, consumer groups with cursor tracking, time/size-based retention, configurable replication. Blueprint-declared streams as first-class resources. Status: Exploratory Draft.
 
 - **Cross-Slice Transaction Support (2PC)**
     - Distributed transactions via Transaction aspect
