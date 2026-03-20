@@ -68,10 +68,22 @@ import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
 import org.pragmatica.aether.ttm.TTMManager;
 import org.pragmatica.aether.update.RollingUpdateManager;
+import org.pragmatica.aether.worker.bootstrap.WorkerBootstrap;
+import org.pragmatica.aether.worker.deployment.WorkerDeploymentManager;
+import org.pragmatica.aether.worker.governor.DecisionRelay;
+import org.pragmatica.aether.worker.governor.GovernorCleanup;
+import org.pragmatica.aether.worker.governor.GovernorMesh;
+import org.pragmatica.aether.worker.group.GroupMembershipTracker;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.CommunityScalingRequest;
+import org.pragmatica.aether.worker.mutation.MutationForwarder;
+import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.MetricsMessage;
+import org.pragmatica.cluster.node.ForwardingClusterNode;
+import org.pragmatica.cluster.node.SwitchableClusterNode;
+import org.pragmatica.cluster.node.forward.ForwardApplyRequest;
+import org.pragmatica.cluster.node.forward.ForwardApplyResponse;
 import org.pragmatica.cluster.node.rabia.NodeConfig;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.consensus.rabia.RabiaPersistence;
@@ -125,6 +137,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -356,12 +369,24 @@ public interface AetherNode {
         var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer);
         // Create DHT anti-entropy for replica synchronization
         var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode, dhtNetwork, config.artifactRepo());
+        // Create SwitchableClusterNode wrapping clusterNode — allows runtime switch to forwarding mode
+        var switchableCluster = SwitchableClusterNode.switchableClusterNode(clusterNode);
+        // Create ForwardingClusterNode for worker mode — forwards apply() to core peers
+        var corePeerIds = config.topology()
+                                .coreNodes()
+                                .stream()
+                                .map(NodeInfo::id)
+                                .filter(id -> !id.equals(config.self()))
+                                .collect(Collectors.toSet());
+        var forwardingClusterNode = ForwardingClusterNode.forwardingClusterNode(
+            clusterNode, clusterNode.network(), corePeerIds);
         record aetherNode(AetherNodeConfig config,
                           MessageRouter.DelegateRouter router,
                           KVStore<AetherKey, AetherValue> kvStore,
                           SliceRegistry sliceRegistry,
                           SliceStore sliceStore,
                           RabiaNode<KVCommand<AetherKey>> clusterNode,
+                          SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
                           NodeDeploymentManager nodeDeploymentManager,
                           ClusterDeploymentManager clusterDeploymentManager,
                           EndpointRegistry endpointRegistry,
@@ -619,7 +644,7 @@ public interface AetherNode {
 
             @Override
             public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
-                return clusterNode.apply(commands);
+                return switchableCluster.apply(commands);
             }
 
             @Override
@@ -994,6 +1019,17 @@ public interface AetherNode {
         aetherEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
                                                     dhtTopologyListener::onNodeRemoved));
         // DHTNotification routes removed — passive LB uses KV-Store notifications directly
+        // ForwardApply message handlers — core nodes handle forwarded commands from workers,
+        // workers receive responses from core nodes.
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        MessageRouter.Entry forwardRequestRoute = MessageRouter.Entry.route(ForwardApplyRequest.class,
+                                                                            (ForwardApplyRequest request) -> handleForwardApplyRequest(request,
+                                                                                                                                       clusterNode));
+        aetherEntries.add(forwardRequestRoute);
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        MessageRouter.Entry forwardResponseRoute = MessageRouter.Entry.route(ForwardApplyResponse.class,
+                                                                              forwardingClusterNode::onForwardApplyResponse);
+        aetherEntries.add(forwardResponseRoute);
         // Activation directive KV handler — CDM submits activation through consensus,
         // so all nodes see committed directives. Each node checks if the directive targets itself.
         var growthLog = LoggerFactory.getLogger(AetherNode.class);
@@ -1003,6 +1039,13 @@ public interface AetherNode {
                                                             (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> handleActivationDirective(put,
                                                                                                                                                                                 selfId,
                                                                                                                                                                                 clusterNode,
+                                                                                                                                                                                switchableCluster,
+                                                                                                                                                                                forwardingClusterNode,
+                                                                                                                                                                                config,
+                                                                                                                                                                                delegateRouter,
+                                                                                                                                                                                kvStore,
+                                                                                                                                                                                sliceStore,
+                                                                                                                                                                                sliceInvoker,
                                                                                                                                                                                 growthLog))
                                                      .build();
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
@@ -1032,6 +1075,7 @@ public interface AetherNode {
                                   sliceRegistry,
                                   sliceStore,
                                   clusterNode,
+                                  switchableCluster,
                                   nodeDeploymentManager,
                                   clusterDeploymentManager,
                                   endpointRegistry,
@@ -1103,6 +1147,7 @@ public interface AetherNode {
                                                            sliceRegistry,
                                                            sliceStore,
                                                            clusterNode,
+                                                           switchableCluster,
                                                            nodeDeploymentManager,
                                                            clusterDeploymentManager,
                                                            endpointRegistry,
@@ -1154,24 +1199,108 @@ public interface AetherNode {
         }
     }
 
-    private static void handleActivationDirective(ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put,
-                                                  NodeId selfId,
-                                                  RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                  Logger growthLog) {
+    @SuppressWarnings({"JBCT-RET-01"})
+    private static void handleActivationDirective(
+            ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put,
+            NodeId selfId,
+            RabiaNode<KVCommand<AetherKey>> clusterNode,
+            SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
+            ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
+            AetherNodeConfig config,
+            MessageRouter.DelegateRouter delegateRouter,
+            KVStore<AetherKey, AetherValue> kvStore,
+            SliceStore sliceStore,
+            SliceInvoker sliceInvoker,
+            Logger growthLog) {
         if (!put.cause()
                 .key()
                 .nodeId()
                 .equals(selfId)) {
             return;
         }
-        if (AetherValue.ActivationDirectiveValue.CORE.equals(put.cause()
-                                                                .value()
-                                                                .role())) {
+        var role = put.cause()
+                      .value()
+                      .role();
+        if (AetherValue.ActivationDirectiveValue.CORE.equals(role)) {
             growthLog.info("Received core activation directive from CDM");
             clusterNode.authorizeActivation();
-        } else {
-            growthLog.info("Received worker role assignment from CDM");
+        } else if (AetherValue.ActivationDirectiveValue.WORKER.equals(role)) {
+            growthLog.info("Received worker activation directive from CDM");
+            activateWorkerMode(selfId, clusterNode, switchableCluster, forwardingClusterNode,
+                               config, delegateRouter, kvStore, sliceStore, sliceInvoker, growthLog);
         }
+    }
+
+    @SuppressWarnings({"JBCT-RET-01"})
+    private static void activateWorkerMode(
+            NodeId selfId,
+            RabiaNode<KVCommand<AetherKey>> clusterNode,
+            SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
+            ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
+            AetherNodeConfig config,
+            MessageRouter.DelegateRouter delegateRouter,
+            KVStore<AetherKey, AetherValue> kvStore,
+            SliceStore sliceStore,
+            SliceInvoker sliceInvoker,
+            Logger log) {
+        // 1. Enter observer mode (receive Decisions, don't vote)
+        clusterNode.authorizeObservation();
+
+        // 2. Switch to forwarding apply() calls to core peers
+        switchableCluster.switchTo(forwardingClusterNode);
+        log.info("Worker {} switched to forwarding mode", selfId.id());
+
+        // 3. Create worker subsystems
+        var decisionRelay = DecisionRelay.decisionRelay(selfId, delegateRouter);
+        var mutationForwarder = MutationForwarder.mutationForwarder(selfId, delegateRouter);
+        var workerBootstrap = WorkerBootstrap.workerBootstrap(selfId, delegateRouter, kvStore);
+        var governorMesh = GovernorMesh.governorMesh(delegateRouter);
+
+        var groupMembershipTracker = GroupMembershipTracker.groupMembershipTracker(
+            selfId,
+            config.workerConfig()
+                  .map(WorkerConfig::groupName)
+                  .or(WorkerConfig.DEFAULT_GROUP_NAME),
+            config.workerConfig()
+                  .map(WorkerConfig::maxGroupSize)
+                  .or(WorkerConfig.DEFAULT_MAX_GROUP_SIZE));
+
+        var governorCleanup = GovernorCleanup.governorCleanup(mutationForwarder);
+
+        var workerDeploymentManager = WorkerDeploymentManager.workerDeploymentManager(
+            selfId, sliceStore, mutationForwarder, List.of(),
+            () -> groupMembershipTracker.myGroup()
+                                        .communityId());
+
+        log.info("Worker {} subsystems created, ready for SWIM-based community formation", selfId.id());
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes", "JBCT-RET-01"})
+    private static void handleForwardApplyRequest(ForwardApplyRequest request,
+                                                   RabiaNode<KVCommand<AetherKey>> clusterNode) {
+        clusterNode.apply((List) request.commands())
+                   .onSuccess(results -> sendSuccessResponse(clusterNode, request, (List) results))
+                   .onFailure(cause -> sendFailureResponse(clusterNode, request, (Cause) cause));
+    }
+
+    @SuppressWarnings({"rawtypes"})
+    private static void sendSuccessResponse(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                             ForwardApplyRequest request,
+                                             List<?> results) {
+        var response = new ForwardApplyResponse<>(clusterNode.self(), request.correlationId(),
+                                                   results, Option.empty());
+        clusterNode.network()
+                   .send(request.sender(), response);
+    }
+
+    @SuppressWarnings({"rawtypes"})
+    private static void sendFailureResponse(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                             ForwardApplyRequest request,
+                                             Cause cause) {
+        var response = new ForwardApplyResponse<>(clusterNode.self(), request.correlationId(),
+                                                   List.of(), Option.some(cause.message()));
+        clusterNode.network()
+                   .send(request.sender(), response);
     }
 
     @SuppressWarnings("JBCT-RET-01")

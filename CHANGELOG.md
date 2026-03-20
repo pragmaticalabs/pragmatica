@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`GET /api/cluster/governors` endpoint** — exposes governor announcements from KV-Store: governor ID, community, member count, and member list
 
 ### Changed
+- **Role-aware unified AetherNode** — merged WorkerNode into AetherNode. Single `aether-node.jar` binary for both CORE and WORKER roles. Consensus observer mode (receives Decisions without voting), `ForwardingClusterNode` for transparent KV write forwarding, `SwitchableClusterNode` for runtime role switching. WORKER→CORE promotion supported. `aether/worker` module eliminated — components ported to `aether/node` and `aether-metrics`
+- **Quorum fix for mixed clusters** — when `coreMax > 0`, consensus quorum calculated against core node count only (not total nodes including workers)
 - **KV-commit-driven allocation/deallocation** — slice allocation and deallocation now triggered exclusively by KV-Store commit notifications (`onSliceTargetPut`/`onSliceTargetRemove`), eliminating double-allocation race in blueprint handler
 - **ReconciliationAdjustment events** — CDM emits scaling events to cluster event stream when reconciliation adjusts instance counts
 

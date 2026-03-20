@@ -83,6 +83,7 @@ public class RabiaEngine<C extends Command> {
     private final boolean activationGated;
     private final TimeSpan phaseStallCheck;
     private volatile boolean activationAuthorized;
+    private volatile boolean observerMode;
     private final AtomicReference<QuorumStateNotification> pendingQuorum = new AtomicReference<>();
 
     // Single-thread executor with DiscardPolicy to silently drop tasks after shutdown
@@ -237,14 +238,47 @@ public class RabiaEngine<C extends Command> {
 
     /// Authorize a gated engine to start consensus participation.
     /// If a quorum ESTABLISHED notification was received while gated, it is replayed.
+    /// When promoting from observer mode, transitions directly to active without re-sync.
     public void authorizeActivation() {
         log.info("Node {}: consensus activation authorized", self);
+        if (observerMode) {
+            log.info("Node {}: promoting from observer to full consensus", self);
+            observerMode = false;
+        }
         activationAuthorized = true;
         var pending = pendingQuorum.getAndSet(null);
         if (pending != null) {
             log.info("Node {}: replaying stored quorum notification", self);
             clusterConnected();
+        } else if (engineState.get().isObserving()) {
+            executor.execute(this::promoteObserverToActive);
         }
+    }
+
+    private void promoteObserverToActive() {
+        var oldState = engineState.getAndSet(new EngineState.Idle());
+        exitState(oldState);
+        log.info("Node {} promoted from observer to active in phase {}", self, currentPhase.get());
+        executor.execute(this::startPhase);
+    }
+
+    /// Authorize a gated engine to enter observer mode.
+    /// The node will receive and apply committed Decisions but will not propose or vote.
+    /// If a quorum ESTABLISHED notification was received while gated, it is replayed.
+    public void authorizeObservation() {
+        log.info("Node {}: consensus observation authorized (observer mode)", self);
+        activationAuthorized = true;
+        observerMode = true;
+        var pending = pendingQuorum.getAndSet(null);
+        if (pending != null) {
+            log.info("Node {}: replaying stored quorum notification for observer mode", self);
+            clusterConnected();
+        }
+    }
+
+    /// Returns true if the engine is currently in observer mode.
+    public boolean isObserving() {
+        return engineState.get().isObserving();
     }
 
     private void clusterConnected() {
@@ -267,7 +301,7 @@ public class RabiaEngine<C extends Command> {
 
     private void doClusterDisconnected() {
         var current = engineState.get();
-        if (!current.isActive()) {
+        if (!current.isActive() && !current.isObserving()) {
             return;
         }
         var oldState = engineState.getAndSet(new EngineState.Stopped());
@@ -575,7 +609,12 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// Activate node and adjust phase, if necessary.
+    /// In observer mode, transitions to Observing state instead of Idle and does not start phases.
     private void activate() {
+        if (observerMode) {
+            activateAsObserver();
+            return;
+        }
         var oldState = engineState.getAndSet(new EngineState.Idle());
         exitState(oldState);
         startPromise.get()
@@ -584,6 +623,16 @@ public class RabiaEngine<C extends Command> {
         metrics.recordSyncAttempt(self, true);
         log.info("Node {} activated in phase {}", self, currentPhase.get());
         executor.execute(this::startPhase);
+    }
+
+    private void activateAsObserver() {
+        var oldState = engineState.getAndSet(new EngineState.Observing());
+        exitState(oldState);
+        startPromise.get()
+                    .succeed(Unit.unit());
+        syncResponses.clear();
+        metrics.recordSyncAttempt(self, true);
+        log.info("Node {} activated in observer mode at phase {}", self, currentPhase.get());
     }
 
     /// Cancels any timers owned by the old state during a transition.
@@ -630,7 +679,8 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void doHandleSyncRequest(SyncRequest request) {
-        if (engineState.get().isActive()) {
+        var state = engineState.get();
+        if (state.isActive() || state.isObserving()) {
             stateMachine.makeSnapshot()
                         .map(snapshot -> new SyncResponse<>(self,
                                                             savedState(snapshot,
@@ -664,7 +714,8 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void doCleanupOldPhases() {
-        if (!engineState.get().isActive()) {
+        var state = engineState.get();
+        if (!state.isActive() && !state.isObserving()) {
             return;
         }
         var current = currentPhase.get();
@@ -940,8 +991,10 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// Handles a decision message from another node.
+    /// Observers also process decisions to keep their state machine in sync.
     private void handleDecision(Decision<C> decision) {
-        if (!engineState.get().isActive()) {
+        var state = engineState.get();
+        if (!state.isActive() && !state.isObserving()) {
             log.warn("Node {} ignores decision {}. Node is dormant", self, decision);
             return;
         }
@@ -950,12 +1003,18 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// Advances to the next phase after decision or carry-forward.
+    /// In observer mode, advances the phase counter but returns to Observing state
+    /// without locking values or starting new phases.
     /// @param fromPhase the phase being completed
     /// @param value the state value (V0 or V1)
     /// @param forceLock if true, always lock the value (for carry-forward per spec)
     private void advancePhase(Phase fromPhase, StateValue value, boolean forceLock) {
         var nextPhase = fromPhase.successor();
         this.currentPhase.set(nextPhase);
+        if (observerMode) {
+            advancePhaseAsObserver(nextPhase);
+            return;
+        }
         // Transition InPhase -> Idle, cancel stall detector
         var oldState = engineState.getAndSet(new EngineState.Idle());
         exitState(oldState);
@@ -970,6 +1029,12 @@ public class RabiaEngine<C extends Command> {
         if (!pendingBatches.isEmpty()) {
             executor.execute(this::startPhase);
         }
+    }
+
+    private void advancePhaseAsObserver(Phase nextPhase) {
+        var oldState = engineState.getAndSet(new EngineState.Observing());
+        exitState(oldState);
+        log.trace("Node {} (observer) advancing to phase {}", self, nextPhase);
     }
 
     /// Gets or creates phase data for a specific phase.

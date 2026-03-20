@@ -141,11 +141,7 @@
             <artifactId>aether-control</artifactId>
             <version>${project.version}</version>
         </dependency>
-        <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>worker</artifactId>
-            <version>${project.version}</version>
-        </dependency>
+        <!-- worker module removed: sources moved to node and aether-metrics -->
 
         <!-- Observability -->
         <dependency>

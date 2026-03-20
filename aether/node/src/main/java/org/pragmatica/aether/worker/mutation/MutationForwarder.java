@@ -4,6 +4,7 @@ import org.pragmatica.cluster.node.passive.PassiveNode;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.lang.Option;
+import org.pragmatica.messaging.MessageRouter.DelegateRouter;
 
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -30,11 +31,18 @@ public interface MutationForwarder {
     /// Update the known governor.
     void updateGovernor(Option<NodeId> governor);
 
-    /// Factory method.
+    /// Factory method using PassiveNode.
     static MutationForwarder mutationForwarder(NodeId selfId,
                                                PassiveNode<?, ?> passiveNode) {
+        return mutationForwarder(selfId, passiveNode.delegateRouter());
+    }
+
+    /// Factory method using DelegateRouter directly.
+    /// Used by AetherNode where a RabiaNode (not PassiveNode) provides the network.
+    static MutationForwarder mutationForwarder(NodeId selfId,
+                                               DelegateRouter delegateRouter) {
         record mutationForwarder(NodeId selfId,
-                                 PassiveNode<?, ?> passiveNode,
+                                 DelegateRouter delegateRouter,
                                  AtomicReference<Option<NodeId>> currentGovernor) implements MutationForwarder {
             @Override
             public void forward(WorkerMutation mutation) {
@@ -62,17 +70,15 @@ public interface MutationForwarder {
             }
 
             private void forwardToCore(WorkerMutation mutation) {
-                passiveNode.delegateRouter()
-                           .route(new NetworkServiceMessage.Broadcast(mutation));
+                delegateRouter.route(new NetworkServiceMessage.Broadcast(mutation));
                 LOG.trace("Forwarded mutation {} to core cluster", mutation.correlationId());
             }
 
             private void forwardToGovernor(WorkerMutation mutation, NodeId governorId) {
-                passiveNode.delegateRouter()
-                           .route(new NetworkServiceMessage.Send(governorId, mutation));
+                delegateRouter.route(new NetworkServiceMessage.Send(governorId, mutation));
                 LOG.trace("Forwarded mutation {} to governor {}", mutation.correlationId(), governorId.id());
             }
         }
-        return new mutationForwarder(selfId, passiveNode, new AtomicReference<>(Option.empty()));
+        return new mutationForwarder(selfId, delegateRouter, new AtomicReference<>(Option.empty()));
     }
 }
