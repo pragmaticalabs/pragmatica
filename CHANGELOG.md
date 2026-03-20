@@ -33,6 +33,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Activation timeout alignment** — ACTIVATING stall timeout (90s) and NDM activation chain timeout (90s) aligned; stall detector fires at 3 min (2× multiplier), after NDM has had time to fail and write FAILED state
 - **Consensus operation timeouts** — all `cluster.apply()` calls in NDM now have 15s timeout, preventing orphaned Rabia proposals from hanging activation chains forever
 - **Double slice allocation** — blueprint handler no longer allocates directly; allocation deferred to `onSliceTargetPut` notification, fixing race where 5 instances were created instead of 3
+- **Multi-phase allocation double-write** — `tryAllocate()` now optimistically tracks allocations in `sliceStates`, preventing Phase 2/3 of `issueScaleUpCommands` from re-allocating nodes already assigned in Phase 1 (async `cluster.apply()` hadn't committed yet)
+- **Blueprint deletion deallocation** — `handleAppBlueprintRemoval()` now issues deallocation commands before removing artifacts from `blueprints` map; previously deferred to `onSliceTargetRemove` which couldn't find the artifacts because they were already removed
+- **SliceState ACTIVATING timeout** — test expected 60s but actual was 90s (aligned after activation timeout changes)
 - **Cloud providers — AWS, GCP, Azure** — complete cloud integration for all major providers:
   - `integrations/xml/jackson-xml` — XML mapper module (Jackson XML) mirroring `JsonMapper` pattern, needed for AWS EC2 XML responses
   - `integrations/cloud/aws` — AWS cloud client with SigV4 signing from scratch, EC2 (XML), ELBv2 (JSON), Secrets Manager (JSON). No AWS SDK
