@@ -586,7 +586,7 @@ public interface ClusterDeploymentManager {
                 var consensusCommands = new ArrayList<KVCommand<AetherKey>>();
                 for (var artifact : artifactsToRemove) {
                     blueprints.remove(artifact);
-                    // Deallocation happens via onSliceTargetRemove when this Remove is committed
+                    issueDeallocationCommands(artifact);
                     consensusCommands.add(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(artifact.base())));
                 }
                 submitBatch(consensusCommands);
@@ -1660,6 +1660,7 @@ public interface ClusterDeploymentManager {
                           sliceKey,
                           alreadyExists);
                 if (!alreadyExists) {
+                    sliceStates.put(sliceKey, SliceState.LOAD);
                     issueLoadCommand(sliceKey);
                     return true;
                 }

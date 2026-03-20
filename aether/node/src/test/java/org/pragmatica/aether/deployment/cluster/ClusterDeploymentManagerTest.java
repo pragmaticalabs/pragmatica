@@ -616,7 +616,9 @@ class ClusterDeploymentManagerTest {
         var blueprintB = createNamedBlueprint("app-b", "service-b");
 
         sendAppBlueprintPut(manager, blueprintA);
+        replaySliceTargetNotifications();
         sendAppBlueprintPut(manager, blueprintB);
+        replaySliceTargetNotifications();
 
         var serviceA = Artifact.artifact("org.example:service-a:1.0.0").unwrap();
         var serviceB = Artifact.artifact("org.example:service-b:1.0.0").unwrap();
@@ -659,7 +661,9 @@ class ClusterDeploymentManagerTest {
         var blueprintB = createNamedBlueprint("app-b", "service-b");
 
         sendAppBlueprintPut(manager, blueprintA);
+        replaySliceTargetNotifications();
         sendAppBlueprintPut(manager, blueprintB);
+        replaySliceTargetNotifications();
 
         // Clear tracking to isolate deletion effects
         clusterNode.appliedCommands.clear();
@@ -709,6 +713,7 @@ class ClusterDeploymentManagerTest {
             Artifact.artifact("org.example:service-a:1.0.0").unwrap(), 3, false).unwrap();
         var blueprintV1 = ExpandedBlueprint.expandedBlueprint(bpId, List.of(sliceV1));
         sendAppBlueprintPut(manager, blueprintV1);
+        replaySliceTargetNotifications();
 
         // Clear tracking to isolate re-deploy effects
         clusterNode.appliedCommands.clear();
@@ -718,6 +723,7 @@ class ClusterDeploymentManagerTest {
             Artifact.artifact("org.example:service-a:2.0.0").unwrap(), 3, false).unwrap();
         var blueprintV2 = ExpandedBlueprint.expandedBlueprint(bpId, List.of(sliceV2));
         sendAppBlueprintPut(manager, blueprintV2);
+        replaySliceTargetNotifications();
 
         var serviceAv2 = Artifact.artifact("org.example:service-a:2.0.0").unwrap();
         var loadedArtifacts = filterLoadArtifacts();
@@ -841,6 +847,33 @@ class ClusterDeploymentManagerTest {
                         AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY));
         }
         mgr.onTopologyChange(TopologyChangeNotification.nodeAdded(nodes[nodes.length - 1], topology));
+    }
+
+    @SuppressWarnings("unchecked")
+    private void replaySliceTargetNotifications() {
+        replaySliceTargetNotifications(manager);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void replaySliceTargetNotifications(ClusterDeploymentManager mgr) {
+        clusterNode.appliedCommands.stream()
+            .filter(cmd -> cmd instanceof KVCommand.Put<?, ?>)
+            .map(cmd -> (KVCommand.Put<AetherKey, AetherValue>) cmd)
+            .filter(put -> put.key() instanceof SliceTargetKey)
+            .forEach(put -> mgr.onSliceTargetPut(
+                new ValuePut<>((KVCommand.Put<SliceTargetKey, SliceTargetValue>) (KVCommand.Put<?, ?>) put, Option.none())));
+        // Replay NodeArtifactKey puts so sliceStates gets populated
+        replayNodeArtifactNotifications(mgr);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void replayNodeArtifactNotifications(ClusterDeploymentManager mgr) {
+        clusterNode.appliedCommands.stream()
+            .filter(cmd -> cmd instanceof KVCommand.Put<?, ?>)
+            .map(cmd -> (KVCommand.Put<AetherKey, AetherValue>) cmd)
+            .filter(put -> put.key() instanceof NodeArtifactKey)
+            .forEach(put -> mgr.onNodeArtifactPut(
+                new ValuePut<>((KVCommand.Put<NodeArtifactKey, NodeArtifactValue>) (KVCommand.Put<?, ?>) put, Option.none())));
     }
 
     private void sendSliceTargetPut(Artifact artifact, int instanceCount) {
