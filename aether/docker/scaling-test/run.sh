@@ -34,6 +34,18 @@ COMPOSE_FULL="$COMPOSE_BASE -f $SCRIPT_DIR/docker-compose.workers.yml"
 # Management API base (node-1)
 MGMT_URL="http://localhost:8080"
 
+upload_artifact() {
+    local group_path="$1" artifact_id="$2" version="$3" filename="$4" filepath="$5"
+    if [ ! -f "$filepath" ]; then
+        echo "ERROR: Artifact not found: $filepath"
+        exit 1
+    fi
+    echo "  Uploading $filename..."
+    curl -sf -X PUT "$MGMT_URL/repository/$group_path/$artifact_id/$version/$filename" \
+        --data-binary "@$filepath" \
+        || { echo "ERROR: Upload failed for $filename"; exit 1; }
+}
+
 teardown() {
     echo "=== Tearing down ==="
     $COMPOSE_FULL down --remove-orphans 2>/dev/null || true
@@ -59,12 +71,11 @@ phase_deploy() {
         exit 1
     fi
 
-    # Upload blueprint JAR via Maven protocol
-    echo "Uploading blueprint JAR..."
-    curl -sf -X PUT "$MGMT_URL/repository/$BLUEPRINT_GROUP_PATH/$BLUEPRINT_ARTIFACT/$BLUEPRINT_VERSION/${BLUEPRINT_ARTIFACT}-${BLUEPRINT_VERSION}-${BLUEPRINT_CLASSIFIER}.jar" \
-        --data-binary "@$BLUEPRINT_JAR" \
-        || { echo "ERROR: Blueprint upload failed"; exit 1; }
-    echo "Blueprint JAR uploaded."
+    # Upload all artifacts via Maven protocol (blueprint + slice JARs)
+    upload_artifact "$BLUEPRINT_GROUP_PATH" "$BLUEPRINT_ARTIFACT" "$BLUEPRINT_VERSION" "${BLUEPRINT_ARTIFACT}-${BLUEPRINT_VERSION}-${BLUEPRINT_CLASSIFIER}.jar" "$BLUEPRINT_JAR"
+    upload_artifact "$BLUEPRINT_GROUP_PATH" "url-shortener-url-shortener" "$BLUEPRINT_VERSION" "url-shortener-url-shortener-${BLUEPRINT_VERSION}.jar" "$ROOT_DIR/examples/url-shortener/target/url-shortener-url-shortener-${BLUEPRINT_VERSION}.jar"
+    upload_artifact "$BLUEPRINT_GROUP_PATH" "url-shortener-analytics" "$BLUEPRINT_VERSION" "url-shortener-analytics-${BLUEPRINT_VERSION}.jar" "$ROOT_DIR/examples/url-shortener/target/url-shortener-analytics-${BLUEPRINT_VERSION}.jar"
+    echo "All artifacts uploaded."
 
     # Deploy via management API
     echo "Deploying blueprint..."
