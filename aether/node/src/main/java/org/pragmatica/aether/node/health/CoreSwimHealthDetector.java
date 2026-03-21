@@ -52,49 +52,41 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private final TopologyConfig topologyConfig;
     private final Serializer serializer;
     private final Deserializer deserializer;
-    private final GossipEncryptor encryptor;
+    private volatile GossipEncryptor encryptor;
     private volatile SwimProtocol swimProtocol;
     private volatile SwimTransport swimTransport;
 
     private CoreSwimHealthDetector(MessageRouter router,
                                    TopologyConfig topologyConfig,
                                    Serializer serializer,
-                                   Deserializer deserializer,
-                                   GossipEncryptor encryptor) {
+                                   Deserializer deserializer) {
         this.router = router;
         this.topologyConfig = topologyConfig;
         this.serializer = serializer;
         this.deserializer = deserializer;
-        this.encryptor = encryptor;
+        this.encryptor = GossipEncryptor.none();
     }
 
-    /// Factory method for creating a CoreSwimHealthDetector with encryption.
-    public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
-                                                                TopologyConfig topologyConfig,
-                                                                Serializer serializer,
-                                                                Deserializer deserializer,
-                                                                GossipEncryptor encryptor) {
-        return new CoreSwimHealthDetector(router, topologyConfig, serializer, deserializer, encryptor);
-    }
-
-    /// Factory method for creating a CoreSwimHealthDetector without encryption (backward-compatible).
+    /// Factory method.
     public static CoreSwimHealthDetector coreSwimHealthDetector(MessageRouter router,
                                                                 TopologyConfig topologyConfig,
                                                                 Serializer serializer,
                                                                 Deserializer deserializer) {
-        return coreSwimHealthDetector(router, topologyConfig, serializer, deserializer, GossipEncryptor.none());
+        return new CoreSwimHealthDetector(router, topologyConfig, serializer, deserializer);
     }
 
     /// Start the SWIM protocol for core node health detection.
     /// SWIM port = cluster port + 1.
     /// Idempotent: if SWIM is already running, this is a no-op.
     public Promise<Unit> start() {
-        return start(Option.empty());
+        return start(Option.empty(), GossipEncryptor.none());
     }
 
-    /// Start the SWIM protocol, optionally reusing a shared EventLoopGroup for UDP transport.
-    /// When present, SWIM shares the Server's workerGroup instead of creating its own.
-    public Promise<Unit> start(Option<EventLoopGroup> sharedEventLoopGroup) {
+    /// Start the SWIM protocol with encryption, optionally reusing a shared EventLoopGroup.
+    /// Encryptor is resolved at start time (quorum), not at construction — avoids race
+    /// condition where certificate provider isn't initialized yet during node assembly.
+    public Promise<Unit> start(Option<EventLoopGroup> sharedEventLoopGroup, GossipEncryptor gossipEncryptor) {
+        this.encryptor = gossipEncryptor;
         if (swimProtocol != null) {
             log.debug("SWIM already running, skipping start");
             return Promise.success(Unit.unit());
