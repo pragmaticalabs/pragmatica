@@ -13,7 +13,7 @@ import org.pragmatica.aether.api.routes.MetricsRoutes;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.api.routes.ObservabilityRoutes;
 import org.pragmatica.aether.api.routes.RepositoryRoutes;
-import org.pragmatica.aether.api.routes.ABTestRoutes;
+import org.pragmatica.aether.api.routes.AbTestRoutes;
 import org.pragmatica.aether.api.routes.BlueGreenRoutes;
 import org.pragmatica.aether.api.routes.CanaryRoutes;
 import org.pragmatica.aether.api.routes.RollingUpdateRoutes;
@@ -212,7 +212,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(RollingUpdateRoutes.rollingUpdateRoutes(nodeSupplier));
         routeSources.add(CanaryRoutes.canaryRoutes(nodeSupplier));
         routeSources.add(BlueGreenRoutes.blueGreenRoutes(nodeSupplier));
-        routeSources.add(ABTestRoutes.abTestRoutes(nodeSupplier));
+        routeSources.add(AbTestRoutes.abTestRoutes(nodeSupplier));
         routeSources.add(NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier));
         routeSources.add(RepositoryRoutes.repositoryRoutes(nodeSupplier));
         routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry,

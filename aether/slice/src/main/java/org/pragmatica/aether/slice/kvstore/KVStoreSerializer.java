@@ -160,8 +160,8 @@ public final class KVStoreSerializer {
             case BlueprintResourcesKey _ -> "blueprint-resources";
             case SchemaVersionKey _ -> "schema-version";
             case SchemaMigrationLockKey _ -> "schema-lock";
-            case ABTestKey _ -> "ab-test";
-            case ABTestRoutingKey _ -> "ab-test-routing";
+            case AbTestKey _ -> "ab-test";
+            case AbTestRoutingKey _ -> "ab-test-routing";
         };
     }
 
@@ -214,8 +214,8 @@ public final class KVStoreSerializer {
             case BlueprintResourcesValue v -> v.tomlContent();
             case SchemaVersionValue v -> serializeSchemaVersion(v);
             case SchemaMigrationLockValue v -> serializeSchemaMigrationLock(v);
-            case ABTestValue v -> serializeABTest(v);
-            case ABTestRoutingValue v -> serializeABTestRouting(v);
+            case AbTestValue v -> serializeAbTest(v);
+            case AbTestRoutingValue v -> serializeAbTestRouting(v);
         };
     }
 
@@ -381,8 +381,8 @@ public final class KVStoreSerializer {
             case "blueprint-resources" -> parseBlueprintResourcesEntry(identity, rawValue);
             case "schema-version" -> parseSchemaVersionEntry(identity, rawValue);
             case "schema-lock" -> parseSchemaMigrationLockEntry(identity, rawValue);
-            case "ab-test" -> parseABTestEntry(identity, rawValue);
-            case "ab-test-routing" -> parseABTestRoutingEntry(identity, rawValue);
+            case "ab-test" -> parseAbTestEntry(identity, rawValue);
+            case "ab-test-routing" -> parseAbTestRoutingEntry(identity, rawValue);
             default -> new SerializationError.UnknownKeyType(section).result();
         };
     }
@@ -867,25 +867,25 @@ public final class KVStoreSerializer {
                                                                                                              Long.parseLong(parts[3])))));
     }
 
-    private static String serializeABTest(ABTestValue v) {
+    private static String serializeAbTest(AbTestValue v) {
         return v.testId() + PIPE + v.artifactBase()
                                    .asString() + PIPE + v.baselineVersion()
                                                         .withQualifier() + PIPE + v.variantVersionsJson() + PIPE + v.state() + PIPE + v.splitRuleJson() + PIPE + v.newWeight() + PIPE + v.oldWeight() + PIPE + v.blueprintId() + PIPE + v.createdAt() + PIPE + v.updatedAt();
     }
 
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseABTestEntry(String identity, String raw) {
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseAbTestEntry(String identity, String raw) {
         var parts = raw.split("\\|", - 1);
         if (parts.length != 11) {
             return parseFailure("ab-test value requires 11 fields, got " + parts.length);
         }
-        return ABTestKey.abTestKey("ab-test/" + identity)
-                        .flatMap(key -> buildABTestValue(parts).map(val -> entry(key, val)));
+        return AbTestKey.abTestKey("ab-test/" + identity)
+                        .flatMap(key -> buildAbTestValue(parts).map(val -> entry(key, val)));
     }
 
-    private static Result<AetherValue> buildABTestValue(String[] parts) {
+    private static Result<AetherValue> buildAbTestValue(String[] parts) {
         return Result.all(org.pragmatica.aether.artifact.ArtifactBase.artifactBase(parts[1]),
                           org.pragmatica.aether.artifact.Version.version(parts[2]))
-                     .map((ab, baseline) -> new ABTestValue(parts[0],
+                     .map((ab, baseline) -> new AbTestValue(parts[0],
                                                             ab,
                                                             baseline,
                                                             parts[3],
@@ -898,18 +898,18 @@ public final class KVStoreSerializer {
                                                             Long.parseLong(parts[10])));
     }
 
-    private static String serializeABTestRouting(ABTestRoutingValue v) {
+    private static String serializeAbTestRouting(AbTestRoutingValue v) {
         return v.testId() + PIPE + v.splitRuleJson() + PIPE + v.variantVersionsJson();
     }
 
-    private static Result<Map.Entry<AetherKey, AetherValue>> parseABTestRoutingEntry(String identity, String raw) {
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseAbTestRoutingEntry(String identity, String raw) {
         var parts = raw.split("\\|", - 1);
         if (parts.length != 3) {
             return parseFailure("ab-test-routing value requires 3 fields, got " + parts.length);
         }
-        return ABTestRoutingKey.abTestRoutingKey("ab-test-routing/" + identity)
+        return AbTestRoutingKey.abTestRoutingKey("ab-test-routing/" + identity)
                                .map(key -> entry(key,
-                                                 new ABTestRoutingValue(parts[0], parts[1], parts[2])));
+                                                 new AbTestRoutingValue(parts[0], parts[1], parts[2])));
     }
 
     // --- Utility helpers ---

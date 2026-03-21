@@ -13,7 +13,7 @@ import java.util.Map;
 /// @param testId the A/B test identifier
 /// @param variantMetrics per-variant metrics keyed by variant name
 /// @param collectedAt timestamp when metrics were collected
-public record ABTestMetrics(String testId,
+public record AbTestMetrics(String testId,
                             Map<String, VariantMetrics> variantMetrics,
                             long collectedAt) {
     /// Performance metrics for a single variant in an A/B test.
@@ -50,7 +50,7 @@ public record ABTestMetrics(String testId,
     /// @param testId the A/B test identifier
     /// @param variantMetrics per-variant metrics
     /// @return new A/B test metrics snapshot
-    public static ABTestMetrics abTestMetrics(String testId, Map<String, VariantMetrics> variantMetrics) {
-        return new ABTestMetrics(testId, Map.copyOf(variantMetrics), System.currentTimeMillis());
+    public static AbTestMetrics abTestMetrics(String testId, Map<String, VariantMetrics> variantMetrics) {
+        return new AbTestMetrics(testId, Map.copyOf(variantMetrics), System.currentTimeMillis());
     }
 }

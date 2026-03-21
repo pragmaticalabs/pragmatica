@@ -67,7 +67,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
 import org.pragmatica.aether.ttm.TTMManager;
-import org.pragmatica.aether.update.ABTestManager;
+import org.pragmatica.aether.update.AbTestManager;
 import org.pragmatica.aether.update.BlueGreenDeploymentManager;
 import org.pragmatica.aether.update.CanaryDeploymentManager;
 import org.pragmatica.aether.update.DeploymentStrategyCoordinator;
@@ -194,7 +194,7 @@ public interface AetherNode {
     BlueGreenDeploymentManager blueGreenDeploymentManager();
 
     /// Get the A/B test manager for variant testing deployments.
-    ABTestManager abTestManager();
+    AbTestManager abTestManager();
 
     /// Get the endpoint registry for service discovery.
     EndpointRegistry endpointRegistry();
@@ -420,7 +420,7 @@ public interface AetherNode {
                           RollingUpdateManager rollingUpdateManager,
                           CanaryDeploymentManager canaryDeploymentManager,
                           BlueGreenDeploymentManager blueGreenDeploymentManager,
-                          ABTestManager abTestManager,
+                          AbTestManager abTestManager,
                           AlertManager alertManager,
                           ObservabilityDepthRegistry observabilityDepthRegistry,
                           InvocationTraceStore traceStore,
@@ -902,7 +902,7 @@ public interface AetherNode {
                                                                                                kvStore,
                                                                                                invocationMetrics);
         // Create A/B test manager
-        var abTestManager = ABTestManager.abTestManager(clusterNode, kvStore, invocationMetrics);
+        var abTestManager = AbTestManager.abTestManager(clusterNode, kvStore, invocationMetrics);
         // Create strategy coordinator for deployment routing decisions
         var strategyCoordinator = DeploymentStrategyCoordinator.deploymentStrategyCoordinator(rollingUpdateManager,
                                                                                               Option.some(canaryDeploymentManager),
@@ -1411,7 +1411,7 @@ public interface AetherNode {
                                                                     RollingUpdateManager rollingUpdateManager,
                                                                     CanaryDeploymentManager canaryDeploymentManager,
                                                                     BlueGreenDeploymentManager blueGreenDeploymentManager,
-                                                                    ABTestManager abTestManager,
+                                                                    AbTestManager abTestManager,
                                                                     RollbackManager rollbackManager,
                                                                     ArtifactMetricsCollector artifactMetricsCollector,
                                                                     DeploymentMap deploymentMap,

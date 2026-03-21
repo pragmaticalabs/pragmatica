@@ -7,7 +7,7 @@ import org.pragmatica.aether.artifact.Version;
 ///
 /// Each strategy manages the transition from one artifact version to another,
 /// controlling traffic routing and lifecycle state.
-public sealed interface DeploymentStrategy permits RollingUpdate, CanaryDeployment, BlueGreenDeployment, ABTestDeployment {
+public sealed interface DeploymentStrategy permits RollingUpdate, CanaryDeployment, BlueGreenDeployment, AbTestDeployment {
     /// Unique identifier for this deployment.
     String strategyId();
 

@@ -32,11 +32,11 @@ import java.util.Map;
 /// @param artifacts list of artifacts involved in this deployment
 /// @param createdAt timestamp when deployment was created
 /// @param updatedAt timestamp of last state change
-public record ABTestDeployment(String testId,
+public record AbTestDeployment(String testId,
                                ArtifactBase artifactBase,
                                Version baselineVersion,
                                Map<String, Version> variantVersions,
-                               ABTestState state,
+                               AbTestState state,
                                SplitRule splitRule,
                                VersionRouting routing,
                                Option<String> blueprintId,
@@ -54,17 +54,17 @@ public record ABTestDeployment(String testId,
     /// @param splitRule traffic routing rule
     /// @return new A/B test deployment
     @SuppressWarnings("JBCT-VO-02") // Factory method - validated construction
-    public static ABTestDeployment abTestDeployment(String testId,
+    public static AbTestDeployment abTestDeployment(String testId,
                                                     ArtifactBase artifactBase,
                                                     Version baselineVersion,
                                                     Map<String, Version> variantVersions,
                                                     SplitRule splitRule) {
         var now = System.currentTimeMillis();
-        return new ABTestDeployment(testId,
+        return new AbTestDeployment(testId,
                                     artifactBase,
                                     baselineVersion,
                                     Map.copyOf(variantVersions),
-                                    ABTestState.PENDING,
+                                    AbTestState.PENDING,
                                     splitRule,
                                     VersionRouting.ALL_OLD,
                                     Option.none(),
@@ -78,13 +78,13 @@ public record ABTestDeployment(String testId,
     /// @param newState the new state
     /// @return updated A/B test deployment, or failure if transition is invalid
     @SuppressWarnings("JBCT-VO-02") // Record copy method with validated state transition
-    public Result<ABTestDeployment> transitionTo(ABTestState newState) {
+    public Result<AbTestDeployment> transitionTo(AbTestState newState) {
         if (!state.validTransitions()
                   .contains(newState)) {
             return INVALID_TRANSITION.apply(state + " -> " + newState)
                                      .result();
         }
-        return Result.success(new ABTestDeployment(testId,
+        return Result.success(new AbTestDeployment(testId,
                                                    artifactBase,
                                                    baselineVersion,
                                                    variantVersions,
@@ -102,8 +102,8 @@ public record ABTestDeployment(String testId,
     /// @param newRouting the new routing configuration
     /// @return updated A/B test deployment
     @SuppressWarnings("JBCT-VO-02") // Record copy method with known-valid fields
-    public ABTestDeployment withRouting(VersionRouting newRouting) {
-        return new ABTestDeployment(testId,
+    public AbTestDeployment withRouting(VersionRouting newRouting) {
+        return new AbTestDeployment(testId,
                                     artifactBase,
                                     baselineVersion,
                                     variantVersions,
@@ -122,8 +122,8 @@ public record ABTestDeployment(String testId,
     /// @param newArtifacts the artifacts involved in this deployment
     /// @return updated A/B test deployment with blueprint context
     @SuppressWarnings("JBCT-VO-02") // Record copy method with known-valid fields
-    public ABTestDeployment withBlueprintContext(String newBlueprintId, List<ArtifactBase> newArtifacts) {
-        return new ABTestDeployment(testId,
+    public AbTestDeployment withBlueprintContext(String newBlueprintId, List<ArtifactBase> newArtifacts) {
+        return new AbTestDeployment(testId,
                                     artifactBase,
                                     baselineVersion,
                                     variantVersions,

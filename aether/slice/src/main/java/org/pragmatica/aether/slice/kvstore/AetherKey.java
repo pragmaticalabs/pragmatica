@@ -1062,7 +1062,7 @@ public sealed interface AetherKey extends StructuredKey {
     /// ab-test/{testId}
     /// ```
     /// Stores A/B test deployment state.
-    record ABTestKey(String testId) implements AetherKey {
+    record AbTestKey(String testId) implements AetherKey {
         private static final String PREFIX = "ab-test/";
 
         @Override
@@ -1075,7 +1075,7 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
-        public static Result<ABTestKey> abTestKey(String key) {
+        public static Result<AbTestKey> abTestKey(String key) {
             if (!key.startsWith(PREFIX)) {
                 return AB_TEST_KEY_FORMAT_ERROR.apply(key)
                                                .result();
@@ -1085,7 +1085,7 @@ public sealed interface AetherKey extends StructuredKey {
                 return AB_TEST_KEY_FORMAT_ERROR.apply(key)
                                                .result();
             }
-            return success(new ABTestKey(id));
+            return success(new AbTestKey(id));
         }
     }
 
@@ -1094,7 +1094,7 @@ public sealed interface AetherKey extends StructuredKey {
     /// ab-test-routing/{groupId}:{artifactId}
     /// ```
     /// Stores routing configuration for A/B test traffic splitting.
-    record ABTestRoutingKey(ArtifactBase artifactBase) implements AetherKey {
+    record AbTestRoutingKey(ArtifactBase artifactBase) implements AetherKey {
         private static final String PREFIX = "ab-test-routing/";
 
         @Override
@@ -1108,18 +1108,18 @@ public sealed interface AetherKey extends StructuredKey {
         }
 
         @SuppressWarnings("JBCT-VO-02")
-        public static ABTestRoutingKey abTestRoutingKey(ArtifactBase artifactBase) {
-            return new ABTestRoutingKey(artifactBase);
+        public static AbTestRoutingKey abTestRoutingKey(ArtifactBase artifactBase) {
+            return new AbTestRoutingKey(artifactBase);
         }
 
-        public static Result<ABTestRoutingKey> abTestRoutingKey(String key) {
+        public static Result<AbTestRoutingKey> abTestRoutingKey(String key) {
             if (!key.startsWith(PREFIX)) {
                 return AB_TEST_ROUTING_KEY_FORMAT_ERROR.apply(key)
                                                        .result();
             }
             var artifactBasePart = key.substring(PREFIX.length());
             return ArtifactBase.artifactBase(artifactBasePart)
-                               .map(ABTestRoutingKey::new);
+                               .map(AbTestRoutingKey::new);
         }
     }
 

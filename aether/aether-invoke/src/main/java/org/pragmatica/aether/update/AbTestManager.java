@@ -5,10 +5,10 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.ABTestKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AbTestKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ABTestValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AbTestValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -42,32 +42,32 @@ import org.slf4j.LoggerFactory;
 ///
 /// A/B test state is stored in the KV-Store for persistence and visibility.
 /// Only the leader node can create, conclude, or rollback tests.
-public interface ABTestManager {
+public interface AbTestManager {
     /// Create a new A/B test deployment.
-    Promise<ABTestDeployment> createTest(ArtifactBase artifactBase,
+    Promise<AbTestDeployment> createTest(ArtifactBase artifactBase,
                                          Map<String, Version> variantVersions,
                                          SplitRule splitRule);
 
     /// Conclude the test by promoting a winning variant.
-    Promise<ABTestDeployment> concludeTest(String testId, String winningVariant);
+    Promise<AbTestDeployment> concludeTest(String testId, String winningVariant);
 
     /// Rollback the test to baseline.
-    Promise<ABTestDeployment> rollbackTest(String testId);
+    Promise<AbTestDeployment> rollbackTest(String testId);
 
     /// Get A/B test by ID.
-    Option<ABTestDeployment> getTest(String testId);
+    Option<AbTestDeployment> getTest(String testId);
 
     /// Get active A/B test for an artifact.
-    Option<ABTestDeployment> getActiveTest(ArtifactBase artifactBase);
+    Option<AbTestDeployment> getActiveTest(ArtifactBase artifactBase);
 
     /// List all active A/B tests.
-    List<ABTestDeployment> activeTests();
+    List<AbTestDeployment> activeTests();
 
     /// List all A/B tests.
-    List<ABTestDeployment> allTests();
+    List<AbTestDeployment> allTests();
 
     /// Get metrics for an A/B test.
-    ABTestMetrics getMetrics(String testId);
+    AbTestMetrics getMetrics(String testId);
 
     /// Handle leader change (restore state on promotion).
     @MessageReceiver
@@ -87,7 +87,7 @@ public interface ABTestManager {
     long DEFAULT_TERMINAL_RETENTION_MS = TimeUnit.HOURS.toMillis(1);
 
     /// Factory method following JBCT naming convention.
-    static ABTestManager abTestManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
+    static AbTestManager abTestManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                        KVStore<AetherKey, AetherValue> kvStore,
                                        InvocationMetricsCollector metricsCollector) {
         return abTestManager(clusterNode,
@@ -99,7 +99,7 @@ public interface ABTestManager {
 
     /// Factory method with custom settings.
     @SuppressWarnings({"JBCT-SEQ-01", "JBCT-NAM-01"})
-    static ABTestManager abTestManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
+    static AbTestManager abTestManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                        KVStore<AetherKey, AetherValue> kvStore,
                                        InvocationMetricsCollector metricsCollector,
                                        TimeSpan kvOperationTimeout,
@@ -109,8 +109,8 @@ public interface ABTestManager {
                              InvocationMetricsCollector metricsCollector,
                              TimeSpan kvOperationTimeout,
                              long terminalRetentionMs,
-                             Map<String, ABTestDeployment> tests) implements ABTestManager {
-            private static final Logger log = LoggerFactory.getLogger(ABTestManager.class);
+                             Map<String, AbTestDeployment> tests) implements AbTestManager {
+            private static final Logger log = LoggerFactory.getLogger(AbTestManager.class);
 
             @Override
             @SuppressWarnings("JBCT-RET-01")
@@ -131,17 +131,17 @@ public interface ABTestManager {
                 getActiveTest(artifactBase).filter(test -> containsVersion(test,
                                                                            event.artifact()
                                                                                 .version()))
-                             .filter(ABTestDeployment::isActive)
+                             .filter(AbTestDeployment::isActive)
                              .onPresent(test -> triggerAutoRollback(test, event));
             }
 
-            private boolean containsVersion(ABTestDeployment test, Version version) {
+            private boolean containsVersion(AbTestDeployment test, Version version) {
                 return test.variantVersions()
                            .containsValue(version);
             }
 
             @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
-            private void triggerAutoRollback(ABTestDeployment test, DeploymentEvent.DeploymentFailed event) {
+            private void triggerAutoRollback(AbTestDeployment test, DeploymentEvent.DeploymentFailed event) {
                 log.warn("Auto-rollback triggered for A/B test {} — variant failed on node {}: {}",
                          test.testId(),
                          event.nodeId(),
@@ -152,7 +152,7 @@ public interface ABTestManager {
 
             // --- Core operations ---
             @Override
-            public Promise<ABTestDeployment> createTest(ArtifactBase artifactBase,
+            public Promise<AbTestDeployment> createTest(ArtifactBase artifactBase,
                                                         Map<String, Version> variantVersions,
                                                         SplitRule splitRule) {
                 return requireLeader().flatMap(_ -> checkNoActiveTest(artifactBase))
@@ -164,24 +164,24 @@ public interface ABTestManager {
             }
 
             @Override
-            public Promise<ABTestDeployment> concludeTest(String testId, String winningVariant) {
+            public Promise<AbTestDeployment> concludeTest(String testId, String winningVariant) {
                 return requireLeader().flatMap(_ -> findTest(testId))
                                     .flatMap(test -> validateAndConclude(test, winningVariant));
             }
 
             @Override
-            public Promise<ABTestDeployment> rollbackTest(String testId) {
+            public Promise<AbTestDeployment> rollbackTest(String testId) {
                 return requireLeader().flatMap(_ -> findTest(testId))
                                     .flatMap(this::validateAndRollback);
             }
 
             @Override
-            public Option<ABTestDeployment> getTest(String testId) {
+            public Option<AbTestDeployment> getTest(String testId) {
                 return Option.option(tests.get(testId));
             }
 
             @Override
-            public Option<ABTestDeployment> getActiveTest(ArtifactBase artifactBase) {
+            public Option<AbTestDeployment> getActiveTest(ArtifactBase artifactBase) {
                 return Option.from(tests.values()
                                         .stream()
                                         .filter(t -> t.artifactBase()
@@ -190,23 +190,23 @@ public interface ABTestManager {
             }
 
             @Override
-            public List<ABTestDeployment> activeTests() {
+            public List<AbTestDeployment> activeTests() {
                 return tests.values()
                             .stream()
-                            .filter(ABTestDeployment::isActive)
+                            .filter(AbTestDeployment::isActive)
                             .toList();
             }
 
             @Override
-            public List<ABTestDeployment> allTests() {
+            public List<AbTestDeployment> allTests() {
                 return List.copyOf(tests.values());
             }
 
             @Override
-            public ABTestMetrics getMetrics(String testId) {
+            public AbTestMetrics getMetrics(String testId) {
                 return Option.option(tests.get(testId))
                              .map(this::collectMetrics)
-                             .or(ABTestMetrics.abTestMetrics(testId,
+                             .or(AbTestMetrics.abTestMetrics(testId,
                                                              Map.of()));
             }
 
@@ -214,21 +214,21 @@ public interface ABTestManager {
             private Promise<Unit> requireLeader() {
                 if (!clusterNode.leaderManager()
                                 .isLeader()) {
-                    return ABTestDeploymentError.NotLeader.INSTANCE.promise();
+                    return AbTestDeploymentError.NotLeader.INSTANCE.promise();
                 }
                 return Promise.success(Unit.unit());
             }
 
             private Promise<Unit> checkNoActiveTest(ArtifactBase artifactBase) {
                 return getActiveTest(artifactBase).isPresent()
-                       ? ABTestDeploymentError.TestAlreadyExists.testAlreadyExists(artifactBase)
+                       ? AbTestDeploymentError.TestAlreadyExists.testAlreadyExists(artifactBase)
                                               .promise()
                        : Promise.success(Unit.unit());
             }
 
-            private Promise<ABTestDeployment> findTest(String testId) {
+            private Promise<AbTestDeployment> findTest(String testId) {
                 return Option.option(tests.get(testId))
-                             .toResult(ABTestDeploymentError.TestNotFound.testNotFound(testId))
+                             .toResult(AbTestDeploymentError.TestNotFound.testNotFound(testId))
                              .async();
             }
 
@@ -236,28 +236,28 @@ public interface ABTestManager {
                 var key = SliceTargetKey.sliceTargetKey(artifactBase);
                 return kvStore.get(key)
                               .map(value -> ((SliceTargetValue) value).currentVersion())
-                              .toResult(ABTestDeploymentError.InitialDeployment.initialDeployment(artifactBase))
+                              .toResult(AbTestDeploymentError.InitialDeployment.initialDeployment(artifactBase))
                               .async();
             }
 
-            private Promise<ABTestDeployment> createAndDeployTest(ArtifactBase artifactBase,
+            private Promise<AbTestDeployment> createAndDeployTest(ArtifactBase artifactBase,
                                                                   Version baseline,
                                                                   Map<String, Version> variantVersions,
                                                                   SplitRule splitRule) {
                 var testId = KSUID.ksuid()
                                   .encoded();
-                var test = ABTestDeployment.abTestDeployment(testId, artifactBase, baseline, variantVersions, splitRule);
+                var test = AbTestDeployment.abTestDeployment(testId, artifactBase, baseline, variantVersions, splitRule);
                 log.info("Starting A/B test {} for {} with {} variants (baseline: {})",
                          testId,
                          artifactBase,
                          variantVersions.size(),
                          baseline);
                 tests.put(testId, test);
-                return persistAndTransition(test, ABTestState.DEPLOYING_VARIANTS).flatMap(this::deployVariants);
+                return persistAndTransition(test, AbTestState.DEPLOYING_VARIANTS).flatMap(this::deployVariants);
             }
 
             @SuppressWarnings("unchecked")
-            private Promise<ABTestDeployment> deployVariants(ABTestDeployment test) {
+            private Promise<AbTestDeployment> deployVariants(AbTestDeployment test) {
                 var commands = test.variantVersions()
                                    .values()
                                    .stream()
@@ -277,33 +277,33 @@ public interface ABTestManager {
                 return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
             }
 
-            private Promise<ABTestDeployment> activateTest(ABTestDeployment test) {
+            private Promise<AbTestDeployment> activateTest(AbTestDeployment test) {
                 var withRouting = test.withRouting(VersionRouting.ALL_NEW);
                 tests.put(test.testId(), withRouting);
-                return persistAndTransition(withRouting, ABTestState.ACTIVE);
+                return persistAndTransition(withRouting, AbTestState.ACTIVE);
             }
 
-            private Promise<ABTestDeployment> validateAndConclude(ABTestDeployment test, String winningVariant) {
-                if (test.state() != ABTestState.ACTIVE) {
-                    return ABTestDeploymentError.InvalidTestState.invalidTestState(test.state(),
-                                                                                   ABTestState.CONCLUDING)
+            private Promise<AbTestDeployment> validateAndConclude(AbTestDeployment test, String winningVariant) {
+                if (test.state() != AbTestState.ACTIVE) {
+                    return AbTestDeploymentError.InvalidTestState.invalidTestState(test.state(),
+                                                                                   AbTestState.CONCLUDING)
                                                 .promise();
                 }
                 if (!test.variantVersions()
                          .containsKey(winningVariant)) {
-                    return ABTestDeploymentError.VariantNotFound.variantNotFound(test.testId(),
+                    return AbTestDeploymentError.VariantNotFound.variantNotFound(test.testId(),
                                                                                  winningVariant)
                                                 .promise();
                 }
                 log.info("Concluding A/B test {} — winner: {}", test.testId(), winningVariant);
-                return test.transitionTo(ABTestState.CONCLUDING)
+                return test.transitionTo(AbTestState.CONCLUDING)
                            .async()
                            .flatMap(this::cacheAndPersistTest)
                            .flatMap(concluded -> promoteWinner(concluded, winningVariant));
             }
 
             @SuppressWarnings("unchecked")
-            private Promise<ABTestDeployment> promoteWinner(ABTestDeployment test, String winningVariant) {
+            private Promise<AbTestDeployment> promoteWinner(AbTestDeployment test, String winningVariant) {
                 var winnerVersion = test.variantVersions()
                                         .get(winningVariant);
                 var key = SliceTargetKey.sliceTargetKey(test.artifactBase());
@@ -316,25 +316,25 @@ public interface ABTestManager {
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
                 return clusterNode.<Unit> apply(List.of(command))
                                   .timeout(kvOperationTimeout)
-                                  .flatMap(_ -> persistAndTransition(test, ABTestState.COMPLETED));
+                                  .flatMap(_ -> persistAndTransition(test, AbTestState.COMPLETED));
             }
 
-            private Promise<ABTestDeployment> validateAndRollback(ABTestDeployment test) {
+            private Promise<AbTestDeployment> validateAndRollback(AbTestDeployment test) {
                 if (test.isTerminal()) {
-                    return ABTestDeploymentError.InvalidTestState.invalidTestState(test.state(),
-                                                                                   ABTestState.ROLLING_BACK)
+                    return AbTestDeploymentError.InvalidTestState.invalidTestState(test.state(),
+                                                                                   AbTestState.ROLLING_BACK)
                                                 .promise();
                 }
                 log.info("Rolling back A/B test {}", test.testId());
                 var withOldRouting = test.withRouting(VersionRouting.ALL_OLD);
-                return withOldRouting.transitionTo(ABTestState.ROLLING_BACK)
+                return withOldRouting.transitionTo(AbTestState.ROLLING_BACK)
                                      .async()
                                      .flatMap(this::cacheAndPersistTest)
                                      .flatMap(this::restoreBaseline);
             }
 
             @SuppressWarnings("unchecked")
-            private Promise<ABTestDeployment> restoreBaseline(ABTestDeployment test) {
+            private Promise<AbTestDeployment> restoreBaseline(AbTestDeployment test) {
                 log.info("Restoring baseline {} for A/B test {}", test.baselineVersion(), test.testId());
                 var key = SliceTargetKey.sliceTargetKey(test.artifactBase());
                 var value = new SliceTargetValue(test.baselineVersion(),
@@ -346,23 +346,23 @@ public interface ABTestManager {
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
                 return clusterNode.<Unit> apply(List.of(command))
                                   .timeout(kvOperationTimeout)
-                                  .flatMap(_ -> persistAndTransition(test, ABTestState.ROLLED_BACK));
+                                  .flatMap(_ -> persistAndTransition(test, AbTestState.ROLLED_BACK));
             }
 
             // --- Persistence ---
-            private Promise<ABTestDeployment> persistAndTransition(ABTestDeployment test, ABTestState newState) {
+            private Promise<AbTestDeployment> persistAndTransition(AbTestDeployment test, AbTestState newState) {
                 return test.transitionTo(newState)
                            .async()
                            .flatMap(this::cacheAndPersistTest);
             }
 
             @SuppressWarnings("unchecked")
-            private Promise<ABTestDeployment> cacheAndPersistTest(ABTestDeployment test) {
+            private Promise<AbTestDeployment> cacheAndPersistTest(AbTestDeployment test) {
                 tests.put(test.testId(), test);
                 if (test.isTerminal()) {
                     pruneTerminalTests();
                 }
-                var key = new ABTestKey(test.testId());
+                var key = new AbTestKey(test.testId());
                 var value = buildTestValue(test);
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
                 return clusterNode.<Unit> apply(List.of(command))
@@ -370,10 +370,10 @@ public interface ABTestManager {
                                   .map(_ -> test);
             }
 
-            private ABTestValue buildTestValue(ABTestDeployment test) {
+            private AbTestValue buildTestValue(AbTestDeployment test) {
                 var variantsJson = serializeVariantVersions(test.variantVersions());
                 var splitRuleJson = serializeSplitRule(test.splitRule());
-                return new ABTestValue(test.testId(),
+                return new AbTestValue(test.testId(),
                                        test.artifactBase(),
                                        test.baselineVersion(),
                                        variantsJson,
@@ -394,7 +394,7 @@ public interface ABTestManager {
             @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private void restoreState() {
                 int beforeCount = tests.size();
-                kvStore.forEach(ABTestKey.class, ABTestValue.class, (key, value) -> restoreTest(value));
+                kvStore.forEach(AbTestKey.class, AbTestValue.class, (key, value) -> restoreTest(value));
                 int restoredCount = tests.size() - beforeCount;
                 if (restoredCount > 0) {
                     log.info("Restored {} A/B tests from KV-Store", restoredCount);
@@ -402,8 +402,8 @@ public interface ABTestManager {
             }
 
             @SuppressWarnings({"JBCT-VO-02", "JBCT-RET-01"}) // Side-effect helper — void inherent
-            private void restoreTest(ABTestValue atv) {
-                var state = ABTestState.valueOf(atv.state());
+            private void restoreTest(AbTestValue atv) {
+                var state = AbTestState.valueOf(atv.state());
                 var routing = new VersionRouting(atv.newWeight(), atv.oldWeight());
                 var variantVersions = deserializeVariantVersions(atv.variantVersionsJson());
                 var splitRule = deserializeSplitRule(atv.splitRuleJson());
@@ -411,7 +411,7 @@ public interface ABTestManager {
                                      .isEmpty()
                                   ? Option.<String>none()
                                   : Option.some(atv.blueprintId());
-                var test = new ABTestDeployment(atv.testId(),
+                var test = new AbTestDeployment(atv.testId(),
                                                 atv.artifactBase(),
                                                 atv.baselineVersion(),
                                                 variantVersions,
@@ -426,19 +426,19 @@ public interface ABTestManager {
             }
 
             // --- Metrics collection ---
-            private ABTestMetrics collectMetrics(ABTestDeployment test) {
+            private AbTestMetrics collectMetrics(AbTestDeployment test) {
                 var snapshots = metricsCollector.snapshot();
-                var metricsMap = new HashMap<String, ABTestMetrics.VariantMetrics>();
+                var metricsMap = new HashMap<String, AbTestMetrics.VariantMetrics>();
                 test.variantVersions()
                     .forEach((variant, version) -> metricsMap.put(variant,
                                                                   collectVariantMetrics(snapshots,
                                                                                         test.artifactBase(),
                                                                                         variant,
                                                                                         version)));
-                return ABTestMetrics.abTestMetrics(test.testId(), metricsMap);
+                return AbTestMetrics.abTestMetrics(test.testId(), metricsMap);
             }
 
-            private ABTestMetrics.VariantMetrics collectVariantMetrics(List<InvocationMetricsCollector.MethodSnapshot> snapshots,
+            private AbTestMetrics.VariantMetrics collectVariantMetrics(List<InvocationMetricsCollector.MethodSnapshot> snapshots,
                                                                        ArtifactBase artifactBase,
                                                                        String variant,
                                                                        Version version) {
@@ -447,8 +447,8 @@ public interface ABTestManager {
                                            .filter(s -> s.artifact()
                                                          .equals(artifact))
                                            .reduce(new long[] {0, 0, 0, 0},
-                                                   ABTestManager::accumulateSnapshot,
-                                                   ABTestManager::combineAccumulators);
+                                                   AbTestManager::accumulateSnapshot,
+                                                   AbTestManager::combineAccumulators);
                 long requests = accumulated[0];
                 long errors = accumulated[1];
                 long totalLatency = accumulated[2];
@@ -459,7 +459,7 @@ public interface ABTestManager {
                 long avgLatency = requests > 0
                                   ? totalLatency / requests
                                   : 0;
-                return ABTestMetrics.VariantMetrics.variantMetrics(variant,
+                return AbTestMetrics.VariantMetrics.variantMetrics(variant,
                                                                    version,
                                                                    requests,
                                                                    errors,
@@ -585,7 +585,7 @@ public interface ABTestManager {
     private static SplitRule parsePercentageSplit(String json) {
         var weightStr = json.substring("percentage:".length());
         var weights = java.util.Arrays.stream(weightStr.split(";"))
-                          .map(ABTestManager::parseVariantWeight)
+                          .map(AbTestManager::parseVariantWeight)
                           .toList();
         return SplitRule.PercentageSplit.percentageSplit(weights);
     }

@@ -12,7 +12,7 @@ import java.util.Set;
 ///   - **Rollback**: ACTIVE or DEPLOYING_VARIANTS -> ROLLING_BACK -> ROLLED_BACK
 ///   - **Failure**: Any non-terminal state -> FAILED
 ///
-public enum ABTestState {
+public enum AbTestState {
     /// A/B test requested but not yet started
     PENDING,
     /// Variant instances being deployed
@@ -30,7 +30,7 @@ public enum ABTestState {
     /// A/B test failed
     FAILED;
     /// Returns valid transitions from this state.
-    public Set<ABTestState> validTransitions() {
+    public Set<AbTestState> validTransitions() {
         return switch (this) {
             case PENDING -> Set.of(DEPLOYING_VARIANTS, FAILED);
             case DEPLOYING_VARIANTS -> Set.of(ACTIVE, ROLLING_BACK, FAILED);

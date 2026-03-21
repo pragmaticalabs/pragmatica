@@ -52,11 +52,11 @@ public interface DeploymentStrategyCoordinator {
     static DeploymentStrategyCoordinator deploymentStrategyCoordinator(RollingUpdateManager rollingUpdateManager,
                                                                        Option<CanaryDeploymentManager> canaryManager,
                                                                        Option<BlueGreenDeploymentManager> blueGreenManager,
-                                                                       Option<ABTestManager> abTestManager) {
+                                                                       Option<AbTestManager> abTestManager) {
         record deploymentStrategyCoordinator(RollingUpdateManager rollingUpdateManager,
                                              Option<CanaryDeploymentManager> canaryManager,
                                              Option<BlueGreenDeploymentManager> blueGreenManager,
-                                             Option<ABTestManager> abTestManager)
+                                             Option<AbTestManager> abTestManager)
         implements DeploymentStrategyCoordinator {
             @Override
             public Option<DeploymentStrategy> getAnyActiveStrategy(ArtifactBase artifactBase) {
@@ -105,7 +105,7 @@ public interface DeploymentStrategyCoordinator {
                     return blueGreen;
                 }
                 return abTestManager.flatMap(ab -> ab.getActiveTest(artifactBase))
-                                    .filter(ABTestDeployment::isActive)
+                                    .filter(AbTestDeployment::isActive)
                                     .map(DeploymentStrategy.class::cast);
             }
         }

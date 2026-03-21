@@ -984,7 +984,7 @@ public sealed interface AetherValue {
     /// @param blueprintId optional blueprint identifier
     /// @param createdAt timestamp when test was created
     /// @param updatedAt timestamp of last state change
-    record ABTestValue(String testId,
+    record AbTestValue(String testId,
                        ArtifactBase artifactBase,
                        Version baselineVersion,
                        String variantVersionsJson,
@@ -995,7 +995,7 @@ public sealed interface AetherValue {
                        String blueprintId,
                        long createdAt,
                        long updatedAt) implements AetherValue {
-        public static ABTestValue abTestValue(String testId,
+        public static AbTestValue abTestValue(String testId,
                                               ArtifactBase artifactBase,
                                               Version baselineVersion,
                                               String variantVersionsJson,
@@ -1006,7 +1006,7 @@ public sealed interface AetherValue {
                                               String blueprintId,
                                               long createdAt,
                                               long updatedAt) {
-            return new ABTestValue(testId,
+            return new AbTestValue(testId,
                                    artifactBase,
                                    baselineVersion,
                                    variantVersionsJson,
@@ -1026,13 +1026,13 @@ public sealed interface AetherValue {
     /// @param testId the A/B test this routing belongs to
     /// @param splitRuleJson serialized split rule configuration
     /// @param variantVersionsJson serialized variant name to version mapping
-    record ABTestRoutingValue(String testId,
+    record AbTestRoutingValue(String testId,
                               String splitRuleJson,
                               String variantVersionsJson) implements AetherValue {
-        public static ABTestRoutingValue abTestRoutingValue(String testId,
+        public static AbTestRoutingValue abTestRoutingValue(String testId,
                                                             String splitRuleJson,
                                                             String variantVersionsJson) {
-            return new ABTestRoutingValue(testId, splitRuleJson, variantVersionsJson);
+            return new AbTestRoutingValue(testId, splitRuleJson, variantVersionsJson);
         }
     }
 }

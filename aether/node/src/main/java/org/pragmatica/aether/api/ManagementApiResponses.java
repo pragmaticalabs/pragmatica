@@ -322,9 +322,9 @@ public sealed interface ManagementApiResponses {
                          long updatedAt) {}
 
     // ===== A/B Test Routes =====
-    record ABTestListResponse(List<ABTestInfo> tests) {}
+    record AbTestListResponse(List<AbTestInfo> tests) {}
 
-    record ABTestInfo(String testId,
+    record AbTestInfo(String testId,
                       String artifactBase,
                       String baselineVersion,
                       String state,
@@ -332,11 +332,11 @@ public sealed interface ManagementApiResponses {
                       long createdAt,
                       long updatedAt) {}
 
-    record ABTestMetricsResponse(String testId,
-                                 Map<String, ABTestVariantMetrics> variants,
+    record AbTestMetricsResponse(String testId,
+                                 Map<String, AbTestVariantMetrics> variants,
                                  long collectedAt) {}
 
-    record ABTestVariantMetrics(String variant,
+    record AbTestVariantMetrics(String variant,
                                 String version,
                                 long requestCount,
                                 double errorRate,

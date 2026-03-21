@@ -82,7 +82,7 @@ AetherCli.BackupCommand.class,
 AetherCli.SchemaCommand.class,
 AetherCli.CanaryCommand.class,
 AetherCli.BlueGreenCommand.class,
-AetherCli.ABTestCommand.class})
+AetherCli.AbTestCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -2985,12 +2985,12 @@ public class AetherCli implements Runnable {
     // ===== A/B Test Commands =====
     @Command(name = "ab-test",
     description = "Manage A/B test deployments",
-    subcommands = {ABTestCommand.CreateCommand.class,
-    ABTestCommand.ListCommand.class,
-    ABTestCommand.StatusCommand.class,
-    ABTestCommand.MetricsCommand.class,
-    ABTestCommand.ConcludeCommand.class})
-    static class ABTestCommand implements Runnable {
+    subcommands = {AbTestCommand.CreateCommand.class,
+    AbTestCommand.ListCommand.class,
+    AbTestCommand.StatusCommand.class,
+    AbTestCommand.MetricsCommand.class,
+    AbTestCommand.ConcludeCommand.class})
+    static class AbTestCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
 
@@ -3002,7 +3002,7 @@ public class AetherCli implements Runnable {
         @Command(name = "create", description = "Create a new A/B test")
         static class CreateCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
-            private ABTestCommand abParent;
+            private AbTestCommand abParent;
 
             @Parameters(index = "0", description = "Artifact base (group:artifact)")
             private String artifactBase;
@@ -3037,7 +3037,7 @@ public class AetherCli implements Runnable {
         @Command(name = "list", description = "List A/B tests")
         static class ListCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
-            private ABTestCommand abParent;
+            private AbTestCommand abParent;
 
             @Override
             public Integer call() {
@@ -3050,7 +3050,7 @@ public class AetherCli implements Runnable {
         @Command(name = "status", description = "Show A/B test status")
         static class StatusCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
-            private ABTestCommand abParent;
+            private AbTestCommand abParent;
 
             @Parameters(index = "0", description = "Test ID")
             private String testId;
@@ -3066,7 +3066,7 @@ public class AetherCli implements Runnable {
         @Command(name = "metrics", description = "Show A/B test comparison metrics")
         static class MetricsCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
-            private ABTestCommand abParent;
+            private AbTestCommand abParent;
 
             @Parameters(index = "0", description = "Test ID")
             private String testId;
@@ -3082,7 +3082,7 @@ public class AetherCli implements Runnable {
         @Command(name = "conclude", description = "Conclude A/B test and select winner")
         static class ConcludeCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
-            private ABTestCommand abParent;
+            private AbTestCommand abParent;
 
             @Parameters(index = "0", description = "Test ID")
             private String testId;
