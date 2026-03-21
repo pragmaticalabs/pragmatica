@@ -249,11 +249,16 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                                              connector,
                                                                              self.id()))
                                  .onSuccess(result -> logMigrationSuccess(datasourceName, result))
-                                 .onFailure(cause -> log.error("Migration execution failed for '{}': {}",
-                                                               datasourceName,
-                                                               cause.message()))
                                  .mapToUnit()
-                                 .onResultRun(() -> releaseConnectorSilently(datasourceName));
+                                 .onResultRun(() -> releaseConnectorSilently(datasourceName))
+                                 .orElse(() -> skipMigrationNoDatabaseConfig(datasourceName));
+    }
+
+    /// No database config for this datasource — skip migration and don't gate activation.
+    /// Preserves pre-migration-engine behavior where slices deployed without schema checks.
+    private static Promise<Unit> skipMigrationNoDatabaseConfig(String datasourceName) {
+        log.info("No database config for datasource '{}' — skipping migration (activation will proceed)", datasourceName);
+        return Promise.success(unit());
     }
 
     private static void logMigrationSuccess(String datasourceName, AetherSchemaManager.SchemaResult result) {
