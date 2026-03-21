@@ -343,11 +343,11 @@ class ManagementApiTest {
     class ClusterTopologyEndpoints {
 
         @Test
-        void governors_returnsEmptyListForCoreOnlyCluster() {
+        void governors_returnsEmptyForCoreOnlyCluster() {
             var response = getGovernors(anyNodePort());
 
-            assertThat(response).contains("\"governors\"");
-            assertThat(response).contains("[]");
+            // NON_EMPTY serialization omits empty lists — core-only cluster has no governors
+            assertThat(response).isEqualTo("{}");
         }
 
         @Test
