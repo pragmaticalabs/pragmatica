@@ -1,7 +1,11 @@
 package org.pragmatica.aether.http;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.update.DeploymentStrategy;
+import org.pragmatica.aether.update.DeploymentStrategyCoordinator;
+import org.pragmatica.aether.update.VersionRouting;
 import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
@@ -49,6 +53,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -146,7 +151,8 @@ public interface AppHttpServer {
                                        Option<TlsConfig> tls,
                                        Option<InvocationMetricsCollector> metricsCollector,
                                        Option<EventLoopGroup> bossGroup,
-                                       Option<EventLoopGroup> workerGroup) {
+                                       Option<EventLoopGroup> workerGroup,
+                                       Option<DeploymentStrategyCoordinator> strategyCoordinator) {
         return new AppHttpServerImpl(config,
                                      selfNodeId,
                                      routeRegistry,
@@ -157,7 +163,8 @@ public interface AppHttpServer {
                                      tls,
                                      metricsCollector,
                                      bossGroup,
-                                     workerGroup);
+                                     workerGroup,
+                                     strategyCoordinator);
     }
 }
 
@@ -178,6 +185,7 @@ class AppHttpServerImpl implements AppHttpServer {
     private final Option<InvocationMetricsCollector> metricsCollector;
     private final Option<EventLoopGroup> bossGroup;
     private final Option<EventLoopGroup> workerGroup;
+    private final Option<DeploymentStrategyCoordinator> strategyCoordinator;
     private final Option<HttpForwarder> httpForwarder;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
     private final AtomicReference<RouteTable> routeTableRef = new AtomicReference<>(RouteTable.empty());
@@ -193,7 +201,8 @@ class AppHttpServerImpl implements AppHttpServer {
                       Option<TlsConfig> tls,
                       Option<InvocationMetricsCollector> metricsCollector,
                       Option<EventLoopGroup> bossGroup,
-                      Option<EventLoopGroup> workerGroup) {
+                      Option<EventLoopGroup> workerGroup,
+                      Option<DeploymentStrategyCoordinator> strategyCoordinator) {
         this.config = config;
         this.selfNodeId = selfNodeId;
         this.routeRegistry = routeRegistry;
@@ -208,6 +217,7 @@ class AppHttpServerImpl implements AppHttpServer {
         this.metricsCollector = metricsCollector;
         this.bossGroup = bossGroup;
         this.workerGroup = workerGroup;
+        this.strategyCoordinator = strategyCoordinator;
         this.httpForwarder = buildHttpForwarder(selfNodeId,
                                                 routeRegistry,
                                                 clusterNetwork,
@@ -402,6 +412,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                                                requestId));
     }
 
+    @SuppressWarnings("JBCT-PAT-01") // Dispatcher method — decomposition would scatter routing logic
     private void dispatchToRoute(RequestContext request,
                                  ResponseWriter response,
                                  RouteTable routeTable,
@@ -412,6 +423,18 @@ class AppHttpServerImpl implements AppHttpServer {
         if (httpRoutePublisher.isPresent()) {
             var localRouteOpt = findMatchingLocalRoute(routeTable.localRoutes(), method, normalizedPath);
             if (localRouteOpt.isPresent()) {
+                // Check deployment strategy routing before serving locally
+                if (shouldForwardForStrategy(localRouteOpt.unwrap(), method, normalizedPath, routeTable)) {
+                    var remoteRouteOpt = findMatchingRemoteRoute(routeTable.remoteRoutes(), method, normalizedPath);
+                    if (remoteRouteOpt.isPresent()) {
+                        log.debug("Deployment strategy routing — forwarding {} {} to remote [{}]",
+                                  method,
+                                  normalizedPath,
+                                  requestId);
+                        handleRemoteRoute(request, response, remoteRouteOpt.unwrap(), requestId);
+                        return;
+                    }
+                }
                 handleLocalRoute(request, response, localRouteOpt.unwrap(), requestId);
                 return;
             }
@@ -441,6 +464,78 @@ class AppHttpServerImpl implements AppHttpServer {
                         request.path(),
                         requestId);
         }
+    }
+
+    // ================== Deployment Strategy Routing ==================
+    @SuppressWarnings("JBCT-PAT-01")
+    private boolean shouldForwardForStrategy(HttpNodeRouteKey localRouteKey,
+                                             String method,
+                                             String normalizedPath,
+                                             RouteTable routeTable) {
+        if (strategyCoordinator.isEmpty()) {
+            return false;
+        }
+        var localRouteInfo = httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath));
+        if (localRouteInfo.isEmpty()) {
+            return false;
+        }
+        var artifactResult = Artifact.artifact(localRouteInfo.unwrap()
+                                                             .artifactCoord());
+        if (artifactResult.isFailure()) {
+            return false;
+        }
+        var artifact = artifactResult.unwrap();
+        var strategyOpt = strategyCoordinator.unwrap()
+                                             .getActiveStrategyWithRouting(artifact.base());
+        if (strategyOpt.isEmpty()) {
+            return false;
+        }
+        return evaluateRoutingDecision(artifact, strategyOpt.unwrap(), method, normalizedPath, routeTable);
+    }
+
+    private boolean evaluateRoutingDecision(Artifact artifact,
+                                            DeploymentStrategy strategy,
+                                            String method,
+                                            String normalizedPath,
+                                            RouteTable routeTable) {
+        var routing = strategy.routing();
+        var localVersion = artifact.version();
+        // If all traffic goes to one version, deterministic decision
+        if (routing.isAllOld()) {
+            return localVersion.equals(strategy.newVersion()) && hasMatchingRemoteRoute(routeTable.remoteRoutes(),
+                                                                                        method,
+                                                                                        normalizedPath);
+        }
+        if (routing.isAllNew()) {
+            return localVersion.equals(strategy.oldVersion()) && hasMatchingRemoteRoute(routeTable.remoteRoutes(),
+                                                                                        method,
+                                                                                        normalizedPath);
+        }
+        // Weighted random decision
+        return evaluateWeightedRouting(localVersion, strategy, routing, method, normalizedPath, routeTable);
+    }
+
+    private boolean evaluateWeightedRouting(Version localVersion,
+                                            DeploymentStrategy strategy,
+                                            VersionRouting routing,
+                                            String method,
+                                            String normalizedPath,
+                                            RouteTable routeTable) {
+        boolean localIsNew = localVersion.equals(strategy.newVersion());
+        int random = ThreadLocalRandom.current()
+                                      .nextInt(routing.totalWeight());
+        boolean shouldRouteToNew = random < routing.newWeight();
+        // Forward only if weighted decision says "route to other version" and a remote route exists
+        boolean shouldForward = localIsNew
+                                ? !shouldRouteToNew
+                                : shouldRouteToNew;
+        return shouldForward && hasMatchingRemoteRoute(routeTable.remoteRoutes(), method, normalizedPath);
+    }
+
+    private boolean hasMatchingRemoteRoute(List<HttpRouteRegistry.RouteInfo> remoteRoutes,
+                                           String method,
+                                           String normalizedPath) {
+        return findMatchingRemoteRoute(remoteRoutes, method, normalizedPath).isPresent();
     }
 
     @SuppressWarnings("JBCT-PAT-01")

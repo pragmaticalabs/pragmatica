@@ -19,6 +19,10 @@ import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
+import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
+import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
+import org.pragmatica.aether.deployment.schema.SchemaPolicy;
+import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.dht.AetherMaps;
@@ -64,11 +68,27 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
 import org.pragmatica.aether.ttm.TTMManager;
+import org.pragmatica.aether.update.AbTestManager;
+import org.pragmatica.aether.update.BlueGreenDeploymentManager;
+import org.pragmatica.aether.update.CanaryDeploymentManager;
+import org.pragmatica.aether.update.DeploymentStrategyCoordinator;
 import org.pragmatica.aether.update.RollingUpdateManager;
+import org.pragmatica.aether.worker.bootstrap.WorkerBootstrap;
+import org.pragmatica.aether.worker.deployment.WorkerDeploymentManager;
+import org.pragmatica.aether.worker.governor.DecisionRelay;
+import org.pragmatica.aether.worker.governor.GovernorCleanup;
+import org.pragmatica.aether.worker.governor.GovernorMesh;
+import org.pragmatica.aether.worker.group.GroupMembershipTracker;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.CommunityScalingRequest;
+import org.pragmatica.aether.worker.mutation.MutationForwarder;
+import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.MetricsMessage;
+import org.pragmatica.cluster.node.ForwardingClusterNode;
+import org.pragmatica.cluster.node.SwitchableClusterNode;
+import org.pragmatica.cluster.node.forward.ForwardApplyRequest;
+import org.pragmatica.cluster.node.forward.ForwardApplyResponse;
 import org.pragmatica.cluster.node.rabia.NodeConfig;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.consensus.rabia.RabiaPersistence;
@@ -98,7 +118,11 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
+import org.pragmatica.aether.environment.InstanceInfo;
+import org.pragmatica.aether.environment.PeerInfo;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
@@ -116,7 +140,9 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -125,7 +151,7 @@ import org.slf4j.LoggerFactory;
 /// Assembles all components: consensus, KV-store, slice management, deployment managers.
 @SuppressWarnings("JBCT-RET-01")
 public interface AetherNode {
-    String VERSION = "0.20.0";
+    String VERSION = "0.21.0";
     NodeId self();
 
     Promise<Unit> start();
@@ -161,6 +187,15 @@ public interface AetherNode {
 
     /// Get the rolling update manager for managing version transitions.
     RollingUpdateManager rollingUpdateManager();
+
+    /// Get the canary deployment manager for multi-stage progressive traffic shifting.
+    CanaryDeploymentManager canaryDeploymentManager();
+
+    /// Get the blue-green deployment manager for atomic traffic switching.
+    BlueGreenDeploymentManager blueGreenDeploymentManager();
+
+    /// Get the A/B test manager for variant testing deployments.
+    AbTestManager abTestManager();
 
     /// Get the endpoint registry for service discovery.
     EndpointRegistry endpointRegistry();
@@ -348,12 +383,25 @@ public interface AetherNode {
         var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer);
         // Create DHT anti-entropy for replica synchronization
         var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode, dhtNetwork, config.artifactRepo());
+        // Create SwitchableClusterNode wrapping clusterNode — allows runtime switch to forwarding mode
+        var switchableCluster = SwitchableClusterNode.switchableClusterNode(clusterNode);
+        // Create ForwardingClusterNode for worker mode — forwards apply() to core peers
+        var corePeerIds = config.topology()
+                                .coreNodes()
+                                .stream()
+                                .map(NodeInfo::id)
+                                .filter(id -> !id.equals(config.self()))
+                                .collect(Collectors.toSet());
+        var forwardingClusterNode = ForwardingClusterNode.forwardingClusterNode(clusterNode,
+                                                                                clusterNode.network(),
+                                                                                corePeerIds);
         record aetherNode(AetherNodeConfig config,
                           MessageRouter.DelegateRouter router,
                           KVStore<AetherKey, AetherValue> kvStore,
                           SliceRegistry sliceRegistry,
                           SliceStore sliceStore,
                           RabiaNode<KVCommand<AetherKey>> clusterNode,
+                          SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
                           NodeDeploymentManager nodeDeploymentManager,
                           ClusterDeploymentManager clusterDeploymentManager,
                           EndpointRegistry endpointRegistry,
@@ -371,6 +419,9 @@ public interface AetherNode {
                           InvocationMetricsCollector invocationMetrics,
                           DecisionTreeController controller,
                           RollingUpdateManager rollingUpdateManager,
+                          CanaryDeploymentManager canaryDeploymentManager,
+                          BlueGreenDeploymentManager blueGreenDeploymentManager,
+                          AbTestManager abTestManager,
                           AlertManager alertManager,
                           ObservabilityDepthRegistry observabilityDepthRegistry,
                           InvocationTraceStore traceStore,
@@ -388,6 +439,7 @@ public interface AetherNode {
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
                           Option<ManagementServer> managementServer,
+                          Option<DiscoveryProvider> discoveryProvider,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
@@ -427,7 +479,9 @@ public interface AetherNode {
                 SliceRuntime.clear();
                 // 4. Stop SWIM health detector
                 swimHealthDetector.stop();
-                // 5. Stop servers and network
+                // 5. Deregister from discovery provider
+                discoveryProvider.onPresent(this::deregisterFromDiscovery);
+                // 6. Stop servers and network
                 return managementServer.map(ManagementServer::stop)
                                        .or(Promise.unitPromise())
                                        .flatMap(_ -> appHttpServer.stop())
@@ -459,10 +513,92 @@ public interface AetherNode {
                 // to prevent livelock from simultaneous proposals.
                 clusterNode.leaderManager()
                            .triggerElection();
+                                                 // Register with discovery provider after cluster is ready
+                discoveryProvider.onPresent(this::registerWithDiscovery);
+                                                 // Apply aether-node-id tag to self instance for cloud scale-down lookup
+                applyNodeIdTag();
                                              })
                                   .onSuccess(_ -> printStartupBanner())
                                   .onFailure(cause -> log.error("Cluster formation failed: {}",
                                                                 cause.message()));
+            }
+
+            private void registerWithDiscovery(DiscoveryProvider dp) {
+                Option.from(config.topology()
+                                  .coreNodes()
+                                  .stream()
+                                  .filter(n -> n.id()
+                                                .equals(self()))
+                                  .findFirst())
+                      .map(n -> new PeerInfo(n.address()
+                                              .host(),
+                                             n.address()
+                                              .port(),
+                                             Map.of("role",
+                                                    "core",
+                                                    "nodeId",
+                                                    self().id())))
+                      .onPresent(peerInfo -> dp.registerSelf(peerInfo)
+                                               .await()
+                                               .onSuccess(_ -> log.info("Registered self with discovery provider"))
+                                               .onFailure(cause -> log.warn("Failed to register with discovery: {}",
+                                                                            cause.message())));
+            }
+
+            /// Apply the aether-node-id tag to the self instance via ComputeProvider.
+            /// This enables tag-based instance lookup during cloud scale-down termination.
+            private void applyNodeIdTag() {
+                config.environment()
+                      .flatMap(EnvironmentIntegration::compute)
+                      .onPresent(this::tagSelfInstance);
+            }
+
+            private void tagSelfInstance(ComputeProvider provider) {
+                provider.listInstances()
+                        .onSuccess(instances -> tagMatchingInstance(provider, instances))
+                        .onFailure(cause -> log.warn("Failed to list instances for self-tagging: {}",
+                                                     cause.message()));
+            }
+
+            private void tagMatchingInstance(ComputeProvider provider, List<InstanceInfo> instances) {
+                findSelfInstance(instances).onPresent(instance -> provider.applyTags(instance.id(),
+                                                                                     Map.of("aether-node-id",
+                                                                                            self().id()))
+                                                                          .onSuccess(_ -> log.info("Applied aether-node-id tag to instance {}",
+                                                                                                   instance.id()
+                                                                                                           .value()))
+                                                                          .onFailure(cause -> log.warn("Failed to apply aether-node-id tag: {}",
+                                                                                                       cause.message())));
+            }
+
+            private Option<InstanceInfo> findSelfInstance(List<InstanceInfo> instances) {
+                return selfAddress()
+                .flatMap(selfIp -> Option.from(instances.stream()
+                                                        .filter(i -> i.addresses()
+                                                                      .contains(selfIp))
+                                                        .findFirst()));
+            }
+
+            private Option<String> selfAddress() {
+                return Option.from(config.topology()
+                                         .coreNodes()
+                                         .stream()
+                                         .filter(n -> n.id()
+                                                       .equals(self()))
+                                         .map(n -> n.address()
+                                                    .host())
+                                         .findFirst());
+            }
+
+            private void deregisterFromDiscovery(DiscoveryProvider dp) {
+                dp.stopWatching()
+                  .await()
+                  .onFailure(cause -> log.warn("Failed to stop discovery watching: {}",
+                                               cause.message()));
+                dp.deregisterSelf()
+                  .await()
+                  .onFailure(cause -> log.warn("Failed to deregister from discovery: {}",
+                                               cause.message()));
             }
 
             private void printStartupBanner() {
@@ -510,6 +646,10 @@ public interface AetherNode {
                 log.info("|  TLS:            {}", pad(tlsEnabled
                                                       ? "enabled"
                                                       : "disabled", 46) + "|");
+                var discoveryEnabled = discoveryProvider.isPresent();
+                log.info("|  Discovery:      {}", pad(discoveryEnabled
+                                                      ? "enabled"
+                                                      : "disabled", 46) + "|");
                 log.info("{}", "+-----------------------------------------------------------------+");
             }
 
@@ -522,7 +662,7 @@ public interface AetherNode {
 
             @Override
             public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
-                return clusterNode.apply(commands);
+                return switchableCluster.apply(commands);
             }
 
             @Override
@@ -623,6 +763,18 @@ public interface AetherNode {
                                     .stream()
                                     .map(NodeInfo::id)
                                     .toList();
+        // Create schema migration engine and orchestrator (uses composite repository for local Maven fallback)
+        var schemaPolicy = SchemaPolicy.schemaPolicy();
+        var schemaManager = AetherSchemaManager.aetherSchemaManager(schemaPolicy);
+        var repository = compositeRepository(repositories);
+        var connectionProvider = DatasourceConnectionProvider.datasourceConnectionProvider();
+        var schemaOrchestrator = SchemaOrchestratorService.schemaOrchestratorService(clusterNode,
+                                                                                     kvStore,
+                                                                                     artifactStore,
+                                                                                     repository,
+                                                                                     schemaManager,
+                                                                                     connectionProvider,
+                                                                                     config.self());
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
@@ -637,7 +789,8 @@ public interface AetherNode {
                                                                                                .coreMax(),
                                                                                          config.timeouts()
                                                                                                .deployment()
-                                                                                               .reconciliationInterval());
+                                                                                               .reconciliationInterval(),
+                                                                                         schemaOrchestrator);
         // Create load balancer manager when provider is available
         var loadBalancerManager = config.environment()
                                         .flatMap(EnvironmentIntegration::loadBalancer)
@@ -647,6 +800,9 @@ public interface AetherNode {
                                                                                                  provider,
                                                                                                  config.appHttp()
                                                                                                        .port()));
+        // Extract discovery provider when available
+        var discoveryProvider = config.environment()
+                                      .flatMap(EnvironmentIntegration::discovery);
         // Create endpoint registry
         var endpointRegistry = EndpointRegistry.endpointRegistry();
         // Create topic subscription registry for pub/sub messaging
@@ -670,7 +826,7 @@ public interface AetherNode {
         // Create base decision tree controller (uses node config — Forge disables CPU-based scaling)
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         // Create blueprint service using composite repository from configuration
-        var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, compositeRepository(repositories));
+        var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore);
         // Create Maven protocol handler from artifact store (DHT created in createNode)
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         // Create rolling update manager
@@ -739,7 +895,22 @@ public interface AetherNode {
                                     .enabled()
                               ? RollbackManager.rollbackManager(config.self(), config.rollback(), clusterNode, kvStore)
                               : RollbackManager.disabled();
-        // Create slice invoker (needs rollingUpdateManager for weighted routing during rolling updates)
+        // Create canary deployment manager
+        var canaryDeploymentManager = CanaryDeploymentManager.canaryDeploymentManager(clusterNode,
+                                                                                      kvStore,
+                                                                                      invocationMetrics);
+        // Create blue-green deployment manager
+        var blueGreenDeploymentManager = BlueGreenDeploymentManager.blueGreenDeploymentManager(clusterNode,
+                                                                                               kvStore,
+                                                                                               invocationMetrics);
+        // Create A/B test manager
+        var abTestManager = AbTestManager.abTestManager(clusterNode, kvStore, invocationMetrics);
+        // Create strategy coordinator for deployment routing decisions
+        var strategyCoordinator = DeploymentStrategyCoordinator.deploymentStrategyCoordinator(rollingUpdateManager,
+                                                                                              Option.some(canaryDeploymentManager),
+                                                                                              Option.some(blueGreenDeploymentManager),
+                                                                                              Option.some(abTestManager));
+        // Create slice invoker (needs strategyCoordinator for weighted routing during deployments)
         var sliceInvoker = SliceInvoker.sliceInvoker(config.self(),
                                                      clusterNode.network(),
                                                      endpointRegistry,
@@ -754,7 +925,7 @@ public interface AetherNode {
                                                            .observability()
                                                            .invocationCleanup()
                                                            .millis(),
-                                                     rollingUpdateManager,
+                                                     strategyCoordinator,
                                                      observabilityInterceptor);
         // Wire the deferred invoker facade to the actual SliceInvoker
         deferredInvoker.setDelegate(sliceInvoker);
@@ -804,7 +975,8 @@ public interface AetherNode {
                                                         config.tls(),
                                                         Option.some(invocationMetrics),
                                                         serverBossGroup,
-                                                        serverWorkerGroup);
+                                                        serverWorkerGroup,
+                                                        Option.some(strategyCoordinator));
         // DHT subscriptions removed — all control plane state flows through KV-Store notifications
         // Collect all route entries from RabiaNode and AetherNode components
         var aetherEntries = collectRouteEntries(kvStore,
@@ -830,6 +1002,9 @@ public interface AetherNode {
                                                 ttmManager,
                                                 rabiaMetricsCollector,
                                                 rollingUpdateManager,
+                                                canaryDeploymentManager,
+                                                blueGreenDeploymentManager,
+                                                abTestManager,
                                                 rollbackManager,
                                                 artifactMetricsCollector,
                                                 deploymentMap,
@@ -882,6 +1057,17 @@ public interface AetherNode {
         aetherEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
                                                     dhtTopologyListener::onNodeRemoved));
         // DHTNotification routes removed — passive LB uses KV-Store notifications directly
+        // ForwardApply message handlers — core nodes handle forwarded commands from workers,
+        // workers receive responses from core nodes.
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        MessageRouter.Entry forwardRequestRoute = MessageRouter.Entry.route(ForwardApplyRequest.class,
+                                                                            (ForwardApplyRequest request) -> handleForwardApplyRequest(request,
+                                                                                                                                       clusterNode));
+        aetherEntries.add(forwardRequestRoute);
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        MessageRouter.Entry forwardResponseRoute = MessageRouter.Entry.route(ForwardApplyResponse.class,
+                                                                             forwardingClusterNode::onForwardApplyResponse);
+        aetherEntries.add(forwardResponseRoute);
         // Activation directive KV handler — CDM submits activation through consensus,
         // so all nodes see committed directives. Each node checks if the directive targets itself.
         var growthLog = LoggerFactory.getLogger(AetherNode.class);
@@ -891,6 +1077,13 @@ public interface AetherNode {
                                                             (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> handleActivationDirective(put,
                                                                                                                                                                                 selfId,
                                                                                                                                                                                 clusterNode,
+                                                                                                                                                                                switchableCluster,
+                                                                                                                                                                                forwardingClusterNode,
+                                                                                                                                                                                config,
+                                                                                                                                                                                delegateRouter,
+                                                                                                                                                                                kvStore,
+                                                                                                                                                                                sliceStore,
+                                                                                                                                                                                sliceInvoker,
                                                                                                                                                                                 growthLog))
                                                      .build();
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
@@ -920,6 +1113,7 @@ public interface AetherNode {
                                   sliceRegistry,
                                   sliceStore,
                                   clusterNode,
+                                  switchableCluster,
                                   nodeDeploymentManager,
                                   clusterDeploymentManager,
                                   endpointRegistry,
@@ -937,6 +1131,9 @@ public interface AetherNode {
                                   invocationMetrics,
                                   controller,
                                   rollingUpdateManager,
+                                  canaryDeploymentManager,
+                                  blueGreenDeploymentManager,
+                                  abTestManager,
                                   alertManager,
                                   depthRegistry,
                                   traceStore,
@@ -954,6 +1151,7 @@ public interface AetherNode {
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
                                   Option.empty(),
+                                  discoveryProvider,
                                   startTimeMs);
         // Wire remote shutdown: when SHUTTING_DOWN lifecycle is received, stop the node
         nodeDeploymentManager.setShutdownCallback(node::stop);
@@ -990,6 +1188,7 @@ public interface AetherNode {
                                                            sliceRegistry,
                                                            sliceStore,
                                                            clusterNode,
+                                                           switchableCluster,
                                                            nodeDeploymentManager,
                                                            clusterDeploymentManager,
                                                            endpointRegistry,
@@ -1007,6 +1206,9 @@ public interface AetherNode {
                                                            invocationMetrics,
                                                            controller,
                                                            rollingUpdateManager,
+                                                           canaryDeploymentManager,
+                                                           blueGreenDeploymentManager,
+                                                           abTestManager,
                                                            alertManager,
                                                            depthRegistry,
                                                            traceStore,
@@ -1024,6 +1226,7 @@ public interface AetherNode {
                                                            eventLoopMetricsCollector,
                                                            swimHealthDetector,
                                                            Option.some(managementServer),
+                                                           discoveryProvider,
                                                            startTimeMs);
                                  }
                                  return node;
@@ -1040,9 +1243,17 @@ public interface AetherNode {
         }
     }
 
+    @SuppressWarnings({"JBCT-RET-01"})
     private static void handleActivationDirective(ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put,
                                                   NodeId selfId,
                                                   RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                                  SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
+                                                  ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
+                                                  AetherNodeConfig config,
+                                                  MessageRouter.DelegateRouter delegateRouter,
+                                                  KVStore<AetherKey, AetherValue> kvStore,
+                                                  SliceStore sliceStore,
+                                                  SliceInvoker sliceInvoker,
                                                   Logger growthLog) {
         if (!put.cause()
                 .key()
@@ -1050,14 +1261,98 @@ public interface AetherNode {
                 .equals(selfId)) {
             return;
         }
-        if (AetherValue.ActivationDirectiveValue.CORE.equals(put.cause()
-                                                                .value()
-                                                                .role())) {
+        var role = put.cause()
+                      .value()
+                      .role();
+        if (AetherValue.ActivationDirectiveValue.CORE.equals(role)) {
             growthLog.info("Received core activation directive from CDM");
             clusterNode.authorizeActivation();
-        } else {
-            growthLog.info("Received worker role assignment from CDM");
+        } else if (AetherValue.ActivationDirectiveValue.WORKER.equals(role)) {
+            growthLog.info("Received worker activation directive from CDM");
+            activateWorkerMode(selfId,
+                               clusterNode,
+                               switchableCluster,
+                               forwardingClusterNode,
+                               config,
+                               delegateRouter,
+                               kvStore,
+                               sliceStore,
+                               sliceInvoker,
+                               growthLog);
         }
+    }
+
+    @SuppressWarnings({"JBCT-RET-01"})
+    private static void activateWorkerMode(NodeId selfId,
+                                           RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                           SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
+                                           ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
+                                           AetherNodeConfig config,
+                                           MessageRouter.DelegateRouter delegateRouter,
+                                           KVStore<AetherKey, AetherValue> kvStore,
+                                           SliceStore sliceStore,
+                                           SliceInvoker sliceInvoker,
+                                           Logger log) {
+        // 1. Enter observer mode (receive Decisions, don't vote)
+        clusterNode.authorizeObservation();
+        // 2. Switch to forwarding apply() calls to core peers
+        switchableCluster.switchTo(forwardingClusterNode);
+        log.info("Worker {} switched to forwarding mode", selfId.id());
+        // 3. Create worker subsystems
+        var decisionRelay = DecisionRelay.decisionRelay(selfId, delegateRouter);
+        var mutationForwarder = MutationForwarder.mutationForwarder(selfId, delegateRouter);
+        var workerBootstrap = WorkerBootstrap.workerBootstrap(selfId, delegateRouter, kvStore);
+        var governorMesh = GovernorMesh.governorMesh(delegateRouter);
+        var groupMembershipTracker = GroupMembershipTracker.groupMembershipTracker(selfId,
+                                                                                   config.workerConfig()
+                                                                                         .map(WorkerConfig::groupName)
+                                                                                         .or(WorkerConfig.DEFAULT_GROUP_NAME),
+                                                                                   config.workerConfig()
+                                                                                         .map(WorkerConfig::maxGroupSize)
+                                                                                         .or(WorkerConfig.DEFAULT_MAX_GROUP_SIZE));
+        var governorCleanup = GovernorCleanup.governorCleanup(mutationForwarder);
+        var workerDeploymentManager = WorkerDeploymentManager.workerDeploymentManager(selfId,
+                                                                                      sliceStore,
+                                                                                      mutationForwarder,
+                                                                                      List.of(),
+                                                                                      () -> groupMembershipTracker.myGroup()
+                                                                                                                  .communityId());
+        log.info("Worker {} subsystems created, ready for SWIM-based community formation", selfId.id());
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes", "JBCT-RET-01"})
+    private static void handleForwardApplyRequest(ForwardApplyRequest request,
+                                                  RabiaNode<KVCommand<AetherKey>> clusterNode) {
+        clusterNode.apply((List) request.commands())
+                   .onSuccess(results -> sendSuccessResponse(clusterNode,
+                                                             request,
+                                                             (List) results))
+                   .onFailure(cause -> sendFailureResponse(clusterNode,
+                                                           request,
+                                                           (Cause) cause));
+    }
+
+    @SuppressWarnings({"rawtypes"})
+    private static void sendSuccessResponse(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                            ForwardApplyRequest request,
+                                            List<?> results) {
+        var response = new ForwardApplyResponse<>(clusterNode.self(), request.correlationId(), results, Option.empty());
+        clusterNode.network()
+                   .send(request.sender(),
+                         response);
+    }
+
+    @SuppressWarnings({"rawtypes"})
+    private static void sendFailureResponse(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                            ForwardApplyRequest request,
+                                            Cause cause) {
+        var response = new ForwardApplyResponse<>(clusterNode.self(),
+                                                  request.correlationId(),
+                                                  List.of(),
+                                                  Option.some(cause.message()));
+        clusterNode.network()
+                   .send(request.sender(),
+                         response);
     }
 
     @SuppressWarnings("JBCT-RET-01")
@@ -1116,6 +1411,9 @@ public interface AetherNode {
                                                                     TTMManager ttmManager,
                                                                     RabiaMetricsCollector rabiaMetricsCollector,
                                                                     RollingUpdateManager rollingUpdateManager,
+                                                                    CanaryDeploymentManager canaryDeploymentManager,
+                                                                    BlueGreenDeploymentManager blueGreenDeploymentManager,
+                                                                    AbTestManager abTestManager,
                                                                     RollbackManager rollbackManager,
                                                                     ArtifactMetricsCollector artifactMetricsCollector,
                                                                     DeploymentMap deploymentMap,
@@ -1184,6 +1482,8 @@ public interface AetherNode {
                                                          clusterDeploymentManager::onGovernorAnnouncementPut)
                                                   .onRemove(AetherKey.GovernorAnnouncementKey.class,
                                                             clusterDeploymentManager::onGovernorAnnouncementRemove)
+                                                  .onPut(AetherKey.SchemaVersionKey.class,
+                                                         clusterDeploymentManager::onSchemaVersionPut)
                                                   .onPut(AetherKey.NodeArtifactKey.class,
                                                          nodeDeploymentManager::onNodeArtifactPut)
                                                   .onPut(AetherKey.NodeArtifactKey.class,
@@ -1195,6 +1495,8 @@ public interface AetherNode {
                                                   .onPut(AetherKey.NodeArtifactKey.class,
                                                          deploymentMap::onNodeArtifactPut)
                                                   .onPut(AetherKey.NodeArtifactKey.class, controlLoop::onNodeArtifactPut)
+                                                  .onPut(AetherKey.NodeArtifactKey.class,
+                                                         eventAggregator::onNodeArtifactPut)
                                                   .onRemove(AetherKey.NodeArtifactKey.class,
                                                             nodeDeploymentManager::onNodeArtifactRemove)
                                                   .onRemove(AetherKey.NodeArtifactKey.class,
@@ -1220,7 +1522,9 @@ public interface AetherNode {
                                                                       lbm::onNodeRoutesRemove));
         // Dynamic config manager (optional)
         dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
-                                                             .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
+                                                             .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove)
+                                                             .onPut(AetherKey.BlueprintResourcesKey.class,
+                                                                    dcm::onBlueprintResourcesPut));
         // Load balancer manager HTTP route events now come from DHT subscription (wired above)
         entries.addAll(kvRouterBuilder.build()
                                       .asRouteEntries());
@@ -1245,6 +1549,11 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, ttmManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               rollingUpdateManager::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              canaryDeploymentManager::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              blueGreenDeploymentManager::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, abTestManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, rollbackManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               scheduledTaskManager::onLeaderChange));
@@ -1318,18 +1627,19 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class, eventAggregator::onNodeDown));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, eventAggregator::onQuorumStateChange));
-        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentStarted.class,
-                                              eventAggregator::onDeploymentStarted));
-        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentCompleted.class,
-                                              eventAggregator::onDeploymentCompleted));
-        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
-                                              eventAggregator::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
                                               rollingUpdateManager::onDeploymentFailed));
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
+                                              canaryDeploymentManager::onDeploymentFailed));
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
+                                              blueGreenDeploymentManager::onDeploymentFailed));
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               eventAggregator::onSliceFailure));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledUp.class, eventAggregator::onScaledUp));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledDown.class, eventAggregator::onScaledDown));
+        entries.add(MessageRouter.Entry.route(ClusterDeploymentManager.ReconciliationAdjustment.class,
+                                              eventAggregator::onReconciliationAdjustment));
         // Community scaling messages from worker governors
         entries.add(MessageRouter.Entry.route(CommunityScalingRequest.class, controlLoop::onCommunityScalingRequest));
         entries.add(MessageRouter.Entry.route(CommunityMetricsSnapshot.class, controlLoop::onCommunityMetricsSnapshot));

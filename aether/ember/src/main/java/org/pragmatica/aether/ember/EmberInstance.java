@@ -34,7 +34,8 @@ public final class EmberInstance {
                                                  config.appHttpPort(),
                                                  "node",
                                                  Option.empty(),
-                                                 config.observability());
+                                                 config.observability(),
+                                                 config.coreMax());
     }
 
     /// Create a new Ember instance with the given configuration.

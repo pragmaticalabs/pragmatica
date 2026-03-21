@@ -2,8 +2,6 @@ package org.pragmatica.aether.forge;
 
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberConfig;
-import org.pragmatica.aether.ember.EmberH2Config;
-import org.pragmatica.aether.ember.EmberH2Server;
 import org.pragmatica.aether.lb.AetherPassiveLB;
 import org.pragmatica.aether.lb.PassiveLBConfig;
 import org.pragmatica.consensus.NodeId;
@@ -11,7 +9,6 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.config.ConfigurationProvider;
-import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
 import org.pragmatica.aether.forge.load.LoadConfigLoader;
@@ -32,13 +29,10 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.awt.Desktop;
-import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpRequest;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map;
 import java.util.function.Supplier;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -53,7 +47,8 @@ import org.slf4j.LoggerFactory;
 /// CLI arguments:
 /// ```
 /// --config &lt;forge.toml&gt;       Forge cluster configuration
-/// --blueprint &lt;file.toml&gt;     Blueprint to deploy on startup
+/// --blueprint &lt;coords&gt;        Artifact coordinates to deploy (groupId:artifactId:version)
+///                              Cluster resolves JAR via configured Repository chain
 /// --load-config &lt;file.toml&gt;   Load test configuration
 /// --auto-start                Start load generation after config loaded
 /// ```
@@ -61,7 +56,7 @@ import org.slf4j.LoggerFactory;
 /// Environment variables (override CLI args):
 /// ```
 /// FORGE_CONFIG        - Path to forge.toml
-/// FORGE_BLUEPRINT     - Path to blueprint file
+/// FORGE_BLUEPRINT     - Artifact coordinates (groupId:artifactId:version)
 /// FORGE_LOAD_CONFIG   - Path to load config file
 /// FORGE_AUTO_START    - Set to "true" to auto-start load
 /// FORGE_PORT          - Dashboard port (backwards compatible)
@@ -75,10 +70,6 @@ public final class ForgeServer {
     private static final int MAX_CONTENT_LENGTH = 65536;
     private static final JsonCodec CODEC = JsonCodecAdapter.defaultCodec();
 
-    // Forge-only dev tooling credentials for embedded H2 database
-    private static final String FORGE_H2_USERNAME = "sa";
-    private static final String FORGE_H2_PASSWORD = "";
-
     private final StartupConfig startupConfig;
     private final EmberConfig forgeConfig;
 
@@ -88,7 +79,6 @@ public final class ForgeServer {
     private volatile Option<ForgeMetrics> metrics = Option.empty();
     private volatile Option<ForgeApiHandler> apiHandler = Option.empty();
     private volatile Option<StaticFileHandler> staticHandler = Option.empty();
-    private volatile Option<EmberH2Server> h2Server = Option.empty();
     private volatile Option<HttpServer> httpServer = Option.empty();
     private volatile Option<ScheduledExecutorService> metricsScheduler = Option.empty();
     private volatile Option<StatusWebSocketPublisher> wsPublisher = Option.empty();
@@ -163,7 +153,8 @@ public final class ForgeServer {
         System.out.println();
         System.out.println("Options:");
         System.out.println("  --config <forge.toml>       Forge cluster configuration");
-        System.out.println("  --blueprint <file.toml>     Blueprint to deploy on startup");
+        System.out.println("  --blueprint <coords>        Artifact coordinates (groupId:artifactId:version)");
+        System.out.println("                              Cluster resolves JAR via configured Repository chain");
         System.out.println("  --load-config <file.toml>   Load test configuration");
         System.out.println("  --auto-start                Start load generation after config loaded");
         System.out.println("  -h, --help                  Show this help message");
@@ -171,7 +162,7 @@ public final class ForgeServer {
         System.out.println();
         System.out.println("Environment variables:");
         System.out.println("  FORGE_CONFIG        Path to forge.toml");
-        System.out.println("  FORGE_BLUEPRINT     Path to blueprint file");
+        System.out.println("  FORGE_BLUEPRINT     Artifact coordinates (groupId:artifactId:version)");
         System.out.println("  FORGE_LOAD_CONFIG   Path to load config file");
         System.out.println("  FORGE_AUTO_START    Set to \"true\" to auto-start load");
         System.out.println("  FORGE_PORT          Dashboard port (default: 8888)");
@@ -205,18 +196,8 @@ public final class ForgeServer {
         if (forgeConfig.lbEnabled()) {
             log.info("  Load balancer: http://localhost:{}", forgeConfig.lbPort());
         }
-        if (forgeConfig.h2Config()
-                       .enabled()) {
-            log.info("  H2 Database: port {} ({})",
-                     forgeConfig.h2Config()
-                                .port(),
-                     forgeConfig.h2Config()
-                                .persistent()
-                     ? "persistent"
-                     : "in-memory");
-        }
         startupConfig.blueprint()
-                     .onPresent(p -> log.info("  Blueprint: {}", p));
+                     .onPresent(coords -> log.info("  Blueprint: {}", coords));
         startupConfig.loadConfig()
                      .onPresent(p -> log.info("  Load config: {}", p));
         if (startupConfig.autoStart()) {
@@ -227,7 +208,6 @@ public final class ForgeServer {
 
     public void start() {
         log.info("Starting Forge server...");
-        startH2Server();
         var configProvider = buildConfigurationProvider();
         initializeComponents(configProvider);
         startCluster();
@@ -250,7 +230,8 @@ public final class ForgeServer {
                                                         forgeConfig.appHttpPort(),
                                                         "node",
                                                         configProvider,
-                                                        forgeConfig.observability());
+                                                        forgeConfig.observability(),
+                                                        forgeConfig.coreMax());
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
         Supplier<List<Integer>> portSupplier = forgeConfig.lbEnabled()
                                                ? () -> List.of(forgeConfig.lbPort())
@@ -437,7 +418,7 @@ public final class ForgeServer {
 
     private void deployAndStartLoad() {
         startupConfig.blueprint()
-                     .onPresent(this::deployBlueprint);
+                     .onPresent(this::deployBlueprintFromArtifact);
         startupConfig.loadConfig()
                      .onPresent(this::loadLoadConfig);
         if (startupConfig.autoStart() && startupConfig.loadConfig()
@@ -458,39 +439,38 @@ public final class ForgeServer {
         }
     }
 
-    private void deployBlueprint(Path blueprintPath) {
-        log.info("Deploying blueprint from {}...", blueprintPath);
-        try{
-            var content = Files.readString(blueprintPath);
-            var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort)
-                                    .or(forgeConfig.managementPort());
-            var request = HttpRequest.newBuilder()
-                                     .uri(URI.create("http://localhost:" + leaderPort + "/api/blueprint"))
-                                     .header("Content-Type", "application/toml")
-                                     .POST(HttpRequest.BodyPublishers.ofString(content))
-                                     .build();
-            http.sendString(request)
-                .await(TimeSpan.timeSpan(10)
-                               .seconds())
-                .onSuccess(result -> handleBlueprintResponse(result, blueprintPath))
-                .onFailure(cause -> log.error("Failed to deploy blueprint: {}",
-                                              cause.message()));
-        } catch (IOException e) {
-            log.error("Failed to deploy blueprint: {}", e.getMessage());
-        }
+    /// Deploy a blueprint by posting artifact coordinates to the cluster.
+    /// The cluster's BlueprintService resolves the artifact via its configured Repository chain
+    /// (local Maven repo, builtin, etc.) before falling back to ArtifactStore (DHT).
+    private void deployBlueprintFromArtifact(String artifactCoords) {
+        log.info("Deploying blueprint artifact: {}...", artifactCoords);
+        var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort)
+                                .or(forgeConfig.managementPort());
+        var body = "{\"artifact\":\"" + artifactCoords + "\"}";
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + leaderPort + "/api/blueprint/deploy"))
+                                 .header("Content-Type", "application/json")
+                                 .POST(HttpRequest.BodyPublishers.ofString(body))
+                                 .build();
+        log.info("Deploying blueprint by coordinates: POST /api/blueprint/deploy — {}", artifactCoords);
+        http.sendString(request)
+            .await(TimeSpan.timeSpan(10)
+                           .seconds())
+            .onSuccess(result -> handleDeployResponse(result, artifactCoords))
+            .onFailure(cause -> log.error("Failed to deploy blueprint: {}",
+                                          cause.message()));
     }
 
-    private void handleBlueprintResponse(org.pragmatica.http.HttpResult<String> result, Path blueprintPath) {
+    private void handleDeployResponse(org.pragmatica.http.HttpResult<String> result, String artifactCoords) {
         if (result.isSuccess()) {
-            log.info("Blueprint deployed");
+            log.info("Blueprint deployed from artifact: {}", artifactCoords);
             apiHandler.onPresent(h -> h.addEvent("BLUEPRINT_DEPLOYED",
-                                                 "Blueprint deployed from " + blueprintPath.getFileName()));
-            // Wait for deployment to propagate
+                                                 "Blueprint deployed from artifact " + artifactCoords));
             TimeSpan.timeSpan(1)
                     .seconds()
                     .sleep();
         } else {
-            log.error("Failed to deploy blueprint: {} - {}", result.statusCode(), result.body());
+            log.error("Blueprint deploy failed (HTTP {}): {}", result.statusCode(), result.body());
         }
     }
 
@@ -529,34 +509,13 @@ public final class ForgeServer {
                                                .seconds())
                                 .onFailure(cause -> log.warn("Error stopping cluster: {}",
                                                              cause.message())));
-        stopH2Server();
         log.info("Forge server stopped.");
-    }
-
-    private void startH2Server() {
-        if (!forgeConfig.h2Config()
-                        .enabled()) {
-            return;
-        }
-        var server = EmberH2Server.emberH2Server(forgeConfig.h2Config());
-        server.start()
-              .await(TimeSpan.timeSpan(10)
-                             .seconds())
-              .onSuccess(_ -> {
-                             h2Server = Option.some(server);
-                             log.info("H2 database available at: {}",
-                                      server.jdbcUrl());
-                         })
-              .onFailure(cause -> {
-                  throw new IllegalStateException("Failed to start H2 server: " + cause.message());
-              });
     }
 
     /// Build ConfigurationProvider with layered configuration.
     ///
     /// Priority (highest to lowest):
     /// <ol>
-    ///   - Runtime values (H2 URL if enabled)
     ///   - Environment variables (AETHER_*)
     ///   - System properties (-Daether.*)
     ///   - forge.toml (if specified)
@@ -577,46 +536,7 @@ public final class ForgeServer {
         // Add system properties and environment (higher priority)
         builder.withSystemProperties("aether.")
                .withEnvironment("AETHER_");
-        // Inject H2 runtime values (highest priority)
-        // Keys must match toSnakeCase(recordComponentName) from DatabaseConnectorConfig
-        h2Server.onPresent(server -> injectH2Config(server, builder));
         return Option.some(builder.build());
-    }
-
-    private void injectH2Config(EmberH2Server server, ConfigurationProvider.Builder builder) {
-        var runtimeValues = Map.of("database.name",
-                                   "forge-h2",
-                                   "database.type",
-                                   "H2",
-                                   "database.host",
-                                   "localhost",
-                                   "database.port",
-                                   "0",
-                                   "database.database",
-                                   "forge",
-                                   "database.jdbc_url",
-                                   server.jdbcUrl(),
-                                   "database.username",
-                                   FORGE_H2_USERNAME,
-                                   "database.password",
-                                   FORGE_H2_PASSWORD);
-        builder.withSource(MapConfigSource.mapConfigSource("runtime", runtimeValues, 500)
-                                          .unwrap());
-        log.info("Injected H2 configuration into ConfigurationProvider");
-    }
-
-    private void stopH2Server() {
-        h2Server.onPresent(server -> server.stop()
-                                           .await(TimeSpan.timeSpan(5)
-                                                          .seconds())
-                                           .onFailure(cause -> log.warn("Error stopping H2 server: {}",
-                                                                        cause.message())));
-    }
-
-    /// Get the H2 JDBC URL if H2 is enabled and running.
-    public Option<String> h2JdbcUrl() {
-        return h2Server.filter(EmberH2Server::isRunning)
-                       .map(EmberH2Server::jdbcUrl);
     }
 
     private void startHttpServer() {

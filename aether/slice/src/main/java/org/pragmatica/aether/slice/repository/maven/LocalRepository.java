@@ -41,12 +41,21 @@ public interface LocalRepository extends Repository {
         record repository(Path localRepo, TimeSpan locateTimeout) implements LocalRepository {
             @Override
             public Promise<Location> locate(Artifact artifact) {
-                return resolveLocation(artifact).async()
+                return resolveLocation(artifact, "").async()
                                       .timeout(locateTimeout);
             }
 
-            private Result<Location> resolveLocation(Artifact artifact) {
-                var jarPath = resolvePath(artifact, "jar");
+            @Override
+            public Promise<Location> locate(Artifact artifact, String classifier) {
+                var suffix = classifier.isEmpty()
+                             ? ""
+                             : "-" + classifier;
+                return resolveLocation(artifact, suffix).async()
+                                      .timeout(locateTimeout);
+            }
+
+            private Result<Location> resolveLocation(Artifact artifact, String classifier) {
+                var jarPath = resolvePath(artifact, classifier);
                 if (!Files.exists(jarPath)) {
                     return ARTIFACT_NOT_FOUND.apply(artifact.asString() + " at " + jarPath)
                                              .result();
@@ -57,7 +66,7 @@ public interface LocalRepository extends Repository {
                              .flatMap(url -> location(artifact, url));
             }
 
-            private Path resolvePath(Artifact artifact, String packaging) {
+            private Path resolvePath(Artifact artifact, String classifier) {
                 var version = artifact.version();
                 var artifactId = artifact.artifactId()
                                          .id();
@@ -66,7 +75,7 @@ public interface LocalRepository extends Repository {
                                                  .replace('.', '/'))
                                 .resolve(artifactId)
                                 .resolve(version.withQualifier())
-                                .resolve(artifactId + "-" + version.withQualifier() + "." + packaging);
+                                .resolve(artifactId + "-" + version.withQualifier() + classifier + ".jar");
             }
 
             private static final Fn1<Cause, String> ARTIFACT_NOT_FOUND = Causes.forOneValue("Artifact not found in local repository: %s");

@@ -18,6 +18,7 @@
 package org.pragmatica.cloud.hetzner.api;
 
 import java.util.List;
+import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -30,7 +31,8 @@ public record Server(long id,
                      @JsonProperty("server_type") ServerType serverType,
                      Image image,
                      @JsonProperty("public_net") PublicNet publicNet,
-                     @JsonProperty("private_net") List<PrivateNet> privateNet) {
+                     @JsonProperty("private_net") List<PrivateNet> privateNet,
+                     Map<String, String> labels) {
     /// Server hardware type.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ServerType(long id, String name, String description, int cores, double memory, int disk) {}
@@ -91,6 +93,9 @@ public record Server(long id,
                                            startAfterCreate);
         }
     }
+
+    /// Request to update labels on a server.
+    public record UpdateLabelsRequest(Map<String, String> labels) {}
 
     /// Wrapper for single-server API responses.
     @JsonIgnoreProperties(ignoreUnknown = true)

@@ -3,6 +3,7 @@ package org.pragmatica.aether.api.routes;
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.ComponentHealth;
+import org.pragmatica.aether.api.ManagementApiResponses.EnrichedNodeInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.HealthResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.LivenessResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.MetricsSummary;
@@ -13,7 +14,9 @@ import org.pragmatica.aether.api.ManagementApiResponses.StatusResponse;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.QueryParameter;
@@ -23,8 +26,10 @@ import org.pragmatica.lang.Option;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -128,7 +133,33 @@ public final class StatusRoutes implements RouteSource {
                      SliceNodeValue.class,
                      (key, _) -> nodeIds.add(key.nodeId()
                                                 .id()));
-        return new NodesResponse(List.copyOf(nodeIds));
+        var roleMap = collectNodeRoles(node);
+        var leaderId = node.leader()
+                           .map(NodeId::id);
+        var enrichedNodes = nodeIds.stream()
+                                   .map(id -> toEnrichedNodeInfo(id, roleMap, leaderId))
+                                   .toList();
+        return new NodesResponse(enrichedNodes);
+    }
+
+    private static Map<String, String> collectNodeRoles(AetherNode node) {
+        var roleMap = new HashMap<String, String>();
+        node.kvStore()
+            .forEach(ActivationDirectiveKey.class,
+                     ActivationDirectiveValue.class,
+                     (key, value) -> roleMap.put(key.nodeId()
+                                                    .id(),
+                                                 value.role()));
+        return roleMap;
+    }
+
+    private static EnrichedNodeInfo toEnrichedNodeInfo(String id,
+                                                       Map<String, String> roleMap,
+                                                       Option<String> leaderId) {
+        var role = roleMap.getOrDefault(id, ActivationDirectiveValue.CORE);
+        var isLeader = leaderId.map(id::equals)
+                               .or(false);
+        return new EnrichedNodeInfo(id, role, isLeader);
     }
 
     private HealthResponse buildHealthResponse() {

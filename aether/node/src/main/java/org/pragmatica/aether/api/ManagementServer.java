@@ -13,9 +13,13 @@ import org.pragmatica.aether.api.routes.MetricsRoutes;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.api.routes.ObservabilityRoutes;
 import org.pragmatica.aether.api.routes.RepositoryRoutes;
+import org.pragmatica.aether.api.routes.AbTestRoutes;
+import org.pragmatica.aether.api.routes.BlueGreenRoutes;
+import org.pragmatica.aether.api.routes.CanaryRoutes;
 import org.pragmatica.aether.api.routes.RollingUpdateRoutes;
 import org.pragmatica.aether.api.routes.RouteHandler;
 import org.pragmatica.aether.api.routes.ScheduledTaskRoutes;
+import org.pragmatica.aether.api.routes.SchemaRoutes;
 import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.api.routes.StatusRoutes;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
@@ -206,6 +210,9 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(SliceRoutes.sliceRoutes(nodeSupplier));
         routeSources.add(MetricsRoutes.metricsRoutes(nodeSupplier, observability));
         routeSources.add(RollingUpdateRoutes.rollingUpdateRoutes(nodeSupplier));
+        routeSources.add(CanaryRoutes.canaryRoutes(nodeSupplier));
+        routeSources.add(BlueGreenRoutes.blueGreenRoutes(nodeSupplier));
+        routeSources.add(AbTestRoutes.abTestRoutes(nodeSupplier));
         routeSources.add(NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier));
         routeSources.add(RepositoryRoutes.repositoryRoutes(nodeSupplier));
         routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry,
@@ -216,6 +223,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(ClusterTopologyRoutes.clusterTopologyRoutes(nodeSupplier));
         routeSources.add(BackupRoutes.backupRoutes(() -> nodeSupplier.get()
                                                                      .backupService()));
+        routeSources.add(SchemaRoutes.schemaRoutes(nodeSupplier));
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm)));
         this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
         // Legacy routes using RouteHandler for dynamic content types

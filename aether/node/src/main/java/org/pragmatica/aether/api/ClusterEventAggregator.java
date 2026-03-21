@@ -3,12 +3,17 @@ package org.pragmatica.aether.api;
 import org.pragmatica.aether.api.ClusterEvent.EventType;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.controller.ScalingEvent;
+import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
-import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
+import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.lang.Option;
 import org.pragmatica.utility.RingBuffer;
 
 import java.time.Instant;
@@ -27,6 +32,7 @@ public final class ClusterEventAggregator {
     private final RingBuffer<ClusterEvent> buffer;
     private final AtomicLong quorumSequence = new AtomicLong();
     private final ConcurrentHashMap<String, Long> deploymentStartTimes = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> nodeJoinTimes = new ConcurrentHashMap<>();
 
     private ClusterEventAggregator(ClusterEventAggregatorConfig config) {
         this.buffer = RingBuffer.ringBuffer(config.maxEvents());
@@ -50,6 +56,9 @@ public final class ClusterEventAggregator {
 
     // --- Message handlers ---
     public void onNodeAdded(TopologyChangeNotification.NodeAdded event) {
+        nodeJoinTimes.put(event.nodeId()
+                               .id(),
+                          System.currentTimeMillis());
         buffer.add(ClusterEvent.clusterEvent(EventType.NODE_JOINED,
                                              Severity.INFO,
                                              "Node " + event.nodeId()
@@ -115,79 +124,60 @@ public final class ClusterEventAggregator {
         }
     }
 
-    public void onDeploymentStarted(DeploymentEvent.DeploymentStarted event) {
-        var key = event.artifact()
-                       .asString() + ":" + event.targetNode()
-                                               .id();
-        deploymentStartTimes.put(key, event.timestamp());
+    /// Derive deployment events from NodeArtifactKey state transitions in KV-Store.
+    /// This is the authoritative source — visible on ALL nodes via consensus.
+    public void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> event) {
+        var key = event.cause()
+                       .key();
+        var value = event.cause()
+                         .value();
+        var artifact = key.artifact()
+                          .asString();
+        var nodeId = key.nodeId()
+                        .id();
+        var state = value.state();
+        var trackingKey = artifact + ":" + nodeId;
+        switch (state) {
+            case LOAD -> handleDeploymentStarted(trackingKey, artifact, nodeId);
+            case ACTIVE -> handleDeploymentCompleted(trackingKey, artifact, nodeId);
+            case FAILED -> handleDeploymentFailed(trackingKey, artifact, nodeId, value);
+            default -> {}
+        }
+    }
+
+    private void handleDeploymentStarted(String trackingKey, String artifact, String nodeId) {
+        deploymentStartTimes.put(trackingKey, System.currentTimeMillis());
         buffer.add(ClusterEvent.clusterEvent(EventType.DEPLOYMENT_STARTED,
                                              Severity.INFO,
-                                             "Deploying " + event.artifact()
-                                                                 .asString() + " to " + event.targetNode()
-                                                                                             .id(),
-                                             Map.of("artifact",
-                                                    event.artifact()
-                                                         .asString(),
-                                                    "nodeId",
-                                                    event.targetNode()
-                                                         .id())));
+                                             "Deploying " + artifact + " to " + nodeId,
+                                             Map.of("artifact", artifact, "nodeId", nodeId)));
     }
 
-    public void onDeploymentCompleted(DeploymentEvent.DeploymentCompleted event) {
-        var key = event.artifact()
-                       .asString() + ":" + event.nodeId()
-                                               .id();
-        var startTime = deploymentStartTimes.remove(key);
-        var durationMs = startTime != null
-                         ? event.timestamp() - startTime
-                         : - 1L;
-        var durationSuffix = durationMs >= 0
-                             ? " in " + formatDuration(durationMs)
-                             : "";
+    private void handleDeploymentCompleted(String trackingKey, String artifact, String nodeId) {
+        var durationMs = computeAndRemoveDuration(trackingKey);
+        var durationSuffix = durationMs.map(ms -> " in " + formatDuration(ms))
+                                       .or("");
+        var nodeReadySuffix = buildNodeReadySuffix(nodeId);
         buffer.add(ClusterEvent.clusterEvent(EventType.DEPLOYMENT_COMPLETED,
                                              Severity.INFO,
-                                             "Deployed " + event.artifact()
-                                                                .asString() + " on " + event.nodeId()
-                                                                                            .id() + durationSuffix,
-                                             durationMs >= 0
-                                             ? Map.of("artifact",
-                                                      event.artifact()
-                                                           .asString(),
-                                                      "nodeId",
-                                                      event.nodeId()
-                                                           .id(),
-                                                      "durationMs",
-                                                      String.valueOf(durationMs))
-                                             : Map.of("artifact",
-                                                      event.artifact()
-                                                           .asString(),
-                                                      "nodeId",
-                                                      event.nodeId()
-                                                           .id())));
+                                             "Deployed " + artifact + " on " + nodeId + durationSuffix + nodeReadySuffix,
+                                             buildCompletedMetadata(artifact, nodeId, durationMs)));
     }
 
-    public void onDeploymentFailed(DeploymentEvent.DeploymentFailed event) {
-        var key = event.artifact()
-                       .asString() + ":" + event.nodeId()
-                                               .id();
-        var startTime = deploymentStartTimes.remove(key);
-        var durationMs = startTime != null
-                         ? event.timestamp() - startTime
-                         : - 1L;
-        var durationSuffix = durationMs >= 0
-                             ? " after " + formatDuration(durationMs)
-                             : "";
-        var errorSuffix = event.errorMessage()
-                               .isEmpty()
-                          ? ""
-                          : ": " + event.errorMessage();
+    private void handleDeploymentFailed(String trackingKey,
+                                        String artifact,
+                                        String nodeId,
+                                        NodeArtifactValue value) {
+        var durationMs = computeAndRemoveDuration(trackingKey);
+        var durationSuffix = durationMs.map(ms -> " after " + formatDuration(ms))
+                                       .or("");
+        var reason = value.failureReason()
+                          .or("unknown");
         buffer.add(ClusterEvent.clusterEvent(EventType.DEPLOYMENT_FAILED,
                                              Severity.WARNING,
-                                             "Deployment of " + event.artifact()
-                                                                     .asString() + " failed on " + event.nodeId()
-                                                                                                        .id() + " at " + event.failedAt()
-                                                                                                                              .name() + durationSuffix + errorSuffix,
-                                             buildFailedMetadata(event, durationMs)));
+                                             "Deployment of " + artifact + " failed on " + nodeId + durationSuffix
+                                             + ": " + reason,
+                                             buildFailedMetadata(artifact, nodeId, reason, durationMs)));
     }
 
     public void onSliceFailure(SliceFailureEvent.AllInstancesFailed event) {
@@ -237,6 +227,29 @@ public final class ClusterEventAggregator {
                                                     String.valueOf(event.newInstances()))));
     }
 
+    public void onReconciliationAdjustment(ClusterDeploymentManager.ReconciliationAdjustment event) {
+        var direction = event.currentInstances() < event.desiredInstances()
+                        ? "up"
+                        : "down";
+        var eventType = event.currentInstances() < event.desiredInstances()
+                        ? EventType.SCALE_UP
+                        : EventType.SCALE_DOWN;
+        buffer.add(ClusterEvent.clusterEvent(eventType,
+                                             Severity.INFO,
+                                             "Reconciliation: " + event.artifact()
+                                                                       .asString() + " adjusted " + direction + " from " + event.currentInstances()
+                                             + " to " + event.desiredInstances() + " instances",
+                                             Map.of("artifact",
+                                                    event.artifact()
+                                                         .asString(),
+                                                    "previousInstances",
+                                                    String.valueOf(event.currentInstances()),
+                                                    "desiredInstances",
+                                                    String.valueOf(event.desiredInstances()),
+                                                    "trigger",
+                                                    "reconciliation")));
+    }
+
     public void onConnectionEstablished(NetworkServiceMessage.ConnectionEstablished event) {
         buffer.add(ClusterEvent.clusterEvent(EventType.CONNECTION_ESTABLISHED,
                                              Severity.INFO,
@@ -261,25 +274,42 @@ public final class ClusterEventAggregator {
                                                          .message())));
     }
 
-    private static Map<String, String> buildFailedMetadata(DeploymentEvent.DeploymentFailed event, long durationMs) {
-        var metadata = new java.util.HashMap<String, String>();
-        metadata.put("artifact",
-                     event.artifact()
-                          .asString());
-        metadata.put("nodeId",
-                     event.nodeId()
-                          .id());
-        metadata.put("failedAt",
-                     event.failedAt()
-                          .name());
-        if (!event.errorMessage()
-                  .isEmpty()) {
-            metadata.put("errorMessage", event.errorMessage());
+    private Option<Long> computeAndRemoveDuration(String trackingKey) {
+        return Option.option(deploymentStartTimes.remove(trackingKey))
+                     .map(startTime -> System.currentTimeMillis() - startTime);
+    }
+
+    private String buildNodeReadySuffix(String nodeId) {
+        var nodeJoinTime = nodeJoinTimes.remove(nodeId);
+        if (nodeJoinTime == null) {
+            return "";
         }
-        if (durationMs >= 0) {
-            metadata.put("durationMs", String.valueOf(durationMs));
-        }
-        return Map.copyOf(metadata);
+        var joinToDeployMs = System.currentTimeMillis() - nodeJoinTime;
+        return " (node ready in " + formatDuration(joinToDeployMs) + ")";
+    }
+
+    private static Map<String, String> buildCompletedMetadata(String artifact, String nodeId, Option<Long> durationMs) {
+        return durationMs.map(ms -> Map.of("artifact",
+                                           artifact,
+                                           "nodeId",
+                                           nodeId,
+                                           "durationMs",
+                                           String.valueOf(ms)))
+                         .or(Map.of("artifact", artifact, "nodeId", nodeId));
+    }
+
+    private static Map<String, String> buildFailedMetadata(String artifact,
+                                                           String nodeId,
+                                                           String reason,
+                                                           Option<Long> durationMs) {
+        var base = Map.of("artifact", artifact, "nodeId", nodeId, "reason", reason);
+        return durationMs.map(ms -> {
+                                  var metadata = new java.util.HashMap<>(base);
+                                  metadata.put("durationMs",
+                                               String.valueOf(ms));
+                                  return Map.copyOf(metadata);
+                              })
+                         .or(base);
     }
 
     private static String formatDuration(long durationMs) {

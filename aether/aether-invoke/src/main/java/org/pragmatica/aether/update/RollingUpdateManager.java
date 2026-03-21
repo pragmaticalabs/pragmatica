@@ -246,6 +246,7 @@ public interface RollingUpdateManager {
                 }
             }
 
+            @SuppressWarnings("JBCT-VO-02") // Restoring trusted KV-Store data
             private void restoreUpdate(RollingUpdateValue ruv) {
                 var state = RollingUpdateState.valueOf(ruv.state());
                 var routing = new VersionRouting(ruv.newWeight(), ruv.oldWeight());

@@ -1,0 +1,4 @@
+org.pragmatica.email.http.vendor.SendGridMapping
+org.pragmatica.email.http.vendor.MailgunMapping
+org.pragmatica.email.http.vendor.PostmarkMapping
+org.pragmatica.email.http.vendor.ResendMapping

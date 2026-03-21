@@ -1,0 +1,51 @@
+/*
+ *  Copyright (c) 2025 Sergiy Yevtushenko.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ */
+
+package org.pragmatica.cloud.azure.api;
+
+import java.util.List;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
+/// Azure ARM Load Balancer resource.
+@JsonIgnoreProperties(ignoreUnknown = true)
+public record AzureLoadBalancer(String id,
+                                 String name,
+                                 LbProperties properties) {
+    /// Load balancer properties.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record LbProperties(List<BackendPool> backendAddressPools) {}
+
+    /// Backend address pool.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record BackendPool(String id,
+                               String name,
+                               PoolProperties properties) {}
+
+    /// Pool properties containing backend addresses.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record PoolProperties(List<BackendAddress> loadBalancerBackendAddresses) {}
+
+    /// Individual backend address entry.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record BackendAddress(String name,
+                                  BackendAddressProperties properties) {}
+
+    /// Backend address properties containing IP address.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record BackendAddressProperties(String ipAddress) {}
+}

@@ -4,6 +4,7 @@ import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.Environment;
 import org.pragmatica.aether.config.SliceConfig;
+import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.consensus.NodeId;
@@ -60,18 +61,31 @@ public record Main(String[] args) {
         var sliceConfig = parseSliceConfig(aetherConfig);
         var dhtConfig = parseDhtConfig(aetherConfig);
         logStartupInfo(nodeId, port, managementPort, peers, aetherConfig, sliceConfig);
+        var coreMax = parseCoreMax(aetherConfig);
         var config = AetherNodeConfig.aetherNodeConfig(nodeId,
                                                        port,
                                                        peers,
                                                        AetherNodeConfig.defaultSliceActionConfig(),
                                                        sliceConfig,
                                                        managementPort,
-                                                       dhtConfig);
-        var finalConfig = wireTlsIfEnabled(config, aetherConfig);
+                                                       dhtConfig,
+                                                       coreMax);
+        var withTls = wireTlsIfEnabled(config, aetherConfig);
+        var finalConfig = wireCloudIfConfigured(withTls, aetherConfig);
         var node = AetherNode.aetherNode(finalConfig)
                              .unwrap();
         registerShutdownHook(node);
         startNodeAndWait(node, nodeId);
+    }
+
+    private AetherNodeConfig wireCloudIfConfigured(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
+        return aetherConfig.flatMap(AetherConfig::cloud)
+                           .flatMap(cloudConfig -> EnvironmentIntegrationFactory.createFromConfig(cloudConfig)
+                                                                                .onFailure(cause -> log.error("Failed to create cloud environment: {}",
+                                                                                                              cause.message()))
+                                                                                .option())
+                           .map(config::withEnvironment)
+                           .or(config);
     }
 
     private AetherNodeConfig wireTlsIfEnabled(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
@@ -231,6 +245,12 @@ public record Main(String[] args) {
         return findArg("--management-port=").map(Integer::parseInt)
                       .orElse(findEnv("MANAGEMENT_PORT").map(Integer::parseInt))
                       .or(() -> managementPortFromConfig(aetherConfig));
+    }
+
+    private int parseCoreMax(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(cfg -> cfg.cluster()
+                                          .coreMax())
+                           .or(0);
     }
 
     private int managementPortFromConfig(Option<AetherConfig> aetherConfig) {

@@ -6,12 +6,13 @@ Slices access infrastructure — databases, HTTP clients, caches — through **r
 
 ### Built-In Qualifiers
 
-Aether ships two built-in qualifiers:
+Aether ships three built-in qualifiers:
 
 | Annotation | Resource Type | Config Section |
 |------------|--------------|----------------|
 | `@Sql` | `SqlConnector` | `"database"` |
 | `@Http` | `HttpClient` | `"http"` |
+| `@Notify` | `NotificationSender` | `"notification"` |
 
 ```java
 import org.pragmatica.aether.resource.db.Sql;
@@ -292,6 +293,43 @@ Transport is selected automatically by priority:
 | `DB2` | 50000 | `com.ibm.db2.jcc.DB2Driver` |
 | `COCKROACHDB` | 26257 | `org.postgresql.Driver` |
 
+### Schema Migration
+
+The migration engine creates and manages **tables**, not databases. Each datasource database must exist before migration runs.
+
+#### Schema Directory Convention
+
+Migration scripts live in the `schema/` directory of your blueprint artifact. The directory structure determines which datasource config section each script targets:
+
+| Directory | Config Section | Annotation |
+|-----------|---------------|------------|
+| `schema/V001__create_users.sql` | `[database]` | `@Sql` |
+| `schema/analytics/V001__create_events.sql` | `[database.analytics]` | `@ResourceQualifier(config="database.analytics")` |
+| `schema/orders/V001__create_orders.sql` | `[database.orders]` | `@ResourceQualifier(config="database.orders")` |
+
+**Single-datasource zero-config:** If your slice uses only `@Sql` (the default database), place migration scripts directly in `schema/`. They map to the `[database]` section in `aether.toml` — the same section that `@Sql` uses. No subdirectory needed.
+
+**Multi-datasource:** Create a subdirectory for each named datasource. The subdirectory name must match the qualifier suffix in `[database.<name>]`.
+
+#### Strict Datasource Resolution
+
+Every schema directory must have a corresponding `[database]` or `[database.<name>]` config section. There is no fallback or derivation — a missing config section causes an explicit failure with a descriptive error message. This prevents silent misconfiguration.
+
+#### Migration Script Types
+
+Migration scripts use Flyway-style naming: versioned (`V`), repeatable (`R`), undo (`U`), and baseline (`B`). They are applied automatically when a blueprint is deployed. Schema history is tracked per datasource in the `aether_schema_history` table.
+
+#### Local Development
+
+Forge no longer provides an embedded H2 database. For local development, start an external PostgreSQL instance using the `start-postgres.sh` script provided in example projects:
+
+```bash
+./start-postgres.sh          # Start PostgreSQL container
+./run-forge.sh               # Start Forge (connects to external Postgres)
+```
+
+The `start-postgres.sh` script creates the required database automatically. If you add a new named datasource with schema migrations, add a `CREATE DATABASE` statement to your `start-postgres.sh` script.
+
 ### Connection Pool Configuration
 
 Nested under `pool_config` in the database section.
@@ -424,6 +462,200 @@ jdbc_url = "jdbc:oracle:thin:@//oracle.corp:1521/LEGACY"
 username = "legacy_user"
 password = "${secrets:database/legacy/password}"
 ```
+
+---
+
+## Notification Sender
+
+**Resource type:** `NotificationSender`
+**Config prefix:** `notification`
+**Built-in qualifier:** `@Notify`
+**Factory:** `NotificationSenderFactory`
+
+### Configuration
+
+Two backends are supported: `smtp` (direct SMTP) and `http` (vendor API).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `backend` | `String` | required | Backend type: `"smtp"` or `"http"` |
+
+#### SMTP Backend
+
+Nested under `[notification.smtp]`:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `host` | `String` | required | SMTP server hostname |
+| `port` | `int` | `587` | SMTP server port |
+| `tls` | `SmtpTlsMode` | `STARTTLS` | TLS mode: `NONE`, `STARTTLS`, `IMPLICIT` |
+| `username` | `String` (optional) | none | AUTH PLAIN username |
+| `password` | `String` (optional) | none | AUTH PLAIN password |
+| `connect_timeout` | duration | `10s` | TCP connection timeout |
+| `command_timeout` | duration | `30s` | SMTP command timeout |
+
+#### HTTP Vendor Backend
+
+Nested under `[notification.http]`:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `provider` | `String` | required | Vendor: `"sendgrid"`, `"mailgun"`, `"postmark"`, `"resend"` |
+| `api_key` | `String` | required | Vendor API key |
+| `endpoint` | `String` (optional) | vendor default | Override API endpoint URL |
+| `from` | `String` (optional) | none | Default sender address |
+
+#### Retry Configuration
+
+Nested under `[notification.retry]`:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_attempts` | `int` | `3` | Maximum delivery attempts |
+| `initial_delay_ms` | `long` | `1000` | Initial retry delay in milliseconds |
+| `max_delay_ms` | `long` | `30000` | Maximum retry delay in milliseconds |
+| `backoff_multiplier` | `double` | `2.0` | Exponential backoff multiplier |
+
+### API
+
+`NotificationSender` provides a single method:
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `send` | `Promise<NotificationResult> send(Notification notification)` | Send a notification |
+
+`Notification` is a sealed interface. Phase 1 supports `Notification.Email`:
+
+```java
+var notification = Notification.Email.email(
+    "noreply@example.com",
+    List.of("user@example.com"),
+    "Order Confirmed",
+    NotificationBody.Text.text("Your order #1234 has been confirmed.")
+).withCc(List.of("admin@example.com"))
+ .withReplyTo("support@example.com");
+
+sender.send(notification)
+      .onSuccess(result -> log.info("Sent via {}: {}", result.backend(), result.messageId()));
+```
+
+`NotificationBody` is a sealed interface with two variants:
+
+| Variant | Factory | Description |
+|---------|---------|-------------|
+| `Text` | `NotificationBody.Text.text(content)` | Plain text body |
+| `Html` | `NotificationBody.Html.html(content)` or `html(content, fallback)` | HTML body with optional text fallback |
+
+### Error Handling
+
+`NotificationError` is a sealed interface with three variants:
+
+| Variant | When |
+|---------|------|
+| `BackendNotConfigured` | Unknown backend or missing backend-specific configuration |
+| `UnsupportedChannel` | Notification type not supported by this backend |
+| `DeliveryFailed` | All retry attempts exhausted |
+
+### TOML Examples
+
+**SMTP (direct):**
+```toml
+[notification]
+backend = "smtp"
+
+[notification.smtp]
+host = "smtp.example.com"
+port = 587
+tls = "STARTTLS"
+username = "noreply@example.com"
+password = "${secrets:smtp/password}"
+
+[notification.retry]
+max_attempts = 3
+```
+
+**SendGrid (HTTP vendor):**
+```toml
+[notification]
+backend = "http"
+
+[notification.http]
+provider = "sendgrid"
+api_key = "${secrets:sendgrid/api-key}"
+from = "noreply@example.com"
+
+[notification.retry]
+max_attempts = 5
+initial_delay_ms = 2000
+```
+
+**Mailgun (HTTP vendor):**
+```toml
+[notification]
+backend = "http"
+
+[notification.http]
+provider = "mailgun"
+api_key = "${secrets:mailgun/api-key}"
+```
+
+### Slice Usage
+
+```java
+import org.pragmatica.aether.resource.notification.Notify;
+import org.pragmatica.aether.resource.notification.NotificationSender;
+
+@Slice
+public interface AlertService {
+
+    record AlertRequest(String recipient, String subject, String message) {}
+
+    Promise<Unit> sendAlert(AlertRequest request);
+
+    static AlertService alertService(@Notify NotificationSender sender) {
+        record alertService(NotificationSender sender) implements AlertService {
+            @Override
+            public Promise<Unit> sendAlert(AlertRequest request) {
+                var notification = Notification.Email.email(
+                    "alerts@example.com",
+                    List.of(request.recipient()),
+                    request.subject(),
+                    NotificationBody.Text.text(request.message())
+                );
+                return sender.send(notification).map(_ -> Unit.unit());
+            }
+        }
+        return new alertService(sender);
+    }
+}
+```
+
+### Custom Qualifiers
+
+For multiple notification backends:
+
+```java
+@ResourceQualifier(type = NotificationSender.class, config = "notification.transactional")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+@interface TransactionalEmail {}
+
+@ResourceQualifier(type = NotificationSender.class, config = "notification.marketing")
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+@interface MarketingEmail {}
+```
+
+### Supported HTTP Vendors
+
+| Vendor | ID | Auth | Format |
+|--------|----|------|--------|
+| SendGrid | `sendgrid` | Bearer token | JSON (`personalizations` array) |
+| Mailgun | `mailgun` | Basic auth (`api:<key>`) | Form-encoded |
+| Postmark | `postmark` | `X-Postmark-Server-Token` header | JSON |
+| Resend | `resend` | Bearer token | JSON |
+
+Custom vendors can be added via `VendorMapping` SPI (ServiceLoader in `integrations/email-http`).
 
 ---
 

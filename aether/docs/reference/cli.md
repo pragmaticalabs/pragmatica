@@ -264,6 +264,12 @@ aether blueprint validate <file.toml>
 
 # Delete a blueprint
 aether blueprint delete <blueprintId> [-f|--force]
+
+# Deploy a blueprint from an artifact in the cluster repository
+aether blueprint deploy <coords>
+
+# Upload a blueprint JAR file and deploy it
+aether blueprint upload <file> -g <groupId> -a <artifactId> -v <version>
 ```
 
 Example blueprint file (`order-system.toml`):
@@ -298,6 +304,12 @@ aether blueprint get order-system:1.0.0
 
 # Delete a blueprint (with force to skip confirmation)
 aether blueprint delete order-system:1.0.0 -f
+
+# Deploy from artifact coordinates
+aether blueprint deploy org.example:my-app:1.0.0
+
+# Upload a blueprint JAR and deploy it
+aether blueprint upload my-app-1.0.0-blueprint.jar -g org.example -a my-app -v 1.0.0
 ```
 
 #### update
@@ -353,6 +365,153 @@ aether update complete abc123
 
 # Or rollback if issues detected
 aether update rollback abc123
+```
+
+#### canary
+
+Canary deployment management:
+
+```bash
+# Start a canary deployment
+aether canary start -a <artifact> -v <version> [-n <instances>]
+
+# List active canaries
+aether canary list
+
+# Show canary status
+aether canary status <canaryId>
+
+# Show health comparison between baseline and canary
+aether canary health <canaryId>
+
+# Promote to next traffic stage
+aether canary promote <canaryId>
+
+# Promote directly to 100% traffic
+aether canary promote-full <canaryId>
+
+# Rollback canary to baseline
+aether canary rollback <canaryId>
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `start -a <artifact> -v <version> [-n <instances>]` | Start canary deployment |
+| `list` | List active canaries |
+| `status <canaryId>` | Show canary status |
+| `health <canaryId>` | Show health comparison |
+| `promote <canaryId>` | Promote to next stage |
+| `promote-full <canaryId>` | Promote to 100% |
+| `rollback <canaryId>` | Rollback canary |
+
+Example workflow:
+```bash
+# Start canary: deploy v2.0.0 with 1% traffic
+aether canary start -a org.example:my-service -v 2.0.0 -n 3
+
+# Check health comparison
+aether canary health abc123
+
+# Promote through stages: 1% → 5% → 25% → 50% → 100%
+aether canary promote abc123
+aether canary promote abc123
+aether canary promote abc123
+aether canary promote-full abc123
+
+# Or rollback if issues detected
+aether canary rollback abc123
+```
+
+#### blue-green
+
+Blue-green deployment management:
+
+```bash
+# Deploy green version alongside current blue
+aether blue-green deploy -a <artifact> -v <version> [-n <instances>]
+
+# List active blue-green deployments
+aether blue-green list
+
+# Show deployment status
+aether blue-green status <id>
+
+# Switch all traffic to green (atomic, ~100ms)
+aether blue-green switch <id>
+
+# Switch back to blue (instant rollback)
+aether blue-green switch-back <id>
+
+# Complete deployment (drain inactive slot + cleanup)
+aether blue-green complete <id>
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `deploy -a <artifact> -v <version> [-n <instances>]` | Deploy green version |
+| `list` | List deployments |
+| `status <id>` | Show status |
+| `switch <id>` | Switch to green |
+| `switch-back <id>` | Switch back to blue |
+| `complete <id>` | Complete (drain + cleanup) |
+
+Example workflow:
+```bash
+# Deploy green version
+aether blue-green deploy -a org.example:my-service -v 2.0.0 -n 3
+
+# Verify green is ready
+aether blue-green status bg-xyz
+
+# Switch traffic atomically
+aether blue-green switch bg-xyz
+
+# If issues, instant rollback
+aether blue-green switch-back bg-xyz
+
+# When satisfied, complete and clean up
+aether blue-green complete bg-xyz
+```
+
+#### ab-test
+
+A/B testing management:
+
+```bash
+# Create an A/B test with variant definitions
+aether ab-test create -a <artifact> --variants <v1=ver1,v2=ver2>
+
+# List active A/B tests
+aether ab-test list
+
+# Show test status
+aether ab-test status <testId>
+
+# Show per-variant metrics
+aether ab-test metrics <testId>
+
+# Conclude test and promote winner
+aether ab-test conclude <testId> --winner <variant>
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `create -a <artifact> --variants <v1=ver1,v2=ver2>` | Create A/B test |
+| `list` | List active tests |
+| `status <testId>` | Show test status |
+| `metrics <testId>` | Show per-variant metrics |
+| `conclude <testId> --winner <variant>` | Conclude test |
+
+Example workflow:
+```bash
+# Create A/B test: 50/50 split between v1.0.0 and v2.0.0
+aether ab-test create -a org.example:my-service --variants control=1.0.0,experiment=2.0.0
+
+# Monitor per-variant metrics
+aether ab-test metrics ab-001
+
+# Conclude test and promote winner
+aether ab-test conclude ab-001 --winner experiment
 ```
 
 #### invocation-metrics
@@ -858,6 +1017,58 @@ aether backup restore <commit-id>
 | `trigger` | Trigger a manual backup |
 | `list` | List available backups |
 | `restore <commit>` | Restore from backup |
+
+---
+
+### schema
+
+Manage datasource schema migrations.
+
+```bash
+# Show schema status for all datasources
+aether schema status
+
+# Show schema status for a specific datasource
+aether schema status <datasource>
+
+# Show migration history for a datasource
+aether schema history <datasource>
+
+# Trigger manual migration
+aether schema migrate <datasource>
+
+# Undo migrations to a target version
+aether schema undo <datasource> -v <version>
+
+# Baseline a datasource at a version
+aether schema baseline <datasource> -v <version>
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `status [datasource]` | Show schema status (all or specific) |
+| `history <datasource>` | Show migration history |
+| `migrate <datasource>` | Trigger manual migration |
+| `undo <datasource> -v N` | Undo to target version |
+| `baseline <datasource> -v N` | Baseline at version |
+
+Example:
+```bash
+# Check all datasource schemas
+aether schema status
+
+# Check a specific datasource
+aether schema status orders_db
+
+# Trigger migration for a datasource
+aether schema migrate orders_db
+
+# Undo to version 2
+aether schema undo orders_db -v 2
+
+# Baseline at version 3
+aether schema baseline orders_db -v 3
+```
 
 ---
 

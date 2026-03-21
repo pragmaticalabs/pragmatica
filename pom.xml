@@ -6,7 +6,7 @@
 
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>pragmatica</artifactId>
-    <version>0.20.0</version>
+    <version>0.21.0</version>
     <packaging>pom</packaging>
 
     <name>Pragmatica</name>
@@ -71,7 +71,7 @@
         <onnxruntime.version>1.23.2</onnxruntime.version>
 
         <!-- Integration Dependencies -->
-        <jackson.version>3.0.3</jackson.version>
+        <jackson.version>3.1.0</jackson.version>
         <jakarta.persistence.version>3.2.0</jakarta.persistence.version>
         <jooq.version>3.20.11</jooq.version>
 
@@ -213,7 +213,37 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
+                <artifactId>azure</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>gcp</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>aws</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
                 <artifactId>swim</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>smtp</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>email-http</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jackson-xml</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -272,12 +302,32 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>environment-gcp</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>environment-hetzner</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>environment-azure</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>environment-aws</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>resource-interceptors</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>resource-notification</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -394,9 +444,14 @@
                 <version>${jackson.version}</version>
             </dependency>
             <dependency>
+                <groupId>tools.jackson.dataformat</groupId>
+                <artifactId>jackson-dataformat-xml</artifactId>
+                <version>${jackson.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
                 <artifactId>jackson-annotations</artifactId>
-                <version>2.20</version>
+                <version>2.21</version>
             </dependency>
             <dependency>
                 <groupId>io.micrometer</groupId>

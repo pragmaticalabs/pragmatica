@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>pragmatica</artifactId>
-        <version>0.20.0</version>
+        <version>0.21.0</version>
     </parent>
 
     <groupId>org.pragmatica-lite.aether</groupId>
@@ -68,7 +68,7 @@
         <!-- TTM modules - after control and metrics -->
         <module>aether-ttm</module>
         <module>aether-ttm-onnx</module>
-        <module>worker</module>
+        <!-- worker module removed: sources moved to node and aether-metrics -->
         <module>node</module>
         <!-- E2E test slices - pure function, no dependencies -->
         <module>e2e-tests/echo-slice</module>
@@ -343,11 +343,7 @@
                 <artifactId>forge-load</artifactId>
                 <version>${project.version}</version>
             </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>worker</artifactId>
-                <version>${project.version}</version>
-            </dependency>
+            <!-- worker artifact removed from dependency management -->
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>lb</artifactId>

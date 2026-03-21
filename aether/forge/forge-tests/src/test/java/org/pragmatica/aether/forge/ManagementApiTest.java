@@ -117,6 +117,17 @@ class ManagementApiTest {
         }
 
         @Test
+        void nodes_returnsRoleAndLeaderInfo() {
+            var response = getNodes(anyNodePort());
+
+            assertThat(response).contains("\"role\"");
+            assertThat(response).contains("\"isLeader\"");
+            assertThat(response).contains("\"CORE\"");
+            // At least one node should be leader
+            assertThat(response).contains("\"isLeader\":true");
+        }
+
+        @Test
         void slices_listsDeployedSlices_withState() {
             var port = anyNodePort();
 
@@ -328,6 +339,28 @@ class ManagementApiTest {
         }
     }
 
+    @Nested
+    class ClusterTopologyEndpoints {
+
+        @Test
+        void governors_returnsEmptyForCoreOnlyCluster() {
+            var response = getGovernors(anyNodePort());
+
+            // NON_EMPTY serialization omits empty lists — core-only cluster has no governors
+            assertThat(response).isEqualTo("{}");
+        }
+
+        @Test
+        void clusterTopology_includesCoreMaxAndCounts() {
+            var response = getClusterTopology(anyNodePort());
+
+            assertThat(response).contains("\"coreMax\"");
+            assertThat(response).contains("\"coreCount\"");
+            assertThat(response).contains("\"workerCount\"");
+            assertThat(response).contains("\"coreNodes\"");
+        }
+    }
+
     // ===== Helper Methods =====
 
     private int anyNodePort() {
@@ -383,6 +416,16 @@ class ManagementApiTest {
 
     private String getSlicesStatus(int port) {
         return get(port, "/api/slices/status");
+    }
+
+    // ===== HTTP Operations: Cluster Topology =====
+
+    private String getGovernors(int port) {
+        return get(port, "/api/cluster/governors");
+    }
+
+    private String getClusterTopology(int port) {
+        return get(port, "/api/cluster/topology");
     }
 
     // ===== HTTP Operations: Metrics =====

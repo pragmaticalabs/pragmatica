@@ -34,6 +34,13 @@ public sealed interface ConsensusError extends Cause {
         }
     }
 
+    record NodeIsObserver(NodeId nodeId) implements ConsensusError {
+        @Override
+        public String message() {
+            return "Node " + nodeId.id() + " is in observer mode";
+        }
+    }
+
     record SnapshotFailed(String reason) implements ConsensusError {
         @Override
         public String message() {
@@ -54,6 +61,10 @@ public sealed interface ConsensusError extends Cause {
 
     static ConsensusError nodeInactive(NodeId nodeId) {
         return new NodeInactive(nodeId);
+    }
+
+    static ConsensusError nodeIsObserver(NodeId nodeId) {
+        return new NodeIsObserver(nodeId);
     }
 
     static ConsensusError snapshotFailed(String reason) {

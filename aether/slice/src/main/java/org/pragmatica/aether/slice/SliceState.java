@@ -25,7 +25,7 @@ public enum SliceState {
     LOADING(timeSpan(2).minutes()),
     LOADED,
     ACTIVATE,
-    ACTIVATING(timeSpan(1).minutes()),
+    ACTIVATING(timeSpan(90).seconds()),
     ACTIVE,
     DEACTIVATE,
     DEACTIVATING(

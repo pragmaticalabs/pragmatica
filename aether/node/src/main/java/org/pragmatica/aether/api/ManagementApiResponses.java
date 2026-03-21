@@ -35,7 +35,11 @@ public sealed interface ManagementApiResponses {
                           double successRate,
                           double avgLatencyMs) {}
 
-    record NodesResponse(List<String> nodes) {}
+    record NodesResponse(List<EnrichedNodeInfo> nodes) {}
+
+    record EnrichedNodeInfo(String nodeId,
+                            String role,
+                            boolean isLeader) {}
 
     record HealthResponse(String status,
                           boolean ready,
@@ -276,6 +280,68 @@ public sealed interface ManagementApiResponses {
     record RollingUpdateErrorResponse(String error,
                                       String updateId) {}
 
+    // ===== Canary Routes =====
+    record CanaryListResponse(List<CanaryInfo> canaries) {}
+
+    record CanaryInfo(String canaryId,
+                      String artifactBase,
+                      String oldVersion,
+                      String newVersion,
+                      String state,
+                      String routing,
+                      int currentStage,
+                      int totalStages,
+                      int newInstances,
+                      long createdAt,
+                      long updatedAt) {}
+
+    record CanaryHealthResponse(String canaryId,
+                                String verdict,
+                                CanaryVersionHealth baseline,
+                                CanaryVersionHealth canary,
+                                long collectedAt) {}
+
+    record CanaryVersionHealth(String version,
+                               long requestCount,
+                               double errorRate,
+                               long p99LatencyMs) {}
+
+    // ===== Blue-Green Routes =====
+    record BlueGreenListResponse(List<BlueGreenInfo> deployments) {}
+
+    record BlueGreenInfo(String deploymentId,
+                         String artifactBase,
+                         String blueVersion,
+                         String greenVersion,
+                         String state,
+                         String activeEnvironment,
+                         String routing,
+                         int blueInstances,
+                         int greenInstances,
+                         long createdAt,
+                         long updatedAt) {}
+
+    // ===== A/B Test Routes =====
+    record AbTestListResponse(List<AbTestInfo> tests) {}
+
+    record AbTestInfo(String testId,
+                      String artifactBase,
+                      String baselineVersion,
+                      String state,
+                      int variantCount,
+                      long createdAt,
+                      long updatedAt) {}
+
+    record AbTestMetricsResponse(String testId,
+                                 Map<String, AbTestVariantMetrics> variants,
+                                 long collectedAt) {}
+
+    record AbTestVariantMetrics(String variant,
+                                String version,
+                                long requestCount,
+                                double errorRate,
+                                long avgLatencyMs) {}
+
     // ===== Config Routes =====
     record ConfigSetResponse(String status,
                              String key,
@@ -305,6 +371,14 @@ public sealed interface ManagementApiResponses {
                                          int workerCount,
                                          int clusterSize,
                                          List<String> coreNodes) {}
+
+    // ===== Governor Routes =====
+    record GovernorsResponse(List<GovernorInfo> governors) {}
+
+    record GovernorInfo(String governorId,
+                        String community,
+                        int memberCount,
+                        List<String> members) {}
 
     // ===== Repository Routes =====
     record ArtifactInfoResponse(String artifact,

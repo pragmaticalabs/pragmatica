@@ -3,6 +3,7 @@ package org.pragmatica.aether.environment;
 import org.pragmatica.lang.Result;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.pragmatica.lang.Result.success;
 
@@ -10,11 +11,20 @@ import static org.pragmatica.lang.Result.success;
 public record InstanceInfo(InstanceId id,
                            InstanceStatus status,
                            List<String> addresses,
-                           InstanceType type) {
+                           InstanceType type,
+                           Map<String, String> tags) {
+    public static Result<InstanceInfo> instanceInfo(InstanceId id,
+                                                    InstanceStatus status,
+                                                    List<String> addresses,
+                                                    InstanceType type,
+                                                    Map<String, String> tags) {
+        return success(new InstanceInfo(id, status, List.copyOf(addresses), type, Map.copyOf(tags)));
+    }
+
     public static Result<InstanceInfo> instanceInfo(InstanceId id,
                                                     InstanceStatus status,
                                                     List<String> addresses,
                                                     InstanceType type) {
-        return success(new InstanceInfo(id, status, addresses, type));
+        return instanceInfo(id, status, addresses, type, Map.of());
     }
 }

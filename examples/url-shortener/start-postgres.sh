@@ -60,12 +60,8 @@ else
     done
 fi
 
-# Run schema init
-if [ -f "$SCHEMA_DIR/url-shortener-pg.sql" ]; then
-    echo "Initializing schema..."
-    $RUNTIME exec -i "$CONTAINER_NAME" psql -U "$PG_USER" -d "$PG_DB" < "$SCHEMA_DIR/url-shortener-pg.sql"
-    echo "Schema initialized."
-fi
+# Schema is managed by Aether's migration engine.
+# Migration scripts in schema/ are applied automatically on blueprint deploy.
 
 echo ""
 echo "PostgreSQL ready:"

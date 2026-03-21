@@ -1,7 +1,10 @@
 package org.pragmatica.aether.config;
 
+import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+
+import java.util.Map;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -46,6 +49,7 @@ import static org.pragmatica.lang.Result.success;
 /// @param backup         Backup configuration
 /// @param dhtReplication DHT replication behavior configuration
 /// @param timeouts       Centralized timeout configuration
+/// @param endpoints      Infrastructure endpoint configurations from [endpoints.*] sections
 public record AetherConfig(ClusterConfig cluster,
                            NodeConfig node,
                            Option<TlsConfig> tls,
@@ -56,7 +60,9 @@ public record AetherConfig(ClusterConfig cluster,
                            AppHttpConfig appHttp,
                            BackupConfig backup,
                            DhtReplicationConfig dhtReplication,
-                           TimeoutsConfig timeouts) {
+                           TimeoutsConfig timeouts,
+                           Option<CloudConfig> cloud,
+                           Map<String, EndpointConfig> endpoints) {
     /// Factory method following JBCT naming convention.
     public static Result<AetherConfig> aetherConfig(ClusterConfig cluster,
                                                     NodeConfig node,
@@ -79,7 +85,9 @@ public record AetherConfig(ClusterConfig cluster,
                                         appHttp,
                                         backup,
                                         dhtReplication,
-                                        timeouts));
+                                        timeouts,
+                                        none(),
+                                        Map.of()));
     }
 
     /// Create configuration with defaults for specified environment.
@@ -111,6 +119,40 @@ public record AetherConfig(ClusterConfig cluster,
     /// Check if TLS is enabled.
     public boolean tlsEnabled() {
         return cluster.tls();
+    }
+
+    @SuppressWarnings("JBCT-VO-02")
+    public AetherConfig withEndpoints(Map<String, EndpointConfig> endpoints) {
+        return new AetherConfig(cluster,
+                                node,
+                                tls,
+                                docker,
+                                kubernetes,
+                                ttm,
+                                slice,
+                                appHttp,
+                                backup,
+                                dhtReplication,
+                                timeouts,
+                                cloud,
+                                endpoints);
+    }
+
+    @SuppressWarnings("JBCT-VO-02")
+    public AetherConfig withCloud(CloudConfig cloud) {
+        return new AetherConfig(cluster,
+                                node,
+                                tls,
+                                docker,
+                                kubernetes,
+                                ttm,
+                                slice,
+                                appHttp,
+                                backup,
+                                dhtReplication,
+                                timeouts,
+                                some(cloud),
+                                endpoints);
     }
 
     /// Builder for fluent configuration.
@@ -152,6 +194,9 @@ public record AetherConfig(ClusterConfig cluster,
         private BackupConfig backupConfig;
         private DhtReplicationConfig dhtReplicationConfig;
         private TimeoutsConfig timeoutsConfig;
+        private Integer coreMax;
+        private CloudConfig cloudConfig;
+        private Map<String, EndpointConfig> endpointsConfig;
 
         @SuppressWarnings("JBCT-NAM-01")
         public Builder withEnvironment(Environment environment) {
@@ -229,6 +274,21 @@ public record AetherConfig(ClusterConfig cluster,
             return this;
         }
 
+        public Builder coreMax(int coreMax) {
+            this.coreMax = coreMax;
+            return this;
+        }
+
+        public Builder cloud(CloudConfig cloudConfig) {
+            this.cloudConfig = cloudConfig;
+            return this;
+        }
+
+        public Builder endpoints(Map<String, EndpointConfig> endpointsConfig) {
+            this.endpointsConfig = endpointsConfig;
+            return this;
+        }
+
         public AetherConfig build() {
             var base = AetherConfig.aetherConfig(environment);
             var clusterConfig = applyClusterOverrides(base.cluster());
@@ -242,18 +302,23 @@ public record AetherConfig(ClusterConfig cluster,
             var finalBackup = backupFor();
             var finalDhtReplication = dhtReplicationFor();
             var finalTimeouts = timeoutsFor();
-            return AetherConfig.aetherConfig(clusterConfig,
-                                             nodeConfig,
-                                             finalTls,
-                                             finalDocker,
-                                             finalK8s,
-                                             finalTtm,
-                                             finalSlice,
-                                             finalAppHttp,
-                                             finalBackup,
-                                             finalDhtReplication,
-                                             finalTimeouts)
-                               .unwrap();
+            var config = AetherConfig.aetherConfig(clusterConfig,
+                                                   nodeConfig,
+                                                   finalTls,
+                                                   finalDocker,
+                                                   finalK8s,
+                                                   finalTtm,
+                                                   finalSlice,
+                                                   finalAppHttp,
+                                                   finalBackup,
+                                                   finalDhtReplication,
+                                                   finalTimeouts)
+                                     .unwrap();
+            var finalEndpoints = endpointsFor();
+            var withEp = finalEndpoints.isEmpty()
+                         ? config
+                         : config.withEndpoints(finalEndpoints);
+            return option(cloudConfig).fold(() -> withEp, withEp::withCloud);
         }
 
         private ClusterConfig applyClusterOverrides(ClusterConfig base) {
@@ -261,8 +326,10 @@ public record AetherConfig(ClusterConfig cluster,
                                   .or(base);
             var withTls = option(tls).map(withNodes::withTls)
                                 .or(withNodes);
-            return option(ports).map(withTls::withPorts)
-                         .or(withTls);
+            var withPorts = option(ports).map(withTls::withPorts)
+                                  .or(withTls);
+            return option(coreMax).map(withPorts::withCoreMax)
+                         .or(withPorts);
         }
 
         private NodeConfig applyNodeOverrides(NodeConfig base) {
@@ -312,6 +379,10 @@ public record AetherConfig(ClusterConfig cluster,
 
         private TimeoutsConfig timeoutsFor() {
             return option(timeoutsConfig).or(TimeoutsConfig.timeoutsConfig());
+        }
+
+        private Map<String, EndpointConfig> endpointsFor() {
+            return option(endpointsConfig).or(Map.of());
         }
     }
 }

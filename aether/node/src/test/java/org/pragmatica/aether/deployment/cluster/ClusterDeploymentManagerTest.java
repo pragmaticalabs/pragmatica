@@ -3,7 +3,13 @@ package org.pragmatica.aether.deployment.cluster;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.InstanceId;
+import org.pragmatica.aether.environment.InstanceInfo;
+import org.pragmatica.aether.environment.InstanceStatus;
+import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -38,6 +44,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -45,6 +52,26 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ClusterDeploymentManagerTest {
+    private static final SchemaOrchestratorService NO_OP_SCHEMA = noOpSchemaOrchestrator();
+
+    private static SchemaOrchestratorService noOpSchemaOrchestrator() {
+        return new SchemaOrchestratorService() {
+            @Override
+            public Promise<Unit> migrateIfNeeded(String datasourceName) {
+                return Promise.success(Unit.unit());
+            }
+
+            @Override
+            public Promise<Unit> undoTo(String datasourceName, int targetVersion) {
+                return Promise.success(Unit.unit());
+            }
+
+            @Override
+            public Promise<Unit> baseline(String datasourceName, int version) {
+                return Promise.success(Unit.unit());
+            }
+        };
+    }
 
     private NodeId self;
     private NodeId node2;
@@ -63,7 +90,7 @@ class ClusterDeploymentManagerTest {
         kvStore = new TestKVStore();
         router = MessageRouter.mutable();
         manager = ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3),
-                                                                      clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
+                                                                      clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
     }
 
     // === Leader State Tests ===
@@ -164,7 +191,7 @@ class ClusterDeploymentManagerTest {
         // Create manager with empty initial topology
         var emptyTopologyManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, kvStore, router, List.of(),
-            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
+            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
         emptyTopologyManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
         clusterNode.appliedCommands.clear();
 
@@ -339,7 +366,7 @@ class ClusterDeploymentManagerTest {
         // Create manager with ComputeProvider and TopologyManager that expects 3 nodes
         var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, prePopulatedKvStore, router, List.of(self, node2),
-            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
+            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
 
         clusterNode.appliedCommands.clear();
 
@@ -359,7 +386,7 @@ class ClusterDeploymentManagerTest {
         // Create manager with ComputeProvider, no pre-populated blueprints (initial startup)
         var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, kvStore, router, List.of(self, node2),
-            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
+            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
 
         clusterNode.appliedCommands.clear();
 
@@ -379,7 +406,7 @@ class ClusterDeploymentManagerTest {
         // Create manager with 3 nodes already present (matches target)
         var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, kvStore, router, List.of(self, node2, node3),
-            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
+            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
 
         clusterNode.appliedCommands.clear();
 
@@ -404,7 +431,7 @@ class ClusterDeploymentManagerTest {
 
         var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, prePopulatedKvStore, router, List.of(self, node2, node3),
-            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
+            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
 
         // Become leader with full topology (no deficit)
         healingManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
@@ -589,7 +616,9 @@ class ClusterDeploymentManagerTest {
         var blueprintB = createNamedBlueprint("app-b", "service-b");
 
         sendAppBlueprintPut(manager, blueprintA);
+        replaySliceTargetNotifications();
         sendAppBlueprintPut(manager, blueprintB);
+        replaySliceTargetNotifications();
 
         var serviceA = Artifact.artifact("org.example:service-a:1.0.0").unwrap();
         var serviceB = Artifact.artifact("org.example:service-b:1.0.0").unwrap();
@@ -632,7 +661,9 @@ class ClusterDeploymentManagerTest {
         var blueprintB = createNamedBlueprint("app-b", "service-b");
 
         sendAppBlueprintPut(manager, blueprintA);
+        replaySliceTargetNotifications();
         sendAppBlueprintPut(manager, blueprintB);
+        replaySliceTargetNotifications();
 
         // Clear tracking to isolate deletion effects
         clusterNode.appliedCommands.clear();
@@ -682,6 +713,7 @@ class ClusterDeploymentManagerTest {
             Artifact.artifact("org.example:service-a:1.0.0").unwrap(), 3, false).unwrap();
         var blueprintV1 = ExpandedBlueprint.expandedBlueprint(bpId, List.of(sliceV1));
         sendAppBlueprintPut(manager, blueprintV1);
+        replaySliceTargetNotifications();
 
         // Clear tracking to isolate re-deploy effects
         clusterNode.appliedCommands.clear();
@@ -691,6 +723,7 @@ class ClusterDeploymentManagerTest {
             Artifact.artifact("org.example:service-a:2.0.0").unwrap(), 3, false).unwrap();
         var blueprintV2 = ExpandedBlueprint.expandedBlueprint(bpId, List.of(sliceV2));
         sendAppBlueprintPut(manager, blueprintV2);
+        replaySliceTargetNotifications();
 
         var serviceAv2 = Artifact.artifact("org.example:service-a:2.0.0").unwrap();
         var loadedArtifacts = filterLoadArtifacts();
@@ -716,7 +749,7 @@ class ClusterDeploymentManagerTest {
         var restoredManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, kvStore, router, List.of(self, node2, node3),
             clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT,
-            ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0);
+            ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
 
         // Become leader triggers rebuildStateFromKVStore
         restoredManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
@@ -816,6 +849,33 @@ class ClusterDeploymentManagerTest {
         mgr.onTopologyChange(TopologyChangeNotification.nodeAdded(nodes[nodes.length - 1], topology));
     }
 
+    @SuppressWarnings("unchecked")
+    private void replaySliceTargetNotifications() {
+        replaySliceTargetNotifications(manager);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void replaySliceTargetNotifications(ClusterDeploymentManager mgr) {
+        clusterNode.appliedCommands.stream()
+            .filter(cmd -> cmd instanceof KVCommand.Put<?, ?>)
+            .map(cmd -> (KVCommand.Put<AetherKey, AetherValue>) cmd)
+            .filter(put -> put.key() instanceof SliceTargetKey)
+            .forEach(put -> mgr.onSliceTargetPut(
+                new ValuePut<>((KVCommand.Put<SliceTargetKey, SliceTargetValue>) (KVCommand.Put<?, ?>) put, Option.none())));
+        // Replay NodeArtifactKey puts so sliceStates gets populated
+        replayNodeArtifactNotifications(mgr);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void replayNodeArtifactNotifications(ClusterDeploymentManager mgr) {
+        clusterNode.appliedCommands.stream()
+            .filter(cmd -> cmd instanceof KVCommand.Put<?, ?>)
+            .map(cmd -> (KVCommand.Put<AetherKey, AetherValue>) cmd)
+            .filter(put -> put.key() instanceof NodeArtifactKey)
+            .forEach(put -> mgr.onNodeArtifactPut(
+                new ValuePut<>((KVCommand.Put<NodeArtifactKey, NodeArtifactValue>) (KVCommand.Put<?, ?>) put, Option.none())));
+    }
+
     private void sendSliceTargetPut(Artifact artifact, int instanceCount) {
         manager.onSliceTargetPut(sliceTargetPut(artifact, instanceCount));
     }
@@ -856,7 +916,7 @@ class ClusterDeploymentManagerTest {
 
     private ClusterDeploymentManager createAllOrNothingManager() {
         return ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3),
-            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING, 0);
+            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING, 0, NO_OP_SCHEMA);
     }
 
     private void sendAppBlueprintPut(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint) {
@@ -1087,7 +1147,7 @@ class ClusterDeploymentManagerTest {
         }
     }
 
-    static class TestComputeProvider implements org.pragmatica.aether.environment.ComputeProvider {
+    static class TestComputeProvider implements ComputeProvider {
         private final AtomicInteger provisionCount;
 
         TestComputeProvider(AtomicInteger provisionCount) {
@@ -1095,33 +1155,35 @@ class ClusterDeploymentManagerTest {
         }
 
         @Override
-        public Promise<org.pragmatica.aether.environment.InstanceInfo> provision(org.pragmatica.aether.environment.InstanceType instanceType) {
-            var id = new org.pragmatica.aether.environment.InstanceId("test-" + provisionCount.incrementAndGet());
-            var info = new org.pragmatica.aether.environment.InstanceInfo(
+        public Promise<InstanceInfo> provision(InstanceType instanceType) {
+            var id = new InstanceId("test-" + provisionCount.incrementAndGet());
+            var info = new InstanceInfo(
                 id,
-                org.pragmatica.aether.environment.InstanceStatus.RUNNING,
+                InstanceStatus.RUNNING,
                 List.of("localhost:9999"),
-                instanceType);
+                instanceType,
+                Map.of());
             return Promise.success(info);
         }
 
         @Override
-        public Promise<Unit> terminate(org.pragmatica.aether.environment.InstanceId instanceId) {
+        public Promise<Unit> terminate(InstanceId instanceId) {
             return Promise.success(Unit.unit());
         }
 
         @Override
-        public Promise<List<org.pragmatica.aether.environment.InstanceInfo>> listInstances() {
+        public Promise<List<InstanceInfo>> listInstances() {
             return Promise.success(List.of());
         }
 
         @Override
-        public Promise<org.pragmatica.aether.environment.InstanceInfo> instanceStatus(org.pragmatica.aether.environment.InstanceId instanceId) {
-            return Promise.success(new org.pragmatica.aether.environment.InstanceInfo(
+        public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
+            return Promise.success(new InstanceInfo(
                 instanceId,
-                org.pragmatica.aether.environment.InstanceStatus.RUNNING,
+                InstanceStatus.RUNNING,
                 List.of("localhost:9999"),
-                org.pragmatica.aether.environment.InstanceType.ON_DEMAND));
+                InstanceType.ON_DEMAND,
+                Map.of()));
         }
     }
 }

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.pragmatica-lite.aether</groupId>
+        <artifactId>resource</artifactId>
+        <version>0.21.0</version>
+    </parent>
+
+    <artifactId>resource-notification</artifactId>
+    <name>Aether Resource: Notification</name>
+    <description>Email notification sender with SMTP and HTTP vendor backends.</description>
+
+    <licenses>
+        <license>
+            <name>Business Source License 1.1</name>
+            <url>https://mariadb.com/bsl11/</url>
+            <comments>Converts to Apache License 2.0 on January 1, 2030</comments>
+        </license>
+    </licenses>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>smtp</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>email-http</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>test-logging</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

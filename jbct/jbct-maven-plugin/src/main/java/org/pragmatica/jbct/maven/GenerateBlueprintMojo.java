@@ -8,6 +8,7 @@ import org.pragmatica.lang.Option;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -16,14 +17,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.jar.JarFile;
+import java.util.stream.Stream;
 
+import org.apache.maven.archiver.MavenArchiveConfiguration;
+import org.apache.maven.archiver.MavenArchiver;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
+import org.apache.maven.plugins.annotations.Component;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.MavenProject;
+import org.apache.maven.project.MavenProjectHelper;
+import org.codehaus.plexus.archiver.jar.JarArchiver;
 
 /// Generates Blueprint.toml from slice manifests and their transitive dependencies.
 /// The blueprint lists all slices in topological order (dependencies before dependents).
@@ -47,8 +54,20 @@ public class GenerateBlueprintMojo extends AbstractMojo {
     @Parameter(property = "jbct.blueprint.id")
     private String blueprintId;
 
+    @Parameter(property = "jbct.blueprint.package", defaultValue = "true")
+    private boolean packageBlueprint;
+
+    @Parameter(defaultValue = "${project.basedir}/src/main/resources/resources.toml")
+    private File resourcesTomlFile;
+
+    @Parameter(defaultValue = "${project.basedir}/schema")
+    private File schemaDirectory;
+
     @Parameter(property = "jbct.skip", defaultValue = "false")
     private boolean skip;
+
+    @Component
+    private MavenProjectHelper projectHelper;
 
     private final List<SliceEntry> orderedSlices = new ArrayList<>();
     private final Set<String> visited = new HashSet<>();
@@ -72,6 +91,10 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         topologicalSort(graph);
         generateBlueprint();
         getLog().info("Generated blueprint: " + blueprintFile);
+
+        if (packageBlueprint) {
+            packageBlueprintJar();
+        }
     }
 
     private List<SliceManifest> loadLocalManifests() throws MojoExecutionException {
@@ -304,6 +327,9 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         sb.append("# Regenerate with: mvn jbct:generate-blueprint\n\n");
         sb.append("id = \"")
           .append(id)
+          .append("\"\n");
+        sb.append("version = \"")
+          .append(project.getVersion())
           .append("\"\n\n");
         for (var entry : orderedSlices) {
             sb.append("[[slices]]\n");
@@ -327,6 +353,103 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         } catch (IOException e) {
             throw new MojoExecutionException("Failed to write blueprint", e);
         }
+    }
+
+    // --- Blueprint JAR packaging ---
+
+    private static final String CLASSIFIER = "blueprint";
+    private static final String BLUEPRINT_TOML = "blueprint.toml";
+    private static final String RESOURCES_TOML = "resources.toml";
+
+    private void packageBlueprintJar() throws MojoExecutionException {
+        var id = readBlueprintId();
+        var jarFile = buildJarFile();
+
+        createBlueprintJar(jarFile, id);
+        attachArtifact(jarFile);
+
+        getLog().info("Created blueprint JAR: " + jarFile.getName());
+    }
+
+    private String readBlueprintId() throws MojoExecutionException {
+        try {
+            var content = Files.readString(blueprintFile.toPath());
+            for (var line : content.split("\n")) {
+                var trimmed = line.trim();
+                if (trimmed.startsWith("id = \"") && trimmed.endsWith("\"")) {
+                    return trimmed.substring(6, trimmed.length() - 1);
+                }
+            }
+            return project.getGroupId() + ":" + project.getArtifactId() + ":" + project.getVersion();
+        } catch (IOException e) {
+            throw new MojoExecutionException("Failed to read blueprint.toml", e);
+        }
+    }
+
+    private File buildJarFile() {
+        var jarName = project.getArtifactId() + "-" + project.getVersion() + "-" + CLASSIFIER + ".jar";
+        return new File(outputDirectory, jarName);
+    }
+
+    private void createBlueprintJar(File jarFile, String id) throws MojoExecutionException {
+        try {
+            var archiver = new JarArchiver();
+            archiver.setDestFile(jarFile);
+
+            archiver.addFile(blueprintFile, "META-INF/" + BLUEPRINT_TOML);
+            addOptionalResourcesToml(archiver);
+            addOptionalSchemaFiles(archiver);
+
+            var mavenArchiver = new MavenArchiver();
+            mavenArchiver.setArchiver(archiver);
+            mavenArchiver.setOutputFile(jarFile);
+
+            var config = new MavenArchiveConfiguration();
+            config.addManifestEntry("Blueprint-Id", id);
+            config.addManifestEntry("Blueprint-Version", project.getVersion());
+
+            mavenArchiver.createArchive(null, project, config);
+        } catch (Exception e) {
+            throw new MojoExecutionException("Failed to create blueprint JAR", e);
+        }
+    }
+
+    private void addOptionalResourcesToml(JarArchiver archiver) {
+        if (resourcesTomlFile.exists()) {
+            archiver.addFile(resourcesTomlFile, "META-INF/" + RESOURCES_TOML);
+            getLog().debug("Added resources.toml to blueprint JAR");
+        }
+    }
+
+    private void addOptionalSchemaFiles(JarArchiver archiver) throws MojoExecutionException {
+        if (!schemaDirectory.exists() || !schemaDirectory.isDirectory()) {
+            return;
+        }
+
+        var schemaPath = schemaDirectory.toPath();
+
+        try (var sqlFiles = findSqlFiles(schemaPath)) {
+            sqlFiles.forEach(file -> addSchemaFile(archiver, schemaPath, file));
+        } catch (IOException e) {
+            throw new MojoExecutionException("Failed to scan schema directory", e);
+        }
+    }
+
+    private Stream<Path> findSqlFiles(Path schemaPath) throws IOException {
+        return Files.walk(schemaPath)
+                    .filter(Files::isRegularFile)
+                    .filter(p -> p.toString().endsWith(".sql"));
+    }
+
+    private void addSchemaFile(JarArchiver archiver, Path schemaRoot, Path sqlFile) {
+        var relativePath = schemaRoot.relativize(sqlFile).toString().replace('\\', '/');
+        archiver.addFile(sqlFile.toFile(), "schema/" + relativePath);
+        getLog().debug("Added schema file: " + relativePath);
+    }
+
+    private void attachArtifact(File jarFile) {
+        projectHelper.attachArtifact(project, "jar", CLASSIFIER, jarFile);
+        getLog().debug("Attached blueprint artifact with classifier: " + CLASSIFIER);
     }
 
     private record SliceEntry(String artifact, SliceManifest manifest, SliceConfig config, boolean isDependency) {}

@@ -27,6 +27,24 @@ Before:                          After (Phase 1):
 └─────────────────────┘          └─────────────────────┘
 ```
 
+## Coming from Spring / Micronaut / Quarkus
+
+If you have built services with any major Java framework, the transition is straightforward. Your domain model, service boundaries, and API contracts don't change. Only the deployment model changes.
+
+| Spring / Micronaut / Quarkus | Aether Slice |
+|------------------------------|-------------|
+| `@Service` / `@Singleton` | `@Slice` |
+| `@Autowired` / `@Inject` / constructor injection | Factory method parameters |
+| `@RestController` / `@Controller` | `routes.toml` (declarative, no annotations) |
+| `@Transactional` | Saga pattern with `Promise<T>` chains |
+| `application.yml` | `aether.toml` |
+| Kubernetes Deployment + Service | Blueprint TOML |
+| Spring Cloud Config / Consul | Built-in consensus KV-Store |
+| Resilience4j / Hystrix | Built-in retry, failover, circuit breaking |
+| Eureka / Consul service discovery | Built-in (runtime tracks all instances) |
+
+**You do NOT need to learn a new programming paradigm.** If you can write a Java interface, you can write a slice. The runtime handles everything that frameworks and infrastructure usually handle -- service discovery, load balancing, retry logic, health checking, and scaling.
+
 ## Prerequisites
 
 - **Java 25** (your monolith can stay on older Java; only slices need 25)
@@ -789,9 +807,12 @@ public OrderResult processOrder(OrderRequest request) {
 
 ### Forge Testing
 
-Start Forge for local testing with simulated cluster conditions:
+Start Forge for local testing with simulated cluster conditions. Forge requires an external PostgreSQL instance for slices that use `@Sql` — it no longer provides an embedded H2 database:
 
 ```bash
+# Start PostgreSQL for local development
+./start-postgres.sh
+
 # Start Forge
 ./script/aether-forge.sh
 

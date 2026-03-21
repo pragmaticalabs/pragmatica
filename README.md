@@ -9,11 +9,11 @@ A unified monorepo containing the Pragmatica ecosystem for modern functional Jav
 | **Pragmatica Lite Core** | Functional programming library with Result, Option, and Promise monads | Apache 2.0 |
 | **Pragmatica Lite Integrations** | Integration modules for popular Java libraries (Jackson, Micrometer, JPA, jOOQ, HTTP, etc.) | Apache 2.0 |
 | **Pragmatica JBCT Tools** | CLI and Maven plugin for JBCT code formatting and linting | Apache 2.0 |
-| **Pragmatica Aether** | AI-driven distributed runtime for Java applications | BSL 1.1 |
+| **Pragmatica Aether** | Distributed runtime for Java -- deploy services as slices, scale without microservices complexity | BSL 1.1 |
 
 ## Version
 
-Current version: **0.20.0**
+Current version: **0.21.0**
 
 ### Pre-Monorepo Versions
 - pragmatica-lite: 0.11.3
@@ -138,7 +138,7 @@ mvn verify
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>core</artifactId>
-    <version>0.20.0</version>
+    <version>0.21.0</version>
 </dependency>
 ```
 
@@ -148,7 +148,7 @@ mvn verify
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>0.20.0</version>
+    <version>0.21.0</version>
     <executions>
         <execution>
             <goals>
@@ -165,7 +165,7 @@ mvn verify
 <dependency>
     <groupId>org.pragmatica-lite.aether</groupId>
     <artifactId>slice-api</artifactId>
-    <version>0.20.0</version>
+    <version>0.21.0</version>
     <scope>provided</scope>
 </dependency>
 ```

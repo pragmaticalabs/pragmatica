@@ -1,6 +1,7 @@
 package org.pragmatica.aether.slice.kvstore;
 
 import org.pragmatica.aether.slice.ExecutionMode;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
 import org.pragmatica.consensus.NodeId;
@@ -23,7 +24,9 @@ import static org.pragmatica.lang.Result.success;
 /// Serializes and deserializes KV-Store snapshots to/from TOML text format.
 ///
 /// Format: pipe-delimited values grouped by key-type sections.
-/// AppBlueprintKey/Value entries are skipped (ephemeral, re-deployable).
+/// Ephemeral control plane keys (node artifacts, routes, lifecycle, endpoints,
+/// activation directives, governor announcements) are excluded from both
+/// serialization and deserialization. See {@link EphemeralKeys}.
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
 public final class KVStoreSerializer {
     private KVStoreSerializer() {}
@@ -54,7 +57,7 @@ public final class KVStoreSerializer {
                 currentSection = trimmed.substring(1, trimmed.length() - 1);
                 continue;
             }
-            if ("meta".equals(currentSection)) {
+            if ("meta".equals(currentSection) || EphemeralKeys.isEphemeralSection(currentSection)) {
                 continue;
             }
             results.add(parseEntry(currentSection, trimmed));
@@ -103,7 +106,7 @@ public final class KVStoreSerializer {
     private static Map<String, List<Map.Entry<AetherKey, AetherValue>>> groupBySection(Map<AetherKey, AetherValue> entries) {
         return entries.entrySet()
                       .stream()
-                      .filter(e -> !(e.getKey() instanceof AppBlueprintKey))
+                      .filter(e -> !EphemeralKeys.isEphemeral(e.getKey()))
                       .collect(Collectors.groupingBy(e -> sectionForKey(e.getKey()),
                                                      LinkedHashMap::new,
                                                      Collectors.toList()));
@@ -136,6 +139,8 @@ public final class KVStoreSerializer {
             case EndpointKey _ -> "endpoints";
             case VersionRoutingKey _ -> "version-routing";
             case RollingUpdateKey _ -> "rolling-update";
+            case CanaryDeploymentKey _ -> "canary-deployment";
+            case BlueGreenDeploymentKey _ -> "blue-green-deployment";
             case PreviousVersionKey _ -> "previous-version";
             case HttpNodeRouteKey _ -> "http-node-routes";
             case LogLevelKey _ -> "log-level";
@@ -152,6 +157,11 @@ public final class KVStoreSerializer {
             case GovernorAnnouncementKey _ -> "governor-announcement";
             case NodeArtifactKey _ -> "node-artifact";
             case NodeRoutesKey _ -> "node-routes";
+            case BlueprintResourcesKey _ -> "blueprint-resources";
+            case SchemaVersionKey _ -> "schema-version";
+            case SchemaMigrationLockKey _ -> "schema-lock";
+            case AbTestKey _ -> "ab-test";
+            case AbTestRoutingKey _ -> "ab-test-routing";
         };
     }
 
@@ -185,6 +195,8 @@ public final class KVStoreSerializer {
             case ScheduledTaskStateValue v -> serializeScheduledTaskState(v);
             case VersionRoutingValue v -> serializeVersionRouting(v);
             case RollingUpdateValue v -> serializeRollingUpdate(v);
+            case CanaryDeploymentValue v -> serializeCanaryDeployment(v);
+            case BlueGreenDeploymentValue v -> serializeBlueGreenDeployment(v);
             case PreviousVersionValue v -> serializePreviousVersion(v);
             case HttpNodeRouteValue v -> serializeHttpNodeRoute(v);
             case AlertThresholdValue v -> serializeAlertThreshold(v);
@@ -199,14 +211,19 @@ public final class KVStoreSerializer {
             case NodeArtifactValue v -> serializeNodeArtifact(v);
             case NodeRoutesValue v -> serializeNodeRoutes(v);
             case AppBlueprintValue _ -> "";
+            case BlueprintResourcesValue v -> v.tomlContent();
+            case SchemaVersionValue v -> serializeSchemaVersion(v);
+            case SchemaMigrationLockValue v -> serializeSchemaMigrationLock(v);
+            case AbTestValue v -> serializeAbTest(v);
+            case AbTestRoutingValue v -> serializeAbTestRouting(v);
         };
     }
 
     private static String serializeSliceTarget(SliceTargetValue v) {
         return v.currentVersion()
                 .withQualifier() + PIPE + v.targetInstances() + PIPE + v.minInstances() + PIPE + v.owningBlueprint()
-                                                                                                  .fold(() -> "",
-                                                                                                        bp -> bp.asString()) + PIPE + v.updatedAt() + PIPE + v.effectivePlacement();
+                                                                                                  .map(BlueprintId::asString)
+                                                                                                  .or("") + PIPE + v.updatedAt() + PIPE + v.effectivePlacement();
     }
 
     private static String serializeSliceNode(SliceNodeValue v) {
@@ -236,6 +253,20 @@ public final class KVStoreSerializer {
                                      .asString() + PIPE + v.oldVersion()
                                                           .withQualifier() + PIPE + v.newVersion()
                                                                                     .withQualifier() + PIPE + v.state() + PIPE + v.newWeight() + PIPE + v.oldWeight() + PIPE + v.newInstances() + PIPE + v.maxErrorRate() + PIPE + v.maxLatencyMs() + PIPE + v.requireManualApproval() + PIPE + v.cleanupPolicy() + PIPE + v.createdAt() + PIPE + v.updatedAt();
+    }
+
+    private static String serializeCanaryDeployment(CanaryDeploymentValue v) {
+        return v.canaryId() + PIPE + v.artifactBase()
+                                     .asString() + PIPE + v.oldVersion()
+                                                          .withQualifier() + PIPE + v.newVersion()
+                                                                                    .withQualifier() + PIPE + v.state() + PIPE + v.stagesJson() + PIPE + v.currentStageIndex() + PIPE + v.stageEnteredAt() + PIPE + v.newWeight() + PIPE + v.oldWeight() + PIPE + v.newInstances() + PIPE + v.maxErrorRate() + PIPE + v.maxLatencyMs() + PIPE + v.requireManualApproval() + PIPE + v.analysisMode() + PIPE + v.relativeThresholdPercent() + PIPE + v.cleanupPolicy() + PIPE + v.blueprintId() + PIPE + v.artifactsJson() + PIPE + v.createdAt() + PIPE + v.updatedAt();
+    }
+
+    private static String serializeBlueGreenDeployment(BlueGreenDeploymentValue v) {
+        return v.deploymentId() + PIPE + v.artifactBase()
+                                         .asString() + PIPE + v.blueVersion()
+                                                              .withQualifier() + PIPE + v.greenVersion()
+                                                                                        .withQualifier() + PIPE + v.state() + PIPE + v.activeEnvironment() + PIPE + v.blueInstances() + PIPE + v.greenInstances() + PIPE + v.drainTimeoutMs() + PIPE + v.maxErrorRate() + PIPE + v.maxLatencyMs() + PIPE + v.requireManualApproval() + PIPE + v.cleanupPolicy() + PIPE + v.newWeight() + PIPE + v.oldWeight() + PIPE + v.blueprintId() + PIPE + v.artifactsJson() + PIPE + v.createdAt() + PIPE + v.updatedAt();
     }
 
     private static String serializePreviousVersion(PreviousVersionValue v) {
@@ -329,6 +360,8 @@ public final class KVStoreSerializer {
             case "endpoints" -> parseEndpointEntry(identity, rawValue);
             case "version-routing" -> parseVersionRoutingEntry(identity, rawValue);
             case "rolling-update" -> parseRollingUpdateEntry(identity, rawValue);
+            case "canary-deployment" -> parseCanaryDeploymentEntry(identity, rawValue);
+            case "blue-green-deployment" -> parseBlueGreenDeploymentEntry(identity, rawValue);
             case "previous-version" -> parsePreviousVersionEntry(identity, rawValue);
             case "http-node-routes" -> parseHttpNodeRouteEntry(identity, rawValue);
             case "log-level" -> parseLogLevelEntry(identity, rawValue);
@@ -345,6 +378,11 @@ public final class KVStoreSerializer {
             case "governor-announcement" -> parseGovernorAnnouncementEntry(identity, rawValue);
             case "node-artifact" -> parseNodeArtifactEntry(identity, rawValue);
             case "node-routes" -> parseNodeRoutesEntry(identity, rawValue);
+            case "blueprint-resources" -> parseBlueprintResourcesEntry(identity, rawValue);
+            case "schema-version" -> parseSchemaVersionEntry(identity, rawValue);
+            case "schema-lock" -> parseSchemaMigrationLockEntry(identity, rawValue);
+            case "ab-test" -> parseAbTestEntry(identity, rawValue);
+            case "ab-test-routing" -> parseAbTestRoutingEntry(identity, rawValue);
             default -> new SerializationError.UnknownKeyType(section).result();
         };
     }
@@ -451,6 +489,77 @@ public final class KVStoreSerializer {
                                                                      parts[11],
                                                                      Long.parseLong(parts[12]),
                                                                      Long.parseLong(parts[13])));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseCanaryDeploymentEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 21) {
+            return parseFailure("canary-deployment value requires 21 fields, got " + parts.length);
+        }
+        return CanaryDeploymentKey.canaryDeploymentKey("canary-deployment/" + identity)
+                                  .flatMap(key -> buildCanaryDeploymentValue(parts).map(val -> entry(key, val)));
+    }
+
+    private static Result<AetherValue> buildCanaryDeploymentValue(String[] parts) {
+        return Result.all(org.pragmatica.aether.artifact.ArtifactBase.artifactBase(parts[1]),
+                          org.pragmatica.aether.artifact.Version.version(parts[2]),
+                          org.pragmatica.aether.artifact.Version.version(parts[3]))
+                     .map((ab, oldV, newV) -> new CanaryDeploymentValue(parts[0],
+                                                                        ab,
+                                                                        oldV,
+                                                                        newV,
+                                                                        parts[4],
+                                                                        parts[5],
+                                                                        Integer.parseInt(parts[6]),
+                                                                        Long.parseLong(parts[7]),
+                                                                        Integer.parseInt(parts[8]),
+                                                                        Integer.parseInt(parts[9]),
+                                                                        Integer.parseInt(parts[10]),
+                                                                        Double.parseDouble(parts[11]),
+                                                                        Long.parseLong(parts[12]),
+                                                                        Boolean.parseBoolean(parts[13]),
+                                                                        parts[14],
+                                                                        Integer.parseInt(parts[15]),
+                                                                        parts[16],
+                                                                        parts[17],
+                                                                        parts[18],
+                                                                        Long.parseLong(parts[19]),
+                                                                        Long.parseLong(parts[20])));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseBlueGreenDeploymentEntry(String identity,
+                                                                                           String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 19) {
+            return parseFailure("blue-green-deployment value requires 19 fields, got " + parts.length);
+        }
+        return BlueGreenDeploymentKey.blueGreenDeploymentKey("blue-green-deployment/" + identity)
+                                     .flatMap(key -> buildBlueGreenDeploymentValue(parts).map(val -> entry(key, val)));
+    }
+
+    private static Result<AetherValue> buildBlueGreenDeploymentValue(String[] parts) {
+        return Result.all(org.pragmatica.aether.artifact.ArtifactBase.artifactBase(parts[1]),
+                          org.pragmatica.aether.artifact.Version.version(parts[2]),
+                          org.pragmatica.aether.artifact.Version.version(parts[3]))
+                     .map((ab, blueV, greenV) -> BlueGreenDeploymentValue.blueGreenDeploymentValue(parts[0],
+                                                                                                   ab,
+                                                                                                   blueV,
+                                                                                                   greenV,
+                                                                                                   parts[4],
+                                                                                                   parts[5],
+                                                                                                   Integer.parseInt(parts[6]),
+                                                                                                   Integer.parseInt(parts[7]),
+                                                                                                   Long.parseLong(parts[8]),
+                                                                                                   Double.parseDouble(parts[9]),
+                                                                                                   Long.parseLong(parts[10]),
+                                                                                                   Boolean.parseBoolean(parts[11]),
+                                                                                                   parts[12],
+                                                                                                   Integer.parseInt(parts[13]),
+                                                                                                   Integer.parseInt(parts[14]),
+                                                                                                   parts[15],
+                                                                                                   parts[16],
+                                                                                                   Long.parseLong(parts[17]),
+                                                                                                   Long.parseLong(parts[18])));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parsePreviousVersionEntry(String identity, String raw) {
@@ -710,6 +819,97 @@ public final class KVStoreSerializer {
                                                                                 Integer.parseInt(parts[2]),
                                                                                 parts[3],
                                                                                 Long.parseLong(parts[4]))));
+    }
+
+    private static String serializeSchemaVersion(SchemaVersionValue v) {
+        return v.datasourceName() + PIPE + v.currentVersion() + PIPE + v.lastMigration() + PIPE + v.status()
+                                                                                                  .name() + PIPE + v.artifactCoords() + PIPE + v.updatedAt();
+    }
+
+    private static String serializeSchemaMigrationLock(SchemaMigrationLockValue v) {
+        return v.datasourceName() + PIPE + v.heldBy()
+                                           .id() + PIPE + v.acquiredAt() + PIPE + v.expiresAt();
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseBlueprintResourcesEntry(String identity, String raw) {
+        return BlueprintResourcesKey.blueprintResourcesKey("blueprint-resources/" + identity)
+                                    .map(key -> entry(key,
+                                                      new BlueprintResourcesValue(raw)));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaVersionEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 6) {
+            return parseFailure("schema-version value requires 6 fields, got " + parts.length);
+        }
+        return SchemaVersionKey.schemaVersionKey("schema-version/" + identity, true)
+                               .map(key -> entry(key,
+                                                 new SchemaVersionValue(parts[0],
+                                                                        Integer.parseInt(parts[1]),
+                                                                        parts[2],
+                                                                        SchemaStatus.valueOf(parts[3]),
+                                                                        parts[4],
+                                                                        Long.parseLong(parts[5]))));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaMigrationLockEntry(String identity,
+                                                                                           String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 4) {
+            return parseFailure("schema-lock value requires 4 fields, got " + parts.length);
+        }
+        return SchemaMigrationLockKey.schemaMigrationLockKey("schema-lock/" + identity, true)
+                                     .flatMap(key -> NodeId.nodeId(parts[1])
+                                                           .map(nodeId -> entry(key,
+                                                                                new SchemaMigrationLockValue(parts[0],
+                                                                                                             nodeId,
+                                                                                                             Long.parseLong(parts[2]),
+                                                                                                             Long.parseLong(parts[3])))));
+    }
+
+    private static String serializeAbTest(AbTestValue v) {
+        return v.testId() + PIPE + v.artifactBase()
+                                   .asString() + PIPE + v.baselineVersion()
+                                                        .withQualifier() + PIPE + v.variantVersionsJson() + PIPE + v.state() + PIPE + v.splitRuleJson() + PIPE + v.newWeight() + PIPE + v.oldWeight() + PIPE + v.blueprintId() + PIPE + v.createdAt() + PIPE + v.updatedAt();
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseAbTestEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 11) {
+            return parseFailure("ab-test value requires 11 fields, got " + parts.length);
+        }
+        return AbTestKey.abTestKey("ab-test/" + identity)
+                        .flatMap(key -> buildAbTestValue(parts).map(val -> entry(key, val)));
+    }
+
+    private static Result<AetherValue> buildAbTestValue(String[] parts) {
+        return Result.all(org.pragmatica.aether.artifact.ArtifactBase.artifactBase(parts[1]),
+                          org.pragmatica.aether.artifact.Version.version(parts[2]))
+                     .map((ab, baseline) -> new AbTestValue(parts[0],
+                                                            ab,
+                                                            baseline,
+                                                            parts[3],
+                                                            parts[4],
+                                                            parts[5],
+                                                            Integer.parseInt(parts[6]),
+                                                            Integer.parseInt(parts[7]),
+                                                            parts[8],
+                                                            Long.parseLong(parts[9]),
+                                                            Long.parseLong(parts[10])));
+    }
+
+    private static String serializeAbTestRouting(AbTestRoutingValue v) {
+        return v.testId() + PIPE + v.splitRuleJson() + PIPE + v.variantVersionsJson();
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseAbTestRoutingEntry(String identity, String raw) {
+        var parts = raw.split("\\|", - 1);
+        if (parts.length != 3) {
+            return parseFailure("ab-test-routing value requires 3 fields, got " + parts.length);
+        }
+        return AbTestRoutingKey.abTestRoutingKey("ab-test-routing/" + identity)
+                               .map(key -> entry(key,
+                                                 new AbTestRoutingValue(parts[0], parts[1], parts[2])));
     }
 
     // --- Utility helpers ---

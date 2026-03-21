@@ -4,7 +4,91 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.20.0] - Unreleased
+## [0.21.0] - Unreleased
+
+### Added
+- **Per-datasource schema migration engine** — full migration execution engine with Flyway-style versioned (V), repeatable (R), undo (U), and baseline (B) migration types. Schema history tracked in `aether_schema_history` table per datasource. Checksum validation, transactional per-script execution, configurable failure/failover policy
+- **Schema orchestration** — distributed coordination layer with consensus-based locking, artifact resolution, and status tracking (PENDING → MIGRATING → COMPLETED/FAILED). CDM integration gates slice deployment on schema readiness
+- **Schema management REST API and CLI** — REST endpoints (`/api/schema/status`, `/api/schema/migrate/{ds}`, `/api/schema/undo/{ds}`, `/api/schema/baseline/{ds}`) and CLI commands (`aether schema status|history|migrate|undo|baseline`)
+- **Schema directory convention** — `schema/` root maps to default `[database]` config section (matching `@Sql`), subdirectories map to `[database.<name>]` sections. Single-datasource slices need no subdirectory
+- **Schema migration executes end-to-end** — DatasourceConnectionProvider provisions SqlConnector per datasource, wiring migration engine to actual database execution
+- **Strict datasource resolution** — missing config section causes explicit failure with descriptive error; no silent fallback or derivation
+- **Removed embedded H2 from Forge** — Forge no longer provides an embedded H2 database; external PostgreSQL required via `start-postgres.sh`
+- **Schema migration prerequisites** — `start-postgres.sh` scripts create the required database; migration engine requires pre-existing databases (creates tables, not databases)
+- **Blueprint artifact auto-packaging** — `generate-blueprint` goal now automatically packages the blueprint JAR (no need to add `package-blueprint` explicitly). Schema directory default changed to `${project.basedir}/schema`
+- **Forge artifact-based deployment** — `--blueprint` accepts artifact coordinates with classifier (`groupId:artifactId:version:classifier`). Forge resolves via configured Repository chain (local Maven repo in dev, DHT in production). TOML deployment path removed
+- **Enriched `/api/nodes` endpoint** — now returns role (CORE/WORKER) and isLeader flag per node, with role sourced from `ActivationDirectiveValue` in KV-Store
+- **`GET /api/cluster/governors` endpoint** — exposes governor announcements from KV-Store: governor ID, community, member count, and member list
+
+### Deployment Strategies
+- **Canary deployments** -- Progressive traffic shift with configurable stages (1% -> 5% -> 25% -> 50% -> 100%), auto-evaluation every 30s, health-based auto-rollback, KV-Store persistence, leader failover recovery
+- **Blue-green deployments** -- Atomic traffic switchover (~100ms via single Rabia round), drain period, instant switch-back for rollback, 2x resource usage during transition
+- **A/B testing** -- Deterministic traffic split by request context (header hash, cookie hash, header match, percentage), ScopedValue-based variant propagation through invoke chains, per-variant metrics collection
+- **Deployment strategy coordinator** -- Mutual exclusion (one strategy per artifact), unified routing lookup for all strategies
+- **HTTP version-aware routing** -- AppHttpServer checks deployment strategy routing before serving locally, forwards to remote node when weighted decision routes to other version
+- **Blueprint deployment config** -- Optional `[deployment]` TOML section for strategy selection and configuration
+
+### Changed
+- **Deployment event aggregator — KV-Store driven** — deployment events (STARTED/COMPLETED/FAILED) now derived from `NodeArtifactKey` KV-Store notifications instead of manually injected local messages. All nodes see all deployment events. Deployment duration tracked from LOAD→ACTIVE, node join-to-first-deployment timing included
+- **Jackson 3.1.0 LTS** — bumped from 3.0.3, annotations from 2.20 to 2.21
+- **JBCT review compliance** — SharedScheduler for canary evaluation (was shutdownNow), AtomicBoolean for SliceInvoker.stop(), immutable FailoverContext collections, AB→Ab rename (acronym-as-word), factory methods for all value objects, Option for null policy, deployment audit logging via AuditLog, void helper suppressions
+- **Role-aware unified AetherNode** — merged WorkerNode into AetherNode. Single `aether-node.jar` binary for both CORE and WORKER roles. Consensus observer mode (receives Decisions without voting), `ForwardingClusterNode` for transparent KV write forwarding, `SwitchableClusterNode` for runtime role switching. WORKER→CORE promotion supported. `aether/worker` module eliminated — components ported to `aether/node` and `aether-metrics`
+- **Quorum fix for mixed clusters** — when `coreMax > 0`, consensus quorum calculated against core node count only (not total nodes including workers)
+- **KV-commit-driven allocation/deallocation** — slice allocation and deallocation now triggered exclusively by KV-Store commit notifications (`onSliceTargetPut`/`onSliceTargetRemove`), eliminating double-allocation race in blueprint handler
+- **ReconciliationAdjustment events** — CDM emits scaling events to cluster event stream when reconciliation adjusts instance counts
+
+### Fixed
+- **Deployment flow audit** — comprehensive CDM/NDM handoff audit: schema migration gate blocks ACTIVATE until migrations complete, exclusive schema lock acquisition prevents split-brain races, allocation index bounds check prevents IOOBE, drain eviction excluded from reconciliation, retry counters scoped to (artifact, node), optimistic sliceStates write removed, stuck timeout multiplier increased to 3×, blueprint stores combined into single consensus batch
+- **Timeout failure misclassification** — `updateSliceStateWithRetry` re-classified already-classified failures through a string round-trip, converting transient timeouts (`CoreError.Timeout` → `Intermittent`) into fatal errors (`Fatal.UnexpectedError`). Pre-classified `failureReason` and `fatal` flag now passed directly to `NodeArtifactValue`
+- **Consensus pipeline saturation during activation** — all consensus operations in NDM activation chain (topic subscriptions, scheduled tasks, endpoints, cleanup) now use `applyWithRetry` with 30s timeout × 2 retries, matching state transition retry behavior. Previously only `updateSliceStateWithRetry` had retry logic; bare `cluster.apply().timeout()` calls would fail under multi-slice deployment load
+- **JBCT compliance across deployment subsystem** — factory methods for `SliceNodeKey`, `SliceDeployment`, `SuspendedSlice`, `ParsedArtifactCoords`; null checks replaced with `Option.option()`; multi-statement lambdas extracted to named methods; `create*Command` renamed to `build*Command`; `seedNodes` changed to `Set.copyOf()`; blueprint iteration snapshot in reconcile; `fold()` replaced with `.map().or()`
+- **`coreMax` config wiring** — `core_max` from TOML `[cluster]` section now threaded through ConfigLoader → AetherConfig → AetherNodeConfig → TopologyConfig. Previously always defaulted to 0 (unlimited), preventing worker node assignment
+- **Blueprint artifact resolution** — `publishFromArtifact` resolves via configured Repository chain (local Maven, DHT) with explicit classifier support. Clear error on missing classifier
+- **Leader election reliability** — `triggerElection()` now defers with retry when called before LeaderManager is active, instead of silently dropping. Fixes flaky leader election in Forge (single-JVM multi-node) where rank-0 node's trigger was lost due to startup race
+- **NDM promise chain ordering** — failure/success handlers in loading, activation, deactivation, and unloading chains changed from `onFailure`/`onSuccess` (async) to `withFailure`/`withSuccess` (sequential), preventing state write races
+- **Activation timeout alignment** — ACTIVATING stall timeout (90s) and NDM activation chain timeout (90s) aligned; stall detector fires at 3 min (2× multiplier), after NDM has had time to fail and write FAILED state
+- **Consensus operation timeouts** — all `cluster.apply()` calls in NDM now have 15s timeout, preventing orphaned Rabia proposals from hanging activation chains forever
+- **Double slice allocation** — blueprint handler no longer allocates directly; allocation deferred to `onSliceTargetPut` notification, fixing race where 5 instances were created instead of 3
+- **Multi-phase allocation double-write** — `tryAllocate()` now optimistically tracks allocations in `sliceStates`, preventing Phase 2/3 of `issueScaleUpCommands` from re-allocating nodes already assigned in Phase 1 (async `cluster.apply()` hadn't committed yet)
+- **Blueprint deletion deallocation** — `handleAppBlueprintRemoval()` now issues deallocation commands before removing artifacts from `blueprints` map; previously deferred to `onSliceTargetRemove` which couldn't find the artifacts because they were already removed
+- **SliceState ACTIVATING timeout** — test expected 60s but actual was 90s (aligned after activation timeout changes)
+- **Cloud providers — AWS, GCP, Azure** — complete cloud integration for all major providers:
+  - `integrations/xml/jackson-xml` — XML mapper module (Jackson XML) mirroring `JsonMapper` pattern, needed for AWS EC2 XML responses
+  - `integrations/cloud/aws` — AWS cloud client with SigV4 signing from scratch, EC2 (XML), ELBv2 (JSON), Secrets Manager (JSON). No AWS SDK
+  - `integrations/cloud/gcp` — GCP cloud client with RS256 JWT token management, Compute Engine, Network Endpoint Groups, Secret Manager. No GCP SDK
+  - `integrations/cloud/azure` — Azure cloud client with dual OAuth2 tokens (management + Key Vault), ARM REST API, Resource Graph KQL, Key Vault. No Azure SDK
+  - `aether/environment/aws` — AWS environment integration: EC2 compute, ELBv2 load balancing, tag-based discovery, Secrets Manager
+  - `aether/environment/gcp` — GCP environment integration: Compute Engine, NEG load balancing, label-based discovery, Secret Manager
+  - `aether/environment/azure` — Azure environment integration: VM compute, LB backend pools, Resource Graph discovery, Key Vault secrets
+  - CDM `completeDrain()` now calls `ComputeProvider.terminate()` to stop billing on drained cloud VMs. Tag-based instance lookup via `aether-node-id`. Works uniformly for all providers (Hetzner, AWS, GCP, Azure)
+  - `AetherNode` applies `aether-node-id` tag on startup via IP-based self-identification for CDM terminate correlation
+  - `ComputeProvider` SPI extended: `provision(ProvisionSpec)` for detailed specs, `listInstances(TagSelector)` typed filter
+  - `LoadBalancerProvider` SPI extended: 7 new default methods — `createLoadBalancer`, `deleteLoadBalancer`, `loadBalancerInfo`, `configureHealthCheck`, `syncWeights`, `deregisterWithDrain`, `configureTls`
+  - `SecretsProvider` SPI extended: `resolveSecretWithMetadata`, `resolveSecrets` (batch), `watchRotation`
+  - `CachingSecretsProvider` — TTL-cached wrapper for any SecretsProvider
+  - New SPI types: `ProvisionSpec`, `TagSelector`, `LoadBalancerSpec`, `LoadBalancerInfo`, `HealthCheckConfig`, `TlsTerminationConfig`, `SecretValue`, `SecretRotationCallback`
+- **Cloud integration — Hetzner end-to-end** — complete Hetzner Cloud integration for real cloud testing:
+  - `SecretsProvider` implementations: `EnvSecretsProvider` (AETHER_SECRET_* env vars), `FileSecretsProvider` (/run/secrets files), `CompositeSecretsProvider` (first-success chain). Zero cloud dependencies, universal fallback
+  - `DiscoveryProvider` SPI: label-based peer discovery replacing static TOML peer lists. `discoverPeers()`, `watchPeers()` (polling), `registerSelf()`/`deregisterSelf()`. Wired into AetherNode bootstrap — registers on start, deregisters on graceful shutdown
+  - `HetznerDiscoveryProvider`: discovers peers via `aether-cluster` server labels, extracts host/port from private IPs and `aether-port` label, configurable poll interval
+  - `ComputeProvider` extensions: `restart()`, `applyTags()`, `listInstances(tagFilter)` with default implementations. Hetzner provider overrides all three using API reboot/label update/label selector
+  - `InstanceInfo.tags` field for cloud metadata passthrough (server labels → instance tags)
+  - `HetznerClient` extensions: `listServers(labelSelector)`, `updateServerLabels()`, `rebootServer()`, `Server.labels` field
+  - `EnvironmentIntegration.discovery()` facet with backward-compatible wiring
+- **Blueprint Artifact Transition** — blueprints packaged as deployable JAR artifacts:
+  - **Blueprint artifacts**: Blueprints are now packaged as deployable JAR artifacts containing `blueprint.toml`, optional `resources.toml` (app-level config), and optional `schema/` directory (database migration scripts)
+  - **`PackageBlueprintMojo`**: New Maven plugin goal (`package-blueprint`) produces classifier `blueprint` JARs with `Blueprint-Id` and `Blueprint-Version` manifest entries
+  - **`publishFromArtifact`**: New deployment path — upload blueprint JAR to ArtifactStore, then deploy via `POST /api/blueprint/deploy` or `aether blueprint deploy <coords>`
+  - **Config separation**: Application config (`resources.toml`) travels with blueprint at GLOBAL scope; infrastructure endpoints (`[endpoints.*]` in `aether.toml`) stay at NODE scope. ConfigService merges both hierarchically (SLICE > NODE > GLOBAL)
+  - **Schema migration prep**: Blueprint artifacts carry `schema/` migration scripts (root `schema/*.sql` maps to `[database]`, subdirectories `schema/<name>/*.sql` map to `[database.<name>]`). End-to-end execution via DatasourceConnectionProvider
+  - **New KV types**: `BlueprintResourcesKey/Value`, `SchemaVersionKey/Value`, `SchemaMigrationLockKey/Value` for blueprint resources and schema tracking
+  - **CLI commands**: `blueprint deploy <coords>` and `blueprint upload <file>` for artifact-based blueprint deployment
+- **Notification resource (Phase 1 — Email)** — three new modules delivering async email notifications:
+  - `integrations/net/smtp` — async SMTP client on Netty with STARTTLS, IMPLICIT TLS, AUTH PLAIN/LOGIN, multi-recipient support, connection-per-send. Full state machine (GREETING→EHLO→STARTTLS→AUTH→MAIL FROM→RCPT TO→DATA→QUIT)
+  - `integrations/email-http` — HTTP email sender with pluggable vendor mappings via SPI. Built-in: SendGrid, Mailgun, Postmark, Resend. Hand-built JSON/form-data (no Jackson dependency)
+  - `aether/resource/notification` — thin Aether resource wiring (`NotificationSender` + `NotificationSenderFactory`). Routes to SMTP or HTTP backend based on config. Exponential backoff retry. `@Notify` resource qualifier annotation for slice injection
+
+## [0.20.0] - 2026-03-17
 
 ### Added
 - **Scheduled task ExecutionMode** — replaced `boolean leaderOnly` with `ExecutionMode` enum (`SINGLE`, `ALL`). `SINGLE` (default) fires on leader only, `ALL` fires independently on every node with the slice deployed. TOML: `executionMode = "ALL"` in `[scheduling.*]` sections

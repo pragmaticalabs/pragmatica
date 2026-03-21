@@ -30,11 +30,17 @@ sealed interface EngineState {
 
     record InPhase(ScheduledFuture<?> stallDetector) implements EngineState {}
 
+    record Observing() implements EngineState {}
+
     default boolean isActive() {
         return this instanceof Idle || this instanceof InPhase;
     }
 
     default boolean isInPhase() {
         return this instanceof InPhase;
+    }
+
+    default boolean isObserving() {
+        return this instanceof Observing;
     }
 }

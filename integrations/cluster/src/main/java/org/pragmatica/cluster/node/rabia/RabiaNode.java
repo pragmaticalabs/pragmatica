@@ -94,6 +94,13 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// Only meaningful for non-seed nodes with activation gating enabled.
     void authorizeActivation();
 
+    /// Authorize a gated consensus engine to enter observer mode.
+    /// The node will receive and apply committed Decisions but won't propose or vote.
+    void authorizeObservation();
+
+    /// Check if the consensus engine is in observer mode.
+    boolean isObserving();
+
     /// Get the route entries for RabiaNode's internal components.
     /// These should be combined with other entries when building the final router.
     List<Entry<?>> routeEntries();
@@ -354,6 +361,16 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             @Override
             public void authorizeActivation() {
                 consensus().authorizeActivation();
+            }
+
+            @Override
+            public void authorizeObservation() {
+                consensus().authorizeObservation();
+            }
+
+            @Override
+            public boolean isObserving() {
+                return consensus().isObserving();
             }
 
             @Override

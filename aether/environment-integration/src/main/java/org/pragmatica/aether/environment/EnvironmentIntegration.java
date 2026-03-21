@@ -26,26 +26,41 @@ public interface EnvironmentIntegration {
 
     Option<LoadBalancerProvider> loadBalancer();
 
-    /// Create an EnvironmentIntegration with compute support only.
-    static EnvironmentIntegration withCompute(ComputeProvider compute) {
-        return environmentIntegration(some(compute), empty(), empty());
+    /// Returns the discovery provider facet, if supported.
+    default Option<DiscoveryProvider> discovery() {
+        return empty();
     }
 
-    /// Create an EnvironmentIntegration with all specified facets.
+    /// Create an EnvironmentIntegration with compute support only.
+    static EnvironmentIntegration withCompute(ComputeProvider compute) {
+        return environmentIntegration(some(compute), empty(), empty(), empty());
+    }
+
+    /// Create an EnvironmentIntegration with all specified facets (backward-compatible, no discovery).
     static EnvironmentIntegration environmentIntegration(Option<ComputeProvider> compute,
                                                          Option<SecretsProvider> secrets,
                                                          Option<LoadBalancerProvider> loadBalancer) {
-        return FacetedEnvironment.facetedEnvironment(compute, secrets, loadBalancer)
+        return environmentIntegration(compute, secrets, loadBalancer, empty());
+    }
+
+    /// Create an EnvironmentIntegration with all specified facets including discovery.
+    static EnvironmentIntegration environmentIntegration(Option<ComputeProvider> compute,
+                                                         Option<SecretsProvider> secrets,
+                                                         Option<LoadBalancerProvider> loadBalancer,
+                                                         Option<DiscoveryProvider> discovery) {
+        return FacetedEnvironment.facetedEnvironment(compute, secrets, loadBalancer, discovery)
                                  .unwrap();
     }
 
     record FacetedEnvironment(Option<ComputeProvider> compute,
                               Option<SecretsProvider> secrets,
-                              Option<LoadBalancerProvider> loadBalancer) implements EnvironmentIntegration {
+                              Option<LoadBalancerProvider> loadBalancer,
+                              Option<DiscoveryProvider> discovery) implements EnvironmentIntegration {
         public static Result<FacetedEnvironment> facetedEnvironment(Option<ComputeProvider> compute,
                                                                     Option<SecretsProvider> secrets,
-                                                                    Option<LoadBalancerProvider> loadBalancer) {
-            return success(new FacetedEnvironment(compute, secrets, loadBalancer));
+                                                                    Option<LoadBalancerProvider> loadBalancer,
+                                                                    Option<DiscoveryProvider> discovery) {
+            return success(new FacetedEnvironment(compute, secrets, loadBalancer, discovery));
         }
     }
 }

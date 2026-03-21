@@ -4,6 +4,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
@@ -11,6 +12,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.topology.SliceTopology;
 import org.pragmatica.aether.slice.topology.TopologyGraph;
 import org.pragmatica.aether.slice.topology.TopologyParser;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -56,6 +58,8 @@ public final class SliceRoutes implements RouteSource {
     // Request DTOs - nullable types required for JSON deserialization
     record ScaleRequest(String artifact, Integer instances, String placement) {}
 
+    record BlueprintDeployRequest(String artifact) {}
+
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(Route.<SlicesResponse> get("/api/slices")
@@ -86,6 +90,9 @@ public final class SliceRoutes implements RouteSource {
                               .withPath(aString())
                               .to(this::handleDeleteBlueprint)
                               .asJson(),
+                         Route.<BlueprintResponse> post("/api/blueprint/deploy")
+                              .withBody(BlueprintDeployRequest.class)
+                              .toJson(this::handleBlueprintDeploy),
                          Route.<BlueprintValidationResponse> post("/api/blueprint/validate")
                               .to(ctx -> handleValidateBlueprint(ctx.bodyAsString()))
                               .asJson(),
@@ -105,18 +112,41 @@ public final class SliceRoutes implements RouteSource {
                                                          Option.option(request.placement())));
     }
 
+    private record ValidatedScale(ScaleParams params, Artifact artifact) {}
+
     private Promise<ScaleResponse> handleScale(ScaleRequest request) {
         return validateScaleRequest(request).async()
-                                   .flatMap(params -> Artifact.artifact(params.artifact())
-                                                              .async()
-                                                              .flatMap(artifact -> guardBlueprintMembership(artifact).flatMap(_ -> guardMinInstances(artifact,
-                                                                                                                                                     params.instances()))
-                                                                                                           .flatMap(_ -> applyDeployCommand(artifact,
-                                                                                                                                            params.instances(),
-                                                                                                                                            params.placement()))
-                                                                                                           .map(_ -> new ScaleResponse("scaled",
-                                                                                                                                       artifact.asString(),
-                                                                                                                                       params.instances()))));
+                                   .flatMap(this::resolveScaleArtifact)
+                                   .flatMap(this::guardScaleConstraints)
+                                   .flatMap(this::executeScale)
+                                   .onFailure(cause -> log.warn("Scale operation failed: {}",
+                                                                cause.message()));
+    }
+
+    private Promise<ValidatedScale> resolveScaleArtifact(ScaleParams params) {
+        return Artifact.artifact(params.artifact())
+                       .async()
+                       .map(artifact -> new ValidatedScale(params, artifact));
+    }
+
+    private Promise<ValidatedScale> guardScaleConstraints(ValidatedScale vs) {
+        return guardBlueprintMembership(vs.artifact()).flatMap(_ -> guardMinInstances(vs.artifact(),
+                                                                                      vs.params()
+                                                                                        .instances()))
+                                       .map(_ -> vs);
+    }
+
+    private Promise<ScaleResponse> executeScale(ValidatedScale vs) {
+        return applyDeployCommand(vs.artifact(),
+                                  vs.params()
+                                    .instances(),
+                                  vs.params()
+                                    .placement())
+        .map(_ -> new ScaleResponse("scaled",
+                                    vs.artifact()
+                                      .asString(),
+                                    vs.params()
+                                      .instances()));
     }
 
     private static final Cause BELOW_MIN_INSTANCES = Causes.cause("Requested instances is below blueprint minimum");
@@ -165,7 +195,27 @@ public final class SliceRoutes implements RouteSource {
                                                                   expanded.id()
                                                                           .asString(),
                                                                   expanded.loadOrder()
-                                                                          .size()));
+                                                                          .size()))
+                           .onFailure(cause -> log.warn("Blueprint publish failed: {}",
+                                                        cause.message()));
+    }
+
+    private static final Cause MISSING_ARTIFACT_COORDS = Causes.cause("Missing 'artifact' field");
+
+    private Promise<BlueprintResponse> handleBlueprintDeploy(BlueprintDeployRequest request) {
+        return Option.option(request.artifact())
+                     .toResult(MISSING_ARTIFACT_COORDS)
+                     .async()
+                     .flatMap(coords -> nodeSupplier.get()
+                                                    .blueprintService()
+                                                    .publishFromArtifact(coords))
+                     .map(expanded -> new BlueprintResponse("deployed",
+                                                            expanded.id()
+                                                                    .asString(),
+                                                            expanded.loadOrder()
+                                                                    .size()))
+                     .onFailure(cause -> log.warn("Blueprint artifact deploy failed: {}",
+                                                  cause.message()));
     }
 
     private BlueprintListResponse buildBlueprintListResponse() {
@@ -303,23 +353,33 @@ public final class SliceRoutes implements RouteSource {
                                                               .blueprintService()
                                                               .delete(blueprintId)
                                                               .map(_ -> new BlueprintDeleteResponse("deleted",
-                                                                                                    blueprintId.asString())));
+                                                                                                    blueprintId.asString())))
+                          .onFailure(cause -> log.warn("Blueprint delete failed: {}",
+                                                       cause.message()));
     }
 
     private Promise<BlueprintValidationResponse> handleValidateBlueprint(String body) {
         return Promise.success(nodeSupplier.get()
                                            .blueprintService()
                                            .validate(body)
-                                           .fold(cause -> new BlueprintValidationResponse(false,
-                                                                                          "",
-                                                                                          0,
-                                                                                          List.of(cause.message())),
-                                                 blueprint -> new BlueprintValidationResponse(true,
-                                                                                              blueprint.id()
-                                                                                                       .asString(),
-                                                                                              blueprint.slices()
-                                                                                                       .size(),
-                                                                                              List.of())));
+                                           .fold(SliceRoutes::failedValidationResponse,
+                                                 SliceRoutes::successValidationResponse));
+    }
+
+    private static BlueprintValidationResponse failedValidationResponse(Cause cause) {
+        return new BlueprintValidationResponse(false,
+                                               "",
+                                               0,
+                                               List.of(cause.message()));
+    }
+
+    private static BlueprintValidationResponse successValidationResponse(Blueprint blueprint) {
+        return new BlueprintValidationResponse(true,
+                                               blueprint.id()
+                                                        .asString(),
+                                               blueprint.slices()
+                                                        .size(),
+                                               List.of());
     }
 
     private Promise<List<Long>> applyDeployCommand(Artifact artifact, int instances, Option<String> placement) {
@@ -349,18 +409,27 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private TopologyResponse buildTopologyResponse() {
+        var topologies = collectSliceTopologies();
+        var graph = TopologyGraph.build(topologies);
+        return toTopologyResponse(graph);
+    }
+
+    private List<SliceTopology> collectSliceTopologies() {
         var node = nodeSupplier.get();
         var loaded = node.sliceStore()
                          .loaded();
         log.debug("buildTopologyResponse: loaded slices={}", loaded.size());
-        var sliceTopologies = loaded.stream()
-                                    .flatMap(ls -> TopologyParser.parse(ls.slice(),
-                                                                        ls.artifact()
-                                                                          .asString())
-                                                                 .stream())
-                                    .toList();
-        log.debug("buildTopologyResponse: topologies={}", sliceTopologies.size());
-        var graph = TopologyGraph.build(sliceTopologies);
+        var topologies = loaded.stream()
+                               .flatMap(ls -> TopologyParser.parse(ls.slice(),
+                                                                   ls.artifact()
+                                                                     .asString())
+                                                            .stream())
+                               .toList();
+        log.debug("buildTopologyResponse: topologies={}", topologies.size());
+        return topologies;
+    }
+
+    private TopologyResponse toTopologyResponse(TopologyGraph graph) {
         log.debug("buildTopologyResponse: graph nodes={}, edges={}",
                   graph.nodes()
                        .size(),

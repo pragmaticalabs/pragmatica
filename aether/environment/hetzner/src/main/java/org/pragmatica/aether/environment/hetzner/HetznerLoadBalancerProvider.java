@@ -1,5 +1,6 @@
 package org.pragmatica.aether.environment.hetzner;
 
+import org.pragmatica.aether.environment.LoadBalancerInfo;
 import org.pragmatica.aether.environment.LoadBalancerProvider;
 import org.pragmatica.aether.environment.LoadBalancerState;
 import org.pragmatica.aether.environment.RouteChange;
@@ -54,6 +55,20 @@ public record HetznerLoadBalancerProvider(HetznerClient client,
     public Promise<Unit> onNodeRemoved(String nodeIp) {
         log.debug("Removing IP target {} from load balancer {}", nodeIp, loadBalancerId);
         return client.removeIpTarget(loadBalancerId, nodeIp);
+    }
+
+    @Override
+    public Promise<LoadBalancerInfo> loadBalancerInfo() {
+        return client.getLoadBalancer(loadBalancerId)
+                     .map(this::toLbInfo);
+    }
+
+    // --- Leaf: map Hetzner LB to LoadBalancerInfo ---
+    private LoadBalancerInfo toLbInfo(LoadBalancer lb) {
+        var targets = resolveCurrentIps(lb.targets()).stream()
+                                       .map(ip -> new LoadBalancerInfo.TargetInfo(ip, "healthy", 1))
+                                       .toList();
+        return new LoadBalancerInfo(String.valueOf(loadBalancerId), lb.name(), "", "active", targets);
     }
 
     @Override

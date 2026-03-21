@@ -5,7 +5,7 @@
     <parent>
         <artifactId>cloud</artifactId>
         <groupId>org.pragmatica-lite</groupId>
-        <version>0.20.0</version>
+        <version>0.21.0</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -16,8 +16,8 @@
     <description>Hetzner Cloud REST API client with Promise-based async operations</description>
 
     <properties>
-        <jackson.version>3.0.3</jackson.version>
-        <jackson.annotations.version>2.20</jackson.annotations.version>
+        <jackson.version>3.1.0</jackson.version>
+        <jackson.annotations.version>2.21</jackson.annotations.version>
     </properties>
 
     <dependencyManagement>

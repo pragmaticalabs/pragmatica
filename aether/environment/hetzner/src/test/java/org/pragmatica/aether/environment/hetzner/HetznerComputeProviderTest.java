@@ -20,6 +20,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.cloud.hetzner.HetznerConfig.hetznerConfig;
@@ -125,6 +126,53 @@ class HetznerComputeProviderTest {
                     .onSuccess(list -> assertThat(list).isNull())
                     .onFailure(HetznerComputeProviderTest::assertListInstancesFailedError);
         }
+
+        @Test
+        void listInstances_withTagFilter_usesLabelSelector() {
+            testClient.listServersResponse = Promise.success(List.of(
+                serverWithLabels(1, "server-1", Map.of("env", "prod"))));
+
+            provider.listInstances(Map.of("env", "prod"))
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onSuccess(instances -> assertThat(instances).hasSize(1));
+
+            assertThat(testClient.lastLabelSelector).isEqualTo("env=prod");
+        }
+    }
+
+    @Nested
+    class RestartTests {
+
+        @Test
+        void restart_success_callsReboot() {
+            testClient.rebootServerResponse = Promise.success(Unit.unit());
+
+            provider.restart(new InstanceId("42"))
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onSuccess(unit -> assertThat(unit).isNotNull());
+
+            assertThat(testClient.lastRebootServerId).isEqualTo(42L);
+        }
+    }
+
+    @Nested
+    class ApplyTagsTests {
+
+        @Test
+        void applyTags_success_updatesLabels() {
+            testClient.updateLabelsResponse = Promise.success(Unit.unit());
+            var tags = Map.of("env", "prod", "team", "aether");
+
+            provider.applyTags(new InstanceId("42"), tags)
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull())
+                    .onSuccess(unit -> assertThat(unit).isNotNull());
+
+            assertThat(testClient.lastUpdateLabelsServerId).isEqualTo(42L);
+            assertThat(testClient.lastUpdateLabels).isEqualTo(tags);
+        }
     }
 
     @Nested
@@ -213,10 +261,45 @@ class HetznerComputeProviderTest {
 
         @Test
         void collectAddresses_noAddresses_returnsEmpty() {
-            var server = new Server(1, "test", "running", serverType(), image(), null, null);
+            var server = new Server(1, "test", "running", serverType(), image(), null, null, Map.of());
             var addresses = HetznerComputeProvider.collectAddresses(server);
 
             assertThat(addresses).isEmpty();
+        }
+    }
+
+    @Nested
+    class LabelMappingTests {
+
+        @Test
+        void toInstanceInfo_mapsLabels() {
+            var labels = Map.of("env", "prod", "aether-cluster", "test");
+            var server = serverWithLabels(1, "test", labels);
+            var info = HetznerComputeProvider.toInstanceInfo(server);
+
+            assertThat(info.tags()).isEqualTo(labels);
+        }
+
+        @Test
+        void toInstanceInfo_nullLabels_returnsEmptyMap() {
+            var server = new Server(1, "test", "running", serverType(), image(),
+                                    publicNet("1.2.3.4"), List.of(), null);
+            var info = HetznerComputeProvider.toInstanceInfo(server);
+
+            assertThat(info.tags()).isEmpty();
+        }
+
+        @Test
+        void toLabelSelector_formatsCorrectly() {
+            var tags = Map.of("key1", "val1");
+            var selector = HetznerComputeProvider.toLabelSelector(tags);
+
+            assertThat(selector).isEqualTo("key1=val1");
+        }
+
+        @Test
+        void toLabelSelector_emptyMap_returnsEmptyString() {
+            assertThat(HetznerComputeProvider.toLabelSelector(Map.of())).isEmpty();
         }
     }
 
@@ -231,10 +314,25 @@ class HetznerComputeProviderTest {
         }
 
         @Test
-        void secrets_returnsEmpty() {
+        void secrets_returnsEnvProvider() {
             var integration = HetznerEnvironmentIntegration.hetznerEnvironmentIntegration(testClient, CONFIG).unwrap();
 
-            assertThat(integration.secrets().isPresent()).isFalse();
+            assertThat(integration.secrets().isPresent()).isTrue();
+        }
+
+        @Test
+        void discovery_presentWhenClusterNameSet() {
+            var configWithDiscovery = CONFIG.withDiscovery("my-cluster");
+            var integration = HetznerEnvironmentIntegration.hetznerEnvironmentIntegration(testClient, configWithDiscovery).unwrap();
+
+            assertThat(integration.discovery().isPresent()).isTrue();
+        }
+
+        @Test
+        void discovery_emptyWhenNoClusterName() {
+            var integration = HetznerEnvironmentIntegration.hetznerEnvironmentIntegration(testClient, CONFIG).unwrap();
+
+            assertThat(integration.discovery().isPresent()).isFalse();
         }
     }
 
@@ -276,12 +374,12 @@ class HetznerComputeProviderTest {
 
     private static Server runningServer(long id, String name) {
         return new Server(id, name, "running", serverType(), image(),
-                          publicNet("1.2.3.4"), List.of());
+                          publicNet("1.2.3.4"), List.of(), Map.of());
     }
 
     private static Server initializingServer(long id, String name) {
         return new Server(id, name, "initializing", serverType(), image(),
-                          publicNet("5.6.7.8"), List.of());
+                          publicNet("5.6.7.8"), List.of(), Map.of());
     }
 
     private static Server serverWithAddresses(String publicIp, List<String> privateIps) {
@@ -289,7 +387,12 @@ class HetznerComputeProviderTest {
                                     .map(ip -> new Server.PrivateNet(1L, ip))
                                     .toList();
         return new Server(1, "test", "running", serverType(), image(),
-                          publicNet(publicIp), privateNets);
+                          publicNet(publicIp), privateNets, Map.of());
+    }
+
+    private static Server serverWithLabels(long id, String name, Map<String, String> labels) {
+        return new Server(id, name, "running", serverType(), image(),
+                          publicNet("1.2.3.4"), List.of(), labels);
     }
 
     private static Server.ServerType serverType() {
@@ -304,15 +407,21 @@ class HetznerComputeProviderTest {
         return new Server.PublicNet(new Server.Ipv4(ipv4), new Server.Ipv6("2001:db8::1"));
     }
 
-    /// Test stub for HetznerClient that returns canned responses.
+    /// Test stub for HetznerClient that returns canned responses and captures arguments.
     static final class TestHetznerClient implements HetznerClient {
         Promise<Server> createServerResponse = Promise.success(runningServer(1, "default"));
         Promise<Unit> deleteServerResponse = Promise.success(Unit.unit());
         Promise<Server> getServerResponse = Promise.success(runningServer(1, "default"));
         Promise<List<Server>> listServersResponse = Promise.success(List.of());
+        Promise<Unit> rebootServerResponse = Promise.success(Unit.unit());
+        Promise<Unit> updateLabelsResponse = Promise.success(Unit.unit());
 
         long lastDeletedServerId;
         long lastGetServerId;
+        long lastRebootServerId;
+        long lastUpdateLabelsServerId;
+        Map<String, String> lastUpdateLabels;
+        String lastLabelSelector;
 
         @Override
         public Promise<Server> createServer(CreateServerRequest request) {
@@ -334,6 +443,25 @@ class HetznerComputeProviderTest {
         @Override
         public Promise<List<Server>> listServers() {
             return listServersResponse;
+        }
+
+        @Override
+        public Promise<List<Server>> listServers(String labelSelector) {
+            lastLabelSelector = labelSelector;
+            return listServersResponse;
+        }
+
+        @Override
+        public Promise<Unit> updateServerLabels(long serverId, Map<String, String> labels) {
+            lastUpdateLabelsServerId = serverId;
+            lastUpdateLabels = labels;
+            return updateLabelsResponse;
+        }
+
+        @Override
+        public Promise<Unit> rebootServer(long serverId) {
+            lastRebootServerId = serverId;
+            return rebootServerResponse;
         }
 
         @Override

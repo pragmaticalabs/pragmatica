@@ -17,7 +17,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.pragmatica.lang.Option.option;
@@ -62,6 +64,25 @@ public record HetznerComputeProvider(HetznerClient client,
     }
 
     @Override
+    public Promise<Unit> restart(InstanceId id) {
+        return parseServerId(id).async()
+                            .flatMap(this::rebootServer);
+    }
+
+    @Override
+    public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
+        return parseServerId(id).async()
+                            .flatMap(serverId -> updateLabels(serverId, tags));
+    }
+
+    @Override
+    public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
+        return client.listServers(toLabelSelector(tagFilter))
+                     .map(HetznerComputeProvider::toInstanceInfoList)
+                     .mapError(HetznerComputeProvider::toListInstancesError);
+    }
+
+    @Override
     public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
         var serverId = parseServerId(instanceId);
         return serverId.async()
@@ -73,6 +94,16 @@ public record HetznerComputeProvider(HetznerClient client,
     // --- Leaf: destroy a server by ID ---
     private Promise<Unit> destroyServer(long serverId) {
         return client.deleteServer(serverId);
+    }
+
+    // --- Leaf: reboot a server by ID ---
+    private Promise<Unit> rebootServer(long serverId) {
+        return client.rebootServer(serverId);
+    }
+
+    // --- Leaf: update server labels ---
+    private Promise<Unit> updateLabels(long serverId, Map<String, String> tags) {
+        return client.updateServerLabels(serverId, tags);
     }
 
     // --- Leaf: look up a server by ID ---
@@ -118,7 +149,26 @@ public record HetznerComputeProvider(HetznerClient client,
         return new InstanceInfo(new InstanceId(String.valueOf(server.id())),
                                 mapStatus(server.status()),
                                 collectAddresses(server),
-                                InstanceType.ON_DEMAND);
+                                InstanceType.ON_DEMAND,
+                                safeLabels(server));
+    }
+
+    // --- Leaf: safely extract labels from server, defaulting to empty map ---
+    private static Map<String, String> safeLabels(Server server) {
+        return option(server.labels()).or(Map.of());
+    }
+
+    // --- Leaf: convert tag filter map to Hetzner label selector string ---
+    static String toLabelSelector(Map<String, String> tagFilter) {
+        return tagFilter.entrySet()
+                        .stream()
+                        .map(HetznerComputeProvider::toLabelEntry)
+                        .collect(Collectors.joining(","));
+    }
+
+    // --- Leaf: format a single label entry for Hetzner selector ---
+    private static String toLabelEntry(Map.Entry<String, String> entry) {
+        return entry.getKey() + "=" + entry.getValue();
     }
 
     // --- Leaf: map list of servers ---

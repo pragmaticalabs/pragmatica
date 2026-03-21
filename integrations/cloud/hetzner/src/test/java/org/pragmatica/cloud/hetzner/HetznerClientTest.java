@@ -217,6 +217,51 @@ class HetznerClientTest {
     }
 
     @Nested
+    class LabelAndRebootOperations {
+
+        @Test
+        void listServers_withLabelSelector_encodesSelector() {
+            testHttp.respondWith(200, LIST_SERVERS_WITH_LABELS_RESPONSE);
+
+            client.listServers("aether-cluster=my-cluster")
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(HetznerClientTest::assertLabeledServerList);
+
+            assertThat(capturedRequest.get().method()).isEqualTo("GET");
+            assertThat(capturedRequest.get().uri().toString())
+                .isEqualTo(BASE_URL + "/servers?label_selector=aether-cluster%3Dmy-cluster");
+        }
+
+        @Test
+        void updateServerLabels_sendsCorrectBody() {
+            testHttp.respondWith(200, UPDATE_SERVER_LABELS_RESPONSE);
+
+            client.updateServerLabels(42, Map.of("env", "prod", "role", "worker"))
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(unit -> assertThat(unit).isNotNull());
+
+            assertThat(capturedRequest.get().method()).isEqualTo("PUT");
+            assertThat(capturedRequest.get().uri().toString()).isEqualTo(BASE_URL + "/servers/42");
+        }
+
+        @Test
+        void rebootServer_callsCorrectEndpoint() {
+            testHttp.respondWith(200, REBOOT_ACTION_RESPONSE);
+
+            client.rebootServer(42)
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(unit -> assertThat(unit).isNotNull());
+
+            assertThat(capturedRequest.get().method()).isEqualTo("POST");
+            assertThat(capturedRequest.get().uri().toString())
+                .isEqualTo(BASE_URL + "/servers/42/actions/reboot");
+        }
+    }
+
+    @Nested
     class SshKeyOperations {
 
         @Test
@@ -263,6 +308,12 @@ class HetznerClientTest {
     private static void assertSingleServerList(List<Server> servers) {
         assertThat(servers).hasSize(1);
         assertThat(servers.getFirst().id()).isEqualTo(42);
+    }
+
+    private static void assertLabeledServerList(List<Server> servers) {
+        assertThat(servers).hasSize(1);
+        assertThat(servers.getFirst().id()).isEqualTo(42);
+        assertThat(servers.getFirst().labels()).containsEntry("aether-cluster", "my-cluster");
     }
 
     private static void assertNotFoundError(Cause cause) {
@@ -452,6 +503,44 @@ class HetznerClientTest {
     private static final String ADD_TARGET_RESPONSE = """
         {
           "action": {"id": 2, "command": "add_target", "status": "running", "progress": 0}
+        }
+        """;
+
+    private static final String LIST_SERVERS_WITH_LABELS_RESPONSE = """
+        {
+          "servers": [
+            {
+              "id": 42,
+              "name": "aether-node-1",
+              "status": "running",
+              "server_type": {"id": 1, "name": "cx11", "description": "CX11", "cores": 1, "memory": 2.0, "disk": 20},
+              "image": {"id": 1, "name": "ubuntu-22.04", "description": "Ubuntu 22.04", "os_flavor": "ubuntu"},
+              "public_net": {"ipv4": {"ip": "1.2.3.4"}, "ipv6": {"ip": "2001:db8::1"}},
+              "private_net": [],
+              "labels": {"aether-cluster": "my-cluster", "role": "worker"}
+            }
+          ]
+        }
+        """;
+
+    private static final String UPDATE_SERVER_LABELS_RESPONSE = """
+        {
+          "server": {
+            "id": 42,
+            "name": "my-server",
+            "status": "running",
+            "server_type": {"id": 1, "name": "cx11", "description": "CX11", "cores": 1, "memory": 2.0, "disk": 20},
+            "image": {"id": 1, "name": "ubuntu-22.04", "description": "Ubuntu 22.04", "os_flavor": "ubuntu"},
+            "public_net": {"ipv4": {"ip": "1.2.3.4"}, "ipv6": {"ip": "2001:db8::1"}},
+            "private_net": [],
+            "labels": {"env": "prod", "role": "worker"}
+          }
+        }
+        """;
+
+    private static final String REBOOT_ACTION_RESPONSE = """
+        {
+          "action": {"id": 3, "command": "reboot_server", "status": "running", "progress": 0}
         }
         """;
 }

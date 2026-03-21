@@ -33,6 +33,7 @@ import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.Server.CreateServerRequest;
 import org.pragmatica.cloud.hetzner.api.Server.ServerListResponse;
 import org.pragmatica.cloud.hetzner.api.Server.ServerResponse;
+import org.pragmatica.cloud.hetzner.api.Server.UpdateLabelsRequest;
 import org.pragmatica.cloud.hetzner.api.SshKey;
 import org.pragmatica.cloud.hetzner.api.SshKey.SshKeyListResponse;
 import org.pragmatica.cloud.hetzner.api.SshKey.SshKeyResponse;
@@ -44,9 +45,12 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpRequest;
 import java.net.http.HttpRequest.BodyPublishers;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 
 /// Hetzner Cloud REST API client with Promise-based async operations.
 public interface HetznerClient {
@@ -61,6 +65,15 @@ public interface HetznerClient {
 
     /// Lists all servers.
     Promise<List<Server>> listServers();
+
+    /// Lists servers matching a label selector (e.g., "aether-cluster=my-cluster").
+    Promise<List<Server>> listServers(String labelSelector);
+
+    /// Updates labels on a server.
+    Promise<Unit> updateServerLabels(long serverId, Map<String, String> labels);
+
+    /// Reboots a server.
+    Promise<Unit> rebootServer(long serverId);
 
     /// Creates a new SSH key.
     Promise<SshKey> createSshKey(SshKey.CreateSshKeyRequest request);
@@ -143,6 +156,22 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
     @Override
     public Promise<List<Server>> listServers() {
         return getJson("/servers", ServerListResponse.class).map(ServerListResponse::servers);
+    }
+
+    @Override
+    public Promise<List<Server>> listServers(String labelSelector) {
+        return getJson("/servers?label_selector=" + encodeQueryParam(labelSelector), ServerListResponse.class)
+            .map(ServerListResponse::servers);
+    }
+
+    @Override
+    public Promise<Unit> updateServerLabels(long serverId, Map<String, String> labels) {
+        return putJsonDiscarding("/servers/" + serverId, new UpdateLabelsRequest(labels));
+    }
+
+    @Override
+    public Promise<Unit> rebootServer(long serverId) {
+        return postJsonDiscarding("/servers/" + serverId + "/actions/reboot", Map.of());
     }
 
     @Override
@@ -242,6 +271,11 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
                             .flatMap(this::checkSuccess);
     }
 
+    private <T> Promise<Unit> putJsonDiscarding(String path, T body) {
+        return serializeBody(body).flatMap(json -> http.sendString(buildPut(path, json)))
+                            .flatMap(this::checkSuccess);
+    }
+
     private Promise<Unit> delete(String path) {
         return http.sendString(buildDelete(path))
                    .flatMap(this::checkSuccess);
@@ -285,6 +319,12 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
                                 .build();
     }
 
+    private HttpRequest buildPut(String path, String jsonBody) {
+        return authorizedRequest(path).PUT(BodyPublishers.ofString(jsonBody))
+                                .header("Content-Type", "application/json")
+                                .build();
+    }
+
     private HttpRequest buildDelete(String path) {
         return authorizedRequest(path).DELETE()
                                 .build();
@@ -295,5 +335,9 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
                           .uri(URI.create(config.baseUrl() + path))
                           .header("Authorization",
                                   "Bearer " + config.apiToken());
+    }
+
+    private static String encodeQueryParam(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 }

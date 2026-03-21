@@ -1,6 +1,6 @@
 # Development Priorities
 
-## Current Status (v0.20.0)
+## Current Status (v0.21.0)
 
 Release 0.18.0 delivered six major themes: unified invocation observability (RFC-0010), production-grade DHT (anti-entropy repair, re-replication, per-use-case config), pub-sub messaging infrastructure (RFC-0011), blueprint-only deployment model, node lifecycle with disruption budget and graceful drain, and pricing-engine multi-slice example with cross-slice invocations.
 
@@ -156,6 +156,46 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 - **Comprehensive Forge Test Suite** - Tests use InventoryService (no slice dependencies)
 - **Docker E2E Infrastructure** - Hostname-based peer resolution, local Maven repo fallback for artifact resolution, CI timeout adaptation, leader election stabilization in containers
 
+### Per-Data-Source Schema Management (v0.21.0)
+- **Schema migration engine** — Flyway-style versioned (V), repeatable (R), undo (U), and baseline (B) migration types. Per-datasource history tables (`aether_schema_history`). Checksum validation, transactional per-script execution
+- **Schema orchestration** — distributed coordination with exclusive consensus locking, artifact resolution, status tracking (PENDING → MIGRATING → COMPLETED/FAILED). CDM readiness gate blocks slice ACTIVATE until schemas ready
+- **DatasourceConnectionProvider** — provisions SqlConnector per datasource, wiring migration engine to actual database execution. End-to-end migration now functional
+- **Schema directory convention** — `schema/` root maps to default `[database]` config section (matching `@Sql`); subdirectories (`schema/<name>/`) map to `[database.<name>]` sections. Strict resolution: missing config = explicit failure, no fallback
+- **Removed embedded H2 from Forge** — Forge now requires external PostgreSQL via `start-postgres.sh` for local development
+- **Deployment flow audit** — comprehensive CDM/NDM handoff audit: schema migration gate, lock exclusivity, allocation safety, state consistency fixes. RFC-0014 documents the deployment state machine
+- **REST API and CLI** — `/api/schema/status`, `/api/schema/migrate/{ds}`, `/api/schema/undo/{ds}`, `/api/schema/baseline/{ds}` + CLI commands
+
+### Blueprint Artifact Transition (v0.21.0)
+- **Blueprint artifacts** — blueprints packaged as deployable JAR artifacts containing `blueprint.toml`, optional `resources.toml` (app-level config), and optional `schema/` directory (database migration scripts)
+- **`PackageBlueprintMojo`** — new Maven plugin goal (`package-blueprint`) produces classifier `blueprint` JARs with `Blueprint-Id` and `Blueprint-Version` manifest entries
+- **`publishFromArtifact`** — new deployment path via `POST /api/blueprint/deploy` or `aether blueprint deploy <coords>`
+- **Config separation** — application config (`resources.toml`) at GLOBAL scope; infrastructure endpoints (`[endpoints.*]` in `aether.toml`) at NODE scope. ConfigService merges hierarchically (SLICE > NODE > GLOBAL)
+- **Schema migration prep** — blueprint artifacts carry `schema/` migration scripts. Root `schema/*.sql` maps to `[database]` config; `schema/<name>/*.sql` maps to `[database.<name>]`. Schema metadata stored in KV-Store; end-to-end execution via DatasourceConnectionProvider
+- **New KV types** — `BlueprintResourcesKey/Value`, `SchemaVersionKey/Value`, `SchemaMigrationLockKey/Value`
+- **CLI commands** — `blueprint deploy <coords>` and `blueprint upload <file>`
+
+### Cloud Integration (v0.21.0)
+- **4-Provider Cloud Support** -- Hetzner, AWS, GCP, Azure with compute, load balancer, discovery, and secrets facets
+- **CloudConfig + TOML `[cloud]` section** -- generic string-map config with `${env:VAR}` interpolation, provider-agnostic parsing in ConfigLoader
+- **EnvironmentIntegrationFactory SPI** -- ServiceLoader-based provider selection; each provider module registers its factory
+- **ComputeProvider** -- instance creation (with tagging, user data, network config), restart, termination, tag-based lookup for all 4 providers
+- **LoadBalancerProvider** -- automatic target registration/deregistration on node join/leave; Hetzner LB, AWS ELBv2 target groups, GCP NEGs, Azure backend pools
+- **DiscoveryProvider** -- tag/label-based peer discovery replacing static peer lists; configurable poll interval; all 4 providers
+- **SecretsProvider** -- `${secrets:path}` resolution; Hetzner env vars (`AETHER_SECRET_*`), AWS Secrets Manager, GCP Secret Manager, Azure Key Vault (path: `vaultName/secretName`)
+- **CachingSecretsProvider** -- in-memory TTL cache wrapping any secrets backend
+- **NodeLifecycleManager.executeAction(NodeAction)** -- CDM executes StartNode/StopNode decisions via cloud provider
+- **CDM terminate-on-drain** -- automatic cloud instance termination after graceful drain completes
+- **loadBalancerInfo()** -- LB state query for all providers
+- **Drain with deregistration** -- AWS `deregisterWithDrain` for connection draining before target removal
+- **Reference docs** -- [Cloud Integration guide](../../reference/cloud-integration.md), [Configuration reference](../../reference/configuration.md)
+
+### Notification Resource (v0.21.0, Phase 1 — Email)
+- `integrations/net/smtp` — async SMTP client on Netty (STARTTLS, IMPLICIT TLS, AUTH PLAIN, connection-per-send)
+- `integrations/email-http` — HTTP email sender with SendGrid, Mailgun, Postmark, Resend via VendorMapping SPI
+- `aether/resource/notification` — `NotificationSender` resource type, `NotificationSenderFactory`, `@Notify` qualifier, retry with exponential backoff
+- 57 tests (20 SMTP + 26 email-http + 11 notification)
+- **Phase 2 (future):** SMS (Twilio, AWS SNS), push (FCM, APNS), SMTP connection pooling, MX lookup
+
 ### Documentation
 - **CLI Reference** - Complete command documentation
 - **Management API** - Full HTTP API reference
@@ -188,83 +228,126 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 
 ### HIGH PRIORITY - Core & Operations
 
-1. **Cloud Integration**
-   - Implement `NodeLifecycleManager.executeAction(NodeAction)`
-   - Cloud provider adapters: Hetzner (primary), AWS, GCP, Azure
-   - Execute `StartNode`, `StopNode`, `MigrateSlices` decisions from controller
-   - Node auto-discovery and registration
-   - Node pool support: core (on-demand) vs elastic (spot) pools
-   - Instance type parameter for spot/on-demand selection
-   - **Secrets management:** HashiCorp Vault integration, AWS Secrets Manager / Azure Key Vault support (basic `${secrets:...}` resolution already works via ConfigurationProvider)
-   - **Cloud Load Balancer Configuration:**
-     - Automatic target group registration/deregistration on node join/leave
-     - Health check endpoint configuration (path, interval, thresholds)
-     - AWS ALB/NLB, GCP Cloud Load Balancing, Azure Load Balancer adapters
-     - Weighted routing sync: Aether rolling update weights → cloud LB weights
-     - Drain connections before node removal (graceful deregistration delay)
-     - TLS termination configuration (certificate ARN/ID passthrough)
-   - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
-   - **Enables:** Expense Tracking in FUTURE section
+1. **Streaming** — [implementation spec](../../specs/streaming-spec.md), [exploratory design](../../specs/in-memory-streams-spec.md)
+    - Ordered, replayable, consumer-paced streaming as a first-class Aether resource
+    - Typed streams with compile-time codec generation; off-heap ring buffers (`MemorySegment`)
+    - API follows pub/sub pattern: `StreamPublisher<T>` (parameter annotation), `StreamSubscriber` (method annotation), `StreamAccess<T>` (advanced)
+    - Governor-local sequencing (standard) or Rabia path (strong consistency)
+    - Consumer groups with partition assignment, configurable processing (ordered/parallel), error handling (retry/skip/stall + dead-letter)
+    - Governor-local cursor tracking with periodic consensus checkpoint
+    - CDM auto-scaling on consumer lag
+    - CDC adapter: KV-Store change notifications → typed stream
+    - **Phase 1:** Core streaming (produce, consume, ring buffer, consumer groups) — 6-8 weeks
+    - **Phase 2:** Replication, governor failover recovery — 3-4 weeks
+    - **Phase 3:** PostgreSQL persistent backend, transactional cursors, compaction — 4-6 weeks
 
-2. **Per-Data-Source DB Schema Management** — [design spec](schema-management-design.md)
-    - Cluster-level schema migration managed by Aether runtime, not individual nodes
-    - Per-datasource lifecycle with independent history tables (`aether_schema_history`)
-    - Leader-driven execution via Rabia consensus; exactly one node runs migrations
-    - TOML-declared schema versions in service descriptors; versioned SQL scripts (`V001__*.sql`)
-    - Readiness gate: traffic only routed after all datasources reach declared version
-    - Expand-contract support for zero-downtime schema changes
-    - Lightweight `AetherSchemaManager` — plain JDBC, no Flyway/Liquibase dependency
+2. **Canary, Blue-Green & A/B Testing Deployment Strategies** — ✅ **Implemented in v0.21.0**
+     - Canary: multi-stage progressive traffic shift, auto-evaluation, auto-rollback, KV persistence
+     - Blue-green: atomic switchover, drain period, instant switch-back
+     - A/B testing: deterministic split by request context (header/cookie/percentage), ScopedValue variant propagation
+     - DeploymentStrategyCoordinator: mutual exclusion, unified routing lookup
+     - HTTP version-aware routing: AppHttpServer checks strategy before serving locally
+     - REST API (18 endpoints), CLI (18 subcommands), TOML config, full audit logging
+     - **Remaining:** Blueprint-level canary orchestration (data model ready, manager needs `startBlueprintCanary` method)
+
+3. **Schema Migration Failure Recovery**
+     - **Status:** Core migration wiring complete (DatasourceConnectionProvider, end-to-end execution, schema directory convention, strict resolution). Failure recovery is the remaining gap.
+     - **Problem:** When schema migration fails, slices remain stuck in `LOADED` state indefinitely — the activation gate (`areSchemasReady`) blocks, but there's no automatic retry or manual recovery path
+     - **Needs:**
+       - Retry mechanism: automatic retry with backoff on transient failures (connection timeout, lock contention)
+       - Manual retry API: `POST /api/schema/{datasource}/retry` to re-trigger PENDING status and restart migration
+       - CLI command: `aether schema retry <datasource>`
+       - Failed→PENDING transition: allow resetting FAILED status back to PENDING (currently terminal)
+       - Activation resumption: when migration succeeds after retry, automatically resume activation cascade for all LOADED slices that were waiting
+       - Skip gate option: per-blueprint `schema_required = false` config to deploy without waiting for migration (useful for slices that don't need schema)
+       - Dashboard visibility: show schema status per datasource, highlight FAILED with retry button
+     - **Context:** RFC-0014 §3.3 defines the activation gate but not failure recovery. Current behavior: FAILED is terminal, slices stuck forever
+
+4. **Cloud Integration — Remaining Work (demand-driven)** — [SPI architecture spec](../../specs/cloud-integration-spi-spec.md)
+   - **Core implementation complete** (v0.21.0): 4 providers (Hetzner, AWS, GCP, Azure) with compute, LB, discovery, secrets. See Completed section.
+   - Spot pool support: core (on-demand) vs elastic (spot/preemptible) pools
+   - LB provider overrides: health check config, weighted routing sync, TLS termination
+   - HashiCorp Vault integration
+   - Pre-baked images (provider snapshot for instant boot)
+   - Cloud testing: node failure, network partition, multi-region, disaster recovery
+   - DigitalOcean + Vultr providers (Tier 2)
+   - **Enables:** Expense Tracking in FUTURE section
 
 ### Cloud Provider Support
 
-Part of Cloud Integration (#1). Per-provider status:
+Part of Cloud Integration (#3). Per-provider status:
 
-| Provider | Tier | Compute | Load Balancer | Discovery | Secrets | Status |
-|----------|------|---------|---------------|-----------|---------|--------|
-| Hetzner | 2 | ComputeProvider done | LoadBalancerProvider done | Label-based (planned) | — | **Partial** |
-| AWS | 1 | Planned | ALB/NLB | Tag-based | Secrets Manager | Planned |
-| GCP | 1 | Planned | Cloud LB | Label-based | Secret Manager | Planned |
-| Azure | 1 | Planned | Azure LB | Tag-based | Key Vault | Planned |
-| DigitalOcean | 2 | Planned | DO LB | Tag-based | — | Planned |
-| Vultr | 2 | Planned | Vultr LB | Tag-based | — | Planned |
+| Provider | Tier | Compute | Load Balancer | Discovery | Secrets | Spec | Status |
+|----------|------|---------|---------------|-----------|---------|------|--------|
+| Hetzner | 2 | ComputeProvider (restart, tags, filtered list) | LoadBalancerProvider (L4 targets) | Label-based | EnvSecretsProvider (`AETHER_SECRET_*`) | [reference sheet](../../specs/cloud-integration-spi-spec.md#8-hetzner-provider-sheet-reference) | **Complete** |
+| AWS | 1 | EC2 (create, terminate, restart, tags) | ELBv2 target groups (with drain) | Tag-based | Secrets Manager | [provider sheet](../../specs/cloud-provider-aws.md) | **Complete** |
+| GCP | 1 | Compute Engine (create, delete, reset, labels) | NEG endpoints | Label-based | Secret Manager | [provider sheet](../../specs/cloud-provider-gcp.md) | **Complete** |
+| Azure | 1 | VM (create, delete, restart, tags) | ARM LB backend pools | Resource Graph | Key Vault (`vaultName/secretName`) | [provider sheet](../../specs/cloud-provider-azure.md) | **Complete** |
+| DigitalOcean | 2 | Planned | DO LB | Tag-based | — | [provider sheet](../../specs/cloud-provider-digitalocean.md) | Planned |
+| Vultr | 2 | Planned | Vultr LB | Tag-based | — | — | Planned |
 
 **Cloud Testing Milestones** (initial provider: Hetzner):
-- Cloud cluster formation — code committed (`545300ce`), **not yet executed against real infrastructure**
-- Load balancer integration — create LB, add servers as targets, verify traffic distribution
+- ~~Cloud cluster formation~~ **Done (v0.21.0)** — code committed (`545300ce`), Hetzner integration complete: discovery, secrets, compute extensions
+- ~~Cloud-native discovery~~ **Done (v0.21.0)** — HetznerDiscoveryProvider with AetherNode bootstrap wiring; AWS/GCP/Azure discovery providers added
+- ~~Load balancer integration~~ **Done (v0.21.0)** — all 4 providers: target registration/deregistration, loadBalancerInfo(), LB reconciliation on leader change
+- ~~Secrets management~~ **Done (v0.21.0)** — Hetzner env vars, AWS SM, GCP SM, Azure KV; CachingSecretsProvider with TTL
 - Node failure + re-election — kill servers, verify quorum maintained and new leader elected
 - Network partition — manipulate firewall rules to block traffic between nodes
 - Slice deployment — deploy via management API, verify ACTIVE on all nodes
 - Pre-baked images — provider snapshot with Java + JAR for instant boot (~30s vs ~3min)
 - Multi-region cluster — test consensus over higher-latency links
-- Cloud-native discovery — label/tag-based peer discovery (eliminates static peer list)
 - Disaster recovery — terminate majority, bring up replacements, verify state recovery via Rabia sync
 
 ### MEDIUM PRIORITY - Developer Tooling & Deployment
 
-3. **Notification Resource**
-    - Unified notification facade with pluggable backends via SPI (same `@ResourceQualifier` pattern)
-    - **Channels:** Email, SMS, push notifications
-    - **Email backends (SPI):** SMTP, AWS SES, SendGrid, Mailgun
-    - **SMS backends (SPI):** Twilio, AWS SNS
-    - **Push backends (SPI):** Firebase Cloud Messaging, Apple Push Notification Service
-    - **API shape:** `NotificationSender` resource type with channel-specific configuration
-    - **Config:** per-backend TOML section (`[notifications.smtp]`, `[notifications.ses]`, `[notifications.twilio]`, etc.)
-    - **Scope exclusions:** no template engine (slices own their content), no mailing list management
-    - **Depends on:** Cloud Integration (#1) for SES/SNS/cloud-based backends; SMTP backend standalone
-
-4. **Canary & Blue-Green Deployment Strategies**
-     - Current: Rolling updates with weighted routing exist
-     - Add explicit canary deployment with automatic rollback on error threshold
-     - Add blue-green deployment with instant switchover
-     - A/B testing support with traffic splitting by criteria
-
-5. **RBAC Tier 2 — Per-Endpoint Role Authorization**
+4. **RBAC Tier 2 — Per-Endpoint Role Authorization**
      - Per-endpoint role-based authorization rules (admin, operator, viewer)
      - Route-level security policy from KV-Store
      - Auth failure rate limiting
      - Currently all authenticated keys have equivalent access; Tier 2 differentiates by role
 
-6. **Slice Development IDE Plugins**
+5. **Forge Modular Rework**
+    - ~80% done: modules separated (`forge-simulator`, `forge-load`, `forge-cluster`), Ember works
+    - **Remaining scope:**
+      - Remote cluster support in load generator (target remote clusters, not just embedded)
+      - Forge Script DSL: declarative scenario language for load/chaos test definitions, reusable scenario libraries, CI/CD integration
+    - Three independently usable components:
+      - **Ember** — single-process Aether runtime. Standalone for production migration, embedded for development
+      - **Tester** — load generator + chaos testing + Forge Script DSL. Standalone for remote clusters, embedded for local
+      - **Forge** — Ember + Tester + dashboard for local development convenience
+
+### LOWER PRIORITY
+
+6. **Configurable Rate Limiting per HTTP Route**
+     - Per-route rate limiting configuration in blueprint or management API
+     - Token bucket or sliding window algorithm
+     - Configurable limits: requests/second, burst size
+     - 429 Too Many Requests response with Retry-After header
+     - Cluster-aware: distributed counters via consensus or per-node local limits
+     - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
+
+7. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
+    - Phases 1, 2a, 2b, 2b.5 complete in v0.19.3. Remaining work driven by real demand:
+      - Phase 2c: Spot pool, spot-node exclusion from DHT ring
+      - Phase 3: Multi-region, cross-region governors
+    - **Architecture:** Small consensus core (5-7-9 active nodes) + self-organizing worker pools with elected governors. SWIM gossip for O(1) membership. Zone-aware grouping. Event-based community scaling.
+    - **Research:** [10-system comparative analysis](../../internal/passive-worker-pool-research.md)
+
+8. **Observability Dashboard UI**
+   - Wire `ObservabilityDepthRegistry` data to dashboard with UI for configuring per-method depth thresholds
+   - Backend REST API (`/api/observability/depth`) and KV-store sync already implemented
+   - Current state is functional; production value but no customers yet
+
+9. **Invocation Observability Dashboard Tab**
+   - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
+   - Click-to-expand tree view showing invocation depth with input/output at each level
+   - Waterfall view for multi-hop request visualization
+   - Filters: time range, slice, method, status, depth range
+   - Auto-refresh via existing WebSocket push
+   - See [RFC-0010](../../../../docs/rfc/RFC-0010-unified-invocation-observability.md) for data model and API
+   - Backend complete (RFC-0010): REST API and trace store ready
+
+10. **Slice Development IDE Plugins**
     - IDE plugins for Aether slice development, providing deep integration with the JBCT toolchain
     - **Recommended approach:** build a shared **Language Server (LSP)** backend first, then thin IDE-specific clients. IntelliJ IDEA gets a native plugin for features that LSP cannot express (refactoring, inspections, run configs). VS Code, Eclipse, and NetBeans consume the LSP directly.
 
@@ -308,49 +391,6 @@ Part of Cloud Integration (#1). Per-provider status:
     **Complexity:** Medium-high for LSP + IntelliJ; low for VS Code/Eclipse/NetBeans LSP clients
     **Prerequisite:** Stable JBCT CLI and annotation processor APIs
 
-7. **Forge Modular Rework**
-    - ~80% done: modules separated (`forge-simulator`, `forge-load`, `forge-cluster`), Ember works
-    - **Remaining scope:**
-      - Remote cluster support in load generator (target remote clusters, not just embedded)
-      - Forge Script DSL: declarative scenario language for load/chaos test definitions, reusable scenario libraries, CI/CD integration
-    - Three independently usable components:
-      - **Ember** — single-process Aether runtime. Standalone for production migration, embedded for development
-      - **Tester** — load generator + chaos testing + Forge Script DSL. Standalone for remote clusters, embedded for local
-      - **Forge** — Ember + Tester + dashboard for local development convenience
-
-### LOWER PRIORITY
-
-8. **Configurable Rate Limiting per HTTP Route**
-     - Per-route rate limiting configuration in blueprint or management API
-     - Token bucket or sliding window algorithm
-     - Configurable limits: requests/second, burst size
-     - 429 Too Many Requests response with Retry-After header
-     - Cluster-aware: distributed counters via consensus or per-node local limits
-     - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
-
-9. **Per-Blueprint Artifact Scoping (Tier 2)** — When artifact exclusivity (Tier 1) becomes too restrictive for multi-tenant clusters, add per-blueprint SliceTargetKey scoping. Changes: `SliceTargetKey(BlueprintId, ArtifactBase)`, CDM `Map<BlueprintId, Map<Artifact, Blueprint>>`, SliceNodeValue `owningBlueprint` field, WorkerSliceDirectiveKey blueprint scoping, Management API `blueprintId` parameter on `/api/scale`. Instance count = sum of all blueprints' allocations. Rolling update guard: reject if artifact has multiple blueprint owners. Prerequisite: Tier 1 (multi-blueprint correctness).
-
-10. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
-    - Phases 1, 2a, 2b, 2b.5 complete in v0.19.3. Remaining work driven by real demand:
-      - Phase 2c: Spot pool, spot-node exclusion from DHT ring
-      - Phase 3: Multi-region, cross-region governors
-    - **Architecture:** Small consensus core (5-7-9 active nodes) + self-organizing worker pools with elected governors. SWIM gossip for O(1) membership. Zone-aware grouping. Event-based community scaling.
-    - **Research:** [10-system comparative analysis](../../internal/passive-worker-pool-research.md)
-
-11. **Observability Dashboard UI**
-   - Wire `ObservabilityDepthRegistry` data to dashboard with UI for configuring per-method depth thresholds
-   - Backend REST API (`/api/observability/depth`) and KV-store sync already implemented
-   - Current state is functional; production value but no customers yet
-
-12. **Invocation Observability Dashboard Tab**
-   - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
-   - Click-to-expand tree view showing invocation depth with input/output at each level
-   - Waterfall view for multi-hop request visualization
-   - Filters: time range, slice, method, status, depth range
-   - Auto-refresh via existing WebSocket push
-   - See [RFC-0010](../../../../docs/rfc/RFC-0010-unified-invocation-observability.md) for data model and API
-   - Backend complete (RFC-0010): REST API and trace store ready
-
 ### FUTURE
 
 - **Official Installation Binaries** — Pre-built distribution archives (`aether-node`, `aether-cli`, `aether-forge`). Formats: `.tar.gz`, `.zip`, `.deb`, `.rpm`, Homebrew. Self-contained via jlink/jpackage. Java audience already has JDK — low priority.
@@ -359,7 +399,7 @@ Part of Cloud Integration (#1). Per-provider status:
 
 - **LLM Integration (Layer 3)** — Claude/GPT API integration. Complex reasoning workflows. Multi-cloud decision support.
 
-- **In-Memory Streams** — [design spec](../../specs/in-memory-streams-spec.md) — Ordered, replayable, consumer-paced streaming (Kafka-like primitive). Partition-based with DHT ownership, consumer groups with cursor tracking, time/size-based retention, configurable replication. Blueprint-declared streams as first-class resources. Status: Exploratory Draft.
+- **Per-Blueprint Artifact Scoping (Tier 2)** — Tier 1 complete (ownership tracking, artifact exclusivity enforcement). Tier 2 would relax exclusivity for multi-tenant clusters: same artifact deployable by multiple blueprints with independent scaling. Deferred until a concrete multi-tenant use case arises.
 
 - **Cross-Slice Transaction Support (2PC)**
     - Distributed transactions via Transaction aspect
@@ -400,7 +440,7 @@ All infrastructure modules transition to unified `@ResourceQualifier(type, confi
 
 | Module | Target | Status |
 |--------|--------|--------|
-| infra-notifications | `@ResourceQualifier(type=NotificationSender.class)` | **Planned** — email + SMS + push (#4) |
+| infra-notifications | `@ResourceQualifier(type=NotificationSender.class)` | **Phase 1 Complete** (v0.21.0) — email via SMTP + HTTP vendors. Phase 2: SMS + push |
 | infra-config | Superseded by Dynamic Configuration via KV store | **Remove** |
 | infra-aspect | Fn1 composition utilities (`Aspects.withCaching()`, `@Key`, etc.) | **Keep** |
 

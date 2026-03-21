@@ -62,6 +62,28 @@ public sealed interface EnvironmentError extends Cause {
         }
     }
 
+    record DiscoveryFailed(String detail, Throwable cause) implements EnvironmentError {
+        public static Result<DiscoveryFailed> discoveryFailed(String detail, Throwable cause) {
+            return success(new DiscoveryFailed(detail, cause));
+        }
+
+        @Override
+        public String message() {
+            return "Discovery failed: " + detail + " — " + cause.getMessage();
+        }
+    }
+
+    record OperationNotSupported(String operation) implements EnvironmentError {
+        public static Result<OperationNotSupported> operationNotSupported(String operation) {
+            return success(new OperationNotSupported(operation));
+        }
+
+        @Override
+        public String message() {
+            return "Operation not supported: " + operation;
+        }
+    }
+
     record unused() implements EnvironmentError {
         public static Result<unused> unused() {
             return success(new unused());
@@ -96,5 +118,15 @@ public sealed interface EnvironmentError extends Cause {
     static EnvironmentError secretResolutionFailed(String path, Throwable cause) {
         return SecretResolutionFailed.secretResolutionFailed(path, cause)
                                      .unwrap();
+    }
+
+    static EnvironmentError discoveryFailed(String detail, Throwable cause) {
+        return DiscoveryFailed.discoveryFailed(detail, cause)
+                              .unwrap();
+    }
+
+    static EnvironmentError operationNotSupported(String operation) {
+        return OperationNotSupported.operationNotSupported(operation)
+                                    .unwrap();
     }
 }

@@ -117,6 +117,15 @@ class HetznerCloudIT {
               .onSuccess(HetznerCloudIT::assertNonNullList);
     }
 
+    @Test
+    @Order(20)
+    void listServers_withLabelSelector_works() {
+        client.listServers("aether-test=nonexistent")
+              .await()
+              .onFailure(HetznerCloudIT::failWithCause)
+              .onSuccess(HetznerCloudIT::assertNonNullList);
+    }
+
     // --- Assertion helpers ---
 
     private static void failWithCause(Cause cause) {

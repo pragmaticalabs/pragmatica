@@ -112,14 +112,20 @@ Components checked:
 
 ### GET /api/nodes
 
-List all known cluster node IDs.
+List all known cluster nodes with role and leader status.
 
 **Response:**
 ```json
 {
-  "nodes": ["node-1", "node-2", "node-3"]
+  "nodes": [
+    {"nodeId": "node-1", "role": "CORE", "isLeader": true},
+    {"nodeId": "node-2", "role": "CORE", "isLeader": false},
+    {"nodeId": "node-3", "role": "WORKER", "isLeader": false}
+  ]
 }
 ```
+
+- `role`: `"CORE"` (consensus participant) or `"WORKER"` (passive compute). Defaults to `"CORE"` if no `ActivationDirective` exists.
 
 ### GET /api/events
 
@@ -344,6 +350,26 @@ Delete a published blueprint.
 {
   "status": "deleted",
   "id": "my-blueprint"
+}
+```
+
+### POST /api/blueprint/deploy
+
+Deploy a blueprint from an artifact in the cluster's artifact repository.
+
+**Request Body:**
+```json
+{
+  "artifact": "org.example:my-app:1.0.0"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "deployed",
+  "blueprintId": "org.example:my-app:1.0.0",
+  "sliceCount": 5
 }
 ```
 
@@ -1323,6 +1349,46 @@ Rollback to old version. Requires leader node.
 
 ---
 
+## Cluster Topology
+
+### GET /api/cluster/topology
+
+Get cluster topology summary with core/worker node counts.
+
+**Response:**
+```json
+{
+  "coreCount": 5,
+  "coreMax": 5,
+  "coreMin": 5,
+  "workerCount": 7,
+  "clusterSize": 12,
+  "coreNodes": ["node-1", "node-2", "node-3", "node-4", "node-5"]
+}
+```
+
+### GET /api/cluster/governors
+
+List active community governors (worker pool leaders elected via SWIM).
+
+**Response:**
+```json
+{
+  "governors": [
+    {
+      "governorId": "node-6",
+      "community": "default:local:0",
+      "memberCount": 4,
+      "members": ["node-6", "node-7", "node-8", "node-9"]
+    }
+  ]
+}
+```
+
+Returns empty list if no worker communities exist (all nodes are core).
+
+---
+
 ## Topology
 
 ### GET /api/topology
@@ -1602,6 +1668,313 @@ List all worker-hosted slice endpoints across all groups.
 
 ---
 
+## Canary Deployments
+
+All canary mutation endpoints require the requesting node to be the cluster leader.
+
+### GET /api/canaries
+
+List all active canary deployments.
+
+**Response:**
+```json
+{
+  "canaries": [
+    {
+      "canaryId": "abc123",
+      "artifactBase": "org.example:my-service",
+      "baselineVersion": "1.0.0",
+      "canaryVersion": "2.0.0",
+      "state": "EVALUATING",
+      "currentStage": 2,
+      "trafficPercent": 5,
+      "instances": 3,
+      "createdAt": 1704067200000
+    }
+  ]
+}
+```
+
+### GET /api/canary/{canaryId}
+
+Get canary deployment status.
+
+**Response:**
+```json
+{
+  "canaryId": "abc123",
+  "artifactBase": "org.example:my-service",
+  "baselineVersion": "1.0.0",
+  "canaryVersion": "2.0.0",
+  "state": "EVALUATING",
+  "currentStage": 2,
+  "trafficPercent": 5,
+  "stages": [1, 5, 25, 50, 100],
+  "instances": 3,
+  "maxErrorRate": 0.01,
+  "maxLatencyMs": 500,
+  "createdAt": 1704067200000,
+  "updatedAt": 1704067230000
+}
+```
+
+### GET /api/canary/{canaryId}/health
+
+Get health comparison between baseline and canary versions.
+
+**Response:**
+```json
+{
+  "canaryId": "abc123",
+  "baseline": {
+    "version": "1.0.0",
+    "requestCount": 9500,
+    "errorRate": 0.001,
+    "avgLatencyMs": 45.0
+  },
+  "canary": {
+    "version": "2.0.0",
+    "requestCount": 500,
+    "errorRate": 0.002,
+    "avgLatencyMs": 48.0
+  },
+  "evaluation": "PASS",
+  "collectedAt": 1704067230000
+}
+```
+
+### POST /api/canary/start
+
+Start a new canary deployment. Requires leader node.
+
+**Request:**
+```json
+{
+  "artifactBase": "org.example:my-service",
+  "version": "2.0.0",
+  "instances": 3,
+  "maxErrorRate": 0.01,
+  "maxLatencyMs": 500,
+  "cleanupPolicy": "GRACE_PERIOD"
+}
+```
+
+All fields except `artifactBase` and `version` are optional. Defaults: `instances=1`, `maxErrorRate=0.01`, `maxLatencyMs=500`, `cleanupPolicy=GRACE_PERIOD`.
+
+**Response:** Same as `GET /api/canary/{canaryId}`.
+
+### POST /api/canary/{canaryId}/promote
+
+Promote the canary to the next traffic stage (e.g., 1% to 5%). Requires leader node.
+
+**Response:** Same as `GET /api/canary/{canaryId}`.
+
+### POST /api/canary/{canaryId}/promote-full
+
+Promote the canary directly to 100% traffic. Requires leader node.
+
+**Response:** Same as `GET /api/canary/{canaryId}`.
+
+### POST /api/canary/{canaryId}/rollback
+
+Rollback the canary deployment to the baseline version. Requires leader node.
+
+**Response:** Same as `GET /api/canary/{canaryId}`.
+
+---
+
+## Blue-Green Deployments
+
+All blue-green mutation endpoints require the requesting node to be the cluster leader.
+
+### GET /api/blue-green-deployments
+
+List all active blue-green deployments.
+
+**Response:**
+```json
+{
+  "deployments": [
+    {
+      "deploymentId": "bg-xyz",
+      "artifactBase": "org.example:my-service",
+      "blueVersion": "1.0.0",
+      "greenVersion": "2.0.0",
+      "activeSlot": "BLUE",
+      "state": "GREEN_READY",
+      "createdAt": 1704067200000
+    }
+  ]
+}
+```
+
+### GET /api/blue-green/{deploymentId}
+
+Get blue-green deployment status.
+
+**Response:**
+```json
+{
+  "deploymentId": "bg-xyz",
+  "artifactBase": "org.example:my-service",
+  "blueVersion": "1.0.0",
+  "greenVersion": "2.0.0",
+  "activeSlot": "BLUE",
+  "state": "GREEN_READY",
+  "instances": 3,
+  "createdAt": 1704067200000,
+  "updatedAt": 1704067230000
+}
+```
+
+### POST /api/blue-green/deploy
+
+Deploy the green version alongside the current blue. Requires leader node.
+
+**Request:**
+```json
+{
+  "artifactBase": "org.example:my-service",
+  "version": "2.0.0",
+  "instances": 3
+}
+```
+
+**Response:** Same as `GET /api/blue-green/{deploymentId}`.
+
+### POST /api/blue-green/{deploymentId}/switch
+
+Switch all traffic from blue to green. Atomic switchover via single Rabia round (~100ms). Requires leader node.
+
+**Response:** Same as `GET /api/blue-green/{deploymentId}`.
+
+### POST /api/blue-green/{deploymentId}/switch-back
+
+Switch traffic back from green to blue (instant rollback). Requires leader node.
+
+**Response:** Same as `GET /api/blue-green/{deploymentId}`.
+
+### POST /api/blue-green/{deploymentId}/complete
+
+Complete the deployment: drain the inactive slot and clean up resources. Requires leader node.
+
+**Response:** Same as `GET /api/blue-green/{deploymentId}`.
+
+---
+
+## A/B Testing
+
+All A/B test mutation endpoints require the requesting node to be the cluster leader.
+
+### GET /api/ab-tests
+
+List all active A/B tests.
+
+**Response:**
+```json
+{
+  "tests": [
+    {
+      "testId": "ab-001",
+      "artifactBase": "org.example:my-service",
+      "variants": {
+        "control": {"version": "1.0.0", "weight": 50},
+        "experiment": {"version": "2.0.0", "weight": 50}
+      },
+      "state": "RUNNING",
+      "createdAt": 1704067200000
+    }
+  ]
+}
+```
+
+### GET /api/ab-test/{testId}
+
+Get A/B test status.
+
+**Response:**
+```json
+{
+  "testId": "ab-001",
+  "artifactBase": "org.example:my-service",
+  "variants": {
+    "control": {"version": "1.0.0", "weight": 50},
+    "experiment": {"version": "2.0.0", "weight": 50}
+  },
+  "splitStrategy": "HEADER_HASH",
+  "state": "RUNNING",
+  "createdAt": 1704067200000,
+  "updatedAt": 1704067230000
+}
+```
+
+### GET /api/ab-test/{testId}/metrics
+
+Get per-variant metrics for an A/B test.
+
+**Response:**
+```json
+{
+  "testId": "ab-001",
+  "variants": {
+    "control": {
+      "version": "1.0.0",
+      "requestCount": 5000,
+      "errorRate": 0.001,
+      "avgLatencyMs": 45.0
+    },
+    "experiment": {
+      "version": "2.0.0",
+      "requestCount": 5100,
+      "errorRate": 0.002,
+      "avgLatencyMs": 42.0
+    }
+  },
+  "collectedAt": 1704067230000
+}
+```
+
+### POST /api/ab-test/create
+
+Create a new A/B test. Requires leader node.
+
+**Request:**
+```json
+{
+  "artifactBase": "org.example:my-service",
+  "variants": {
+    "control": {"version": "1.0.0", "weight": 50},
+    "experiment": {"version": "2.0.0", "weight": 50}
+  },
+  "splitStrategy": "HEADER_HASH",
+  "instances": 3
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `artifactBase` | string | Yes | Base artifact coordinates (group:artifact) |
+| `variants` | object | Yes | Map of variant name to version + weight |
+| `splitStrategy` | string | No | `HEADER_HASH`, `COOKIE_HASH`, `HEADER_MATCH`, `PERCENTAGE` (default: `PERCENTAGE`) |
+| `instances` | integer | No | Instances per variant (default: 1) |
+
+**Response:** Same as `GET /api/ab-test/{testId}`.
+
+### POST /api/ab-test/{testId}/conclude
+
+Conclude the A/B test and promote the winning variant. Requires leader node.
+
+**Request:**
+```json
+{
+  "winner": "experiment"
+}
+```
+
+**Response:** Same as `GET /api/ab-test/{testId}`.
+
+---
+
 ## Endpoint Summary
 
 | Method | Path | Section |
@@ -1621,6 +1994,7 @@ List all worker-hosted slice endpoints across all groups.
 | GET | `/api/blueprint/{id}` | Blueprint Management |
 | GET | `/api/blueprint/{id}/status` | Blueprint Management |
 | DELETE | `/api/blueprint/{id}` | Blueprint Management |
+| POST | `/api/blueprint/deploy` | Blueprint Management |
 | POST | `/api/blueprint/validate` | Blueprint Management |
 | GET | `/api/metrics` | Metrics |
 | GET | `/api/metrics/comprehensive` | Metrics |
@@ -1663,6 +2037,24 @@ List all worker-hosted slice endpoints across all groups.
 | POST | `/api/config` | Dynamic Configuration |
 | DELETE | `/api/config/{key}` | Dynamic Configuration |
 | DELETE | `/api/config/node/{nodeId}/{key}` | Dynamic Configuration |
+| GET | `/api/canaries` | Canary Deployments |
+| GET | `/api/canary/{canaryId}` | Canary Deployments |
+| GET | `/api/canary/{canaryId}/health` | Canary Deployments |
+| POST | `/api/canary/start` | Canary Deployments |
+| POST | `/api/canary/{canaryId}/promote` | Canary Deployments |
+| POST | `/api/canary/{canaryId}/promote-full` | Canary Deployments |
+| POST | `/api/canary/{canaryId}/rollback` | Canary Deployments |
+| GET | `/api/blue-green-deployments` | Blue-Green Deployments |
+| GET | `/api/blue-green/{deploymentId}` | Blue-Green Deployments |
+| POST | `/api/blue-green/deploy` | Blue-Green Deployments |
+| POST | `/api/blue-green/{deploymentId}/switch` | Blue-Green Deployments |
+| POST | `/api/blue-green/{deploymentId}/switch-back` | Blue-Green Deployments |
+| POST | `/api/blue-green/{deploymentId}/complete` | Blue-Green Deployments |
+| GET | `/api/ab-tests` | A/B Testing |
+| GET | `/api/ab-test/{testId}` | A/B Testing |
+| GET | `/api/ab-test/{testId}/metrics` | A/B Testing |
+| POST | `/api/ab-test/create` | A/B Testing |
+| POST | `/api/ab-test/{testId}/conclude` | A/B Testing |
 | GET | `/api/rolling-updates` | Rolling Updates |
 | GET | `/api/rolling-update/{updateId}` | Rolling Updates |
 | GET | `/api/rolling-update/{updateId}/health` | Rolling Updates |
@@ -1945,6 +2337,92 @@ Restore from a specific backup.
 ---
 
 ## Error Responses
+
+## Schema Management
+
+Manage datasource schema migrations across the cluster.
+
+### GET /api/schema/status
+
+Returns schema migration status for all datasources.
+
+**Response:**
+```json
+{
+  "datasources": [
+    {
+      "datasource": "orders_db",
+      "currentVersion": 3,
+      "lastMigration": "V003__add_index.sql",
+      "status": "COMPLETED"
+    }
+  ]
+}
+```
+
+### GET /api/schema/status/{datasource}
+
+Returns schema status for a specific datasource.
+
+**Response:**
+```json
+{
+  "datasource": "orders_db",
+  "currentVersion": 3,
+  "lastMigration": "V003__add_index.sql",
+  "status": "COMPLETED"
+}
+```
+
+### GET /api/schema/history/{datasource}
+
+Returns migration history for a datasource (placeholder -- currently returns current status).
+
+### POST /api/schema/migrate/{datasource}
+
+Triggers manual schema migration for a datasource. Sets status to `MIGRATING`.
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Migration triggered for orders_db"
+}
+```
+
+### POST /api/schema/undo/{datasource}?targetVersion=N
+
+Undoes migrations to the specified target version. Sets status to `PENDING` at the target version.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `targetVersion` | int | yes | Version to undo to |
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Undo to version 2 initiated for orders_db"
+}
+```
+
+### POST /api/schema/baseline/{datasource}?version=N
+
+Baselines a datasource at the specified version (marks V001..V{N} as applied without executing).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `version` | int | yes | Version to baseline at |
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Baselined orders_db at version 3"
+}
+```
+
+---
 
 All errors return JSON with an `error` field:
 

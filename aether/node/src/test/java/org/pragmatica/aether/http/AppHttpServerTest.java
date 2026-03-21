@@ -51,7 +51,8 @@ class AppHttpServerTest {
                                              Option.none(),  // No TLS
                                              Option.none(),  // No InvocationMetricsCollector
                                              Option.none(),  // No shared boss group
-                                             Option.none()); // No shared worker group
+                                             Option.none(),  // No shared worker group
+                                             Option.none()); // No DeploymentStrategyCoordinator
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();
@@ -110,6 +111,7 @@ class AppHttpServerTest {
         var disabledServer = AppHttpServer.appHttpServer(disabledConfig,
                                                          SELF_NODE,
                                                          registry,
+                                                         Option.none(),
                                                          Option.none(),
                                                          Option.none(),
                                                          Option.none(),

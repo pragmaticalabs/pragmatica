@@ -269,7 +269,8 @@ public interface LeaderManager {
                           currentTopology.get(),
                           expectedCluster);
                 if (!active.get()) {
-                    log.debug("triggerElection skipped: not active");
+                    log.debug("triggerElection deferred: not active yet, retrying in 500ms");
+                    SharedScheduler.schedule(this::triggerElection, timeSpan(500).millis());
                     return;
                 }
                 // On first call during initial election, apply base delay + rank-based stagger.

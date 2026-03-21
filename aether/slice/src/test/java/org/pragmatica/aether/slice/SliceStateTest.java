@@ -15,7 +15,7 @@ class SliceStateTest {
         assertThat(SliceState.LOADING.timeout()).isEqualTo(some(timeSpan(2).minutes()));
 
         assertThat(SliceState.ACTIVATING.hasTimeout()).isTrue();
-        assertThat(SliceState.ACTIVATING.timeout()).isEqualTo(some(timeSpan(1).minutes()));
+        assertThat(SliceState.ACTIVATING.timeout()).isEqualTo(some(timeSpan(90).seconds()));
 
         assertThat(SliceState.DEACTIVATING.hasTimeout()).isTrue();
         assertThat(SliceState.DEACTIVATING.timeout()).isEqualTo(some(timeSpan(30).seconds()));

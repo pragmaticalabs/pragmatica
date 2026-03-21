@@ -8,6 +8,3 @@ app_http_port = 8070
 
 [observability]
 depth_threshold = -1
-
-[database]
-enabled = false

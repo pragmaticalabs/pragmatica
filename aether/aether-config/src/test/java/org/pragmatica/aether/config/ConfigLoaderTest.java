@@ -333,6 +333,37 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void loadFromString_parsesCoreMaxFromToml() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 5
+            core_max = 5
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.cluster().coreMax()).isEqualTo(5);
+            });
+    }
+
+    @Test
+    void loadFromString_defaultsCoreMaxToZero() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.cluster().coreMax()).isEqualTo(0);
+            });
+    }
+
+    @Test
     void loadFromString_usesDefaultSliceConfigWhenNotSpecified() {
         var toml = """
             [cluster]

@@ -12,7 +12,9 @@ The platform is built on Pragmatica Lite, a functional Java core library that en
 
 ### The Programming Model
 
-A **slice** is a unit of deployment — a Java interface annotated with `@Slice`:
+A **slice** is a service -- a typed Java interface with dependency injection via factory method parameters, request/response communication via `Promise<T>`, and declarative HTTP routing. The interaction model is method calls, not message passing. There are no actors, no mailboxes, no behavior switching. Developers who have written Spring services can write slices in an afternoon -- the same service-oriented thinking applies.
+
+A slice is a unit of deployment — a Java interface annotated with `@Slice`:
 
 ```java
 @Slice
@@ -227,6 +229,8 @@ Aether collapses this stack. The runtime provides service discovery, load balanc
 **Where Kubernetes is stronger:** ecosystem breadth, market trust, resource isolation via cgroups.
 
 **Where Orleans/Akka are stronger:** ecosystem maturity, broader language support.
+
+**Key distinction:** Orleans and Akka use the actor model -- untyped messages, mailboxes, supervision trees. Aether uses a service model -- typed interfaces, request/response, factory method injection. There is no paradigm shift for Java developers. Existing service-based designs, API contracts, and domain decomposition transfer directly.
 
 ### Architecture, Not Infrastructure
 
