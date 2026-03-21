@@ -11,6 +11,7 @@ import org.pragmatica.aether.update.VersionRouting;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -153,9 +154,12 @@ public final class RollingUpdateRoutes implements RouteSource {
         if (request.artifactBase() == null || request.version() == null) {
             return MISSING_ARTIFACT_BASE_OR_VERSION.promise();
         }
-        var instances = defaultIfNull(request.instances(), 1);
-        var maxErrorRate = defaultIfNull(request.maxErrorRate(), 0.01);
-        var maxLatencyMs = defaultIfNull(request.maxLatencyMs(), 500L);
+        var instances = Option.option(request.instances())
+                              .or(1);
+        var maxErrorRate = Option.option(request.maxErrorRate())
+                                 .or(0.01);
+        var maxLatencyMs = Option.option(request.maxLatencyMs())
+                                 .or(500L);
         var manualApproval = request.requireManualApproval() != null && request.requireManualApproval();
         var cleanupPolicy = request.cleanupPolicy() != null
                             ? CleanupPolicy.valueOf(request.cleanupPolicy())
@@ -169,13 +173,6 @@ public final class RollingUpdateRoutes implements RouteSource {
                                                                                         thresholds,
                                                                                         cleanupPolicy))
                      .async();
-    }
-
-    @SuppressWarnings("JBCT-RET-03")
-    private static <T> T defaultIfNull(T value, T defaultValue) {
-        return value != null
-               ? value
-               : defaultValue;
     }
 
     /// Resolves "current" to the first active rolling update ID.

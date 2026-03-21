@@ -1,6 +1,7 @@
 package org.pragmatica.aether.slice.kvstore;
 
 import org.pragmatica.aether.slice.ExecutionMode;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
 import org.pragmatica.consensus.NodeId;
@@ -221,8 +222,8 @@ public final class KVStoreSerializer {
     private static String serializeSliceTarget(SliceTargetValue v) {
         return v.currentVersion()
                 .withQualifier() + PIPE + v.targetInstances() + PIPE + v.minInstances() + PIPE + v.owningBlueprint()
-                                                                                                  .fold(() -> "",
-                                                                                                        bp -> bp.asString()) + PIPE + v.updatedAt() + PIPE + v.effectivePlacement();
+                                                                                                  .map(BlueprintId::asString)
+                                                                                                  .or("") + PIPE + v.updatedAt() + PIPE + v.effectivePlacement();
     }
 
     private static String serializeSliceNode(SliceNodeValue v) {
@@ -540,25 +541,25 @@ public final class KVStoreSerializer {
         return Result.all(org.pragmatica.aether.artifact.ArtifactBase.artifactBase(parts[1]),
                           org.pragmatica.aether.artifact.Version.version(parts[2]),
                           org.pragmatica.aether.artifact.Version.version(parts[3]))
-                     .map((ab, blueV, greenV) -> new BlueGreenDeploymentValue(parts[0],
-                                                                              ab,
-                                                                              blueV,
-                                                                              greenV,
-                                                                              parts[4],
-                                                                              parts[5],
-                                                                              Integer.parseInt(parts[6]),
-                                                                              Integer.parseInt(parts[7]),
-                                                                              Long.parseLong(parts[8]),
-                                                                              Double.parseDouble(parts[9]),
-                                                                              Long.parseLong(parts[10]),
-                                                                              Boolean.parseBoolean(parts[11]),
-                                                                              parts[12],
-                                                                              Integer.parseInt(parts[13]),
-                                                                              Integer.parseInt(parts[14]),
-                                                                              parts[15],
-                                                                              parts[16],
-                                                                              Long.parseLong(parts[17]),
-                                                                              Long.parseLong(parts[18])));
+                     .map((ab, blueV, greenV) -> BlueGreenDeploymentValue.blueGreenDeploymentValue(parts[0],
+                                                                                                   ab,
+                                                                                                   blueV,
+                                                                                                   greenV,
+                                                                                                   parts[4],
+                                                                                                   parts[5],
+                                                                                                   Integer.parseInt(parts[6]),
+                                                                                                   Integer.parseInt(parts[7]),
+                                                                                                   Long.parseLong(parts[8]),
+                                                                                                   Double.parseDouble(parts[9]),
+                                                                                                   Long.parseLong(parts[10]),
+                                                                                                   Boolean.parseBoolean(parts[11]),
+                                                                                                   parts[12],
+                                                                                                   Integer.parseInt(parts[13]),
+                                                                                                   Integer.parseInt(parts[14]),
+                                                                                                   parts[15],
+                                                                                                   parts[16],
+                                                                                                   Long.parseLong(parts[17]),
+                                                                                                   Long.parseLong(parts[18])));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parsePreviousVersionEntry(String identity, String raw) {

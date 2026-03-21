@@ -6,9 +6,11 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.update.BlueGreenDeployment;
 import org.pragmatica.aether.update.CleanupPolicy;
 import org.pragmatica.aether.update.HealthThresholds;
+import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -90,28 +92,44 @@ public final class BlueGreenRoutes implements RouteSource {
                                                                         parsed.thresholds(),
                                                                         parsed.drainTimeoutMs(),
                                                                         parsed.cleanupPolicy()))
-                            .map(this::toBlueGreenInfo);
+                            .map(this::toBlueGreenInfo)
+                            .onSuccess(info -> AuditLog.deploymentStart("blue-green",
+                                                                        info.deploymentId(),
+                                                                        info.artifactBase(),
+                                                                        info.blueVersion(),
+                                                                        info.greenVersion()));
     }
 
     private Promise<BlueGreenInfo> handleBlueGreenSwitch(String deploymentId) {
         return requireLeader().flatMap(_ -> nodeSupplier.get()
                                                         .blueGreenDeploymentManager()
                                                         .switchToGreen(deploymentId))
-                            .map(this::toBlueGreenInfo);
+                            .map(this::toBlueGreenInfo)
+                            .onSuccess(info -> AuditLog.deploymentPromote("blue-green",
+                                                                          info.deploymentId(),
+                                                                          info.artifactBase(),
+                                                                          info.routing()));
     }
 
     private Promise<BlueGreenInfo> handleBlueGreenSwitchBack(String deploymentId) {
         return requireLeader().flatMap(_ -> nodeSupplier.get()
                                                         .blueGreenDeploymentManager()
                                                         .switchBack(deploymentId))
-                            .map(this::toBlueGreenInfo);
+                            .map(this::toBlueGreenInfo)
+                            .onSuccess(info -> AuditLog.deploymentRollback("blue-green",
+                                                                           info.deploymentId(),
+                                                                           info.artifactBase(),
+                                                                           "manual"));
     }
 
     private Promise<BlueGreenInfo> handleBlueGreenComplete(String deploymentId) {
         return requireLeader().flatMap(_ -> nodeSupplier.get()
                                                         .blueGreenDeploymentManager()
                                                         .completeDeployment(deploymentId))
-                            .map(this::toBlueGreenInfo);
+                            .map(this::toBlueGreenInfo)
+                            .onSuccess(info -> AuditLog.deploymentComplete("blue-green",
+                                                                           info.deploymentId(),
+                                                                           info.artifactBase()));
     }
 
     private Promise<org.pragmatica.lang.Unit> requireLeader() {
@@ -137,10 +155,14 @@ public final class BlueGreenRoutes implements RouteSource {
         if (request.artifactBase() == null || request.version() == null) {
             return MISSING_ARTIFACT_BASE_OR_VERSION.promise();
         }
-        var instances = defaultIfNull(request.instances(), 1);
-        var maxErrorRate = defaultIfNull(request.maxErrorRate(), 0.01);
-        var maxLatencyMs = defaultIfNull(request.maxLatencyMs(), 500L);
-        var drainTimeoutMs = defaultIfNull(request.drainTimeoutMs(), 30_000L);
+        var instances = Option.option(request.instances())
+                              .or(1);
+        var maxErrorRate = Option.option(request.maxErrorRate())
+                                 .or(0.01);
+        var maxLatencyMs = Option.option(request.maxLatencyMs())
+                                 .or(500L);
+        var drainTimeoutMs = Option.option(request.drainTimeoutMs())
+                                   .or(30_000L);
         var cleanupPolicy = request.cleanupPolicy() != null
                             ? CleanupPolicy.valueOf(request.cleanupPolicy())
                             : CleanupPolicy.GRACE_PERIOD;
@@ -154,13 +176,6 @@ public final class BlueGreenRoutes implements RouteSource {
                                                                                             drainTimeoutMs,
                                                                                             cleanupPolicy))
                      .async();
-    }
-
-    @SuppressWarnings("JBCT-RET-03")
-    private static <T> T defaultIfNull(T value, T defaultValue) {
-        return value != null
-               ? value
-               : defaultValue;
     }
 
     private BlueGreenListResponse buildBlueGreenListResponse() {

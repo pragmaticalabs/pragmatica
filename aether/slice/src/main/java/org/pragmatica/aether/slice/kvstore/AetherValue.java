@@ -441,7 +441,49 @@ public sealed interface AetherValue {
                                     String blueprintId,
                                     String artifactsJson,
                                     long createdAt,
-                                    long updatedAt) implements AetherValue {}
+                                    long updatedAt) implements AetherValue {
+        /// Factory method following JBCT naming convention.
+        @SuppressWarnings("JBCT-VO-02")
+        public static BlueGreenDeploymentValue blueGreenDeploymentValue(String deploymentId,
+                                                                        ArtifactBase artifactBase,
+                                                                        Version blueVersion,
+                                                                        Version greenVersion,
+                                                                        String state,
+                                                                        String activeEnvironment,
+                                                                        int blueInstances,
+                                                                        int greenInstances,
+                                                                        long drainTimeoutMs,
+                                                                        double maxErrorRate,
+                                                                        long maxLatencyMs,
+                                                                        boolean requireManualApproval,
+                                                                        String cleanupPolicy,
+                                                                        int newWeight,
+                                                                        int oldWeight,
+                                                                        String blueprintId,
+                                                                        String artifactsJson,
+                                                                        long createdAt,
+                                                                        long updatedAt) {
+            return new BlueGreenDeploymentValue(deploymentId,
+                                                artifactBase,
+                                                blueVersion,
+                                                greenVersion,
+                                                state,
+                                                activeEnvironment,
+                                                blueInstances,
+                                                greenInstances,
+                                                drainTimeoutMs,
+                                                maxErrorRate,
+                                                maxLatencyMs,
+                                                requireManualApproval,
+                                                cleanupPolicy,
+                                                newWeight,
+                                                oldWeight,
+                                                blueprintId,
+                                                artifactsJson,
+                                                createdAt,
+                                                updatedAt);
+        }
+    }
 
     /// Previous version tracking for rollback support.
     /// Stores the previous version of an artifact before a deployment update.

@@ -148,6 +148,7 @@ public interface BlueGreenDeploymentManager {
                                    .onPresent(dep -> triggerAutoRollback(dep, event));
             }
 
+            @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private void triggerAutoRollback(BlueGreenDeployment deployment, DeploymentEvent.DeploymentFailed event) {
                 log.warn("Auto-rollback triggered for blue-green {} — green version {} failed on node {}: {}",
                          deployment.deploymentId(),
@@ -161,6 +162,7 @@ public interface BlueGreenDeploymentManager {
             }
 
             // --- State restoration ---
+            @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private void restoreState() {
                 int beforeCount = deployments.size();
                 kvStore.forEach(BlueGreenDeploymentKey.class,
@@ -172,7 +174,7 @@ public interface BlueGreenDeploymentManager {
                 }
             }
 
-            @SuppressWarnings("JBCT-VO-02")
+            @SuppressWarnings({"JBCT-VO-02", "JBCT-RET-01"}) // Side-effect helper — void inherent
             private void restoreDeployment(BlueGreenDeploymentValue bgv) {
                 var state = BlueGreenState.valueOf(bgv.state());
                 var activeEnv = BlueGreenDeployment.ActiveEnvironment.valueOf(bgv.activeEnvironment());
@@ -468,34 +470,34 @@ public interface BlueGreenDeploymentManager {
             }
 
             private BlueGreenDeploymentValue buildDeploymentValue(BlueGreenDeployment deployment) {
-                return new BlueGreenDeploymentValue(deployment.deploymentId(),
-                                                    deployment.artifactBase(),
-                                                    deployment.blueVersion(),
-                                                    deployment.greenVersion(),
-                                                    deployment.state()
-                                                              .name(),
-                                                    deployment.activeEnvironment()
-                                                              .name(),
-                                                    deployment.blueInstances(),
-                                                    deployment.greenInstances(),
-                                                    deployment.drainTimeoutMs(),
-                                                    deployment.healthThresholds()
-                                                              .maxErrorRate(),
-                                                    deployment.healthThresholds()
-                                                              .maxLatencyMs(),
-                                                    deployment.healthThresholds()
-                                                              .requireManualApproval(),
-                                                    deployment.cleanupPolicy()
-                                                              .name(),
-                                                    deployment.routing()
-                                                              .newWeight(),
-                                                    deployment.routing()
-                                                              .oldWeight(),
-                                                    deployment.blueprintId()
-                                                              .or(""),
-                                                    serializeArtifacts(deployment.artifacts()),
-                                                    deployment.createdAt(),
-                                                    System.currentTimeMillis());
+                return BlueGreenDeploymentValue.blueGreenDeploymentValue(deployment.deploymentId(),
+                                                                         deployment.artifactBase(),
+                                                                         deployment.blueVersion(),
+                                                                         deployment.greenVersion(),
+                                                                         deployment.state()
+                                                                                   .name(),
+                                                                         deployment.activeEnvironment()
+                                                                                   .name(),
+                                                                         deployment.blueInstances(),
+                                                                         deployment.greenInstances(),
+                                                                         deployment.drainTimeoutMs(),
+                                                                         deployment.healthThresholds()
+                                                                                   .maxErrorRate(),
+                                                                         deployment.healthThresholds()
+                                                                                   .maxLatencyMs(),
+                                                                         deployment.healthThresholds()
+                                                                                   .requireManualApproval(),
+                                                                         deployment.cleanupPolicy()
+                                                                                   .name(),
+                                                                         deployment.routing()
+                                                                                   .newWeight(),
+                                                                         deployment.routing()
+                                                                                   .oldWeight(),
+                                                                         deployment.blueprintId()
+                                                                                   .or(""),
+                                                                         serializeArtifacts(deployment.artifacts()),
+                                                                         deployment.createdAt(),
+                                                                         System.currentTimeMillis());
             }
 
             @SuppressWarnings("unchecked")
@@ -546,6 +548,7 @@ public interface BlueGreenDeploymentManager {
             }
 
             // --- Housekeeping ---
+            @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private void pruneTerminalDeployments() {
                 var cutoff = System.currentTimeMillis() - terminalRetentionMs;
                 var pruned = deployments.entrySet()
@@ -565,7 +568,8 @@ public interface BlueGreenDeploymentManager {
             }
 
             private static List<ArtifactBase> deserializeArtifacts(String artifactsJson) {
-                if (artifactsJson == null || artifactsJson.isEmpty()) {
+                // Serializer guarantees non-null (writes "" for empty)
+                if (artifactsJson.isEmpty()) {
                     return List.of();
                 }
                 return Arrays.stream(artifactsJson.split(","))

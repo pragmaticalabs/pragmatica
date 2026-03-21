@@ -187,6 +187,13 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 - **Drain with deregistration** -- AWS `deregisterWithDrain` for connection draining before target removal
 - **Reference docs** -- [Cloud Integration guide](../../reference/cloud-integration.md), [Configuration reference](../../reference/configuration.md)
 
+### Notification Resource (v0.21.0, Phase 1 — Email)
+- `integrations/net/smtp` — async SMTP client on Netty (STARTTLS, IMPLICIT TLS, AUTH PLAIN, connection-per-send)
+- `integrations/email-http` — HTTP email sender with SendGrid, Mailgun, Postmark, Resend via VendorMapping SPI
+- `aether/resource/notification` — `NotificationSender` resource type, `NotificationSenderFactory`, `@Notify` qualifier, retry with exponential backoff
+- 57 tests (20 SMTP + 26 email-http + 11 notification)
+- **Phase 2 (future):** SMS (Twilio, AWS SNS), push (FCM, APNS), SMTP connection pooling, MX lookup
+
 ### Documentation
 - **CLI Reference** - Complete command documentation
 - **Management API** - Full HTTP API reference
@@ -276,20 +283,13 @@ Part of Cloud Integration (#3). Per-provider status:
 
 ### MEDIUM PRIORITY - Developer Tooling & Deployment
 
-4. ~~**Notification Resource**~~ → **Complete (v0.21.0, Phase 1 — Email)**
-    - `integrations/net/smtp` — async SMTP client on Netty (STARTTLS, IMPLICIT TLS, AUTH PLAIN, connection-per-send)
-    - `integrations/email-http` — HTTP email sender with SendGrid, Mailgun, Postmark, Resend via VendorMapping SPI
-    - `aether/resource/notification` — `NotificationSender` resource type, `NotificationSenderFactory`, `@Notify` qualifier, retry with exponential backoff
-    - 57 tests (20 SMTP + 26 email-http + 11 notification)
-    - **Phase 2 (future):** SMS (Twilio, AWS SNS), push (FCM, APNS), SMTP connection pooling, MX lookup
-
-5. **RBAC Tier 2 — Per-Endpoint Role Authorization**
+4. **RBAC Tier 2 — Per-Endpoint Role Authorization**
      - Per-endpoint role-based authorization rules (admin, operator, viewer)
      - Route-level security policy from KV-Store
      - Auth failure rate limiting
      - Currently all authenticated keys have equivalent access; Tier 2 differentiates by role
 
-6. **Forge Modular Rework**
+5. **Forge Modular Rework**
     - ~80% done: modules separated (`forge-simulator`, `forge-load`, `forge-cluster`), Ember works
     - **Remaining scope:**
       - Remote cluster support in load generator (target remote clusters, not just embedded)
@@ -301,7 +301,7 @@ Part of Cloud Integration (#3). Per-provider status:
 
 ### LOWER PRIORITY
 
-7. **Configurable Rate Limiting per HTTP Route**
+6. **Configurable Rate Limiting per HTTP Route**
      - Per-route rate limiting configuration in blueprint or management API
      - Token bucket or sliding window algorithm
      - Configurable limits: requests/second, burst size
@@ -309,19 +309,19 @@ Part of Cloud Integration (#3). Per-provider status:
      - Cluster-aware: distributed counters via consensus or per-node local limits
      - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
 
-8. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
+7. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
     - Phases 1, 2a, 2b, 2b.5 complete in v0.19.3. Remaining work driven by real demand:
       - Phase 2c: Spot pool, spot-node exclusion from DHT ring
       - Phase 3: Multi-region, cross-region governors
     - **Architecture:** Small consensus core (5-7-9 active nodes) + self-organizing worker pools with elected governors. SWIM gossip for O(1) membership. Zone-aware grouping. Event-based community scaling.
     - **Research:** [10-system comparative analysis](../../internal/passive-worker-pool-research.md)
 
-9. **Observability Dashboard UI**
+8. **Observability Dashboard UI**
    - Wire `ObservabilityDepthRegistry` data to dashboard with UI for configuring per-method depth thresholds
    - Backend REST API (`/api/observability/depth`) and KV-store sync already implemented
    - Current state is functional; production value but no customers yet
 
-10. **Invocation Observability Dashboard Tab**
+9. **Invocation Observability Dashboard Tab**
    - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
    - Click-to-expand tree view showing invocation depth with input/output at each level
    - Waterfall view for multi-hop request visualization
@@ -330,7 +330,7 @@ Part of Cloud Integration (#3). Per-provider status:
    - See [RFC-0010](../../../../docs/rfc/RFC-0010-unified-invocation-observability.md) for data model and API
    - Backend complete (RFC-0010): REST API and trace store ready
 
-11. **Slice Development IDE Plugins**
+10. **Slice Development IDE Plugins**
     - IDE plugins for Aether slice development, providing deep integration with the JBCT toolchain
     - **Recommended approach:** build a shared **Language Server (LSP)** backend first, then thin IDE-specific clients. IntelliJ IDEA gets a native plugin for features that LSP cannot express (refactoring, inspections, run configs). VS Code, Eclipse, and NetBeans consume the LSP directly.
 

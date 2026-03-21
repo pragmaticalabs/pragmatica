@@ -19,6 +19,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.KSUID;
 
@@ -26,9 +27,9 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
@@ -134,7 +135,7 @@ public interface CanaryDeploymentManager {
                                        long terminalRetentionMs,
                                        TimeSpan evaluationInterval,
                                        Map<String, CanaryDeployment> canaries,
-                                       ScheduledExecutorService scheduler) implements CanaryDeploymentManager {
+                                       AtomicReference<ScheduledFuture<?>> evaluationFuture) implements CanaryDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(CanaryDeploymentManager.class);
 
             @Override
@@ -162,6 +163,7 @@ public interface CanaryDeploymentManager {
                                .onPresent(canary -> triggerAutoRollback(canary, event));
             }
 
+            @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private void triggerAutoRollback(CanaryDeployment canary, DeploymentEvent.DeploymentFailed event) {
                 log.warn("Auto-rollback triggered for canary {} — new version {} failed on node {}: {}",
                          canary.canaryId(),
@@ -174,15 +176,19 @@ public interface CanaryDeploymentManager {
                                               cause.message()));
             }
 
-            // --- Evaluation loop ---
+            // --- Evaluation loop (SharedScheduler + ScheduledFuture pattern from ControlLoop) ---
+            @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private void startEvaluationLoop() {
-                var intervalMs = evaluationInterval.millis();
-                scheduler.scheduleAtFixedRate(this::evaluateCanaries, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
-                log.info("Canary evaluation loop started (interval: {}ms)", intervalMs);
+                stopEvaluationLoop();
+                var task = SharedScheduler.scheduleAtFixedRate(this::evaluateCanaries, evaluationInterval);
+                evaluationFuture.set(task);
+                log.info("Canary evaluation loop started (interval: {}ms)", evaluationInterval.millis());
             }
 
+            @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private void stopEvaluationLoop() {
-                scheduler.shutdownNow();
+                Option.option(evaluationFuture.getAndSet(null))
+                      .onPresent(existing -> existing.cancel(false));
             }
 
             @SuppressWarnings("JBCT-RET-01")
@@ -206,6 +212,7 @@ public interface CanaryDeploymentManager {
                 }
             }
 
+            @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private void logEvaluation(CanaryDeployment canary, CanaryHealthComparison comparison) {
                 log.debug("Canary {} stage {}/{} verdict={} (canary: err={} p99={}ms, baseline: err={} p99={}ms)",
                           canary.canaryId(),
@@ -619,6 +626,7 @@ public interface CanaryDeploymentManager {
             }
 
             // --- State restoration ---
+            @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private void restoreState() {
                 int beforeCount = canaries.size();
                 kvStore.forEach(CanaryDeploymentKey.class,
@@ -630,7 +638,7 @@ public interface CanaryDeploymentManager {
                 }
             }
 
-            @SuppressWarnings("JBCT-VO-02")
+            @SuppressWarnings({"JBCT-VO-02", "JBCT-RET-01"}) // Side-effect helper — void inherent
             private void restoreCanary(CanaryDeploymentValue cdv) {
                 var state = CanaryState.valueOf(cdv.state());
                 var routing = new VersionRouting(cdv.newWeight(), cdv.oldWeight());
@@ -696,6 +704,7 @@ public interface CanaryDeploymentManager {
             }
 
             // --- Housekeeping ---
+            @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private void pruneTerminalCanaries() {
                 var cutoff = System.currentTimeMillis() - terminalRetentionMs;
                 var pruned = canaries.entrySet()
@@ -715,7 +724,8 @@ public interface CanaryDeploymentManager {
             }
 
             private static List<CanaryStage> deserializeStages(String stagesJson) {
-                if (stagesJson == null || stagesJson.isEmpty()) {
+                // Serializer guarantees non-null (writes "" for empty)
+                if (stagesJson.isEmpty()) {
                     return List.of();
                 }
                 return Arrays.stream(stagesJson.split(","))
@@ -730,7 +740,8 @@ public interface CanaryDeploymentManager {
             }
 
             private static List<ArtifactBase> deserializeArtifacts(String artifactsJson) {
-                if (artifactsJson == null || artifactsJson.isEmpty()) {
+                // Serializer guarantees non-null (writes "" for empty)
+                if (artifactsJson.isEmpty()) {
                     return List.of();
                 }
                 return Arrays.stream(artifactsJson.split(","))
@@ -747,9 +758,7 @@ public interface CanaryDeploymentManager {
                                            terminalRetentionMs,
                                            evaluationInterval,
                                            new ConcurrentHashMap<>(),
-                                           Executors.newSingleThreadScheduledExecutor(r -> Thread.ofVirtual()
-                                                                                                 .name("canary-eval")
-                                                                                                 .unstarted(r)));
+                                           new AtomicReference<>());
     }
 
     /// Parse a single stage entry from serialized format.
@@ -781,7 +790,12 @@ public interface CanaryDeploymentManager {
             long avgLatency = requests > 0
                               ? totalLatencyMs / requests
                               : 0;
-            return new CanaryHealthComparison.VersionMetrics(version, requests, errors, errorRate, maxP99Ms, avgLatency);
+            return CanaryHealthComparison.VersionMetrics.versionMetrics(version,
+                                                                        requests,
+                                                                        errors,
+                                                                        errorRate,
+                                                                        maxP99Ms,
+                                                                        avgLatency);
         }
     }
 }

@@ -31,6 +31,7 @@ public record CanaryStage(int trafficPercent, int observationMinutes) {
 
     /// Converts traffic percentage to a VersionRouting ratio.
     /// For example: 5% -> VersionRouting(5, 95), 25% -> (25, 75), 100% -> (100, 0)
+    @SuppressWarnings("JBCT-VO-02") // Pre-validated: trafficPercent guaranteed [1-100] by factory
     public VersionRouting toRouting() {
         return new VersionRouting(trafficPercent, 100 - trafficPercent);
     }

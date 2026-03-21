@@ -6,6 +6,7 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.update.ABTestDeployment;
 import org.pragmatica.aether.update.ABTestMetrics;
 import org.pragmatica.aether.update.SplitRule;
+import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -88,7 +89,12 @@ public final class ABTestRoutes implements RouteSource {
                                                            .createTest(parsed.artifactBase(),
                                                                        parsed.variantVersions(),
                                                                        parsed.splitRule()))
-                            .map(this::toABTestInfo);
+                            .map(this::toABTestInfo)
+                            .onSuccess(info -> AuditLog.deploymentStart("ab-test",
+                                                                        info.testId(),
+                                                                        info.artifactBase(),
+                                                                        info.baselineVersion(),
+                                                                        "variants=" + info.variantCount()));
     }
 
     private Promise<ABTestInfo> handleABTestConclude(String testId, ABTestConcludeRequest request) {
@@ -96,7 +102,10 @@ public final class ABTestRoutes implements RouteSource {
                                                         .abTestManager()
                                                         .concludeTest(testId,
                                                                       request.winner()))
-                            .map(this::toABTestInfo);
+                            .map(this::toABTestInfo)
+                            .onSuccess(info -> AuditLog.deploymentComplete("ab-test",
+                                                                           info.testId(),
+                                                                           info.artifactBase()));
     }
 
     private Promise<org.pragmatica.lang.Unit> requireLeader() {
@@ -151,7 +160,7 @@ public final class ABTestRoutes implements RouteSource {
         var headerName = request.splitHeader() != null
                          ? request.splitHeader()
                          : "X-Request-Id";
-        return new SplitRule.HeaderHashSplit(headerName, 2);
+        return SplitRule.HeaderHashSplit.headerHashSplit(headerName, 2);
     }
 
     private ABTestListResponse buildABTestListResponse() {

@@ -27,6 +27,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.utility.KSUID;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -305,7 +306,7 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private final Map<String, CacheAffinityResolver> affinityResolvers = new ConcurrentHashMap<>();
 
-    private volatile boolean stopped = false;
+    private final java.util.concurrent.atomic.AtomicBoolean stopped = new java.util.concurrent.atomic.AtomicBoolean(false);
     private volatile Option<SliceFailureListener> failureListener = Option.none();
 
     record PendingInvocation(Promise<Object> promise,
@@ -373,10 +374,9 @@ class SliceInvokerImpl implements SliceInvoker {
 
     @Override
     public Promise<Unit> stop() {
-        if (stopped) {
+        if (!stopped.compareAndSet(false, true)) {
             return Promise.success(unit());
         }
-        stopped = true;
         log.info("Stopping SliceInvoker with {} pending invocations", pendingInvocations.size());
         // Cancel all pending invocations
         pendingInvocations.forEach(this::cancelPendingInvocation);
@@ -461,7 +461,7 @@ class SliceInvokerImpl implements SliceInvoker {
 
     @Override
     public <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
-        if (stopped) {
+        if (stopped.get()) {
             return INVOKER_STOPPED.promise();
         }
         return selectEndpointWithAffinity(slice, method, request)
@@ -542,7 +542,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                           Object request,
                                           TypeToken<R> responseType,
                                           int maxRetries) {
-        if (stopped) {
+        if (stopped.get()) {
             return INVOKER_STOPPED.promise();
         }
         var requestId = InvocationContext.getOrGenerateRequestId();
@@ -552,8 +552,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                         responseType,
                                         maxRetries,
                                         requestId,
-                                        new java.util.HashSet<>(),
-                                        new java.util.ArrayList<>(),
+                                        Set.of(),
+                                        List.of(),
                                         Option.none());
         return Promise.promise(promise -> executeWithFailover(promise, ctx));
     }
@@ -580,8 +580,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                          responseType,
                                          maxRetries,
                                          requestId,
-                                         newFailed,
-                                         newAttempted,
+                                         Set.copyOf(newFailed),
+                                         List.copyOf(newAttempted),
                                          Option.some(error));
         }
 
@@ -695,7 +695,7 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private <R> void handleFailoverFailure(Promise<R> promise, FailoverContext<R> ctx, NodeId failedNode, Cause cause) {
-        if (stopped) {
+        if (stopped.get()) {
             promise.fail(INVOKER_STOPPED);
             return;
         }

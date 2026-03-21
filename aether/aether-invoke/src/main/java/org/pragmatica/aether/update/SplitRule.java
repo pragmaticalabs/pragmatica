@@ -23,6 +23,12 @@ public sealed interface SplitRule {
     /// @param headerName the header to hash
     /// @param variantCount number of variant buckets
     record HeaderHashSplit(String headerName, int variantCount) implements SplitRule {
+        /// Factory method following JBCT naming convention.
+        @SuppressWarnings("JBCT-VO-02")
+        public static HeaderHashSplit headerHashSplit(String headerName, int variantCount) {
+            return new HeaderHashSplit(headerName, variantCount);
+        }
+
         @Override
         public String resolveVariant(Map<String, String> headers, Map<String, String> cookies) {
             var value = headers.getOrDefault(headerName, "");
@@ -36,6 +42,12 @@ public sealed interface SplitRule {
     /// @param cookieName the cookie to hash
     /// @param variantCount number of variant buckets
     record CookieHashSplit(String cookieName, int variantCount) implements SplitRule {
+        /// Factory method following JBCT naming convention.
+        @SuppressWarnings("JBCT-VO-02")
+        public static CookieHashSplit cookieHashSplit(String cookieName, int variantCount) {
+            return new CookieHashSplit(cookieName, variantCount);
+        }
+
         @Override
         public String resolveVariant(Map<String, String> headers, Map<String, String> cookies) {
             var value = cookies.getOrDefault(cookieName, "");
@@ -52,6 +64,14 @@ public sealed interface SplitRule {
     record HeaderMatchSplit(String headerName,
                             Map<String, String> valueToVariant,
                             String defaultVariant) implements SplitRule {
+        /// Factory method following JBCT naming convention.
+        @SuppressWarnings("JBCT-VO-02")
+        public static HeaderMatchSplit headerMatchSplit(String headerName,
+                                                        Map<String, String> valueToVariant,
+                                                        String defaultVariant) {
+            return new HeaderMatchSplit(headerName, valueToVariant, defaultVariant);
+        }
+
         @Override
         public String resolveVariant(Map<String, String> headers, Map<String, String> cookies) {
             var value = headers.getOrDefault(headerName, "");
@@ -63,11 +83,23 @@ public sealed interface SplitRule {
     ///
     /// @param weights list of variant-weight pairs defining traffic distribution
     record PercentageSplit(List<VariantWeight> weights) implements SplitRule {
+        /// Factory method following JBCT naming convention.
+        @SuppressWarnings("JBCT-VO-02")
+        public static PercentageSplit percentageSplit(List<VariantWeight> weights) {
+            return new PercentageSplit(weights);
+        }
+
         /// A variant name paired with its relative traffic weight.
         ///
         /// @param variant the variant identifier
         /// @param weight relative traffic weight (higher = more traffic)
-        public record VariantWeight(String variant, int weight) {}
+        public record VariantWeight(String variant, int weight) {
+            /// Factory method following JBCT naming convention.
+            @SuppressWarnings("JBCT-VO-02")
+            public static VariantWeight variantWeight(String variant, int weight) {
+                return new VariantWeight(variant, weight);
+            }
+        }
 
         @Override
         public String resolveVariant(Map<String, String> headers, Map<String, String> cookies) {

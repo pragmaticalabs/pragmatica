@@ -38,4 +38,34 @@ public final class AuditLog {
     public static void wsAuthFailure(String sessionId, String reason) {
         AUDIT.warn("WS_AUTH_FAILURE sessionId={} reason={}", sessionId, reason);
     }
+
+    /// Log deployment strategy start.
+    public static void deploymentStart(String type, String id, String artifact, String oldVersion, String newVersion) {
+        AUDIT.info("DEPLOY_START type={} id={} artifact={} oldVersion={} newVersion={}",
+                   type,
+                   id,
+                   artifact,
+                   oldVersion,
+                   newVersion);
+    }
+
+    /// Log deployment strategy promotion/advancement.
+    public static void deploymentPromote(String type, String id, String artifact, String routing) {
+        AUDIT.info("DEPLOY_PROMOTE type={} id={} artifact={} routing={}", type, id, artifact, routing);
+    }
+
+    /// Log deployment strategy rollback.
+    public static void deploymentRollback(String type, String id, String artifact, String reason) {
+        AUDIT.warn("DEPLOY_ROLLBACK type={} id={} artifact={} reason={}", type, id, artifact, reason);
+    }
+
+    /// Log deployment strategy completion.
+    public static void deploymentComplete(String type, String id, String artifact) {
+        AUDIT.info("DEPLOY_COMPLETE type={} id={} artifact={}", type, id, artifact);
+    }
+
+    /// Log automatic rollback triggered by health evaluation.
+    public static void deploymentAutoRollback(String type, String id, String artifact, String verdict) {
+        AUDIT.warn("DEPLOY_AUTO_ROLLBACK type={} id={} artifact={} verdict={}", type, id, artifact, verdict);
+    }
 }

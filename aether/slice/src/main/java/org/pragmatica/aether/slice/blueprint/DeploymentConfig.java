@@ -30,23 +30,29 @@ public record DeploymentConfig(Strategy strategy,
     ///
     /// @param trafficPercent percentage of traffic to route to the canary version (1-100)
     /// @param observationMinutes how long to observe at this traffic level before advancing
-    public record CanaryStageConfig(int trafficPercent, int observationMinutes) {}
+    public record CanaryStageConfig(int trafficPercent, int observationMinutes) {
+        /// Factory method following JBCT naming convention.
+        @SuppressWarnings("JBCT-VO-02")
+        public static CanaryStageConfig canaryStageConfig(int trafficPercent, int observationMinutes) {
+            return new CanaryStageConfig(trafficPercent, observationMinutes);
+        }
+    }
 
     /// Default canary stages for progressive traffic shift.
     public static List<CanaryStageConfig> defaultCanaryStages() {
-        return List.of(new CanaryStageConfig(1, 5),
-                       new CanaryStageConfig(5, 5),
-                       new CanaryStageConfig(25, 10),
-                       new CanaryStageConfig(50, 10),
-                       new CanaryStageConfig(100, 0));
+        return List.of(CanaryStageConfig.canaryStageConfig(1, 5),
+                       CanaryStageConfig.canaryStageConfig(5, 5),
+                       CanaryStageConfig.canaryStageConfig(25, 10),
+                       CanaryStageConfig.canaryStageConfig(50, 10),
+                       CanaryStageConfig.canaryStageConfig(100, 0));
     }
 
     /// Default configuration: rolling updates with standard thresholds.
-    public static final DeploymentConfig DEFAULT = new DeploymentConfig(Strategy.ROLLING,
-                                                                        defaultCanaryStages(),
-                                                                        0.01,
-                                                                        500,
-                                                                        300_000);
+    public static final DeploymentConfig DEFAULT = deploymentConfig(Strategy.ROLLING,
+                                                                    defaultCanaryStages(),
+                                                                    0.01,
+                                                                    500,
+                                                                    300_000);
 
     /// Factory method.
     public static DeploymentConfig deploymentConfig(Strategy strategy,

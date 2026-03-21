@@ -140,6 +140,7 @@ public interface ABTestManager {
                            .containsValue(version);
             }
 
+            @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private void triggerAutoRollback(ABTestDeployment test, DeploymentEvent.DeploymentFailed event) {
                 log.warn("Auto-rollback triggered for A/B test {} — variant failed on node {}: {}",
                          test.testId(),
@@ -203,11 +204,10 @@ public interface ABTestManager {
 
             @Override
             public ABTestMetrics getMetrics(String testId) {
-                var test = tests.get(testId);
-                if (test == null) {
-                    return ABTestMetrics.abTestMetrics(testId, Map.of());
-                }
-                return collectMetrics(test);
+                return Option.option(tests.get(testId))
+                             .map(this::collectMetrics)
+                             .or(ABTestMetrics.abTestMetrics(testId,
+                                                             Map.of()));
             }
 
             // --- Private helpers ---
@@ -391,6 +391,7 @@ public interface ABTestManager {
             }
 
             // --- State restoration ---
+            @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private void restoreState() {
                 int beforeCount = tests.size();
                 kvStore.forEach(ABTestKey.class, ABTestValue.class, (key, value) -> restoreTest(value));
@@ -400,7 +401,7 @@ public interface ABTestManager {
                 }
             }
 
-            @SuppressWarnings("JBCT-VO-02")
+            @SuppressWarnings({"JBCT-VO-02", "JBCT-RET-01"}) // Side-effect helper — void inherent
             private void restoreTest(ABTestValue atv) {
                 var state = ABTestState.valueOf(atv.state());
                 var routing = new VersionRouting(atv.newWeight(), atv.oldWeight());
@@ -458,16 +459,17 @@ public interface ABTestManager {
                 long avgLatency = requests > 0
                                   ? totalLatency / requests
                                   : 0;
-                return new ABTestMetrics.VariantMetrics(variant,
-                                                        version,
-                                                        requests,
-                                                        errors,
-                                                        errorRate,
-                                                        maxP99,
-                                                        avgLatency);
+                return ABTestMetrics.VariantMetrics.variantMetrics(variant,
+                                                                   version,
+                                                                   requests,
+                                                                   errors,
+                                                                   errorRate,
+                                                                   maxP99,
+                                                                   avgLatency);
             }
 
             // --- Housekeeping ---
+            @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private void pruneTerminalTests() {
                 var cutoff = System.currentTimeMillis() - terminalRetentionMs;
                 var pruned = tests.entrySet()
@@ -528,7 +530,8 @@ public interface ABTestManager {
     /// Deserializes variant versions from serialized format.
     @SuppressWarnings("JBCT-VO-02")
     private static Map<String, Version> deserializeVariantVersions(String json) {
-        if (json == null || json.isEmpty()) {
+        // Serializer guarantees non-null (writes "" for empty)
+        if (json.isEmpty()) {
             return Map.of();
         }
         var result = new HashMap<String, Version>();
@@ -547,8 +550,9 @@ public interface ABTestManager {
     /// Deserializes a split rule from serialized format.
     @SuppressWarnings("JBCT-VO-02")
     private static SplitRule deserializeSplitRule(String json) {
-        if (json == null || json.isEmpty()) {
-            return new SplitRule.HeaderHashSplit("X-Request-Id", 2);
+        // Serializer guarantees non-null (writes "" for empty)
+        if (json.isEmpty()) {
+            return SplitRule.HeaderHashSplit.headerHashSplit("X-Request-Id", 2);
         }
         if (json.startsWith("header-hash:")) {
             return parseHeaderHashSplit(json);
@@ -559,23 +563,23 @@ public interface ABTestManager {
         if (json.startsWith("percentage:")) {
             return parsePercentageSplit(json);
         }
-        return new SplitRule.HeaderHashSplit("X-Request-Id", 2);
+        return SplitRule.HeaderHashSplit.headerHashSplit("X-Request-Id", 2);
     }
 
     private static SplitRule parseHeaderHashSplit(String json) {
         var parts = json.substring("header-hash:".length())
                         .split(":", 2);
         return parts.length == 2
-               ? new SplitRule.HeaderHashSplit(parts[0], Integer.parseInt(parts[1]))
-               : new SplitRule.HeaderHashSplit("X-Request-Id", 2);
+               ? SplitRule.HeaderHashSplit.headerHashSplit(parts[0], Integer.parseInt(parts[1]))
+               : SplitRule.HeaderHashSplit.headerHashSplit("X-Request-Id", 2);
     }
 
     private static SplitRule parseCookieHashSplit(String json) {
         var parts = json.substring("cookie-hash:".length())
                         .split(":", 2);
         return parts.length == 2
-               ? new SplitRule.CookieHashSplit(parts[0], Integer.parseInt(parts[1]))
-               : new SplitRule.CookieHashSplit("session-id", 2);
+               ? SplitRule.CookieHashSplit.cookieHashSplit(parts[0], Integer.parseInt(parts[1]))
+               : SplitRule.CookieHashSplit.cookieHashSplit("session-id", 2);
     }
 
     private static SplitRule parsePercentageSplit(String json) {
@@ -583,14 +587,14 @@ public interface ABTestManager {
         var weights = java.util.Arrays.stream(weightStr.split(";"))
                           .map(ABTestManager::parseVariantWeight)
                           .toList();
-        return new SplitRule.PercentageSplit(weights);
+        return SplitRule.PercentageSplit.percentageSplit(weights);
     }
 
     private static SplitRule.PercentageSplit.VariantWeight parseVariantWeight(String entry) {
         var eqIndex = entry.indexOf('=');
         return eqIndex > 0
-               ? new SplitRule.PercentageSplit.VariantWeight(entry.substring(0, eqIndex),
-                                                             Integer.parseInt(entry.substring(eqIndex + 1)))
-               : new SplitRule.PercentageSplit.VariantWeight(entry, 1);
+               ? SplitRule.PercentageSplit.VariantWeight.variantWeight(entry.substring(0, eqIndex),
+                                                                       Integer.parseInt(entry.substring(eqIndex + 1)))
+               : SplitRule.PercentageSplit.VariantWeight.variantWeight(entry, 1);
     }
 }

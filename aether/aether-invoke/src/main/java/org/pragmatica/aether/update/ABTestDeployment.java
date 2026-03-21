@@ -150,10 +150,10 @@ public record ABTestDeployment(String testId,
     /// Returns the first variant version, or baseline if no variants exist.
     @Override
     public Version newVersion() {
-        return variantVersions.values()
-                              .stream()
-                              .findFirst()
-                              .orElse(baselineVersion);
+        return Option.from(variantVersions.values()
+                                          .stream()
+                                          .findFirst())
+                     .or(baselineVersion);
     }
 
     /// Checks if this deployment is in a terminal state.

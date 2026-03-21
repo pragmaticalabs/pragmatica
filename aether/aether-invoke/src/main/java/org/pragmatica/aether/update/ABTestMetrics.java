@@ -31,7 +31,19 @@ public record ABTestMetrics(String testId,
                                  long errorCount,
                                  double errorRate,
                                  long p99LatencyMs,
-                                 long avgLatencyMs) {}
+                                 long avgLatencyMs) {
+        /// Factory method following JBCT naming convention.
+        @SuppressWarnings("JBCT-VO-02")
+        public static VariantMetrics variantMetrics(String variant,
+                                                    Version version,
+                                                    long requestCount,
+                                                    long errorCount,
+                                                    double errorRate,
+                                                    long p99LatencyMs,
+                                                    long avgLatencyMs) {
+            return new VariantMetrics(variant, version, requestCount, errorCount, errorRate, p99LatencyMs, avgLatencyMs);
+        }
+    }
 
     /// Creates metrics with current timestamp.
     ///

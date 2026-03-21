@@ -412,6 +412,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                                                requestId));
     }
 
+    @SuppressWarnings("JBCT-PAT-01") // Dispatcher method — decomposition would scatter routing logic
     private void dispatchToRoute(RequestContext request,
                                  ResponseWriter response,
                                  RouteTable routeTable,

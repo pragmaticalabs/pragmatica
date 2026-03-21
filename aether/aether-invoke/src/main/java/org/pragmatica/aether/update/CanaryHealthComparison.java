@@ -54,6 +54,17 @@ public record CanaryHealthComparison(String canaryId,
             return requestCount >= MIN_REQUESTS;
         }
 
+        /// Factory method following JBCT naming convention.
+        @SuppressWarnings("JBCT-VO-02")
+        public static VersionMetrics versionMetrics(Version version,
+                                                    long requestCount,
+                                                    long errorCount,
+                                                    double errorRate,
+                                                    long p99LatencyMs,
+                                                    long avgLatencyMs) {
+            return new VersionMetrics(version, requestCount, errorCount, errorRate, p99LatencyMs, avgLatencyMs);
+        }
+
         /// Whether error rate exceeds the relative threshold compared to a baseline value.
         public boolean exceedsRelativeErrorRate(double baselineErrorRate, double relativeThreshold) {
             return errorRate > baselineErrorRate * relativeThreshold;

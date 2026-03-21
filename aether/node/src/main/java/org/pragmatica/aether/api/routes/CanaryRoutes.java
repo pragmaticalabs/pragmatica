@@ -9,9 +9,11 @@ import org.pragmatica.aether.update.CanaryHealthComparison;
 import org.pragmatica.aether.update.CanaryStage;
 import org.pragmatica.aether.update.CleanupPolicy;
 import org.pragmatica.aether.update.HealthThresholds;
+import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -101,28 +103,45 @@ public final class CanaryRoutes implements RouteSource {
                                                                         parsed.thresholds(),
                                                                         CanaryAnalysisConfig.DEFAULT,
                                                                         parsed.cleanupPolicy()))
-                            .map(this::toCanaryInfo);
+                            .map(this::toCanaryInfo)
+                            .onSuccess(info -> AuditLog.deploymentStart("canary",
+                                                                        info.canaryId(),
+                                                                        info.artifactBase(),
+                                                                        info.oldVersion(),
+                                                                        info.newVersion()));
     }
 
     private Promise<CanaryInfo> handleCanaryPromote(String canaryId) {
         return requireLeader().flatMap(_ -> nodeSupplier.get()
                                                         .canaryDeploymentManager()
                                                         .promoteCanary(canaryId))
-                            .map(this::toCanaryInfo);
+                            .map(this::toCanaryInfo)
+                            .onSuccess(info -> AuditLog.deploymentPromote("canary",
+                                                                          info.canaryId(),
+                                                                          info.artifactBase(),
+                                                                          info.routing()));
     }
 
     private Promise<CanaryInfo> handleCanaryPromoteFull(String canaryId) {
         return requireLeader().flatMap(_ -> nodeSupplier.get()
                                                         .canaryDeploymentManager()
                                                         .promoteCanaryFull(canaryId))
-                            .map(this::toCanaryInfo);
+                            .map(this::toCanaryInfo)
+                            .onSuccess(info -> AuditLog.deploymentPromote("canary",
+                                                                          info.canaryId(),
+                                                                          info.artifactBase(),
+                                                                          info.routing()));
     }
 
     private Promise<CanaryInfo> handleCanaryRollback(String canaryId) {
         return requireLeader().flatMap(_ -> nodeSupplier.get()
                                                         .canaryDeploymentManager()
                                                         .rollbackCanary(canaryId))
-                            .map(this::toCanaryInfo);
+                            .map(this::toCanaryInfo)
+                            .onSuccess(info -> AuditLog.deploymentRollback("canary",
+                                                                           info.canaryId(),
+                                                                           info.artifactBase(),
+                                                                           "manual"));
     }
 
     private Promise<org.pragmatica.lang.Unit> requireLeader() {
@@ -147,9 +166,12 @@ public final class CanaryRoutes implements RouteSource {
         if (request.artifactBase() == null || request.version() == null) {
             return MISSING_ARTIFACT_BASE_OR_VERSION.promise();
         }
-        var instances = defaultIfNull(request.instances(), 1);
-        var maxErrorRate = defaultIfNull(request.maxErrorRate(), 0.01);
-        var maxLatencyMs = defaultIfNull(request.maxLatencyMs(), 500L);
+        var instances = Option.option(request.instances())
+                              .or(1);
+        var maxErrorRate = Option.option(request.maxErrorRate())
+                                 .or(0.01);
+        var maxLatencyMs = Option.option(request.maxLatencyMs())
+                                 .or(500L);
         var cleanupPolicy = request.cleanupPolicy() != null
                             ? CleanupPolicy.valueOf(request.cleanupPolicy())
                             : CleanupPolicy.GRACE_PERIOD;
@@ -162,13 +184,6 @@ public final class CanaryRoutes implements RouteSource {
                                                                                          thresholds,
                                                                                          cleanupPolicy))
                      .async();
-    }
-
-    @SuppressWarnings("JBCT-RET-03")
-    private static <T> T defaultIfNull(T value, T defaultValue) {
-        return value != null
-               ? value
-               : defaultValue;
     }
 
     private CanaryListResponse buildCanaryListResponse() {

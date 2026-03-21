@@ -133,7 +133,7 @@ public interface BlueprintParser {
         var observationMinutes = entry.get("observation_minutes") instanceof Number n
                                  ? n.intValue()
                                  : 5;
-        return new CanaryStageConfig(trafficPercent, observationMinutes);
+        return CanaryStageConfig.canaryStageConfig(trafficPercent, observationMinutes);
     }
 
     private static Result<List<SliceSpec>> parseSlices(TomlDocument doc) {
