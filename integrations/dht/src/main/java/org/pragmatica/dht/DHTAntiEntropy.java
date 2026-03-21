@@ -18,15 +18,14 @@ package org.pragmatica.dht;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.utility.KSUID;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
@@ -48,7 +47,7 @@ public final class DHTAntiEntropy {
     private final DHTNetwork network;
     private final DHTConfig config;
     private final TimeSpan antiEntropyInterval;
-    private final ScheduledExecutorService scheduler;
+    private volatile ScheduledFuture<?> scheduledTask;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     /// Pending digest comparisons indexed by correlation ID.
@@ -59,11 +58,6 @@ public final class DHTAntiEntropy {
         this.network = network;
         this.config = config;
         this.antiEntropyInterval = antiEntropyInterval;
-        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-                                                                        var thread = new Thread(r, "dht-anti-entropy");
-                                                                        thread.setDaemon(true);
-                                                                        return thread;
-                                                                    });
     }
 
     /// Create an anti-entropy process for the given node with default interval.
@@ -90,9 +84,8 @@ public final class DHTAntiEntropy {
         if (!running.compareAndSet(false, true)) {
             return;
         }
-        var intervalSeconds = antiEntropyInterval.millis() / 1000;
-        scheduler.scheduleAtFixedRate(this::runAntiEntropy, intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
-        log.info("DHT anti-entropy started (interval: {}s)", intervalSeconds);
+        scheduledTask = SharedScheduler.scheduleAtFixedRate(this::runAntiEntropy, antiEntropyInterval);
+        log.info("DHT anti-entropy started (interval: {}s)", antiEntropyInterval.millis() / 1000);
     }
 
     /// Stop the anti-entropy process.
@@ -100,7 +93,11 @@ public final class DHTAntiEntropy {
         if (!running.compareAndSet(true, false)) {
             return;
         }
-        scheduler.shutdown();
+        var task = scheduledTask;
+        if (task != null) {
+            task.cancel(false);
+            scheduledTask = null;
+        }
         log.info("DHT anti-entropy stopped");
     }
 

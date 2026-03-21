@@ -22,6 +22,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -31,9 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ScheduledFuture;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -293,7 +292,7 @@ class SliceInvokerImpl implements SliceInvoker {
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final long timeoutMs;
-    private final ScheduledExecutorService scheduler;
+    private volatile ScheduledFuture<?> cleanupTask;
     private final DeploymentStrategyCoordinator strategyCoordinator;
     private final ObservabilityInterceptor observabilityInterceptor;
 
@@ -334,18 +333,9 @@ class SliceInvokerImpl implements SliceInvoker {
         this.timeoutMs = timeoutMs;
         this.strategyCoordinator = strategyCoordinator;
         this.observabilityInterceptor = observabilityInterceptor;
-        this.scheduler = Executors.newSingleThreadScheduledExecutor(this::createSchedulerThread);
         // Schedule periodic cleanup of stale pending invocations
-        scheduler.scheduleAtFixedRate(this::cleanupStaleInvocations,
-                                      cleanupIntervalMs,
-                                      cleanupIntervalMs,
-                                      TimeUnit.MILLISECONDS);
-    }
-
-    private Thread createSchedulerThread(Runnable r) {
-        var t = new Thread(r, "slice-invoker-scheduler");
-        t.setDaemon(true);
-        return t;
+        this.cleanupTask = SharedScheduler.scheduleAtFixedRate(this::cleanupStaleInvocations,
+                                                               timeSpan(cleanupIntervalMs).millis());
     }
 
     private void cleanupStaleInvocations() {
@@ -383,16 +373,11 @@ class SliceInvokerImpl implements SliceInvoker {
         pendingInvocations.clear();
         pendingInvocationsByNode.clear();
         affinityResolvers.clear();
-        // Shutdown scheduler
-        scheduler.shutdown();
-        try{
-            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
-                scheduler.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            scheduler.shutdownNow();
-            Thread.currentThread()
-                  .interrupt();
+        // Cancel cleanup task
+        var task = cleanupTask;
+        if (task != null) {
+            task.cancel(false);
+            cleanupTask = null;
         }
         log.info("SliceInvoker stopped");
         return Promise.success(unit());
@@ -716,7 +701,7 @@ class SliceInvokerImpl implements SliceInvoker {
                       ctx.method,
                       cause.message());
         }
-        scheduler.schedule(() -> executeWithFailover(promise, newCtx), delayMs, TimeUnit.MILLISECONDS);
+        SharedScheduler.schedule(() -> executeWithFailover(promise, newCtx), timeSpan(delayMs).millis());
     }
 
     private <R> void handleAllEndpointsFailed(Promise<R> promise, FailoverContext<R> ctx) {

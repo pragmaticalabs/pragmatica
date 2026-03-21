@@ -13,9 +13,11 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 
-import java.util.concurrent.*;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -76,17 +78,11 @@ public interface TTMManager {
                                             MinuteAggregator aggregator,
                                             Supplier<ControllerConfig> controllerConfigSupplier) {
         var analyzer = ForecastAnalyzer.forecastAnalyzer(config);
-        var scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-                                                                       var thread = new Thread(r, "ttm-manager");
-                                                                       thread.setDaemon(true);
-                                                                       return thread;
-                                                                   });
         return new ActiveTTMManager(config,
                                     predictor,
                                     analyzer,
                                     aggregator,
                                     controllerConfigSupplier,
-                                    scheduler,
                                     new AtomicReference<>(),
                                     new AtomicReference<>(),
                                     new AtomicReference<>(TTMState.STOPPED),
@@ -133,7 +129,6 @@ public interface TTMManager {
                             ForecastAnalyzer analyzer,
                             MinuteAggregator aggregator,
                             Supplier<ControllerConfig> controllerConfigSupplier,
-                            ScheduledExecutorService scheduler,
                             AtomicReference<ScheduledFuture<?>> evaluationTask,
                             AtomicReference<TTMForecast> currentForecastRef,
                             AtomicReference<TTMState> stateRef,
@@ -180,35 +175,13 @@ public interface TTMManager {
         public Unit stop() {
             stopEvaluation();
             predictor.close();
-            scheduler.shutdown();
-            awaitSchedulerTermination();
             return Unit.unit();
-        }
-
-        private void awaitSchedulerTermination() {
-            Result.lift(e -> new TTMError.InferenceFailed("Scheduler termination interrupted"),
-                        () -> {
-                            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
-                                scheduler.shutdownNow();
-                            }
-                            return Unit.unit();
-                        })
-                  .onFailure(cause -> {
-                      scheduler.shutdownNow();
-                      Thread.currentThread()
-                            .interrupt();
-                  });
         }
 
         private void startEvaluation() {
             stopEvaluation();
             stateRef.set(TTMState.RUNNING);
-            var task = scheduler.scheduleAtFixedRate(this::runEvaluation,
-                                                     config.evaluationInterval()
-                                                           .millis(),
-                                                     config.evaluationInterval()
-                                                           .millis(),
-                                                     TimeUnit.MILLISECONDS);
+            var task = SharedScheduler.scheduleAtFixedRate(this::runEvaluation, config.evaluationInterval());
             evaluationTask.set(task);
             log.info("TTM evaluation started with interval {}", config.evaluationInterval());
         }

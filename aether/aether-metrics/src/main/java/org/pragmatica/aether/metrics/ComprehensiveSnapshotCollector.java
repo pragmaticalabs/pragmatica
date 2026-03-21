@@ -11,15 +11,14 @@ import org.pragmatica.aether.metrics.network.NetworkMetrics;
 import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
 import java.lang.management.OperatingSystemMXBean;
 import java.util.Map;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,8 +52,7 @@ public final class ComprehensiveSnapshotCollector {
     private final OperatingSystemMXBean osMxBean;
     private final MemoryMXBean memoryMxBean;
 
-    private final ScheduledExecutorService scheduler;
-    private ScheduledFuture<?> collectionTask;
+    private volatile ScheduledFuture<?> collectionTask;
     private volatile boolean started = false;
 
     private ComprehensiveSnapshotCollector(GCMetricsCollector gcCollector,
@@ -73,13 +71,6 @@ public final class ComprehensiveSnapshotCollector {
         this.derivedCalculator = derivedCalculator;
         this.osMxBean = ManagementFactory.getOperatingSystemMXBean();
         this.memoryMxBean = ManagementFactory.getMemoryMXBean();
-        this.scheduler = Executors.newSingleThreadScheduledExecutor(ComprehensiveSnapshotCollector::createDaemonThread);
-    }
-
-    private static Thread createDaemonThread(Runnable r) {
-        var thread = new Thread(r, "comprehensive-snapshot-collector");
-        thread.setDaemon(true);
-        return thread;
     }
 
     /// Factory method following JBCT naming convention.
@@ -122,11 +113,10 @@ public final class ComprehensiveSnapshotCollector {
         }
         started = true;
         gcCollector.start();
-        eventLoopCollector.start(scheduler);
-        collectionTask = scheduler.scheduleAtFixedRate(this::collectSnapshot,
-                                                       COLLECTION_INTERVAL_MS,
-                                                       COLLECTION_INTERVAL_MS,
-                                                       TimeUnit.MILLISECONDS);
+        eventLoopCollector.start();
+        collectionTask = SharedScheduler.scheduleAtFixedRate(this::collectSnapshot,
+                                                             TimeSpan.timeSpan(COLLECTION_INTERVAL_MS)
+                                                                     .millis());
         log.info("Comprehensive snapshot collection started (interval: {}ms)", COLLECTION_INTERVAL_MS);
         return unitResult();
     }
@@ -144,22 +134,8 @@ public final class ComprehensiveSnapshotCollector {
         }
         gcCollector.stop();
         eventLoopCollector.stop();
-        shutdownScheduler();
         log.info("Comprehensive snapshot collection stopped");
         return unitResult();
-    }
-
-    private void shutdownScheduler() {
-        scheduler.shutdown();
-        try{
-            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
-                scheduler.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            scheduler.shutdownNow();
-            Thread.currentThread()
-                  .interrupt();
-        }
     }
 
     /// Get the MinuteAggregator (for TTM access).

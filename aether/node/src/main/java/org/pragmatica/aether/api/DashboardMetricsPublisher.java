@@ -7,11 +7,11 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.topology.TopologyGraph;
 import org.pragmatica.aether.slice.topology.TopologyParser;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.util.List;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
@@ -34,7 +34,7 @@ public class DashboardMetricsPublisher {
     private final long broadcastIntervalMs;
     private final Supplier<AetherNode> nodeSupplier;
     private final AlertManager alertManager;
-    private final ScheduledExecutorService scheduler;
+    private volatile ScheduledFuture<?> scheduledTask;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     private long lastTotalInvocations = 0;
@@ -56,21 +56,15 @@ public class DashboardMetricsPublisher {
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
         this.broadcastIntervalMs = broadcastIntervalMs;
-        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-                                                                        var thread = new Thread(r, "dashboard-publisher");
-                                                                        thread.setDaemon(true);
-                                                                        return thread;
-                                                                    });
     }
 
     public void start() {
         if (!running.compareAndSet(false, true)) {
             return;
         }
-        scheduler.scheduleAtFixedRate(this::publishMetrics,
-                                      broadcastIntervalMs,
-                                      broadcastIntervalMs,
-                                      TimeUnit.MILLISECONDS);
+        scheduledTask = SharedScheduler.scheduleAtFixedRate(this::publishMetrics,
+                                                            TimeSpan.timeSpan(broadcastIntervalMs)
+                                                                    .millis());
         log.info("Dashboard metrics publisher started");
     }
 
@@ -78,7 +72,11 @@ public class DashboardMetricsPublisher {
         if (!running.compareAndSet(true, false)) {
             return;
         }
-        scheduler.shutdown();
+        var task = scheduledTask;
+        if (task != null) {
+            task.cancel(false);
+            scheduledTask = null;
+        }
         log.info("Dashboard metrics publisher stopped");
     }
 
