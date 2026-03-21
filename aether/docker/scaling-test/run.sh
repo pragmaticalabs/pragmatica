@@ -20,10 +20,13 @@ VERSION=$(grep -m1 '<version>' "$ROOT_DIR/pom.xml" | sed 's/.*<version>\(.*\)<\/
 echo "Detected project version: $VERSION"
 
 # Blueprint coordinates
-BLUEPRINT_GROUP="org.pragmatica.examples"
+BLUEPRINT_GROUP="org.pragmatica.aether.example"
 BLUEPRINT_ARTIFACT="url-shortener"
 BLUEPRINT_VERSION="$VERSION"
-BLUEPRINT_COORDS="$BLUEPRINT_GROUP:$BLUEPRINT_ARTIFACT:$BLUEPRINT_VERSION"
+BLUEPRINT_CLASSIFIER="blueprint"
+BLUEPRINT_COORDS="$BLUEPRINT_GROUP:$BLUEPRINT_ARTIFACT:$BLUEPRINT_VERSION:$BLUEPRINT_CLASSIFIER"
+BLUEPRINT_JAR="$ROOT_DIR/examples/url-shortener/target/url-shortener-${VERSION}-blueprint.jar"
+BLUEPRINT_GROUP_PATH="org/pragmatica/aether/example"
 
 COMPOSE_BASE="docker compose -f $SCRIPT_DIR/docker-compose.yml"
 COMPOSE_FULL="$COMPOSE_BASE -f $SCRIPT_DIR/docker-compose.workers.yml"
@@ -49,18 +52,34 @@ phase_deploy() {
     echo "=== Phase 2: Deploying url-shortener blueprint ==="
     echo "Blueprint: $BLUEPRINT_COORDS"
 
+    # Check blueprint JAR exists
+    if [ ! -f "$BLUEPRINT_JAR" ]; then
+        echo "ERROR: Blueprint JAR not found at $BLUEPRINT_JAR"
+        echo "Build with: mvn install -DskipTests -pl examples/url-shortener -am"
+        exit 1
+    fi
+
+    # Upload blueprint JAR via Maven protocol
+    echo "Uploading blueprint JAR..."
+    curl -sf -X PUT "$MGMT_URL/repository/$BLUEPRINT_GROUP_PATH/$BLUEPRINT_ARTIFACT/$BLUEPRINT_VERSION/${BLUEPRINT_ARTIFACT}-${BLUEPRINT_VERSION}-${BLUEPRINT_CLASSIFIER}.jar" \
+        --data-binary "@$BLUEPRINT_JAR" \
+        || { echo "ERROR: Blueprint upload failed"; exit 1; }
+    echo "Blueprint JAR uploaded."
+
     # Deploy via management API
-    curl -sf -X POST "$MGMT_URL/api/deployments" \
+    echo "Deploying blueprint..."
+    curl -sf -X POST "$MGMT_URL/api/blueprint/deploy" \
         -H "Content-Type: application/json" \
-        -d "{\"blueprint\": \"$BLUEPRINT_COORDS\", \"replicas\": 5}" \
+        -d "{\"artifact\": \"$BLUEPRINT_COORDS\"}" \
         || { echo "ERROR: Deployment failed"; exit 1; }
 
     echo ""
     echo "Waiting for deployment to stabilize..."
-    sleep 10
+    sleep 15
 
-    # Verify deployment status
-    curl -sf "$MGMT_URL/api/deployments" | head -c 500
+    # Verify slices
+    echo "Cluster status:"
+    curl -sf "$MGMT_URL/api/status" | head -c 500
     echo ""
     echo "Phase 2 complete: blueprint deployed."
 }
