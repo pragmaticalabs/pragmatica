@@ -44,12 +44,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private static final Logger log = LoggerFactory.getLogger(CoreSwimHealthDetector.class);
 
-    /// Core SWIM config: faster probing for core consensus nodes.
-    private static final SwimConfig CORE_SWIM_CONFIG = SwimConfig.swimConfig(timeSpan(500).millis(),
-                                                                             timeSpan(300).millis(),
-                                                                             3,
-                                                                             timeSpan(10).seconds(),
-                                                                             8);
+    /// Core SWIM config — uses DEFAULT which is tuned for containerized environments.
+    /// period=1s, probeTimeout=800ms, suspectTimeout=15s.
+    private static final SwimConfig CORE_SWIM_CONFIG = SwimConfig.DEFAULT;
 
     private final MessageRouter router;
     private final TopologyConfig topologyConfig;
