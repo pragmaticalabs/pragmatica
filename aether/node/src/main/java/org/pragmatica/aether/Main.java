@@ -1,6 +1,7 @@
 package org.pragmatica.aether;
 
 import org.pragmatica.aether.config.AetherConfig;
+import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.Environment;
 import org.pragmatica.aether.config.SliceConfig;
@@ -70,7 +71,8 @@ public record Main(String[] args) {
                                                        managementPort,
                                                        dhtConfig,
                                                        coreMax);
-        var withTls = wireTlsIfEnabled(config, aetherConfig);
+        var withAppHttp = wireAppHttpIfConfigured(config, aetherConfig);
+        var withTls = wireTlsIfEnabled(withAppHttp, aetherConfig);
         var finalConfig = wireCloudIfConfigured(withTls, aetherConfig);
         var node = AetherNode.aetherNode(finalConfig)
                              .unwrap();
@@ -85,6 +87,13 @@ public record Main(String[] args) {
                                                                                                               cause.message()))
                                                                                 .option())
                            .map(config::withEnvironment)
+                           .or(config);
+    }
+
+    private AetherNodeConfig wireAppHttpIfConfigured(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(AetherConfig::appHttp)
+                           .filter(AppHttpConfig::enabled)
+                           .map(config::withAppHttp)
                            .or(config);
     }
 
