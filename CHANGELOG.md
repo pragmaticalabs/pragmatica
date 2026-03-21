@@ -29,6 +29,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Blueprint deployment config** -- Optional `[deployment]` TOML section for strategy selection and configuration
 
 ### Changed
+- **Deployment event aggregator — KV-Store driven** — deployment events (STARTED/COMPLETED/FAILED) now derived from `NodeArtifactKey` KV-Store notifications instead of manually injected local messages. All nodes see all deployment events. Deployment duration tracked from LOAD→ACTIVE, node join-to-first-deployment timing included
+- **Jackson 3.1.0 LTS** — bumped from 3.0.3, annotations from 2.20 to 2.21
+- **JBCT review compliance** — SharedScheduler for canary evaluation (was shutdownNow), AtomicBoolean for SliceInvoker.stop(), immutable FailoverContext collections, AB→Ab rename (acronym-as-word), factory methods for all value objects, Option for null policy, deployment audit logging via AuditLog, void helper suppressions
 - **Role-aware unified AetherNode** — merged WorkerNode into AetherNode. Single `aether-node.jar` binary for both CORE and WORKER roles. Consensus observer mode (receives Decisions without voting), `ForwardingClusterNode` for transparent KV write forwarding, `SwitchableClusterNode` for runtime role switching. WORKER→CORE promotion supported. `aether/worker` module eliminated — components ported to `aether/node` and `aether-metrics`
 - **Quorum fix for mixed clusters** — when `coreMax > 0`, consensus quorum calculated against core node count only (not total nodes including workers)
 - **KV-commit-driven allocation/deallocation** — slice allocation and deallocation now triggered exclusively by KV-Store commit notifications (`onSliceTargetPut`/`onSliceTargetRemove`), eliminating double-allocation race in blueprint handler
