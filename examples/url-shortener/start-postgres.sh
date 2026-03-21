@@ -60,12 +60,15 @@ else
     done
 fi
 
-# Run schema init
-if [ -f "$SCHEMA_DIR/url-shortener-pg.sql" ]; then
-    echo "Initializing schema..."
-    $RUNTIME exec -i "$CONTAINER_NAME" psql -U "$PG_USER" -d "$PG_DB" < "$SCHEMA_DIR/url-shortener-pg.sql"
-    echo "Schema initialized."
-fi
+# Create per-datasource databases for schema migration engine
+echo "Creating datasource databases..."
+$RUNTIME exec "$CONTAINER_NAME" psql -U "$PG_USER" -c "CREATE DATABASE url_shortener;" 2>/dev/null || true
+$RUNTIME exec "$CONTAINER_NAME" psql -U "$PG_USER" -c "CREATE DATABASE url_shortener_pg;" 2>/dev/null || true
+echo "Databases ready."
+
+# Schema is now managed by Aether's migration engine.
+# The start-postgres.sh script only creates empty databases.
+# Migration scripts in schema/ directories are applied automatically on blueprint deploy.
 
 echo ""
 echo "PostgreSQL ready:"

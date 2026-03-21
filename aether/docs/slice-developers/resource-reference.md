@@ -293,6 +293,17 @@ Transport is selected automatically by priority:
 | `DB2` | 50000 | `com.ibm.db2.jcc.DB2Driver` |
 | `COCKROACHDB` | 26257 | `org.postgresql.Driver` |
 
+### Schema Migration Prerequisites
+
+The migration engine creates and manages **tables**, not databases. Each datasource database must exist before migration runs.
+
+- **Database names must match schema directory names.** A schema directory `schema/my_datasource/` expects a database named `my_datasource` to exist on the configured host.
+- The `start-postgres.sh` scripts in the example projects create the required per-datasource databases automatically.
+- Migration scripts (versioned `V`, repeatable `R`, undo `U`, baseline `B`) in each schema directory are applied automatically when a blueprint is deployed.
+- Schema history is tracked per datasource in the `aether_schema_history` table.
+
+If you add a new datasource with schema migrations, ensure the target database is created before deploying the blueprint. For local development, add a `CREATE DATABASE` statement to your `start-postgres.sh` script.
+
 ### Connection Pool Configuration
 
 Nested under `pool_config` in the database section.
