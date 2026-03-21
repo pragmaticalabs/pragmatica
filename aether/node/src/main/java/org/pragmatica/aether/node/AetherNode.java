@@ -1493,6 +1493,8 @@ public interface AetherNode {
                                                   .onPut(AetherKey.NodeArtifactKey.class,
                                                          deploymentMap::onNodeArtifactPut)
                                                   .onPut(AetherKey.NodeArtifactKey.class, controlLoop::onNodeArtifactPut)
+                                                  .onPut(AetherKey.NodeArtifactKey.class,
+                                                         eventAggregator::onNodeArtifactPut)
                                                   .onRemove(AetherKey.NodeArtifactKey.class,
                                                             nodeDeploymentManager::onNodeArtifactRemove)
                                                   .onRemove(AetherKey.NodeArtifactKey.class,
@@ -1623,12 +1625,6 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class, eventAggregator::onNodeDown));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, eventAggregator::onQuorumStateChange));
-        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentStarted.class,
-                                              eventAggregator::onDeploymentStarted));
-        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentCompleted.class,
-                                              eventAggregator::onDeploymentCompleted));
-        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
-                                              eventAggregator::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
                                               rollingUpdateManager::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
