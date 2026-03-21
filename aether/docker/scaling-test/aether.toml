@@ -4,6 +4,6 @@
 [slice]
 repositories = ["builtin", "local"]
 
-[app_http]
+[app-http]
 enabled = true
 port = 8070

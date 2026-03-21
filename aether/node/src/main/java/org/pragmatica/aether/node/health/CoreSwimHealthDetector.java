@@ -20,11 +20,12 @@ import org.pragmatica.swim.SwimProtocol;
 import org.pragmatica.swim.SwimTransport;
 
 import java.net.InetSocketAddress;
-import java.time.Duration;
 
 import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Bridges SWIM failure detection to NCN channel management.
 /// SWIM is the sole failure detector — NCN's Ping/Pong keepalive has been removed.
@@ -44,10 +45,10 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private static final Logger log = LoggerFactory.getLogger(CoreSwimHealthDetector.class);
 
     /// Core SWIM config: faster probing for core consensus nodes.
-    private static final SwimConfig CORE_SWIM_CONFIG = SwimConfig.swimConfig(Duration.ofMillis(500),
-                                                                             Duration.ofMillis(300),
+    private static final SwimConfig CORE_SWIM_CONFIG = SwimConfig.swimConfig(timeSpan(500).millis(),
+                                                                             timeSpan(300).millis(),
                                                                              3,
-                                                                             Duration.ofSeconds(10),
+                                                                             timeSpan(10).seconds(),
                                                                              8);
 
     private final MessageRouter router;

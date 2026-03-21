@@ -17,7 +17,7 @@
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
-import java.time.Duration;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
@@ -243,7 +243,7 @@ class SwimProtocolTest {
 
         @BeforeEach
         void setUp() {
-            var config = swimConfig(Duration.ofMillis(50), Duration.ofMillis(20), 3, Duration.ofMillis(100), 8);
+            var config = swimConfig(timeSpan(50).millis(), timeSpan(20).millis(), 3, timeSpan(100).millis(), 8);
             transport = new RecordingTransport();
             listener = new RecordingListener();
             protocol = SwimProtocol.swimProtocol(config, transport, listener, SELF_ID, SELF_ADDR)

@@ -16,9 +16,10 @@
 
 package org.pragmatica.swim;
 
-import java.time.Duration;
-
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.Codec;
+
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Configuration for the SWIM protocol.
 ///
@@ -28,29 +29,32 @@ import org.pragmatica.serialization.Codec;
 /// @param suspectTimeout  time a member stays in SUSPECT before transitioning to FAULTY
 /// @param maxPiggyback    maximum number of membership updates piggybacked per message
 @Codec
-public record SwimConfig(Duration period,
-                         Duration probeTimeout,
+public record SwimConfig(TimeSpan period,
+                         TimeSpan probeTimeout,
                          int indirectProbes,
-                         Duration suspectTimeout,
+                         TimeSpan suspectTimeout,
                          int maxPiggyback) {
 
+    /// Default configuration — suitable for Docker and containerized environments.
+    public static final SwimConfig DEFAULT = new SwimConfig(
+        timeSpan(1).seconds(),
+        timeSpan(800).millis(),
+        3,
+        timeSpan(15).seconds(),
+        8
+    );
+
     /// Factory with all parameters.
-    public static SwimConfig swimConfig(Duration period,
-                                        Duration probeTimeout,
+    public static SwimConfig swimConfig(TimeSpan period,
+                                        TimeSpan probeTimeout,
                                         int indirectProbes,
-                                        Duration suspectTimeout,
+                                        TimeSpan suspectTimeout,
                                         int maxPiggyback) {
         return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout, maxPiggyback);
     }
 
-    /// Factory with sensible defaults.
+    /// Factory with defaults.
     public static SwimConfig swimConfig() {
-        return new SwimConfig(
-            Duration.ofSeconds(1),
-            Duration.ofMillis(500),
-            3,
-            Duration.ofSeconds(5),
-            8
-        );
+        return DEFAULT;
     }
 }

@@ -94,7 +94,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
 
         scheduler = Executors.newSingleThreadScheduledExecutor(Thread.ofVirtual().factory());
-        var periodMillis = config.period().toMillis();
+        var periodMillis = config.period().millis();
         tickFuture = scheduler.scheduleAtFixedRate(this::tick, periodMillis, periodMillis, TimeUnit.MILLISECONDS);
         LOG.info("SWIM protocol started for node {}", selfId.id());
         return Result.success(this);
@@ -188,7 +188,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private void expireSuspectMembers() {
         var now = System.currentTimeMillis();
-        var suspectTimeoutMillis = config.suspectTimeout().toMillis();
+        var suspectTimeoutMillis = config.suspectTimeout().millis();
 
         suspectTimestamps.forEach((nodeId, timestamp) -> expireSuspectIfOverdue(nodeId, timestamp, now, suspectTimeoutMillis));
         // Clean up stale relays older than probe timeout (target never responded)
@@ -234,7 +234,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void scheduleProbeTimeout(long seq) {
-        var timeoutMillis = config.probeTimeout().toMillis();
+        var timeoutMillis = config.probeTimeout().millis();
 
         scheduler.schedule(() -> onProbeTimeout(seq), timeoutMillis, TimeUnit.MILLISECONDS);
     }
