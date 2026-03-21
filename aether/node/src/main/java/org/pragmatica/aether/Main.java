@@ -3,6 +3,7 @@ package org.pragmatica.aether;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.ConfigLoader;
+import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.Environment;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
@@ -71,7 +72,8 @@ public record Main(String[] args) {
                                                        managementPort,
                                                        dhtConfig,
                                                        coreMax);
-        var withAppHttp = wireAppHttpIfConfigured(config, aetherConfig);
+        var withConfig = wireConfigProvider(config);
+        var withAppHttp = wireAppHttpIfConfigured(withConfig, aetherConfig);
         var withTls = wireTlsIfEnabled(withAppHttp, aetherConfig);
         var finalConfig = wireCloudIfConfigured(withTls, aetherConfig);
         var node = AetherNode.aetherNode(finalConfig)
@@ -88,6 +90,22 @@ public record Main(String[] args) {
                                                                                 .option())
                            .map(config::withEnvironment)
                            .or(config);
+    }
+
+    private AetherNodeConfig wireConfigProvider(AetherNodeConfig config) {
+        return findArg("--config=").map(Path::of)
+                                   .filter(p -> p.toFile().exists())
+                                   .map(this::buildConfigProvider)
+                                   .map(config::withConfigProvider)
+                                   .or(config);
+    }
+
+    private ConfigurationProvider buildConfigProvider(Path configPath) {
+        var builder = ConfigurationProvider.builder();
+        builder.withTomlFile(configPath);
+        builder.withSystemProperties("aether.");
+        builder.withEnvironment("AETHER_");
+        return builder.build();
     }
 
     private AetherNodeConfig wireAppHttpIfConfigured(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
