@@ -22,14 +22,13 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
@@ -62,7 +61,6 @@ public final class SwimProtocol implements SwimMessageHandler {
     private final Map<NodeId, Long> suspectTimestamps = new ConcurrentHashMap<>();
     private final PiggybackBuffer piggybackBuffer;
     private final AtomicLong sequenceCounter = new AtomicLong(0);
-    private volatile ScheduledExecutorService scheduler;
     private volatile ScheduledFuture<?> tickFuture;
 
     private SwimProtocol(SwimConfig config,
@@ -87,28 +85,25 @@ public final class SwimProtocol implements SwimMessageHandler {
         return Result.success(new SwimProtocol(config, transport, listener, selfId, selfAddress));
     }
 
-    /// Start the protocol: begin periodic probing.
+    /// Start the protocol: begin periodic probing via SharedScheduler.
     public Result<SwimProtocol> start() {
-        if (scheduler != null) {
+        if (tickFuture != null) {
             return SwimError.General.PROTOCOL_ALREADY_RUNNING.result();
         }
 
-        scheduler = Executors.newSingleThreadScheduledExecutor(Thread.ofVirtual().factory());
-        var periodMillis = config.period().millis();
-        tickFuture = scheduler.scheduleAtFixedRate(this::tick, periodMillis, periodMillis, TimeUnit.MILLISECONDS);
+        tickFuture = SharedScheduler.scheduleAtFixedRate(this::tick, config.period());
         LOG.info("SWIM protocol started for node {}", selfId.id());
         return Result.success(this);
     }
 
     /// Stop the protocol.
     public Result<SwimProtocol> stop() {
-        if (scheduler == null) {
+        var future = tickFuture;
+        if (future == null) {
             return SwimError.General.PROTOCOL_NOT_RUNNING.result();
         }
 
-        tickFuture.cancel(false);
-        scheduler.shutdown();
-        scheduler = null;
+        future.cancel(false);
         tickFuture = null;
         LOG.info("SWIM protocol stopped for node {}", selfId.id());
         return Result.success(this);
@@ -234,9 +229,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void scheduleProbeTimeout(long seq) {
-        var timeoutMillis = config.probeTimeout().millis();
-
-        scheduler.schedule(() -> onProbeTimeout(seq), timeoutMillis, TimeUnit.MILLISECONDS);
+        SharedScheduler.schedule(() -> onProbeTimeout(seq), config.probeTimeout());
     }
 
     private void onProbeTimeout(long seq) {

@@ -28,7 +28,8 @@ import java.util.concurrent.TimeUnit;
 public final class SharedScheduler {
     private SharedScheduler() {}
 
-    private static final ScheduledExecutorService SCHEDULER = new ScheduledThreadPoolExecutor(2);
+    private static final ScheduledExecutorService SCHEDULER =
+        new ScheduledThreadPoolExecutor(Math.max(Runtime.getRuntime().availableProcessors(), 8));
 
     /// Schedule one-time invocation
     ///
