@@ -239,14 +239,28 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
     - **Phase 2:** Replication, governor failover recovery — 3-4 weeks
     - **Phase 3:** PostgreSQL persistent backend, transactional cursors, compaction — 4-6 weeks
 
-2. **Canary & Blue-Green Deployment Strategies** — [design spec](../../specs/canary-blue-green-spec.md)
-     - Current: Rolling updates with weighted routing exist
-     - Add explicit canary deployment with automatic rollback on error threshold
-     - Add blue-green deployment with instant switchover
-     - A/B testing support with traffic splitting by criteria
-     - **Spec complete:** 5-stage canary progression, atomic blue-green switchover, A/B split rules, KV types, REST API, CLI, TOML config, failure handling. 5 phases (18-26 days)
+2. **Canary, Blue-Green & A/B Testing Deployment Strategies** — ✅ **Implemented in v0.21.0**
+     - Canary: multi-stage progressive traffic shift, auto-evaluation, auto-rollback, KV persistence
+     - Blue-green: atomic switchover, drain period, instant switch-back
+     - A/B testing: deterministic split by request context (header/cookie/percentage), ScopedValue variant propagation
+     - DeploymentStrategyCoordinator: mutual exclusion, unified routing lookup
+     - HTTP version-aware routing: AppHttpServer checks strategy before serving locally
+     - REST API (18 endpoints), CLI (18 subcommands), TOML config, full audit logging
+     - **Remaining:** Blueprint-level canary orchestration (data model ready, manager needs `startBlueprintCanary` method)
 
-3. **Cloud Integration — Remaining Work (demand-driven)** — [SPI architecture spec](../../specs/cloud-integration-spi-spec.md)
+3. **Schema Migration Failure Recovery**
+     - **Problem:** When schema migration fails, slices remain stuck in `LOADED` state indefinitely — the activation gate (`areSchemasReady`) blocks, but there's no automatic retry or manual recovery path
+     - **Needs:**
+       - Retry mechanism: automatic retry with backoff on transient failures (connection timeout, lock contention)
+       - Manual retry API: `POST /api/schema/{datasource}/retry` to re-trigger PENDING status and restart migration
+       - CLI command: `aether schema retry <datasource>`
+       - Failed→PENDING transition: allow resetting FAILED status back to PENDING (currently terminal)
+       - Activation resumption: when migration succeeds after retry, automatically resume activation cascade for all LOADED slices that were waiting
+       - Skip gate option: per-blueprint `schema_required = false` config to deploy without waiting for migration (useful for slices that don't need schema)
+       - Dashboard visibility: show schema status per datasource, highlight FAILED with retry button
+     - **Context:** RFC-0014 §3.3 defines the activation gate but not failure recovery. Current behavior: FAILED is terminal, slices stuck forever
+
+4. **Cloud Integration — Remaining Work (demand-driven)** — [SPI architecture spec](../../specs/cloud-integration-spi-spec.md)
    - **Core implementation complete** (v0.21.0): 4 providers (Hetzner, AWS, GCP, Azure) with compute, LB, discovery, secrets. See Completed section.
    - Spot pool support: core (on-demand) vs elastic (spot/preemptible) pools
    - LB provider overrides: health check config, weighted routing sync, TLS termination
