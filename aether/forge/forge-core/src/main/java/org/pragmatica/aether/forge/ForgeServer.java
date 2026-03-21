@@ -2,8 +2,6 @@ package org.pragmatica.aether.forge;
 
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberConfig;
-import org.pragmatica.aether.ember.EmberH2Config;
-import org.pragmatica.aether.ember.EmberH2Server;
 import org.pragmatica.aether.lb.AetherPassiveLB;
 import org.pragmatica.aether.lb.PassiveLBConfig;
 import org.pragmatica.consensus.NodeId;
@@ -11,7 +9,6 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.config.ConfigurationProvider;
-import org.pragmatica.config.source.MapConfigSource;
 import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
 import org.pragmatica.aether.forge.load.LoadConfigLoader;
@@ -36,7 +33,6 @@ import java.net.URI;
 import java.net.http.HttpRequest;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map;
 import java.util.function.Supplier;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -74,10 +70,6 @@ public final class ForgeServer {
     private static final int MAX_CONTENT_LENGTH = 65536;
     private static final JsonCodec CODEC = JsonCodecAdapter.defaultCodec();
 
-    // Forge-only dev tooling credentials for embedded H2 database
-    private static final String FORGE_H2_USERNAME = "sa";
-    private static final String FORGE_H2_PASSWORD = "";
-
     private final StartupConfig startupConfig;
     private final EmberConfig forgeConfig;
 
@@ -87,7 +79,6 @@ public final class ForgeServer {
     private volatile Option<ForgeMetrics> metrics = Option.empty();
     private volatile Option<ForgeApiHandler> apiHandler = Option.empty();
     private volatile Option<StaticFileHandler> staticHandler = Option.empty();
-    private volatile Option<EmberH2Server> h2Server = Option.empty();
     private volatile Option<HttpServer> httpServer = Option.empty();
     private volatile Option<ScheduledExecutorService> metricsScheduler = Option.empty();
     private volatile Option<StatusWebSocketPublisher> wsPublisher = Option.empty();
@@ -205,16 +196,6 @@ public final class ForgeServer {
         if (forgeConfig.lbEnabled()) {
             log.info("  Load balancer: http://localhost:{}", forgeConfig.lbPort());
         }
-        if (forgeConfig.h2Config()
-                       .enabled()) {
-            log.info("  H2 Database: port {} ({})",
-                     forgeConfig.h2Config()
-                                .port(),
-                     forgeConfig.h2Config()
-                                .persistent()
-                     ? "persistent"
-                     : "in-memory");
-        }
         startupConfig.blueprint()
                      .onPresent(coords -> log.info("  Blueprint: {}", coords));
         startupConfig.loadConfig()
@@ -227,7 +208,6 @@ public final class ForgeServer {
 
     public void start() {
         log.info("Starting Forge server...");
-        startH2Server();
         var configProvider = buildConfigurationProvider();
         initializeComponents(configProvider);
         startCluster();
@@ -529,34 +509,13 @@ public final class ForgeServer {
                                                .seconds())
                                 .onFailure(cause -> log.warn("Error stopping cluster: {}",
                                                              cause.message())));
-        stopH2Server();
         log.info("Forge server stopped.");
-    }
-
-    private void startH2Server() {
-        if (!forgeConfig.h2Config()
-                        .enabled()) {
-            return;
-        }
-        var server = EmberH2Server.emberH2Server(forgeConfig.h2Config());
-        server.start()
-              .await(TimeSpan.timeSpan(10)
-                             .seconds())
-              .onSuccess(_ -> {
-                             h2Server = Option.some(server);
-                             log.info("H2 database available at: {}",
-                                      server.jdbcUrl());
-                         })
-              .onFailure(cause -> {
-                  throw new IllegalStateException("Failed to start H2 server: " + cause.message());
-              });
     }
 
     /// Build ConfigurationProvider with layered configuration.
     ///
     /// Priority (highest to lowest):
     /// <ol>
-    ///   - Runtime values (H2 URL if enabled)
     ///   - Environment variables (AETHER_*)
     ///   - System properties (-Daether.*)
     ///   - forge.toml (if specified)
@@ -577,46 +536,7 @@ public final class ForgeServer {
         // Add system properties and environment (higher priority)
         builder.withSystemProperties("aether.")
                .withEnvironment("AETHER_");
-        // Inject H2 runtime values (highest priority)
-        // Keys must match toSnakeCase(recordComponentName) from DatabaseConnectorConfig
-        h2Server.onPresent(server -> injectH2Config(server, builder));
         return Option.some(builder.build());
-    }
-
-    private void injectH2Config(EmberH2Server server, ConfigurationProvider.Builder builder) {
-        var runtimeValues = Map.of("database.name",
-                                   "forge-h2",
-                                   "database.type",
-                                   "H2",
-                                   "database.host",
-                                   "localhost",
-                                   "database.port",
-                                   "0",
-                                   "database.database",
-                                   "forge",
-                                   "database.jdbc_url",
-                                   server.jdbcUrl(),
-                                   "database.username",
-                                   FORGE_H2_USERNAME,
-                                   "database.password",
-                                   FORGE_H2_PASSWORD);
-        builder.withSource(MapConfigSource.mapConfigSource("runtime", runtimeValues, 500)
-                                          .unwrap());
-        log.info("Injected H2 configuration into ConfigurationProvider");
-    }
-
-    private void stopH2Server() {
-        h2Server.onPresent(server -> server.stop()
-                                           .await(TimeSpan.timeSpan(5)
-                                                          .seconds())
-                                           .onFailure(cause -> log.warn("Error stopping H2 server: {}",
-                                                                        cause.message())));
-    }
-
-    /// Get the H2 JDBC URL if H2 is enabled and running.
-    public Option<String> h2JdbcUrl() {
-        return h2Server.filter(EmberH2Server::isRunning)
-                       .map(EmberH2Server::jdbcUrl);
     }
 
     private void startHttpServer() {

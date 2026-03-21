@@ -66,13 +66,20 @@ public interface BlueprintArtifactParser {
     private static void addMigrationEntry(ZipInputStream zis,
                                           String entryPath,
                                           Map<String, List<MigrationEntry>> migrations) throws IOException {
-        // entryPath format: schema/{datasource}/{filename}.sql
         var parts = entryPath.split("/");
-        if (parts.length < 3) {
+        String datasource;
+        String filename;
+        if (parts.length == 2) {
+            // schema/V001__create.sql → default datasource
+            datasource = "database";
+            filename = parts[1];
+        } else if (parts.length >= 3) {
+            // schema/analytics/V001__create.sql → named datasource
+            datasource = "database." + parts[1];
+            filename = parts[parts.length - 1];
+        } else {
             return;
         }
-        var datasource = parts[1];
-        var filename = parts[parts.length - 1];
         var sql = readEntry(zis);
         var checksum = computeChecksum(sql);
         migrations.computeIfAbsent(datasource,

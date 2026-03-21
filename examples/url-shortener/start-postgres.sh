@@ -60,15 +60,8 @@ else
     done
 fi
 
-# Create per-datasource databases for schema migration engine
-echo "Creating datasource databases..."
-$RUNTIME exec "$CONTAINER_NAME" psql -U "$PG_USER" -c "CREATE DATABASE url_shortener;" 2>/dev/null || true
-$RUNTIME exec "$CONTAINER_NAME" psql -U "$PG_USER" -c "CREATE DATABASE url_shortener_pg;" 2>/dev/null || true
-echo "Databases ready."
-
-# Schema is now managed by Aether's migration engine.
-# The start-postgres.sh script only creates empty databases.
-# Migration scripts in schema/ directories are applied automatically on blueprint deploy.
+# Schema is managed by Aether's migration engine.
+# Migration scripts in schema/ are applied automatically on blueprint deploy.
 
 echo ""
 echo "PostgreSQL ready:"

@@ -29,7 +29,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// and released on demand or during shutdown.
 public interface DatasourceConnectionProvider {
     /// Get or create a SqlConnector for the named datasource.
-    /// Config is resolved from section "database.<datasourceName>".
+    /// Config is resolved from the exact section name (e.g. "database" or "database.analytics").
     Promise<SqlConnector> connector(String datasourceName);
 
     /// Release a specific datasource connector (closes pool).
@@ -104,9 +104,8 @@ class DatasourceConnectionProviderInstance implements DatasourceConnectionProvid
     }
 
     private Promise<SqlConnector> createConnector(String datasourceName) {
-        var configSection = "database." + datasourceName;
-        log.info("Creating SqlConnector for datasource '{}' from config section '{}'", datasourceName, configSection);
-        return loadConfig(configSection).flatMap(this::selectAndProvision);
+        log.info("Creating SqlConnector for datasource '{}' from config section '{}'", datasourceName, datasourceName);
+        return loadConfig(datasourceName).flatMap(this::selectAndProvision);
     }
 
     private Promise<DatabaseConnectorConfig> loadConfig(String configSection) {
