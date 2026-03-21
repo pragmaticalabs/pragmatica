@@ -1,0 +1,196 @@
+# Aether Scaling Test — 7 Worker Nodes (overlay)
+# Usage: docker compose -f docker-compose.yml -f docker-compose.workers.yml up --build
+
+services:
+  aether-worker-6:
+    build:
+      context: ../..
+      dockerfile: docker/aether-node/Dockerfile
+      args:
+        CONFIG_PATH: docker/scaling-test/aether.toml
+    container_name: aether-worker-6
+    hostname: aether-worker-6
+    environment:
+      NODE_ID: "node-6"
+      CLUSTER_PORT: "8090"
+      MANAGEMENT_PORT: "8080"
+      CORE_MAX: "5"
+      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
+    ports:
+      - "8185:8080"
+      - "8075:8070"
+    networks:
+      - scaling-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
+  aether-worker-7:
+    build:
+      context: ../..
+      dockerfile: docker/aether-node/Dockerfile
+      args:
+        CONFIG_PATH: docker/scaling-test/aether.toml
+    container_name: aether-worker-7
+    hostname: aether-worker-7
+    environment:
+      NODE_ID: "node-7"
+      CLUSTER_PORT: "8090"
+      MANAGEMENT_PORT: "8080"
+      CORE_MAX: "5"
+      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
+    ports:
+      - "8186:8080"
+      - "8076:8070"
+    networks:
+      - scaling-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
+  aether-worker-8:
+    build:
+      context: ../..
+      dockerfile: docker/aether-node/Dockerfile
+      args:
+        CONFIG_PATH: docker/scaling-test/aether.toml
+    container_name: aether-worker-8
+    hostname: aether-worker-8
+    environment:
+      NODE_ID: "node-8"
+      CLUSTER_PORT: "8090"
+      MANAGEMENT_PORT: "8080"
+      CORE_MAX: "5"
+      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
+    ports:
+      - "8187:8080"
+      - "8077:8070"
+    networks:
+      - scaling-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
+  aether-worker-9:
+    build:
+      context: ../..
+      dockerfile: docker/aether-node/Dockerfile
+      args:
+        CONFIG_PATH: docker/scaling-test/aether.toml
+    container_name: aether-worker-9
+    hostname: aether-worker-9
+    environment:
+      NODE_ID: "node-9"
+      CLUSTER_PORT: "8090"
+      MANAGEMENT_PORT: "8080"
+      CORE_MAX: "5"
+      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
+    ports:
+      - "8188:8080"
+      - "8078:8070"
+    networks:
+      - scaling-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
+  aether-worker-10:
+    build:
+      context: ../..
+      dockerfile: docker/aether-node/Dockerfile
+      args:
+        CONFIG_PATH: docker/scaling-test/aether.toml
+    container_name: aether-worker-10
+    hostname: aether-worker-10
+    environment:
+      NODE_ID: "node-10"
+      CLUSTER_PORT: "8090"
+      MANAGEMENT_PORT: "8080"
+      CORE_MAX: "5"
+      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
+    ports:
+      - "8189:8080"
+      - "8079:8070"
+    networks:
+      - scaling-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
+  aether-worker-11:
+    build:
+      context: ../..
+      dockerfile: docker/aether-node/Dockerfile
+      args:
+        CONFIG_PATH: docker/scaling-test/aether.toml
+    container_name: aether-worker-11
+    hostname: aether-worker-11
+    environment:
+      NODE_ID: "node-11"
+      CLUSTER_PORT: "8090"
+      MANAGEMENT_PORT: "8080"
+      CORE_MAX: "5"
+      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
+    ports:
+      - "8190:8080"
+      - "8180:8070"
+    networks:
+      - scaling-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
+  aether-worker-12:
+    build:
+      context: ../..
+      dockerfile: docker/aether-node/Dockerfile
+      args:
+        CONFIG_PATH: docker/scaling-test/aether.toml
+    container_name: aether-worker-12
+    hostname: aether-worker-12
+    environment:
+      NODE_ID: "node-12"
+      CLUSTER_PORT: "8090"
+      MANAGEMENT_PORT: "8080"
+      CORE_MAX: "5"
+      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
+    ports:
+      - "8191:8080"
+      - "8181:8070"
+    networks:
+      - scaling-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
+networks:
+  scaling-network:
+    driver: bridge

@@ -1,0 +1,9 @@
+# Aether Node Configuration for Docker Scaling Test
+# core_max comes from CORE_MAX env var — allows same config for core and worker nodes
+
+[slice]
+repositories = ["builtin", "local"]
+
+[app_http]
+enabled = true
+port = 8070
