@@ -762,12 +762,14 @@ public interface AetherNode {
                                     .stream()
                                     .map(NodeInfo::id)
                                     .toList();
-        // Create schema migration engine and orchestrator
+        // Create schema migration engine and orchestrator (uses composite repository for local Maven fallback)
         var schemaPolicy = SchemaPolicy.schemaPolicy();
         var schemaManager = AetherSchemaManager.aetherSchemaManager(schemaPolicy);
+        var repository = compositeRepository(repositories);
         var schemaOrchestrator = SchemaOrchestratorService.schemaOrchestratorService(clusterNode,
                                                                                      kvStore,
                                                                                      artifactStore,
+                                                                                     repository,
                                                                                      schemaManager,
                                                                                      config.self());
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
@@ -823,7 +825,7 @@ public interface AetherNode {
         // Create blueprint service using composite repository from configuration
         var blueprintService = BlueprintService.blueprintService(clusterNode,
                                                                  kvStore,
-                                                                 compositeRepository(repositories),
+                                                                 repository,
                                                                  artifactStore);
         // Create Maven protocol handler from artifact store (DHT created in createNode)
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);

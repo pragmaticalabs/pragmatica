@@ -15,6 +15,8 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Remove;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.aether.slice.repository.Location;
+import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -50,9 +52,10 @@ public interface SchemaOrchestratorService {
     static SchemaOrchestratorService schemaOrchestratorService(ClusterNode<KVCommand<AetherKey>> cluster,
                                                                KVStore<AetherKey, AetherValue> kvStore,
                                                                ArtifactStore artifactStore,
+                                                               Repository repository,
                                                                AetherSchemaManager schemaManager,
                                                                NodeId self) {
-        return new SchemaOrchestratorServiceInstance(cluster, kvStore, artifactStore, schemaManager, self);
+        return new SchemaOrchestratorServiceInstance(cluster, kvStore, artifactStore, repository, schemaManager, self);
     }
 }
 
@@ -63,17 +66,20 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private final ClusterNode<KVCommand<AetherKey>> cluster;
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final ArtifactStore artifactStore;
+    private final Repository repository;
     private final AetherSchemaManager schemaManager;
     private final NodeId self;
 
     SchemaOrchestratorServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
                                       KVStore<AetherKey, AetherValue> kvStore,
                                       ArtifactStore artifactStore,
+                                      Repository repository,
                                       AetherSchemaManager schemaManager,
                                       NodeId self) {
         this.cluster = cluster;
         this.kvStore = kvStore;
         this.artifactStore = artifactStore;
+        this.repository = repository;
         this.schemaManager = schemaManager;
         this.self = self;
     }
@@ -181,10 +187,29 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private Promise<Unit> resolveArtifactAndLog(String datasourceName, String artifactCoords) {
         return Artifact.artifact(artifactCoords)
                        .async()
-                       .flatMap(artifactStore::resolve)
+                       .flatMap(this::resolveArtifactBytes)
                        .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes)
                                                                    .async())
                        .flatMap(artifact -> logMigrationsFound(datasourceName, artifact));
+    }
+
+    private Promise<byte[]> resolveArtifactBytes(Artifact artifact) {
+        return repository.locate(artifact)
+                         .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes)
+                         .orElse(() -> artifactStore.resolve(artifact));
+    }
+
+    @SuppressWarnings("JBCT-EX-01") // Infrastructure I/O: URL stream reading
+    private static Promise<byte[]> readLocationBytes(Location location) {
+        return Promise.lift(Causes::fromThrowable, () -> readStreamBytes(location));
+    }
+
+    @SuppressWarnings("JBCT-EX-01") // Adapter boundary: called within Promise.lift
+    private static byte[] readStreamBytes(Location location) throws Exception {
+        try (var stream = location.url()
+                                  .openStream()) {
+            return stream.readAllBytes();
+        }
     }
 
     private Promise<Unit> logNoArtifactCoords(String datasourceName) {
