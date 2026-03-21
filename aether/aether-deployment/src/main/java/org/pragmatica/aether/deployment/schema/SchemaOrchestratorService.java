@@ -2,7 +2,10 @@ package org.pragmatica.aether.deployment.schema;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
+import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
+import org.pragmatica.aether.slice.blueprint.BlueprintArtifact;
 import org.pragmatica.aether.slice.blueprint.BlueprintArtifactParser;
+import org.pragmatica.aether.slice.blueprint.MigrationEntry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaMigrationLockKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
@@ -54,8 +57,15 @@ public interface SchemaOrchestratorService {
                                                                ArtifactStore artifactStore,
                                                                Repository repository,
                                                                AetherSchemaManager schemaManager,
+                                                               DatasourceConnectionProvider connectionProvider,
                                                                NodeId self) {
-        return new SchemaOrchestratorServiceInstance(cluster, kvStore, artifactStore, repository, schemaManager, self);
+        return new SchemaOrchestratorServiceInstance(cluster,
+                                                     kvStore,
+                                                     artifactStore,
+                                                     repository,
+                                                     schemaManager,
+                                                     connectionProvider,
+                                                     self);
     }
 }
 
@@ -68,6 +78,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private final ArtifactStore artifactStore;
     private final Repository repository;
     private final AetherSchemaManager schemaManager;
+    private final DatasourceConnectionProvider connectionProvider;
     private final NodeId self;
 
     SchemaOrchestratorServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
@@ -75,12 +86,14 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                       ArtifactStore artifactStore,
                                       Repository repository,
                                       AetherSchemaManager schemaManager,
+                                      DatasourceConnectionProvider connectionProvider,
                                       NodeId self) {
         this.cluster = cluster;
         this.kvStore = kvStore;
         this.artifactStore = artifactStore;
         this.repository = repository;
         this.schemaManager = schemaManager;
+        this.connectionProvider = connectionProvider;
         this.self = self;
     }
 
@@ -190,7 +203,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                        .flatMap(this::resolveArtifactBytes)
                        .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes)
                                                                    .async())
-                       .flatMap(artifact -> logMigrationsFound(datasourceName, artifact));
+                       .flatMap(artifact -> executeMigrationsFromArtifact(datasourceName, artifact));
     }
 
     private Promise<byte[]> resolveArtifactBytes(Artifact artifact) {
@@ -220,16 +233,45 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         return Promise.success(unit());
     }
 
-    private static Promise<Unit> logMigrationsFound(String datasourceName,
-                                                    org.pragmatica.aether.slice.blueprint.BlueprintArtifact artifact) {
-        Option.option(artifact.schemaMigrations()
-                              .get(datasourceName))
-              .filter(list -> !list.isEmpty())
-              .onEmpty(() -> log.warn("No migrations found for datasource '{}' in artifact", datasourceName))
-              .onPresent(list -> log.info("Found {} migration scripts for datasource '{}' — "
-                                          + "skipping execution (SqlConnector not yet provisioned in orchestrator)",
-                                          list.size(),
-                                          datasourceName));
+    private Promise<Unit> executeMigrationsFromArtifact(String datasourceName, BlueprintArtifact artifact) {
+        return Option.option(artifact.schemaMigrations()
+                                     .get(datasourceName))
+                     .filter(list -> !list.isEmpty())
+                     .map(scripts -> provisionAndMigrate(datasourceName, scripts))
+                     .or(logNoMigrationsInArtifact(datasourceName));
+    }
+
+    private Promise<Unit> provisionAndMigrate(String datasourceName, List<MigrationEntry> scripts) {
+        log.info("Executing {} migration scripts for datasource '{}'", scripts.size(), datasourceName);
+        return connectionProvider.connector(datasourceName)
+                                 .flatMap(connector -> schemaManager.migrate(datasourceName,
+                                                                             scripts,
+                                                                             connector,
+                                                                             self.id()))
+                                 .onSuccess(result -> logMigrationSuccess(datasourceName, result))
+                                 .onFailure(cause -> log.error("Migration execution failed for '{}': {}",
+                                                               datasourceName,
+                                                               cause.message()))
+                                 .mapToUnit()
+                                 .onResultRun(() -> releaseConnectorSilently(datasourceName));
+    }
+
+    private static void logMigrationSuccess(String datasourceName, AetherSchemaManager.SchemaResult result) {
+        log.info("Schema migration for '{}': {} scripts applied, now at version {}",
+                 datasourceName,
+                 result.appliedCount(),
+                 result.currentVersion());
+    }
+
+    private void releaseConnectorSilently(String datasourceName) {
+        connectionProvider.release(datasourceName)
+                          .onFailure(c -> log.warn("Failed to release connector for '{}': {}",
+                                                   datasourceName,
+                                                   c.message()));
+    }
+
+    private static Promise<Unit> logNoMigrationsInArtifact(String datasourceName) {
+        log.info("No migrations for datasource '{}' in artifact", datasourceName);
         return Promise.success(unit());
     }
 

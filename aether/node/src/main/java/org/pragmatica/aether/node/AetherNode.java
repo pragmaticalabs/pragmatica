@@ -22,6 +22,7 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
+import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.dht.AetherMaps;
@@ -766,11 +767,13 @@ public interface AetherNode {
         var schemaPolicy = SchemaPolicy.schemaPolicy();
         var schemaManager = AetherSchemaManager.aetherSchemaManager(schemaPolicy);
         var repository = compositeRepository(repositories);
+        var connectionProvider = DatasourceConnectionProvider.datasourceConnectionProvider();
         var schemaOrchestrator = SchemaOrchestratorService.schemaOrchestratorService(clusterNode,
                                                                                      kvStore,
                                                                                      artifactStore,
                                                                                      repository,
                                                                                      schemaManager,
+                                                                                     connectionProvider,
                                                                                      config.self());
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
@@ -823,10 +826,7 @@ public interface AetherNode {
         // Create base decision tree controller (uses node config — Forge disables CPU-based scaling)
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
         // Create blueprint service using composite repository from configuration
-        var blueprintService = BlueprintService.blueprintService(clusterNode,
-                                                                 kvStore,
-                                                                 repository,
-                                                                 artifactStore);
+        var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, repository, artifactStore);
         // Create Maven protocol handler from artifact store (DHT created in createNode)
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         // Create rolling update manager
