@@ -104,22 +104,56 @@ class DatasourceConnectionProviderInstance implements DatasourceConnectionProvid
     }
 
     private Promise<SqlConnector> createConnector(String datasourceName) {
-        log.info("Creating SqlConnector for datasource '{}' from config section '{}'", datasourceName, datasourceName);
+        log.info("Creating SqlConnector for datasource '{}' from config section '{}', {} factories available",
+                 datasourceName,
+                 datasourceName,
+                 factories.size());
         return loadConfig(datasourceName).flatMap(this::selectAndProvision);
     }
 
     private Promise<DatabaseConnectorConfig> loadConfig(String configSection) {
-        return configLoader.apply(configSection, DatabaseConnectorConfig.class)
-                           .map(DatabaseConnectorConfig.class::cast)
-                           .async();
+        var result = configLoader.apply(configSection, DatabaseConnectorConfig.class)
+                                 .map(DatabaseConnectorConfig.class::cast);
+        result.onSuccess(config -> log.info("Loaded config for '{}': type={}, jdbcUrl={}, asyncUrl={}, r2dbcUrl={}",
+                                            configSection,
+                                            config.type(),
+                                            config.jdbcUrl()
+                                                  .isPresent()
+                                            ? "present"
+                                            : "absent",
+                                            config.asyncUrl()
+                                                  .isPresent()
+                                            ? "present"
+                                            : "absent",
+                                            config.r2dbcUrl()
+                                                  .isPresent()
+                                            ? "present"
+                                            : "absent"))
+              .onFailure(cause -> log.error("Failed to load config for section '{}': {}",
+                                            configSection,
+                                            cause.message()));
+        return result.async();
     }
 
     private Promise<SqlConnector> selectAndProvision(DatabaseConnectorConfig config) {
         for (var factory : factories) {
+            log.debug("Checking factory {} (priority {}): supports={}",
+                      factory.getClass()
+                             .getSimpleName(),
+                      factory.priority(),
+                      factory.supports(config));
             if (factory.supports(config)) {
+                log.info("Selected factory {} for provisioning",
+                         factory.getClass()
+                                .getSimpleName());
                 return factory.provision(config);
             }
         }
+        log.error("No factory supports config: type={}, jdbcUrl={}, asyncUrl={}, r2dbcUrl={}",
+                  config.type(),
+                  config.jdbcUrl(),
+                  config.asyncUrl(),
+                  config.r2dbcUrl());
         return NO_FACTORY.promise();
     }
 }

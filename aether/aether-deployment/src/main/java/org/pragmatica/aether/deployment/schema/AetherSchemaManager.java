@@ -268,11 +268,31 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
 
     private Promise<Integer> executeSingle(ParsedMigration migration, SqlConnector connector, String nodeId) {
         var startNanos = System.nanoTime();
-        return connector.transactional(tx -> tx.update(migration.entry()
-                                                                .sql())
-                                               .mapToUnit())
+        return connector.transactional(tx -> executeStatements(tx,
+                                                               migration.entry()
+                                                                        .sql()))
                         .flatMap(_ -> recordExecution(migration, connector, nodeId, startNanos))
                         .map(_ -> 1);
+    }
+
+    /// Split SQL into individual statements and execute sequentially.
+    /// Required because async Postgres driver doesn't support multi-statement prepared statements.
+    private static Promise<Unit> executeStatements(SqlConnector tx, String sql) {
+        // Strip comment lines before splitting — comments may precede first statement without a separator
+        var stripped = java.util.Arrays.stream(sql.split("\n"))
+                           .filter(line -> !line.strip()
+                                                .startsWith("--"))
+                           .collect(java.util.stream.Collectors.joining("\n"));
+        var statements = java.util.Arrays.stream(stripped.split(";"))
+                             .map(String::strip)
+                             .filter(s -> !s.isEmpty())
+                             .toList();
+        var result = Promise.unitPromise();
+        for (var stmt : statements) {
+            result = result.flatMap(_ -> tx.update(stmt)
+                                           .mapToUnit());
+        }
+        return result;
     }
 
     private Promise<Unit> recordExecution(ParsedMigration migration,

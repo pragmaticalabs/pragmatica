@@ -3,6 +3,7 @@ package org.pragmatica.aether.deployment.schema;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
+import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.aether.slice.blueprint.BlueprintArtifact;
 import org.pragmatica.aether.slice.blueprint.BlueprintArtifactParser;
 import org.pragmatica.aether.slice.blueprint.MigrationEntry;
@@ -243,22 +244,24 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
     private Promise<Unit> provisionAndMigrate(String datasourceName, List<MigrationEntry> scripts) {
         log.info("Executing {} migration scripts for datasource '{}'", scripts.size(), datasourceName);
-        return connectionProvider.connector(datasourceName)
-                                 .flatMap(connector -> schemaManager.migrate(datasourceName,
-                                                                             scripts,
-                                                                             connector,
-                                                                             self.id()))
-                                 .onSuccess(result -> logMigrationSuccess(datasourceName, result))
-                                 .mapToUnit()
-                                 .onResultRun(() -> releaseConnectorSilently(datasourceName))
-                                 .orElse(() -> skipMigrationNoDatabaseConfig(datasourceName));
+        return provisionConnector(datasourceName)
+        .flatMap(connector -> schemaManager.migrate(datasourceName,
+                                                    scripts,
+                                                    connector,
+                                                    self.id())
+                                           .onSuccess(result -> logMigrationSuccess(datasourceName, result))
+                                           .mapToUnit()
+                                           .onResultRun(() -> releaseConnectorSilently(datasourceName)));
     }
 
-    /// No database config for this datasource — skip migration and don't gate activation.
-    /// Preserves pre-migration-engine behavior where slices deployed without schema checks.
-    private static Promise<Unit> skipMigrationNoDatabaseConfig(String datasourceName) {
-        log.info("No database config for datasource '{}' — skipping migration (activation will proceed)", datasourceName);
-        return Promise.success(unit());
+    /// Provision connector, or skip gracefully if no config exists.
+    /// Config absence = no database configured = skip (preserves pre-migration-engine behavior).
+    /// Config present but connection fails = real error, propagate.
+    private Promise<SqlConnector> provisionConnector(String datasourceName) {
+        return connectionProvider.connector(datasourceName)
+                                 .onFailure(cause -> log.info("No database config for '{}': {} — skipping migration",
+                                                              datasourceName,
+                                                              cause.message()));
     }
 
     private static void logMigrationSuccess(String datasourceName, AetherSchemaManager.SchemaResult result) {
