@@ -807,9 +807,12 @@ public OrderResult processOrder(OrderRequest request) {
 
 ### Forge Testing
 
-Start Forge for local testing with simulated cluster conditions:
+Start Forge for local testing with simulated cluster conditions. Forge requires an external PostgreSQL instance for slices that use `@Sql` — it no longer provides an embedded H2 database:
 
 ```bash
+# Start PostgreSQL for local development
+./start-postgres.sh
+
 # Start Forge
 ./script/aether-forge.sh
 

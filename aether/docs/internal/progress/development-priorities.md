@@ -159,16 +159,18 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 ### Per-Data-Source Schema Management (v0.21.0)
 - **Schema migration engine** — Flyway-style versioned (V), repeatable (R), undo (U), and baseline (B) migration types. Per-datasource history tables (`aether_schema_history`). Checksum validation, transactional per-script execution
 - **Schema orchestration** — distributed coordination with exclusive consensus locking, artifact resolution, status tracking (PENDING → MIGRATING → COMPLETED/FAILED). CDM readiness gate blocks slice ACTIVATE until schemas ready
+- **DatasourceConnectionProvider** — provisions SqlConnector per datasource, wiring migration engine to actual database execution. End-to-end migration now functional
+- **Schema directory convention** — `schema/` root maps to default `[database]` config section (matching `@Sql`); subdirectories (`schema/<name>/`) map to `[database.<name>]` sections. Strict resolution: missing config = explicit failure, no fallback
+- **Removed embedded H2 from Forge** — Forge now requires external PostgreSQL via `start-postgres.sh` for local development
 - **Deployment flow audit** — comprehensive CDM/NDM handoff audit: schema migration gate, lock exclusivity, allocation safety, state consistency fixes. RFC-0014 documents the deployment state machine
 - **REST API and CLI** — `/api/schema/status`, `/api/schema/migrate/{ds}`, `/api/schema/undo/{ds}`, `/api/schema/baseline/{ds}` + CLI commands
-- **Remaining:** SqlConnector provisioning in orchestrator (connects engine to actual database execution)
 
 ### Blueprint Artifact Transition (v0.21.0)
 - **Blueprint artifacts** — blueprints packaged as deployable JAR artifacts containing `blueprint.toml`, optional `resources.toml` (app-level config), and optional `schema/` directory (database migration scripts)
 - **`PackageBlueprintMojo`** — new Maven plugin goal (`package-blueprint`) produces classifier `blueprint` JARs with `Blueprint-Id` and `Blueprint-Version` manifest entries
 - **`publishFromArtifact`** — new deployment path via `POST /api/blueprint/deploy` or `aether blueprint deploy <coords>`
 - **Config separation** — application config (`resources.toml`) at GLOBAL scope; infrastructure endpoints (`[endpoints.*]` in `aether.toml`) at NODE scope. ConfigService merges hierarchically (SLICE > NODE > GLOBAL)
-- **Schema migration prep** — blueprint artifacts carry `schema/{datasource}/*.sql` migration scripts. Schema metadata stored in KV-Store for future execution
+- **Schema migration prep** — blueprint artifacts carry `schema/` migration scripts. Root `schema/*.sql` maps to `[database]` config; `schema/<name>/*.sql` maps to `[database.<name>]`. Schema metadata stored in KV-Store; end-to-end execution via DatasourceConnectionProvider
 - **New KV types** — `BlueprintResourcesKey/Value`, `SchemaVersionKey/Value`, `SchemaMigrationLockKey/Value`
 - **CLI commands** — `blueprint deploy <coords>` and `blueprint upload <file>`
 
@@ -249,6 +251,7 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
      - **Remaining:** Blueprint-level canary orchestration (data model ready, manager needs `startBlueprintCanary` method)
 
 3. **Schema Migration Failure Recovery**
+     - **Status:** Core migration wiring complete (DatasourceConnectionProvider, end-to-end execution, schema directory convention, strict resolution). Failure recovery is the remaining gap.
      - **Problem:** When schema migration fails, slices remain stuck in `LOADED` state indefinitely — the activation gate (`areSchemasReady`) blocks, but there's no automatic retry or manual recovery path
      - **Needs:**
        - Retry mechanism: automatic retry with backoff on transient failures (connection timeout, lock contention)

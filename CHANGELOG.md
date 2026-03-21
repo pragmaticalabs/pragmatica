@@ -10,7 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Per-datasource schema migration engine** — full migration execution engine with Flyway-style versioned (V), repeatable (R), undo (U), and baseline (B) migration types. Schema history tracked in `aether_schema_history` table per datasource. Checksum validation, transactional per-script execution, configurable failure/failover policy
 - **Schema orchestration** — distributed coordination layer with consensus-based locking, artifact resolution, and status tracking (PENDING → MIGRATING → COMPLETED/FAILED). CDM integration gates slice deployment on schema readiness
 - **Schema management REST API and CLI** — REST endpoints (`/api/schema/status`, `/api/schema/migrate/{ds}`, `/api/schema/undo/{ds}`, `/api/schema/baseline/{ds}`) and CLI commands (`aether schema status|history|migrate|undo|baseline`)
-- **Schema migration prerequisites** — `start-postgres.sh` scripts now create per-datasource databases; migration engine requires pre-existing databases (creates tables, not databases)
+- **Schema directory convention** — `schema/` root maps to default `[database]` config section (matching `@Sql`), subdirectories map to `[database.<name>]` sections. Single-datasource slices need no subdirectory
+- **Schema migration executes end-to-end** — DatasourceConnectionProvider provisions SqlConnector per datasource, wiring migration engine to actual database execution
+- **Strict datasource resolution** — missing config section causes explicit failure with descriptive error; no silent fallback or derivation
+- **Removed embedded H2 from Forge** — Forge no longer provides an embedded H2 database; external PostgreSQL required via `start-postgres.sh`
+- **Schema migration prerequisites** — `start-postgres.sh` scripts create the required database; migration engine requires pre-existing databases (creates tables, not databases)
 - **Blueprint artifact auto-packaging** — `generate-blueprint` goal now automatically packages the blueprint JAR (no need to add `package-blueprint` explicitly). Schema directory default changed to `${project.basedir}/schema`
 - **Forge artifact-based deployment** — `--blueprint` accepts artifact coordinates with classifier (`groupId:artifactId:version:classifier`). Forge resolves via configured Repository chain (local Maven repo in dev, DHT in production). TOML deployment path removed
 - **Enriched `/api/nodes` endpoint** — now returns role (CORE/WORKER) and isLeader flag per node, with role sourced from `ActivationDirectiveValue` in KV-Store
@@ -73,7 +77,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - **`PackageBlueprintMojo`**: New Maven plugin goal (`package-blueprint`) produces classifier `blueprint` JARs with `Blueprint-Id` and `Blueprint-Version` manifest entries
   - **`publishFromArtifact`**: New deployment path — upload blueprint JAR to ArtifactStore, then deploy via `POST /api/blueprint/deploy` or `aether blueprint deploy <coords>`
   - **Config separation**: Application config (`resources.toml`) travels with blueprint at GLOBAL scope; infrastructure endpoints (`[endpoints.*]` in `aether.toml`) stay at NODE scope. ConfigService merges both hierarchically (SLICE > NODE > GLOBAL)
-  - **Schema migration prep**: Blueprint artifacts can carry `schema/{datasource}/*.sql` migration scripts (Flyway-style naming: V/R/U/B prefixes). Schema metadata stored in KV-Store for future DB migration execution
+  - **Schema migration prep**: Blueprint artifacts carry `schema/` migration scripts (root `schema/*.sql` maps to `[database]`, subdirectories `schema/<name>/*.sql` map to `[database.<name>]`). End-to-end execution via DatasourceConnectionProvider
   - **New KV types**: `BlueprintResourcesKey/Value`, `SchemaVersionKey/Value`, `SchemaMigrationLockKey/Value` for blueprint resources and schema tracking
   - **CLI commands**: `blueprint deploy <coords>` and `blueprint upload <file>` for artifact-based blueprint deployment
 - **Notification resource (Phase 1 — Email)** — three new modules delivering async email notifications:

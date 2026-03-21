@@ -293,16 +293,42 @@ Transport is selected automatically by priority:
 | `DB2` | 50000 | `com.ibm.db2.jcc.DB2Driver` |
 | `COCKROACHDB` | 26257 | `org.postgresql.Driver` |
 
-### Schema Migration Prerequisites
+### Schema Migration
 
 The migration engine creates and manages **tables**, not databases. Each datasource database must exist before migration runs.
 
-- **Database names must match schema directory names.** A schema directory `schema/my_datasource/` expects a database named `my_datasource` to exist on the configured host.
-- The `start-postgres.sh` scripts in the example projects create the required per-datasource databases automatically.
-- Migration scripts (versioned `V`, repeatable `R`, undo `U`, baseline `B`) in each schema directory are applied automatically when a blueprint is deployed.
-- Schema history is tracked per datasource in the `aether_schema_history` table.
+#### Schema Directory Convention
 
-If you add a new datasource with schema migrations, ensure the target database is created before deploying the blueprint. For local development, add a `CREATE DATABASE` statement to your `start-postgres.sh` script.
+Migration scripts live in the `schema/` directory of your blueprint artifact. The directory structure determines which datasource config section each script targets:
+
+| Directory | Config Section | Annotation |
+|-----------|---------------|------------|
+| `schema/V001__create_users.sql` | `[database]` | `@Sql` |
+| `schema/analytics/V001__create_events.sql` | `[database.analytics]` | `@ResourceQualifier(config="database.analytics")` |
+| `schema/orders/V001__create_orders.sql` | `[database.orders]` | `@ResourceQualifier(config="database.orders")` |
+
+**Single-datasource zero-config:** If your slice uses only `@Sql` (the default database), place migration scripts directly in `schema/`. They map to the `[database]` section in `aether.toml` — the same section that `@Sql` uses. No subdirectory needed.
+
+**Multi-datasource:** Create a subdirectory for each named datasource. The subdirectory name must match the qualifier suffix in `[database.<name>]`.
+
+#### Strict Datasource Resolution
+
+Every schema directory must have a corresponding `[database]` or `[database.<name>]` config section. There is no fallback or derivation — a missing config section causes an explicit failure with a descriptive error message. This prevents silent misconfiguration.
+
+#### Migration Script Types
+
+Migration scripts use Flyway-style naming: versioned (`V`), repeatable (`R`), undo (`U`), and baseline (`B`). They are applied automatically when a blueprint is deployed. Schema history is tracked per datasource in the `aether_schema_history` table.
+
+#### Local Development
+
+Forge no longer provides an embedded H2 database. For local development, start an external PostgreSQL instance using the `start-postgres.sh` script provided in example projects:
+
+```bash
+./start-postgres.sh          # Start PostgreSQL container
+./run-forge.sh               # Start Forge (connects to external Postgres)
+```
+
+The `start-postgres.sh` script creates the required database automatically. If you add a new named datasource with schema migrations, add a `CREATE DATABASE` statement to your `start-postgres.sh` script.
 
 ### Connection Pool Configuration
 

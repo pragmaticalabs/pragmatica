@@ -395,6 +395,36 @@ poll_interval_ms = "15000"
 
 **Supported providers:** Hetzner, AWS, GCP, Azure. Each provider module registers via ServiceLoader. Provider-specific credential and compute keys are documented in the [Cloud Integration](cloud-integration.md) reference.
 
+## Database Configuration & Schema Migration
+
+### Multi-Datasource Convention
+
+The `[database]` section configures the default datasource, used by `@Sql` and by migration scripts in the `schema/` root directory. Named datasources use `[database.<name>]` sections, corresponding to `schema/<name>/` subdirectories and `@ResourceQualifier(config="database.<name>")` annotations.
+
+```toml
+[database]                        # default datasource (used by @Sql and schema/ root)
+name = "default"
+type = "POSTGRESQL"
+host = "localhost"
+port = 5432
+database = "myapp"
+username = "app"
+password = "secret"
+
+[database.analytics]              # named datasource (used by schema/analytics/ and @ResourceQualifier(config="database.analytics"))
+name = "analytics"
+type = "POSTGRESQL"
+host = "analytics-host"
+port = 5432
+database = "analytics"
+username = "reader"
+password = "secret"
+```
+
+**Strict resolution:** Every schema directory must have a corresponding config section. A missing section causes an explicit failure — there is no fallback or derivation between sections. This prevents silent misconfiguration where migrations run against the wrong database.
+
+**Single-datasource zero-config:** Slices using only `@Sql` place migration scripts directly in `schema/` (no subdirectory). The scripts map to `[database]` — the same section `@Sql` resolves from.
+
 ## Blueprint Resources (`resources.toml`)
 
 Application-level configuration that travels with the blueprint artifact. Loaded into ConfigService at GLOBAL scope when the blueprint is deployed.

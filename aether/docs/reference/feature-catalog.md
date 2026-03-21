@@ -27,7 +27,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 102 | Multi-blueprint lifecycle independence | Complete | Blueprint-scoped artifact ownership (`owningBlueprint` in SliceTargetValue), artifact exclusivity enforcement (rejects duplicate artifact across blueprints), owner-filtered blueprint deletion (only removes owned artifacts), rolling update deletion guard, KV-Store restore with ownership. Tier 1 correctness for multi-blueprint clusters |
 | 126 | Blueprint Artifacts | Complete | Blueprint packaged as JAR with resources.toml and schema/ |
 | 127 | Config Separation | Complete | App config (blueprint) vs infra config (node) with hierarchical merge |
-| 128 | Schema Migration Engine | Partial | Migration engine (V/R/U/B types), history table, checksum validation, orchestrator with exclusive consensus locking, CDM readiness gating (blocks ACTIVATE until COMPLETED), REST API, CLI. SqlConnector provisioning in orchestrator pending |
+| 128 | Schema Migration Engine | Complete | End-to-end migration engine (V/R/U/B types), history table, checksum validation, orchestrator with exclusive consensus locking, CDM readiness gating (blocks ACTIVATE until COMPLETED), DatasourceConnectionProvider for SqlConnector provisioning, schema directory convention (`schema/` root = `[database]`, subdirectories = `[database.<name>]`), strict datasource resolution (no fallback), REST API, CLI |
 | 130 | Deployment State Machine (RFC-0014) | Complete | Documented CDM/NDM handoff protocol, 11-state lifecycle, schema migration gate, dependency-gated activation, failure classification (fatal/transient), quorum loss/restoration, reconciliation algorithm, blueprint atomicity, drain eviction protocol |
 | 131 | Consensus Operation Retry | Complete | All NDM consensus operations (state transitions, topic subscriptions, scheduled tasks, endpoints) use unified `applyWithRetry` with 30s timeout × 2 retries. Prevents activation failures under consensus pipeline saturation |
 | 129 | Endpoint Config | Complete | `[endpoints.*]` sections in aether.toml for infrastructure endpoints |
@@ -242,7 +242,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 61 | Per-data-source DB schema management | Partial | Migration engine (V/R/U/B), schema history table, consensus-locked orchestrator, CDM readiness gating, REST API, CLI. SqlConnector provisioning pending |
+| 61 | ~~Per-data-source DB schema management~~ | ~~Complete~~ | ~~Moved to Deployment & Lifecycle section (feature 128)~~ |
 | 62 | ~~Canary & blue-green deployment~~ | ~~Complete~~ | ~~Moved to Deployment & Lifecycle section (features 133-135)~~ |
 | 63 | RBAC Tier 2 — per-endpoint authorization | Planned | Per-endpoint role-based authorization rules (admin, operator, viewer). Route-level security policy from KV-Store. Auth failure rate limiting |
 | 64 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
@@ -261,8 +261,8 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 24 |
-| Complete | 105 |
-| Partial | 2 |
+| Complete | 106 |
+| Partial | 1 |
 | Planned | 10 |
 | Total | 141 |
 
@@ -273,13 +273,12 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Feature | Key Gap |
 |---------|---------|
 | TTM predictive scaling | Disabled by default, no live model training |
-| Schema Migration Engine | Migration engine + orchestrator + REST API + CLI complete; SqlConnector provisioning pending |
 
 **Planned features:**
 
 | Feature | Key Dependency |
 |---------|---------------|
-| Per-data-source DB schema management | SqlConnector provisioning in orchestrator |
+| ~~Per-data-source DB schema management~~ | ~~Complete in 0.21.0~~ |
 | ~~Canary & blue-green deployment~~ | ~~Complete in 0.21.0~~ |
 | RBAC Tier 2 — per-endpoint authorization | RBAC Tier 1 complete |
 | ~~TLS certificate management~~ | ~~Complete in 0.19.3~~ |
@@ -292,4 +291,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-03-20 (v0.21.0)*
+*Last updated: 2026-03-21 (v0.21.0)*
