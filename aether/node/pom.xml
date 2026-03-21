@@ -84,6 +84,21 @@
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-db-async</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-db-jdbc</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+            <version>7.0.2</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>environment-integration</artifactId>
         </dependency>
 

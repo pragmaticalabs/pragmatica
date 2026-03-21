@@ -7,3 +7,15 @@ repositories = ["builtin", "local"]
 [app-http]
 enabled = true
 port = 8070
+
+[database]
+type = "POSTGRESQL"
+host = "postgres"
+port = 5432
+database = "forge"
+username = "forge"
+password = "forge"
+async_url = "postgresql://forge:forge@postgres:5432/forge"
+
+[messaging.click-events]
+topic_name = "click-events"
