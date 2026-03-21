@@ -187,6 +187,15 @@ public interface AetherNode {
     /// Get the rolling update manager for managing version transitions.
     RollingUpdateManager rollingUpdateManager();
 
+    /// Get the canary deployment manager for multi-stage progressive traffic shifting.
+    CanaryDeploymentManager canaryDeploymentManager();
+
+    /// Get the blue-green deployment manager for atomic traffic switching.
+    BlueGreenDeploymentManager blueGreenDeploymentManager();
+
+    /// Get the A/B test manager for variant testing deployments.
+    ABTestManager abTestManager();
+
     /// Get the endpoint registry for service discovery.
     EndpointRegistry endpointRegistry();
 
@@ -409,6 +418,9 @@ public interface AetherNode {
                           InvocationMetricsCollector invocationMetrics,
                           DecisionTreeController controller,
                           RollingUpdateManager rollingUpdateManager,
+                          CanaryDeploymentManager canaryDeploymentManager,
+                          BlueGreenDeploymentManager blueGreenDeploymentManager,
+                          ABTestManager abTestManager,
                           AlertManager alertManager,
                           ObservabilityDepthRegistry observabilityDepthRegistry,
                           InvocationTraceStore traceStore,
@@ -1117,6 +1129,9 @@ public interface AetherNode {
                                   invocationMetrics,
                                   controller,
                                   rollingUpdateManager,
+                                  canaryDeploymentManager,
+                                  blueGreenDeploymentManager,
+                                  abTestManager,
                                   alertManager,
                                   depthRegistry,
                                   traceStore,
@@ -1189,6 +1204,9 @@ public interface AetherNode {
                                                            invocationMetrics,
                                                            controller,
                                                            rollingUpdateManager,
+                                                           canaryDeploymentManager,
+                                                           blueGreenDeploymentManager,
+                                                           abTestManager,
                                                            alertManager,
                                                            depthRegistry,
                                                            traceStore,

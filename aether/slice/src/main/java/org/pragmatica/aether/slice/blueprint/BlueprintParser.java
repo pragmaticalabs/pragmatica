@@ -1,6 +1,8 @@
 package org.pragmatica.aether.slice.blueprint;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.blueprint.DeploymentConfig.CanaryStageConfig;
+import org.pragmatica.aether.slice.blueprint.DeploymentConfig.Strategy;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
@@ -16,7 +18,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
 
@@ -38,6 +42,15 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// [[slices]]
 /// artifact = "org.example:order-service:1.0.0"
 /// instances = 3
+///
+/// [deployment]
+/// strategy = "canary"
+/// max_error_rate = 0.02
+/// max_latency_ms = 300
+///
+/// [[deployment.canary.stages]]
+/// traffic_percent = 5
+/// observation_minutes = 5
 /// ```
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-LAM-01", "JBCT-LAM-02", "JBCT-LAM-03", "JBCT-NEST-01", "JBCT-UTIL-02", "JBCT-ZONE-03", "JBCT-RET-05"})
 public interface BlueprintParser {
@@ -72,7 +85,55 @@ public interface BlueprintParser {
             return MISSING_ID.result();
         }
         return BlueprintId.blueprintId(idOpt.unwrap())
-                          .flatMap(id -> parseSlices(doc).flatMap(slices -> Blueprint.blueprint(id, slices)));
+                          .flatMap(id -> parseSlices(doc).flatMap(slices -> Blueprint.blueprint(id,
+                                                                                                slices,
+                                                                                                parseDeploymentConfig(doc))));
+    }
+
+    private static Option<DeploymentConfig> parseDeploymentConfig(TomlDocument doc) {
+        var strategyOpt = doc.getString("deployment", "strategy");
+        if (strategyOpt.isEmpty()) {
+            return none();
+        }
+        var strategy = parseStrategy(strategyOpt.unwrap());
+        var maxErrorRate = doc.getDouble("deployment", "max_error_rate")
+                              .or(0.01);
+        var maxLatencyMs = doc.getLong("deployment", "max_latency_ms")
+                              .or(500L);
+        var drainTimeoutMs = doc.getLong("deployment", "drain_timeout_ms")
+                                .or(300_000L);
+        var stages = parseCanaryStages(doc);
+        return some(DeploymentConfig.deploymentConfig(strategy, stages, maxErrorRate, maxLatencyMs, drainTimeoutMs));
+    }
+
+    private static Strategy parseStrategy(String raw) {
+        return switch (raw.toLowerCase()) {
+            case "canary" -> Strategy.CANARY;
+            case "blue-green", "blue_green" -> Strategy.BLUE_GREEN;
+            default -> Strategy.ROLLING;
+        };
+    }
+
+    private static List<CanaryStageConfig> parseCanaryStages(TomlDocument doc) {
+        return doc.getTableArray("deployment.canary.stages")
+                  .map(BlueprintParser::toCanaryStageConfigs)
+                  .or(DeploymentConfig.defaultCanaryStages());
+    }
+
+    private static List<CanaryStageConfig> toCanaryStageConfigs(List<Map<String, Object>> entries) {
+        return entries.stream()
+                      .map(BlueprintParser::toCanaryStageConfig)
+                      .toList();
+    }
+
+    private static CanaryStageConfig toCanaryStageConfig(Map<String, Object> entry) {
+        var trafficPercent = entry.get("traffic_percent") instanceof Number n
+                             ? n.intValue()
+                             : 5;
+        var observationMinutes = entry.get("observation_minutes") instanceof Number n
+                                 ? n.intValue()
+                                 : 5;
+        return new CanaryStageConfig(trafficPercent, observationMinutes);
     }
 
     private static Result<List<SliceSpec>> parseSlices(TomlDocument doc) {

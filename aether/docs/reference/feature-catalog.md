@@ -17,6 +17,9 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 1 | Blueprint management | Battle-tested | Declarative TOML-based deployment specs with dependency ordering, validation, pub-sub orphan detection, and status tracking |
 | 2 | Slice lifecycle | Battle-tested | Full state machine: DOWNLOADING, LOADING, STARTING, ACTIVE, UNLOADING, UNLOADED, FAILED. Per-node tracking via KV-Store |
 | 3 | Rolling updates | Battle-tested | Zero-downtime version deployments with traffic shifting (new:old ratio), health thresholds, auto-progression, rollback, and cleanup policies |
+| 133 | Canary Deployments | Complete | Progressive traffic shift with auto-evaluation, configurable stages, health-based auto-rollback |
+| 134 | Blue-Green Deployments | Complete | Atomic traffic switchover, drain period, instant switch-back |
+| 135 | A/B Testing | Complete | Deterministic traffic split by request context (header, cookie, percentage), ScopedValue variant propagation |
 | 4 | Auto-healing | Battle-tested | Automatic reconciliation of desired vs. actual state on node departure. Leader-only with failover |
 | 5 | Classloader isolation | Complete | Per-slice classloader prevents dependency conflicts between slices |
 | 6 | Manifest versioning | Complete | Envelope format versioning (v1-v6) for backward-compatible manifest evolution |
@@ -240,7 +243,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
 | 61 | Per-data-source DB schema management | Partial | Migration engine (V/R/U/B), schema history table, consensus-locked orchestrator, CDM readiness gating, REST API, CLI. SqlConnector provisioning pending |
-| 62 | Canary & blue-green deployment | Planned | Canary with automatic rollback on error threshold, blue-green with instant switchover, A/B testing with traffic splitting |
+| 62 | ~~Canary & blue-green deployment~~ | ~~Complete~~ | ~~Moved to Deployment & Lifecycle section (features 133-135)~~ |
 | 63 | RBAC Tier 2 — per-endpoint authorization | Planned | Per-endpoint role-based authorization rules (admin, operator, viewer). Route-level security policy from KV-Store. Auth failure rate limiting |
 | 64 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
 | 65 | Spot instance support | Planned | Elastic pool of spot/preemptible instances for cost-optimized scaling. Core (on-demand) + elastic (spot) pools. Prerequisite: Cloud Integration. Deferred from worker pool Phase 2 to Phase 3 |
@@ -258,10 +261,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 24 |
-| Complete | 102 |
+| Complete | 105 |
 | Partial | 2 |
-| Planned | 11 |
-| Total | 139 |
+| Planned | 10 |
+| Total | 141 |
 
 **Battle-tested features (24):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), E2E test framework, Forge integration tests
 
@@ -277,7 +280,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Feature | Key Dependency |
 |---------|---------------|
 | Per-data-source DB schema management | SqlConnector provisioning in orchestrator |
-| Canary & blue-green deployment | — |
+| ~~Canary & blue-green deployment~~ | ~~Complete in 0.21.0~~ |
 | RBAC Tier 2 — per-endpoint authorization | RBAC Tier 1 complete |
 | ~~TLS certificate management~~ | ~~Complete in 0.19.3~~ |
 | Per-route rate limiting | — |
@@ -289,4 +292,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-03-18 (v0.21.0)*
+*Last updated: 2026-03-20 (v0.21.0)*

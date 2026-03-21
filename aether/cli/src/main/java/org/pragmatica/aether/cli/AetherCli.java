@@ -79,7 +79,10 @@ AetherCli.NodeCommand.class,
 AetherCli.TopologyStatusCommand.class,
 AetherCli.WorkersCommand.class,
 AetherCli.BackupCommand.class,
-AetherCli.SchemaCommand.class})
+AetherCli.SchemaCommand.class,
+AetherCli.CanaryCommand.class,
+AetherCli.BlueGreenCommand.class,
+AetherCli.ABTestCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -2694,6 +2697,403 @@ public class AetherCli implements Runnable {
             public Integer call() {
                 var response = schemaParent.parent.postToNode("/api/schema/baseline/" + datasource + "?version=" + version,
                                                               "{}");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+    }
+
+    // ===== Canary Deployment Commands =====
+    @Command(name = "canary",
+    description = "Manage canary deployments",
+    subcommands = {CanaryCommand.StartCommand.class,
+    CanaryCommand.ListCommand.class,
+    CanaryCommand.StatusCommand.class,
+    CanaryCommand.HealthCommand.class,
+    CanaryCommand.PromoteCommand.class,
+    CanaryCommand.PromoteFullCommand.class,
+    CanaryCommand.RollbackCommand.class})
+    static class CanaryCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        @Command(name = "start", description = "Start a canary deployment")
+        static class StartCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private CanaryCommand canaryParent;
+
+            @Parameters(index = "0", description = "Artifact base (group:artifact)")
+            private String artifactBase;
+
+            @Parameters(index = "1", description = "Canary version to deploy")
+            private String version;
+
+            @CommandLine.Option(names = {"-n", "--instances"}, description = "Number of canary instances", defaultValue = "1")
+            private int instances;
+
+            @CommandLine.Option(names = {"--traffic"}, description = "Initial traffic percentage (0-100)", defaultValue = "5")
+            private int trafficPercent;
+
+            @CommandLine.Option(names = {"--error-rate"}, description = "Max error rate threshold (0.0-1.0)", defaultValue = "0.01")
+            private double errorRate;
+
+            @CommandLine.Option(names = {"--latency"}, description = "Max latency threshold in ms", defaultValue = "500")
+            private long latencyMs;
+
+            @Override
+            public Integer call() {
+                var body = buildCanaryStartBody();
+                var response = canaryParent.parent.postToNode("/api/canary/start", body);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+
+            private String buildCanaryStartBody() {
+                return "{\"artifactBase\":\"" + artifactBase + "\"," + "\"version\":\"" + version + "\","
+                       + "\"instances\":" + instances + "," + "\"trafficPercent\":" + trafficPercent + ","
+                       + "\"maxErrorRate\":" + errorRate + "," + "\"maxLatencyMs\":" + latencyMs + "}";
+            }
+        }
+
+        @Command(name = "list", description = "List canary deployments")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private CanaryCommand canaryParent;
+
+            @Override
+            public Integer call() {
+                var response = canaryParent.parent.fetchFromNode("/api/canaries");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "status", description = "Show canary deployment status")
+        static class StatusCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private CanaryCommand canaryParent;
+
+            @Parameters(index = "0", description = "Canary ID")
+            private String canaryId;
+
+            @Override
+            public Integer call() {
+                var response = canaryParent.parent.fetchFromNode("/api/canary/" + canaryId);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "health", description = "Show canary health metrics")
+        static class HealthCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private CanaryCommand canaryParent;
+
+            @Parameters(index = "0", description = "Canary ID")
+            private String canaryId;
+
+            @Override
+            public Integer call() {
+                var response = canaryParent.parent.fetchFromNode("/api/canary/" + canaryId + "/health");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "promote", description = "Increase canary traffic percentage")
+        static class PromoteCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private CanaryCommand canaryParent;
+
+            @Parameters(index = "0", description = "Canary ID")
+            private String canaryId;
+
+            @CommandLine.Option(names = {"--traffic"}, description = "New traffic percentage (0-100)", required = true)
+            private int trafficPercent;
+
+            @Override
+            public Integer call() {
+                var body = "{\"trafficPercent\":" + trafficPercent + "}";
+                var response = canaryParent.parent.postToNode("/api/canary/" + canaryId + "/promote", body);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "promote-full", description = "Promote canary to full production (100% traffic)")
+        static class PromoteFullCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private CanaryCommand canaryParent;
+
+            @Parameters(index = "0", description = "Canary ID")
+            private String canaryId;
+
+            @Override
+            public Integer call() {
+                var response = canaryParent.parent.postToNode("/api/canary/" + canaryId + "/promote-full", "{}");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "rollback", description = "Rollback canary deployment")
+        static class RollbackCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private CanaryCommand canaryParent;
+
+            @Parameters(index = "0", description = "Canary ID")
+            private String canaryId;
+
+            @Override
+            public Integer call() {
+                var response = canaryParent.parent.postToNode("/api/canary/" + canaryId + "/rollback", "{}");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+    }
+
+    // ===== Blue-Green Deployment Commands =====
+    @Command(name = "blue-green",
+    description = "Manage blue-green deployments",
+    subcommands = {BlueGreenCommand.DeployCommand.class,
+    BlueGreenCommand.ListCommand.class,
+    BlueGreenCommand.StatusCommand.class,
+    BlueGreenCommand.SwitchCommand.class,
+    BlueGreenCommand.SwitchBackCommand.class,
+    BlueGreenCommand.CompleteCommand.class})
+    static class BlueGreenCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        @Command(name = "deploy", description = "Deploy to inactive environment")
+        static class DeployCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BlueGreenCommand bgParent;
+
+            @Parameters(index = "0", description = "Artifact base (group:artifact)")
+            private String artifactBase;
+
+            @Parameters(index = "1", description = "Version to deploy")
+            private String version;
+
+            @CommandLine.Option(names = {"-n", "--instances"}, description = "Number of instances", defaultValue = "1")
+            private int instances;
+
+            @Override
+            public Integer call() {
+                var body = buildDeployBody();
+                var response = bgParent.parent.postToNode("/api/blue-green/deploy", body);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+
+            private String buildDeployBody() {
+                return "{\"artifactBase\":\"" + artifactBase + "\"," + "\"version\":\"" + version + "\","
+                       + "\"instances\":" + instances + "}";
+            }
+        }
+
+        @Command(name = "list", description = "List blue-green deployments")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BlueGreenCommand bgParent;
+
+            @Override
+            public Integer call() {
+                var response = bgParent.parent.fetchFromNode("/api/blue-green/deployments");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "status", description = "Show blue-green deployment status")
+        static class StatusCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BlueGreenCommand bgParent;
+
+            @Parameters(index = "0", description = "Deployment ID")
+            private String deploymentId;
+
+            @Override
+            public Integer call() {
+                var response = bgParent.parent.fetchFromNode("/api/blue-green/" + deploymentId);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "switch", description = "Switch traffic to inactive environment")
+        static class SwitchCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BlueGreenCommand bgParent;
+
+            @Parameters(index = "0", description = "Deployment ID")
+            private String deploymentId;
+
+            @Override
+            public Integer call() {
+                var response = bgParent.parent.postToNode("/api/blue-green/" + deploymentId + "/switch", "{}");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "switch-back", description = "Revert traffic to previous environment")
+        static class SwitchBackCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BlueGreenCommand bgParent;
+
+            @Parameters(index = "0", description = "Deployment ID")
+            private String deploymentId;
+
+            @Override
+            public Integer call() {
+                var response = bgParent.parent.postToNode("/api/blue-green/" + deploymentId + "/switch-back", "{}");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "complete", description = "Complete blue-green deployment and decommission old environment")
+        static class CompleteCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BlueGreenCommand bgParent;
+
+            @Parameters(index = "0", description = "Deployment ID")
+            private String deploymentId;
+
+            @Override
+            public Integer call() {
+                var response = bgParent.parent.postToNode("/api/blue-green/" + deploymentId + "/complete", "{}");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+    }
+
+    // ===== A/B Test Commands =====
+    @Command(name = "ab-test",
+    description = "Manage A/B test deployments",
+    subcommands = {ABTestCommand.CreateCommand.class,
+    ABTestCommand.ListCommand.class,
+    ABTestCommand.StatusCommand.class,
+    ABTestCommand.MetricsCommand.class,
+    ABTestCommand.ConcludeCommand.class})
+    static class ABTestCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        @Command(name = "create", description = "Create a new A/B test")
+        static class CreateCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ABTestCommand abParent;
+
+            @Parameters(index = "0", description = "Artifact base (group:artifact)")
+            private String artifactBase;
+
+            @CommandLine.Option(names = {"--version-a"}, description = "Version A (control)", required = true)
+            private String versionA;
+
+            @CommandLine.Option(names = {"--version-b"}, description = "Version B (experiment)", required = true)
+            private String versionB;
+
+            @CommandLine.Option(names = {"--split"}, description = "Traffic split A:B (e.g., 50:50)", defaultValue = "50:50")
+            private String split;
+
+            @CommandLine.Option(names = {"-n", "--instances"}, description = "Instances per variant", defaultValue = "1")
+            private int instances;
+
+            @Override
+            public Integer call() {
+                var body = buildCreateBody();
+                var response = abParent.parent.postToNode("/api/ab-test/create", body);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+
+            private String buildCreateBody() {
+                return "{\"artifactBase\":\"" + artifactBase + "\"," + "\"versionA\":\"" + versionA + "\","
+                       + "\"versionB\":\"" + versionB + "\"," + "\"split\":\"" + split + "\","
+                       + "\"instancesPerVariant\":" + instances + "}";
+            }
+        }
+
+        @Command(name = "list", description = "List A/B tests")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ABTestCommand abParent;
+
+            @Override
+            public Integer call() {
+                var response = abParent.parent.fetchFromNode("/api/ab-tests");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "status", description = "Show A/B test status")
+        static class StatusCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ABTestCommand abParent;
+
+            @Parameters(index = "0", description = "Test ID")
+            private String testId;
+
+            @Override
+            public Integer call() {
+                var response = abParent.parent.fetchFromNode("/api/ab-test/" + testId);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "metrics", description = "Show A/B test comparison metrics")
+        static class MetricsCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ABTestCommand abParent;
+
+            @Parameters(index = "0", description = "Test ID")
+            private String testId;
+
+            @Override
+            public Integer call() {
+                var response = abParent.parent.fetchFromNode("/api/ab-test/" + testId + "/metrics");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "conclude", description = "Conclude A/B test and select winner")
+        static class ConcludeCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ABTestCommand abParent;
+
+            @Parameters(index = "0", description = "Test ID")
+            private String testId;
+
+            @CommandLine.Option(names = {"--winner"}, description = "Winning variant: A or B", required = true)
+            private String winner;
+
+            @Override
+            public Integer call() {
+                var body = "{\"winner\":\"" + winner + "\"}";
+                var response = abParent.parent.postToNode("/api/ab-test/" + testId + "/conclude", body);
                 System.out.println(formatJson(response));
                 return 0;
             }

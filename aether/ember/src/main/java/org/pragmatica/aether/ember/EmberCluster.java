@@ -662,7 +662,8 @@ public final class EmberCluster {
                                           activationGated,
                                           org.pragmatica.aether.config.TimeoutsConfig.timeoutsConfig(),
                                           Option.empty(),
-                                          Option.empty());
+                                          Option.empty(),
+                                          AetherNodeConfig.DeploymentDefaults.DEFAULT);
         return AetherNode.aetherNode(config)
                          .unwrap();
     }

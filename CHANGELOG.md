@@ -15,6 +15,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Enriched `/api/nodes` endpoint** — now returns role (CORE/WORKER) and isLeader flag per node, with role sourced from `ActivationDirectiveValue` in KV-Store
 - **`GET /api/cluster/governors` endpoint** — exposes governor announcements from KV-Store: governor ID, community, member count, and member list
 
+### Deployment Strategies
+- **Canary deployments** -- Progressive traffic shift with configurable stages (1% -> 5% -> 25% -> 50% -> 100%), auto-evaluation every 30s, health-based auto-rollback, KV-Store persistence, leader failover recovery
+- **Blue-green deployments** -- Atomic traffic switchover (~100ms via single Rabia round), drain period, instant switch-back for rollback, 2x resource usage during transition
+- **A/B testing** -- Deterministic traffic split by request context (header hash, cookie hash, header match, percentage), ScopedValue-based variant propagation through invoke chains, per-variant metrics collection
+- **Deployment strategy coordinator** -- Mutual exclusion (one strategy per artifact), unified routing lookup for all strategies
+- **HTTP version-aware routing** -- AppHttpServer checks deployment strategy routing before serving locally, forwards to remote node when weighted decision routes to other version
+- **Blueprint deployment config** -- Optional `[deployment]` TOML section for strategy selection and configuration
+
 ### Changed
 - **Role-aware unified AetherNode** — merged WorkerNode into AetherNode. Single `aether-node.jar` binary for both CORE and WORKER roles. Consensus observer mode (receives Decisions without voting), `ForwardingClusterNode` for transparent KV write forwarding, `SwitchableClusterNode` for runtime role switching. WORKER→CORE promotion supported. `aether/worker` module eliminated — components ported to `aether/node` and `aether-metrics`
 - **Quorum fix for mixed clusters** — when `coreMax > 0`, consensus quorum calculated against core node count only (not total nodes including workers)

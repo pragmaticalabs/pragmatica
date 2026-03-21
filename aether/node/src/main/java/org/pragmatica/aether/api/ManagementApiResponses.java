@@ -280,6 +280,68 @@ public sealed interface ManagementApiResponses {
     record RollingUpdateErrorResponse(String error,
                                       String updateId) {}
 
+    // ===== Canary Routes =====
+    record CanaryListResponse(List<CanaryInfo> canaries) {}
+
+    record CanaryInfo(String canaryId,
+                      String artifactBase,
+                      String oldVersion,
+                      String newVersion,
+                      String state,
+                      String routing,
+                      int currentStage,
+                      int totalStages,
+                      int newInstances,
+                      long createdAt,
+                      long updatedAt) {}
+
+    record CanaryHealthResponse(String canaryId,
+                                String verdict,
+                                CanaryVersionHealth baseline,
+                                CanaryVersionHealth canary,
+                                long collectedAt) {}
+
+    record CanaryVersionHealth(String version,
+                               long requestCount,
+                               double errorRate,
+                               long p99LatencyMs) {}
+
+    // ===== Blue-Green Routes =====
+    record BlueGreenListResponse(List<BlueGreenInfo> deployments) {}
+
+    record BlueGreenInfo(String deploymentId,
+                         String artifactBase,
+                         String blueVersion,
+                         String greenVersion,
+                         String state,
+                         String activeEnvironment,
+                         String routing,
+                         int blueInstances,
+                         int greenInstances,
+                         long createdAt,
+                         long updatedAt) {}
+
+    // ===== A/B Test Routes =====
+    record ABTestListResponse(List<ABTestInfo> tests) {}
+
+    record ABTestInfo(String testId,
+                      String artifactBase,
+                      String baselineVersion,
+                      String state,
+                      int variantCount,
+                      long createdAt,
+                      long updatedAt) {}
+
+    record ABTestMetricsResponse(String testId,
+                                 Map<String, ABTestVariantMetrics> variants,
+                                 long collectedAt) {}
+
+    record ABTestVariantMetrics(String variant,
+                                String version,
+                                long requestCount,
+                                double errorRate,
+                                long avgLatencyMs) {}
+
     // ===== Config Routes =====
     record ConfigSetResponse(String status,
                              String key,
