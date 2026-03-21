@@ -248,9 +248,11 @@ public record Main(String[] args) {
     }
 
     private int parseCoreMax(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(cfg -> cfg.cluster()
-                                          .coreMax())
-                           .or(0);
+        return findEnv("CORE_MAX").flatMap(s -> Result.lift(() -> Integer.parseInt(s))
+                                                      .option())
+                      .orElse(aetherConfig.map(cfg -> cfg.cluster()
+                                                         .coreMax()))
+                      .or(0);
     }
 
     private int managementPortFromConfig(Option<AetherConfig> aetherConfig) {

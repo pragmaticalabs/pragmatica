@@ -14,7 +14,7 @@
     <description>Annotation processor for @Codec -- generates per-type codec implementations</description>
 
     <properties>
-        <compile-testing.version>0.21.1</compile-testing.version>
+        <compile-testing.version>0.21.0</compile-testing.version>
     </properties>
 
     <dependencies>
