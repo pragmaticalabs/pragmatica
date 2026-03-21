@@ -194,8 +194,11 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private Promise<byte[]> resolveArtifactBytes(Artifact artifact) {
-        return repository.locate(artifact)
+        // Try blueprint classifier first (migration scripts are packaged in the blueprint JAR)
+        return repository.locate(artifact, "blueprint")
                          .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes)
+                         .orElse(() -> repository.locate(artifact)
+                                                 .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes))
                          .orElse(() -> artifactStore.resolve(artifact));
     }
 
