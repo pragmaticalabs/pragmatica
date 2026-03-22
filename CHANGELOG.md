@@ -4,7 +4,9 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.21.2] - Unreleased
+## [0.22.0] - Unreleased
+
+## [0.21.2] - 2026-03-22
 
 ### Added
 - **Schema migration failure recovery** — automatic retry with exponential backoff (5s/15s/45s) for transient failures, manual retry via `POST /api/schema/{ds}/retry` and `aether schema retry` CLI command
