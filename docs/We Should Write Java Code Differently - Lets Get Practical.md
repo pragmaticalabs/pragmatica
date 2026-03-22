@@ -1,3 +1,10 @@
+---
+title: "We Should Write Java Code Differently: Let's Get Practical"
+tags: [java, functional, programming, architecture]
+published: true
+description: "Three types - Option, Result, and Promise - cover virtually every return value in a Java backend. Here is how they work together."
+---
+
 # We Should Write Java Code Differently: Let's Get Practical
 
 A few years ago I wrote about [why we should write Java code differently](https://dev.to/siy/we-should-write-java-code-differently-210b). The core argument: most of what slows us down is not the amount of code — it's the amount of context we lose while writing it. Nullable variables, business exceptions, framework magic — each one eats information that should have been explicit.
@@ -137,9 +144,9 @@ The real power shows in composition. `Result.all()` collects independent validat
 record ValidRegistration(Email email, Password password, PhoneNumber phoneNumber) {
     public static Result<ValidRegistration> validRegistration(Registration raw) {
         return Result.all(Email.email(raw.email()),
-                   Password.password(raw.password()), 
-                   PhoneNumber.phoneNumber(raw.phone()))
-              .map(ValidRegistration::new);
+                          Password.password(raw.password()), 
+                          PhoneNumber.phoneNumber(raw.phone()))
+                     .map(ValidRegistration::new);
     }    
 }
 ```
@@ -299,6 +306,55 @@ Code reviews get faster. When every method returns one of four types, the shape 
 Testing simplifies. Each step in a chain is independently testable. Failures are values you can assert on — not exceptions you have to catch. Mock a dependency to return `EMAIL_ALREADY_EXISTS.result()` and verify the chain handles it correctly.
 
 And the types compose. A `Result` from validation flows into a `Promise` for async processing, which fans out into parallel `Promise.all()`, which combines back into a single response. Each piece connects to the next with `flatMap`. The vocabulary is always the same.
+
+---
+
+## Naming That Scales
+
+Types solve the "what can happen" question. But there's another source of friction — naming. Every code review has that moment: "should this be `fetchUser` or `loadUser` or `getUser`?" The debate is real, and it wastes time because there's no shared vocabulary.
+
+Zone-based naming eliminates this. The idea, adapted from [Derrick Brandt's systematic approach to clean code](https://medium.com/@brandt.a.derrick/how-to-write-clean-code-actually-5205963ec524): verbs belong to abstraction levels. Use the wrong verb at the wrong level, and the name signals something misleading.
+
+**Zone 2 — orchestration steps.** These coordinate other operations. They don't touch databases or parse bytes. They organize.
+
+| Verb | When to use |
+|------|-------------|
+| `validate` | Checking rules and constraints |
+| `process` | Transforming or interpreting data |
+| `load` | Retrieving data for use |
+| `save` | Persisting changes |
+| `resolve` | Determining ambiguous cases |
+| `build` | Assembling complex objects |
+| `notify` | Informing others of events |
+
+**Zone 3 — leaf operations.** These do the actual work. One responsibility, specific and concrete.
+
+| Verb | When to use |
+|------|-------------|
+| `fetch` | Pull from external source |
+| `parse` | Break down structured input |
+| `format` | Build structured output |
+| `calculate` | Perform computation |
+| `hash` | Cryptographic transformation |
+| `send` | Transmit over network |
+| `extract` | Pull piece from larger structure |
+
+The pattern:
+
+```java
+// Zone 2 — step interface, orchestration verb
+interface LoadUserProfile {
+    Promise<UserProfile> apply(UserId id);
+}
+
+// Zone 3 — leaf, implementation verb
+private Promise<User> fetchFromDatabase(UserId id) { ... }
+private Option<CachedUser> extractFromCache(UserId id) { ... }
+```
+
+If you see `fetch` on a step interface — something's wrong. If you see `process` on a leaf — same thing. The verb tells you the abstraction level before you read the parameters.
+
+This matters for the same reason the four return types matter: it makes code predictable. A developer scanning an unfamiliar codebase can tell from the name alone whether they're looking at orchestration or implementation. No need to open the method body.
 
 ---
 
