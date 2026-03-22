@@ -23,6 +23,8 @@ import org.pragmatica.aether.api.routes.SchemaRoutes;
 import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.api.routes.StatusRoutes;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
+import org.pragmatica.aether.http.handler.security.RoleEnforcer;
+import org.pragmatica.aether.http.handler.security.RoutePermissionRegistry;
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.http.security.SecurityError;
@@ -523,7 +525,9 @@ class ManagementServerImpl implements ManagementServer {
         var httpContext = toManagementRequestContext(ctx, path);
         var policy = RouteSecurityPolicy.apiKeyRequired();
         var methodName = method.name();
+        var permission = RoutePermissionRegistry.resolve(methodName, path);
         return securityValidator.validate(httpContext, policy)
+                                .flatMap(sc -> RoleEnforcer.enforce(sc, permission))
                                 .onFailure(cause -> handleManagementSecurityFailure(response, cause, path, methodName))
                                 .onSuccess(sc -> logManagementAccess(sc, methodName, path))
                                 .isSuccess();
@@ -554,11 +558,7 @@ class ManagementServerImpl implements ManagementServer {
     @SuppressWarnings("JBCT-PAT-01")
     private void handleManagementSecurityFailure(ResponseWriter response, Cause cause, String path, String method) {
         AuditLog.authFailure("mgmt", cause.message(), method, path);
-        var status = switch (cause) {
-            case SecurityError.MissingCredentials _ -> HttpStatus.UNAUTHORIZED;
-            case SecurityError.InvalidCredentials _ -> HttpStatus.FORBIDDEN;
-            default -> HttpStatus.UNAUTHORIZED;
-        };
+        var status = resolveSecurityErrorStatus(cause);
         if (status == HttpStatus.UNAUTHORIZED) {
             response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"")
                     .error(status,
@@ -566,5 +566,15 @@ class ManagementServerImpl implements ManagementServer {
         } else {
             response.error(status, cause.message());
         }
+    }
+
+    private static HttpStatus resolveSecurityErrorStatus(Cause cause) {
+        return switch (cause) {
+            case SecurityError.MissingCredentials _ -> HttpStatus.UNAUTHORIZED;
+            case SecurityError.InvalidCredentials _ -> HttpStatus.FORBIDDEN;
+            case SecurityError.AccessDenied _ -> HttpStatus.FORBIDDEN;
+            case RoleEnforcer.AuthorizationError.AccessDenied _ -> HttpStatus.FORBIDDEN;
+            default -> HttpStatus.UNAUTHORIZED;
+        };
     }
 }
