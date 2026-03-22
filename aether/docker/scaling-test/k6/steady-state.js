@@ -29,7 +29,7 @@ export const options = {
 export default function () {
     const node = NODES[__VU % NODES.length];
     const res = http.post(`${node}/api/v1/urls/`, JSON.stringify({
-        url: `https://example.com/test-${__ITER}`,
+        url: `https://example.com/test-${__VU}-${__ITER}`,
     }), { headers: { 'Content-Type': 'application/json' } });
 
     check(res, {

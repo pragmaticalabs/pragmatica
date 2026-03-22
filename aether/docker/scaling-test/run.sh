@@ -109,7 +109,7 @@ phase_steady() {
 
 phase_workers() {
     echo "=== Phase 4: Adding 7 worker nodes ==="
-    $COMPOSE_FULL up --build -d
+    $COMPOSE_FULL up --build -d --no-recreate
     "$LIB_DIR/wait-healthy.sh" 12 180
     echo "Phase 4 complete: 12 nodes healthy (5 core + 7 worker)."
 }

@@ -41,7 +41,7 @@ export const options = {
 export default function () {
     const node = ALL_NODES[__VU % ALL_NODES.length];
     const res = http.post(`${node}/api/v1/urls/`, JSON.stringify({
-        url: `https://example.com/scaling-${__ITER}`,
+        url: `https://example.com/scaling-${__VU}-${__ITER}`,
     }), { headers: { 'Content-Type': 'application/json' } });
 
     check(res, {
