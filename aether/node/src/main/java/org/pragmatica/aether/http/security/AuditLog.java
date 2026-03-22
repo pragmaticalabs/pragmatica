@@ -68,4 +68,44 @@ public final class AuditLog {
     public static void deploymentAutoRollback(String type, String id, String artifact, String verdict) {
         AUDIT.warn("DEPLOY_AUTO_ROLLBACK type={} id={} artifact={} verdict={}", type, id, artifact, verdict);
     }
+
+    /// Log dynamic config set.
+    public static void configSet(String key, String scope) {
+        AUDIT.info("CONFIG_SET key={} scope={}", key, scope);
+    }
+
+    /// Log dynamic config removed.
+    public static void configRemoved(String key, String scope) {
+        AUDIT.info("CONFIG_REMOVED key={} scope={}", key, scope);
+    }
+
+    /// Log backup created.
+    public static void backupCreated(boolean success, String message) {
+        AUDIT.info("BACKUP_CREATED success={} message={}", success, message);
+    }
+
+    /// Log backup restored.
+    public static void backupRestored(boolean success, String commitId, String message) {
+        AUDIT.info("BACKUP_RESTORED success={} commitId={} message={}", success, commitId, message);
+    }
+
+    /// Log node lifecycle transition.
+    public static void nodeLifecycleTransition(String nodeId, String targetState, boolean success, String message) {
+        AUDIT.info("NODE_LIFECYCLE_TRANSITION nodeId={} targetState={} success={} message={}", nodeId, targetState, success, message);
+    }
+
+    /// Log blueprint deployed.
+    public static void blueprintDeployed(String blueprintId, int sliceCount) {
+        AUDIT.info("BLUEPRINT_DEPLOYED blueprintId={} sliceCount={}", blueprintId, sliceCount);
+    }
+
+    /// Log blueprint deleted.
+    public static void blueprintDeleted(String blueprintId) {
+        AUDIT.info("BLUEPRINT_DELETED blueprintId={}", blueprintId);
+    }
+
+    /// Log schema manual retry requested.
+    public static void schemaManualRetry(String datasource) {
+        AUDIT.info("SCHEMA_MANUAL_RETRY datasource={}", datasource);
+    }
 }

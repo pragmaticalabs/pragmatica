@@ -18,6 +18,7 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.aether.backup.BackupService.BackupInfo;
+import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Promise;
@@ -58,11 +59,13 @@ public final class BackupRoutes implements RouteSource {
     }
 
     private BackupResponse triggerBackup() {
-        return backupServiceSupplier.get()
-                                    .backupNow()
-                                    .fold(cause -> BackupResponse.backupResponse(false,
-                                                                                 cause.message()),
-                                          _ -> BackupResponse.backupResponse(true, "Backup completed"));
+        var response = backupServiceSupplier.get()
+                                            .backupNow()
+                                            .fold(cause -> BackupResponse.backupResponse(false,
+                                                                                         cause.message()),
+                                                  _ -> BackupResponse.backupResponse(true, "Backup completed"));
+        AuditLog.backupCreated(response.success(), response.message());
+        return response;
     }
 
     private List<BackupInfo> listBackups() {
@@ -72,10 +75,12 @@ public final class BackupRoutes implements RouteSource {
     }
 
     private Promise<BackupResponse> restoreBackup(RestoreRequest request) {
-        return Promise.success(backupServiceSupplier.get()
-                                                    .restore(request.commit())
-                                                    .fold(cause -> BackupResponse.backupResponse(false,
-                                                                                                 cause.message()),
-                                                          _ -> BackupResponse.backupResponse(true, "Restore completed")));
+        var response = backupServiceSupplier.get()
+                                            .restore(request.commit())
+                                            .fold(cause -> BackupResponse.backupResponse(false,
+                                                                                         cause.message()),
+                                                  _ -> BackupResponse.backupResponse(true, "Restore completed"));
+        AuditLog.backupRestored(response.success(), request.commit(), response.message());
+        return Promise.success(response);
     }
 }

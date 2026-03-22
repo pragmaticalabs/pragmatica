@@ -2,6 +2,7 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
@@ -196,6 +197,7 @@ public final class SliceRoutes implements RouteSource {
                                                                           .asString(),
                                                                   expanded.loadOrder()
                                                                           .size()))
+                           .onSuccess(r -> AuditLog.blueprintDeployed(r.blueprint(), r.slices()))
                            .onFailure(cause -> log.warn("Blueprint publish failed: {}",
                                                         cause.message()));
     }
@@ -214,6 +216,7 @@ public final class SliceRoutes implements RouteSource {
                                                                     .asString(),
                                                             expanded.loadOrder()
                                                                     .size()))
+                     .onSuccess(r -> AuditLog.blueprintDeployed(r.blueprint(), r.slices()))
                      .onFailure(cause -> log.warn("Blueprint artifact deploy failed: {}",
                                                   cause.message()));
     }
@@ -354,6 +357,7 @@ public final class SliceRoutes implements RouteSource {
                                                               .delete(blueprintId)
                                                               .map(_ -> new BlueprintDeleteResponse("deleted",
                                                                                                     blueprintId.asString())))
+                          .onSuccess(r -> AuditLog.blueprintDeleted(r.id()))
                           .onFailure(cause -> log.warn("Blueprint delete failed: {}",
                                                        cause.message()));
     }

@@ -1,6 +1,7 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.DynamicConfigManager;
+import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.api.ManagementApiResponses.ConfigRemovedResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ConfigSetResponse;
 import org.pragmatica.consensus.NodeId;
@@ -65,6 +66,7 @@ public final class ConfigRoutes implements RouteSource {
                   .filter(id -> !id.isEmpty())
                   .fold(() -> configManager.setConfig(req.key(),
                                                       req.value())
+                                           .onSuccess(_ -> AuditLog.configSet(req.key(), "cluster"))
                                            .map(_ -> new ConfigSetResponse("config_set",
                                                                            req.key(),
                                                                            req.value())),
@@ -73,6 +75,7 @@ public final class ConfigRoutes implements RouteSource {
                                            .flatMap(nodeId -> configManager.setNodeConfig(req.key(),
                                                                                           req.value(),
                                                                                           nodeId)
+                                                                           .onSuccess(_ -> AuditLog.configSet(req.key(), "node:" + nodeIdStr))
                                                                            .map(_ -> new ConfigSetResponse("config_set",
                                                                                                            req.key(),
                                                                                                            req.value()))));
@@ -95,6 +98,7 @@ public final class ConfigRoutes implements RouteSource {
             return ConfigError.KEY_REQUIRED.promise();
         }
         return configManager.removeConfig(key)
+                            .onSuccess(_ -> AuditLog.configRemoved(key, "cluster"))
                             .map(_ -> new ConfigRemovedResponse("config_removed", key));
     }
 
@@ -105,6 +109,7 @@ public final class ConfigRoutes implements RouteSource {
         return NodeId.nodeId(nodeIdStr)
                      .async()
                      .flatMap(nodeId -> configManager.removeNodeConfig(key, nodeId)
+                                                     .onSuccess(_ -> AuditLog.configRemoved(key, "node:" + nodeIdStr))
                                                      .map(_ -> new ConfigRemovedResponse("config_removed", key)));
     }
 

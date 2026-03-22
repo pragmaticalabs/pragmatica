@@ -1,6 +1,7 @@
 package org.pragmatica.aether.deployment.schema;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.AuditLog;
 import org.pragmatica.aether.deployment.schema.SchemaEvent.ManualRetryRequested;
 import org.pragmatica.aether.deployment.schema.SchemaEvent.MigrationCompleted;
 import org.pragmatica.aether.deployment.schema.SchemaEvent.MigrationFailed;
@@ -191,12 +192,14 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
     private void emitMigrationStarted(String datasourceName, SchemaVersionValue value) {
         var artifactCoords = Option.option(value.artifactCoords()).or("");
+        AuditLog.schemaMigrationStarted(datasourceName, artifactCoords, self.id());
         router.onPresent(r -> r.route(MigrationStarted.migrationStarted(datasourceName, artifactCoords, self)));
     }
 
     private void emitMigrationCompleted(String datasourceName, SchemaVersionValue value,
                                         int appliedCount, int currentVersion, long durationMs) {
         var artifactCoords = Option.option(value.artifactCoords()).or("");
+        AuditLog.schemaMigrationCompleted(datasourceName, artifactCoords, appliedCount, currentVersion, durationMs);
         router.onPresent(r -> r.route(MigrationCompleted.migrationCompleted(datasourceName, artifactCoords,
                                                                              appliedCount, currentVersion,
                                                                              durationMs, self)));
@@ -225,6 +228,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                  datasourceName, cause.message(), nextRetryMs / 1000, attemptNumber, MAX_RETRIES);
         var retryExplanation = SchemaExplanationBuilder.buildRetryingExplanation(datasourceName, artifactCoords,
                                                                                  attemptNumber, nextRetryMs);
+        AuditLog.schemaMigrationRetrying(datasourceName, artifactCoords, attemptNumber, nextRetryMs);
         router.onPresent(r -> r.route(MigrationRetrying.migrationRetrying(datasourceName, artifactCoords,
                                                                            attemptNumber, nextRetryMs,
                                                                            retryExplanation)));
@@ -241,6 +245,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                                          List.of(), attemptNumber,
                                                                          MAX_RETRIES, 0);
         log.error("Schema migration failed (permanent) for '{}': {}", datasourceName, explanation);
+        AuditLog.schemaMigrationFailed(datasourceName, artifactCoords, classification.name(), cause.message());
         router.onPresent(r -> r.route(MigrationFailed.migrationFailed(datasourceName, artifactCoords,
                                                                        classification, cause.message(),
                                                                        List.of(), attemptNumber,

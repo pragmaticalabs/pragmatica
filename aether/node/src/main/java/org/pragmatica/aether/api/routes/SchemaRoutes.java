@@ -16,6 +16,7 @@
 
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
@@ -187,7 +188,8 @@ public final class SchemaRoutes implements RouteSource {
     }
 
     private Promise<SchemaMigrateResponse> retryMigration(String datasource) {
-        return lookupSchemaVersion(datasource).flatMap(current -> writeRetryStatus(current, datasource));
+        return lookupSchemaVersion(datasource).flatMap(current -> writeRetryStatus(current, datasource))
+                                              .onSuccess(_ -> AuditLog.schemaManualRetry(datasource));
     }
 
     private Promise<SchemaMigrateResponse> writeRetryStatus(SchemaVersionValue current, String datasource) {
