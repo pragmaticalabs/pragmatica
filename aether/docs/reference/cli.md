@@ -71,9 +71,33 @@ export AETHER_API_KEY=mykey123
 aether status
 ```
 
-The CLI will display user-friendly error messages for authentication failures:
+The CLI will display user-friendly error messages for authentication and authorization failures:
 - `Authentication required` (401) — API key not provided
-- `Access denied` (403) — Invalid API key
+- `Access denied` (403) — Invalid API key or insufficient role for the requested operation
+
+### Authorization Roles
+
+API keys can be assigned an authorization role that restricts which operations the CLI can perform. Roles are configured in `aether.toml`:
+
+```toml
+[app-http.api-keys.my-admin-key]
+name = "cluster-admin"
+roles = ["admin"]
+authorization_role = "ADMIN"
+
+[app-http.api-keys.my-viewer-key]
+name = "monitoring"
+roles = ["service"]
+authorization_role = "VIEWER"
+```
+
+| Role | CLI Access |
+|------|-----------|
+| **ADMIN** | All commands |
+| **OPERATOR** | Status, scaling, drain, deploy from artifact, schema, updates, backup, config, alerts |
+| **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `metrics`, `events`, `health` |
+
+When `authorization_role` is omitted, the key defaults to `ADMIN`. See [Management API - Authorization](management-api.md#authorization-rbac) for the full permission mapping.
 
 ### Commands
 

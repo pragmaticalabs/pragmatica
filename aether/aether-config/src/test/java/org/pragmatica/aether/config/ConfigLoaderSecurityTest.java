@@ -126,6 +126,101 @@ class ConfigLoaderSecurityTest {
     }
 
     @Test
+    void loadFromString_parsesAuthorizationRoleFromRichApiKeys() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+
+            [app-http.api-keys.admin-key]
+            name = "admin-service"
+            roles = ["admin"]
+            authorization_role = "ADMIN"
+
+            [app-http.api-keys.viewer-key]
+            name = "read-only"
+            roles = ["service"]
+            authorization_role = "VIEWER"
+
+            [app-http.api-keys.operator-key]
+            name = "ops-bot"
+            roles = ["service"]
+            authorization_role = "OPERATOR"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                var adminEntry = config.appHttp().apiKeys().get("admin-key");
+                assertThat(adminEntry.authorizationRole()).isEqualTo("ADMIN");
+
+                var viewerEntry = config.appHttp().apiKeys().get("viewer-key");
+                assertThat(viewerEntry.authorizationRole()).isEqualTo("VIEWER");
+
+                var operatorEntry = config.appHttp().apiKeys().get("operator-key");
+                assertThat(operatorEntry.authorizationRole()).isEqualTo("OPERATOR");
+            });
+    }
+
+    @Test
+    void loadFromString_defaultsAuthorizationRoleToAdminWhenOmitted() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+
+            [app-http.api-keys.no-role-key]
+            name = "legacy-service"
+            roles = ["service"]
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                var entry = config.appHttp().apiKeys().get("no-role-key");
+                assertThat(entry.authorizationRole()).isEqualTo("ADMIN");
+            });
+    }
+
+    @Test
+    void loadFromString_normalizesLowercaseAuthorizationRole() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+
+            [app-http.api-keys.mixed-case-key]
+            name = "mixed"
+            roles = ["service"]
+            authorization_role = "viewer"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                var entry = config.appHttp().apiKeys().get("mixed-case-key");
+                assertThat(entry.authorizationRole()).isEqualTo("VIEWER");
+            });
+    }
+
+    @Test
+    void loadFromString_simpleApiKeysDefaultToAdminAuthorizationRole() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            api_keys = ["simple-key"]
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                var entry = config.appHttp().apiKeys().get("simple-key");
+                assertThat(entry.authorizationRole()).isEqualTo("ADMIN");
+            });
+    }
+
+    @Test
     void loadFromString_richApiKeysDefaultNameAndRolesWhenOmitted() {
         var toml = MINIMAL_CLUSTER + """
 

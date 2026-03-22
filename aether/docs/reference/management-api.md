@@ -24,6 +24,90 @@ X-API-Key: your-api-key
 
 When no API keys are configured, all endpoints are accessible without authentication (backward compatible).
 
+## Authorization (RBAC)
+
+Aether supports role-based access control (RBAC) with three hierarchical authorization roles. Each API key can be assigned a role that determines which endpoints it can access.
+
+### Roles
+
+| Role | Level | Description |
+|------|-------|-------------|
+| **ADMIN** | Full access | Deploy blueprints, shutdown nodes, manage logging, configure observability, RBAC management |
+| **OPERATOR** | Operational access | Drain/activate nodes, scaling, schema operations, canary/blue-green/rolling updates, backup, alerts, config overrides, scheduled tasks |
+| **VIEWER** | Read-only access | Cluster status, metrics, logs, traces, events, health checks |
+
+Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all VIEWER permissions.
+
+### Permission Mapping
+
+**Read requests** (GET, HEAD, OPTIONS) are accessible to all authenticated roles (VIEWER and above).
+
+**Mutation requests** (POST, PUT, DELETE) follow this mapping:
+
+| Endpoint Category | Minimum Role | Examples |
+|-------------------|-------------|----------|
+| Blueprint management | ADMIN | `POST /api/blueprint`, `DELETE /api/blueprint/{id}` |
+| Node shutdown | ADMIN | `POST /api/node/shutdown/{id}` |
+| Backup restore | ADMIN | `POST /api/backup/restore/{id}` |
+| Log level changes | ADMIN | `PUT /api/logging/levels` |
+| Observability depth | ADMIN | `PUT /api/observability/depth` |
+| Blueprint deploy (from artifact) | OPERATOR | `POST /api/blueprint/deploy` |
+| Blueprint validate | VIEWER | `POST /api/blueprint/validate` |
+| Node drain/activate | OPERATOR | `POST /api/node/drain/{id}`, `POST /api/node/activate/{id}` |
+| Scaling | OPERATOR | `POST /api/scale` |
+| Schema operations | OPERATOR | `POST /api/schema/*` |
+| Deployment strategies | OPERATOR | `POST /api/canary/*`, `POST /api/blue-green/*`, `POST /api/rolling-update/*`, `POST /api/ab-test/*` |
+| Backup trigger | OPERATOR | `POST /api/backup` |
+| Config overrides | OPERATOR | `PUT /api/config/*` |
+| Alert management | OPERATOR | `POST /api/alerts/clear` |
+| Scheduled tasks | OPERATOR | `POST /api/scheduled-tasks/*` |
+| Controller config | OPERATOR | `PUT /api/controller/*` |
+| Threshold config | OPERATOR | `PUT /api/thresholds/*` |
+| Artifact repository | OPERATOR | `POST /repository/*` |
+| All other mutations | ADMIN | Default for unlisted mutation endpoints |
+
+### TOML Configuration
+
+Assign authorization roles to API keys using the `authorization_role` field:
+
+```toml
+[app-http]
+enabled = true
+
+# Rich format with authorization roles
+[app-http.api-keys.my-admin-key-value]
+name = "cluster-admin"
+roles = ["admin"]
+authorization_role = "ADMIN"
+
+[app-http.api-keys.my-operator-key-value]
+name = "deploy-bot"
+roles = ["service"]
+authorization_role = "OPERATOR"
+
+[app-http.api-keys.my-viewer-key-value]
+name = "monitoring"
+roles = ["service"]
+authorization_role = "VIEWER"
+```
+
+**Default behavior:** When `authorization_role` is omitted, the key defaults to `ADMIN` for full backward compatibility. Existing configurations with no `authorization_role` field continue to work unchanged.
+
+**Simple key format:** Keys defined using the simple string list (`api_keys = ["key1", "key2"]`) always receive ADMIN authorization.
+
+### Authorization Failure Response
+
+When an authenticated user lacks the required role for an endpoint, the server returns:
+
+- **`403 Forbidden`** with body:
+```json
+{
+  "error": "Forbidden: VIEWER role insufficient for this operation (requires OPERATOR)"
+}
+```
+
+This is distinct from the authentication 403 (invalid API key). The authorization 403 indicates the key is valid but the assigned role lacks permission.
+
 ---
 
 ## Cluster Status
