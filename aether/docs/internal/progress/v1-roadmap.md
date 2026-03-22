@@ -1,6 +1,6 @@
 # V1.0.0 Roadmap
 
-## Target: v1.0.0-rc1 by April 25, 2026
+## Target: v1.0.0-rc1 by May 2, 2026
 
 ### Current State
 - 130/141 features Complete/Battle-tested
@@ -9,11 +9,16 @@
 - SWIM stabilized (InetSocketAddress codec fix)
 - Core value objects added to core module
 
+### Methodology
+All features follow the [Evolutionary Implementation Protocol](../contributors/evolutionary-implementation.md):
+decompose into layers, hard correctness gate per layer, no layer starts until the previous is green.
+
 ### Release Cadence
 - 0.22.0: Audit trail + docs cleanup
 - 0.23.0: RBAC Tier 2 MVP
-- 0.24.0: Dashboard wiring
-- 0.25.0: Soak test + release pipeline
+- 0.24.0: Streaming MVP (in-memory, preview)
+- 0.25.0: Dashboard wiring
+- 0.26.0: Soak test + release pipeline
 - 1.0.0-rc1: Buffer + beta fixes
 
 ---
@@ -27,31 +32,38 @@
 - Fix catalog contradiction: backup/restore listed as both Planned and Complete
 
 ### 1b. Audit Trail Expansion (S — 2-3 days)
+
 **Goal:** Every mutation path has an audit log entry.
 
-Currently covered:
-- Auth success/failure
-- Management access
-- WebSocket auth
-- Deployment start/promote/rollback/complete/auto-rollback
+**Layered breakdown:**
 
-Missing (add `AuditLog` calls):
-- Schema migration: started, completed, failed, manual retry
-- Scaling decisions: reconciliation scale-up/down, CDM adjustments
-- Config changes: dynamic config overlay updates
-- Backup/restore operations
-- Node lifecycle: drain, activate, shutdown, decommission
-- Blueprint deploy/undeploy
-- Secret resolution (success/failure, not the secret itself)
+| Layer | Scope | Gate |
+|-------|-------|------|
+| 1 | Identify all mutation paths, define audit event categories | Checklist document |
+| 2 | Add `AuditLog` calls to schema migration + blueprint deploy/undeploy | Unit tests verify log output |
+| 3 | Add to scaling decisions, config changes, backup/restore, node lifecycle | Integration test: Forge produces audit entries for all categories |
 
-**Files to modify:** SchemaOrchestratorService, ClusterDeploymentManager, BackupService, NodeLifecycleManager, DynamicConfigRoutes, BlueprintService
+Currently covered: auth, management access, WebSocket, deployment lifecycle.
+
+Missing: schema migration, scaling decisions, config changes, backup/restore, node lifecycle, blueprint deploy/undeploy, secret resolution.
+
+**Files:** SchemaOrchestratorService, ClusterDeploymentManager, BackupService, NodeLifecycleManager, DynamicConfigRoutes, BlueprintService
 
 ---
 
 ## Week 2: RBAC Tier 2 MVP (0.23.0)
 
-### Scope
-Minimum viable role-based access control for production teams.
+**Layered breakdown:**
+
+| Layer | Scope | Duration | Gate |
+|-------|-------|----------|------|
+| 1 | `Role` enum (ADMIN/OPERATOR/VIEWER), `RoutePermission` record | 0.5 day | Types compile, factory tests |
+| 2 | `RoleEnforcer` — check API key role against route requirement | 1 day | Unit tests: all role × route combinations |
+| 3 | Wire into `SecurityValidator` + `ManagementServer`, annotate all `*Routes.java` | 1.5 days | Integration: viewer GET OK, viewer POST drain rejected |
+| 4 | TOML config (`role` in `[[api_keys]]`), CLI key management, docs | 1 day | Config round-trip, CLI output |
+| 5 | Audit log for access denied, default role = VIEWER for unspecified | 0.5 day | Full test suite |
+
+**Total: 4.5 days**
 
 **Roles:**
 | Role | Access |
@@ -60,25 +72,47 @@ Minimum viable role-based access control for production teams.
 | OPERATOR | Operational endpoints (status, scaling, drain, schema retry, backup) |
 | VIEWER | Read-only endpoints (status, metrics, logs, traces) |
 
-**Implementation:**
-1. `Role` enum: ADMIN, OPERATOR, VIEWER
-2. Per-route role requirement: annotation or static map in each `*Routes.java`
-3. `SecurityValidator` enforcement: check API key's role against route requirement
-4. TOML config: `[[api_keys]]` entries get `role = "ADMIN"` field (default: ADMIN for backward compat)
-5. CLI: `--role` option for key management
-
-**Spec exists:** `aether/docs/specs/rbac-spec.md`
-
-**Files:** SecurityValidator, ManagementServer, all *Routes.java files, TOML config parser, AetherCli
+**Spec:** `aether/docs/specs/rbac-spec.md`
 
 ---
 
-## Week 3: Dashboard Wiring (0.24.0)
+## Week 3-4: Streaming MVP (0.24.0) — Preview
 
-### Scope
-Connect existing REST/WebSocket APIs to the management dashboard frontend.
+In-memory streaming as a preview feature. Full spec at `aether/docs/specs/streaming-spec.md`.
+Provides the programming model and core runtime. Consumer groups, CDC, persistence are post-V1.
 
-**Panels needed:**
+**Layered breakdown:**
+
+| Layer | Scope | Duration | Gate |
+|-------|-------|----------|------|
+| 1 | Types: `StreamPublisher<T>`, `StreamSubscriber`, `StreamAccess<T>`, `@PartitionKey`, config records | 1 day | Compile, factory tests, serialization round-trip |
+| 2 | `OffHeapRingBuffer` — produce, consume, wrap-around, retention eviction | 2 days | Unit tests (single + concurrent), benchmark |
+| 3 | Annotation processor: detect stream resources, generate manifest, bump envelope version | 1.5 days | Processor unit tests, generated code compiles |
+| 4 | `StreamPartitionManager` + KV types, governor-local produce/consume, CDM lifecycle | 2 days | Forge integration: produce 1000 events, consume all, verify order |
+| 5 | REST endpoints (`/api/streams/*`), CLI (`aether stream`), docs | 1 day | REST round-trip, CLI output |
+| 6 | Consumer error handling (retry/skip/stall), dead-letter, co-located zero-copy | 1.5 days | Failure injection test |
+
+**Total: 9 days**
+
+**Post-V1 streaming roadmap:**
+- Phase 2: Replication + governor failover → durability without persistence
+- Phase 3: PostgreSQL WAL-backed streams + transactional cursor commits → exactly-once delivery
+- Phase 3 architecture: stream segments stored as PostgreSQL rows, cursor positions as transactional updates, consumer acknowledges within the same DB transaction as side effects → true exactly-once
+
+---
+
+## Week 5: Dashboard Wiring (0.25.0)
+
+**Layered breakdown:**
+
+| Layer | Scope | Duration | Gate |
+|-------|-------|----------|------|
+| 1 | Identify all required WebSocket message types, define push event records | 0.5 day | Types compile |
+| 2 | Backend: WebSocket push for schema status, governors, deployment strategies | 1.5 days | WebSocket subscription test |
+| 3 | Frontend: wire new panels to existing + new endpoints | 2 days | Visual verification in browser |
+| 4 | Stream status panel (if streaming landed) | 1 day | Dashboard shows active streams |
+
+**Panels:**
 | Panel | Data Source | Status |
 |-------|------------|--------|
 | Cluster overview | `/api/status`, `/api/nodes` | Partial |
@@ -87,44 +121,35 @@ Connect existing REST/WebSocket APIs to the management dashboard frontend.
 | Governor/community | `/api/cluster/governors` | New |
 | Deployment strategies | `/api/canary/list`, `/api/bluegreen/list`, `/api/ab/list` | New |
 | Worker group health | `/api/cluster/topology` + metrics | New |
+| Streams | `/api/streams/*` | New (if 0.24.0 landed) |
 | Node lifecycle | `/api/nodes/lifecycle` | Existing |
 
-**Approach:** All REST endpoints exist. Dashboard needs frontend wiring + WebSocket subscription for real-time updates.
+---
+
+## Week 6: Soak Test + Release Pipeline (0.26.0)
+
+### 6a. Soak Test (M — 3-5 days)
+
+**Layered breakdown:**
+
+| Layer | Scope | Duration | Gate |
+|-------|-------|----------|------|
+| 1 | Prometheus Docker Compose extension, metric scrape config | 0.5 day | Metrics visible in Prometheus |
+| 2 | k6 4-hour sustained load scenario (100 RPS) | 1 day | Script runs, metrics recorded |
+| 3 | Chaos phases: kill worker (hour 2), rolling restart (hour 3) | 1 day | Recovery verified, no SWIM faults |
+| 4 | Pass/fail criteria automation, report generation | 1 day | Automated verdict |
+
+**Pass criteria:** All metrics stable within 10% of 1-hour mark at 4-hour mark. Zero SWIM FAULTY after warmup. No heap growth trend.
+
+### 6b. Release Pipeline Verification (S — 1-2 days)
+- Maven Central publish end-to-end
+- GitHub Actions release workflow (container images, checksums)
+- `install.sh` and `upgrade.sh` scripts
+- Docker image builds from released artifacts
 
 ---
 
-## Week 4: Soak Test + Release Pipeline (0.25.0)
-
-### 4a. Soak Test (M — 3-5 days)
-**Foundation:** Docker scaling test infrastructure from 0.21.1
-
-**Scenario:**
-- 5 core + 7 worker nodes, PostgreSQL
-- Deploy url-shortener blueprint
-- k6 sustained load: 4 hours at 100 RPS
-- Monitor via Prometheus scrape:
-  - JVM heap usage (no unbounded growth)
-  - GC pause time (no degradation)
-  - Connection pool active/idle counts
-  - SWIM membership stability (zero FAULTY events after warmup)
-  - Request latency p99 (no drift)
-- Pass criteria: all metrics stable within 10% of 1-hour mark at 4-hour mark
-
-**Chaos during soak:**
-- Hour 1: steady state baseline
-- Hour 2: kill 1 worker, verify recovery
-- Hour 3: rolling restart of 2 core nodes
-- Hour 4: steady state, verify no leaks
-
-### 4b. Release Pipeline Verification (S — 1-2 days)
-- Verify Maven Central publish end-to-end
-- Verify GitHub Actions release workflow (container images, checksums)
-- Test `install.sh` and `upgrade.sh` scripts
-- Verify Docker image builds from released artifacts
-
----
-
-## Week 5: Buffer + RC
+## Week 7: Buffer + RC
 
 - Fix anything soak test reveals
 - Final feature catalog update
@@ -136,22 +161,27 @@ Connect existing REST/WebSocket APIs to the management dashboard frontend.
 
 ## POST-V1 (tracked, not blocking)
 
-| Item | Priority |
-|------|----------|
-| Secret rotation provider implementations | High |
-| Capacity planning guide | High |
-| Upgrade path automated test (0.x → 1.0) | High |
-| Log aggregation documentation | Medium |
-| Error message actionability audit | Medium |
-| IDE support / IntelliJ plugin | Low |
-| Hetzner cloud integration test | Low |
-| OOM graceful degradation guidance | Low |
+| Item | Priority | Notes |
+|------|----------|-------|
+| Streaming Phase 2: replication + failover | High | Durability without persistence |
+| Streaming Phase 3: PostgreSQL + exactly-once | High | Production streaming |
+| Secret rotation provider implementations | High | watchRotation SPI exists, zero providers implement it |
+| Capacity planning guide | High | Sizing guidance for operators |
+| Upgrade path automated test (0.x → 1.0) | High | rolling-aether-upgrade.sh exists, needs CI automation |
+| Consumer groups + CDC adapter | Medium | Streaming Phase 1+ |
+| Log aggregation documentation | Medium | Guidance, not code |
+| Error message actionability audit | Medium | Pass through all Cause messages |
+| IDE support / IntelliJ plugin | Low | jbct add-slice scaffolding exists |
+| Hetzner cloud integration test | Low | Spec exists, needs cloud environment |
+| OOM graceful degradation guidance | Low | Document -XX:+ExitOnOutOfMemoryError recommendation |
 
 ---
 
 ## Known Risks
 
-1. **RBAC Tier 2 scope creep** — keep it to 3 roles, static per-route map. No dynamic policies.
-2. **Dashboard frontend effort** — if frontend is more than wiring, may need to cut scope (schema + governors only).
-3. **Soak test infrastructure** — Prometheus integration needed. May require Docker Compose extension.
-4. **`watchRotation` gap** — V1 docs should clearly state "SPI available, provider implementations coming" rather than claiming rotation support.
+1. **Streaming scope creep** — MVP is in-memory preview. No persistence, no replication, no exactly-once in V1. Mark as "preview" in docs.
+2. **RBAC Tier 2 scope creep** — keep it to 3 roles, static per-route map. No dynamic policies.
+3. **Dashboard frontend effort** — if frontend is more than wiring, cut scope to schema + governors + streams only.
+4. **Soak test infrastructure** — Prometheus integration needed. May require Docker Compose extension.
+5. **`watchRotation` gap** — V1 docs should clearly state "SPI available, provider implementations coming."
+6. **Ring buffer off-heap complexity** — MemorySegment API is powerful but error-prone. Layer 2 gate (unit tests + concurrent tests) is critical before integration.
