@@ -39,7 +39,7 @@ ENV CLUSTER_PORT="8090"
 ENV MANAGEMENT_PORT="8080"
 ENV PEERS=""
 ENV CORE_MAX=""
-ENV JAVA_OPTS="-Xmx512m -XX:+UseZGC -XX:+ZGenerational"
+ENV JAVA_OPTS="-Xmx512m -XX:+UseZGC -XX:+ZGenerational -Djava.net.preferIPv4Stack=true"
 
 # Expose ports
 # 8090 - Cluster communication (consensus, inter-node messaging, TCP)

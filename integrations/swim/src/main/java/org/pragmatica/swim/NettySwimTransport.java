@@ -119,7 +119,11 @@ public final class NettySwimTransport implements SwimTransport {
 
     private static void sendEncrypted(Channel ch, InetSocketAddress target, byte[] encrypted) {
         var packet = new DatagramPacket(Unpooled.wrappedBuffer(encrypted), target);
-        ch.writeAndFlush(packet);
+        ch.writeAndFlush(packet).addListener(future -> {
+            if (!future.isSuccess()) {
+                LOG.warn("UDP send failed to {}: {}", target, future.cause().getMessage());
+            }
+        });
     }
 
     private void doBind(int port, SwimMessageHandler handler) throws InterruptedException {
