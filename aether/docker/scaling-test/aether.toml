@@ -1,0 +1,26 @@
+# Aether Node Configuration for Docker Scaling Test
+# core_max comes from CORE_MAX env var — allows same config for core and worker nodes
+
+[slice]
+repositories = ["builtin", "local"]
+
+[app-http]
+enabled = true
+port = 8070
+
+[database]
+type = "POSTGRESQL"
+host = "postgres"
+port = 5432
+database = "forge"
+username = "forge"
+password = "forge"
+async_url = "postgresql://forge:forge@postgres:5432/forge"
+
+[database.pool_config]
+min_connections = 5
+max_connections = 20
+connection_timeout = "5s"
+
+[messaging.click-events]
+topic_name = "click-events"

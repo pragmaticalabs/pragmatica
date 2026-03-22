@@ -17,17 +17,18 @@
 package org.pragmatica.dht;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.utility.KSUID;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,7 +49,7 @@ public final class DHTAntiEntropy {
     private final DHTNetwork network;
     private final DHTConfig config;
     private final TimeSpan antiEntropyInterval;
-    private final ScheduledExecutorService scheduler;
+    private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     /// Pending digest comparisons indexed by correlation ID.
@@ -59,11 +60,6 @@ public final class DHTAntiEntropy {
         this.network = network;
         this.config = config;
         this.antiEntropyInterval = antiEntropyInterval;
-        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-                                                                        var thread = new Thread(r, "dht-anti-entropy");
-                                                                        thread.setDaemon(true);
-                                                                        return thread;
-                                                                    });
     }
 
     /// Create an anti-entropy process for the given node with default interval.
@@ -90,9 +86,8 @@ public final class DHTAntiEntropy {
         if (!running.compareAndSet(false, true)) {
             return;
         }
-        var intervalSeconds = antiEntropyInterval.millis() / 1000;
-        scheduler.scheduleAtFixedRate(this::runAntiEntropy, intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
-        log.info("DHT anti-entropy started (interval: {}s)", intervalSeconds);
+        scheduledTask.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::runAntiEntropy, antiEntropyInterval)));
+        log.info("DHT anti-entropy started (interval: {}s)", antiEntropyInterval.millis() / 1000);
     }
 
     /// Stop the anti-entropy process.
@@ -100,7 +95,8 @@ public final class DHTAntiEntropy {
         if (!running.compareAndSet(true, false)) {
             return;
         }
-        scheduler.shutdown();
+        scheduledTask.getAndSet(Option.none())
+                     .onPresent(task -> task.cancel(false));
         log.info("DHT anti-entropy stopped");
     }
 
@@ -160,10 +156,11 @@ public final class DHTAntiEntropy {
     /// Handle a digest response from a remote peer.
     /// Compares local vs remote digest; if they differ, requests migration data.
     public void onDigestResponse(DHTMessage.DigestResponse response) {
-        var pending = pendingDigests.remove(response.requestId());
-        if (pending == null) {
-            return;
-        }
+        Option.option(pendingDigests.remove(response.requestId()))
+              .onPresent(pending -> handleDigestComparison(pending, response));
+    }
+
+    private void handleDigestComparison(PendingDigest pending, DHTMessage.DigestResponse response) {
         if (Arrays.equals(pending.localDigest(), response.digest())) {
             log.debug("Partition {} in sync with {}", pending.partitionIndex(), pending.peer().id());
             return;
@@ -194,10 +191,4 @@ public final class DHTAntiEntropy {
         return pendingDigests.size();
     }
 
-    private static byte[] longToBytes(long value) {
-        return new byte[]{(byte) (value >>> 56), (byte) (value >>> 48),
-                          (byte) (value >>> 40), (byte) (value >>> 32),
-                          (byte) (value >>> 24), (byte) (value >>> 16),
-                          (byte) (value >>> 8), (byte) value};
-    }
 }

@@ -123,7 +123,7 @@ public interface UrlShortener {
         record urlShortener(SqlConnector db, Publisher<ClickEvent> clickPublisher) implements UrlShortener {
             private static final String SELECT_BY_URL = "SELECT short_code FROM urls WHERE original_url = ?";
             private static final String SELECT_BY_CODE = "SELECT original_url FROM urls WHERE short_code = ?";
-            private static final String INSERT_URL = "INSERT INTO urls (short_code, original_url) VALUES (?, ?)";
+            private static final String INSERT_URL = "INSERT INTO urls (short_code, original_url) VALUES (?, ?) ON CONFLICT (short_code) DO NOTHING";
 
             @Override
             public Promise<ShortenResponse> shorten(ShortenRequest request) {

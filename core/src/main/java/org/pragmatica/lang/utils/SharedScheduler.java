@@ -28,7 +28,8 @@ import java.util.concurrent.TimeUnit;
 public final class SharedScheduler {
     private SharedScheduler() {}
 
-    private static final ScheduledExecutorService SCHEDULER = new ScheduledThreadPoolExecutor(2);
+    private static final ScheduledExecutorService SCHEDULER =
+        new ScheduledThreadPoolExecutor(Math.max(Runtime.getRuntime().availableProcessors(), 8));
 
     /// Schedule one-time invocation
     ///
@@ -42,5 +43,12 @@ public final class SharedScheduler {
     /// @return instance of [ScheduledFuture] that can be used to cancel scheduled task
     public static ScheduledFuture<?> scheduleAtFixedRate(Runnable runnable, TimeSpan interval) {
         return SCHEDULER.scheduleAtFixedRate(runnable, interval.millis(), interval.millis(), TimeUnit.MILLISECONDS);
+    }
+
+    /// Schedule periodic invocation with custom initial delay
+    ///
+    /// @return instance of [ScheduledFuture] that can be used to cancel scheduled task
+    public static ScheduledFuture<?> scheduleAtFixedRate(Runnable runnable, TimeSpan initialDelay, TimeSpan interval) {
+        return SCHEDULER.scheduleAtFixedRate(runnable, initialDelay.millis(), interval.millis(), TimeUnit.MILLISECONDS);
     }
 }

@@ -38,12 +38,14 @@ ENV NODE_ID=""
 ENV CLUSTER_PORT="8090"
 ENV MANAGEMENT_PORT="8080"
 ENV PEERS=""
-ENV JAVA_OPTS="-Xmx512m -XX:+UseZGC -XX:+ZGenerational"
+ENV CORE_MAX=""
+ENV JAVA_OPTS="-Xmx512m -XX:+UseZGC -XX:+ZGenerational -Djava.net.preferIPv4Stack=true"
 
 # Expose ports
-# 8090 - Cluster communication (consensus, inter-node messaging)
+# 8090 - Cluster communication (consensus, inter-node messaging, TCP)
+# 8091 - SWIM health detection (UDP, cluster port + 1)
 # 8080 - Management API (REST, WebSocket dashboard)
-EXPOSE 8090 8080
+EXPOSE 8090 8091/udp 8080
 
 # Health check using /api/health endpoint
 HEALTHCHECK --interval=10s --timeout=5s --start-period=45s --retries=3 \

@@ -3,11 +3,11 @@ package org.pragmatica.aether.metrics.eventloop;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -41,7 +41,6 @@ public final class EventLoopMetricsCollector {
     private final AtomicInteger totalPendingTasks = new AtomicInteger(0);
     private final AtomicInteger totalActiveChannels = new AtomicInteger(0);
 
-    private volatile ScheduledExecutorService scheduler;
     private final AtomicReference<Option<ScheduledFuture<?>>> probeFuture = new AtomicReference<>(none());
     private volatile boolean started = false;
 
@@ -69,17 +68,15 @@ public final class EventLoopMetricsCollector {
         return unitResult();
     }
 
-    /// Start collecting metrics with external scheduler.
-    public Result<Unit> start(ScheduledExecutorService scheduler) {
+    /// Start collecting metrics using SharedScheduler.
+    public Result<Unit> start() {
         if (started) {
             return unitResult();
         }
-        this.scheduler = scheduler;
         started = true;
-        probeFuture.set(some(scheduler.scheduleAtFixedRate(this::probe,
-                                                           probeIntervalMs,
-                                                           probeIntervalMs,
-                                                           TimeUnit.MILLISECONDS)));
+        probeFuture.set(some(SharedScheduler.scheduleAtFixedRate(this::probe,
+                                                                 TimeSpan.timeSpan(probeIntervalMs)
+                                                                         .millis())));
         log.info("Event loop metrics collection started");
         return unitResult();
     }

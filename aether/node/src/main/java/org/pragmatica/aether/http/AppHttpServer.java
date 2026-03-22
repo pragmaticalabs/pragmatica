@@ -922,6 +922,8 @@ class AppHttpServerImpl implements AppHttpServer {
         var problem = ProblemDetail.problemDetail(status, detail, instance, requestId);
         JSON_MAPPER.writeAsString(problem)
                    .onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId)
+                                              .header("X-Node-Id",
+                                                      selfNodeId.id())
                                               .write(toServerStatus(status.code()),
                                                      json.getBytes(StandardCharsets.UTF_8),
                                                      CONTENT_TYPE_PROBLEM))
@@ -949,7 +951,9 @@ class AppHttpServerImpl implements AppHttpServer {
         } else {
             log.trace("Sending response [{}]: {} {}", requestId, responseData.statusCode(), responseData.headers());
         }
-        var writer = response.header(ResponseWriter.X_REQUEST_ID, requestId);
+        var writer = response.header(ResponseWriter.X_REQUEST_ID, requestId)
+                             .header("X-Node-Id",
+                                     selfNodeId.id());
         for (var entry : responseData.headers()
                                      .entrySet()) {
             writer = writer.header(entry.getKey(), entry.getValue());
@@ -965,6 +969,8 @@ class AppHttpServerImpl implements AppHttpServer {
     private void sendPlainError(ResponseWriter response, HttpStatus status, String requestId) {
         var content = "{\"error\":\"" + status.message() + "\"}";
         response.header(ResponseWriter.X_REQUEST_ID, requestId)
+                .header("X-Node-Id",
+                        selfNodeId.id())
                 .write(toServerStatus(status.code()),
                        content.getBytes(StandardCharsets.UTF_8),
                        CommonContentType.APPLICATION_JSON);

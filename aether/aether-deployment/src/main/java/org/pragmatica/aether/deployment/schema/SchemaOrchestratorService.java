@@ -28,6 +28,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 
 import org.slf4j.Logger;
@@ -128,7 +129,8 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private Promise<Unit> executeMigrationFlow(String datasourceName, SchemaVersionValue value) {
         return acquireLock(datasourceName).flatMap(_ -> runMigration(datasourceName, value))
                           .flatMap(_ -> releaseLock(datasourceName))
-                          .onFailure(_ -> releaseLockSilently(datasourceName));
+                          .onFailure(_ -> releaseLockSilently(datasourceName))
+                          .onResultRun(() -> inFlightMigrations.remove(datasourceName));
     }
 
     private Promise<Unit> runMigration(String datasourceName, SchemaVersionValue value) {
@@ -149,11 +151,18 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         .onFailure(c -> log.error("Failed to release lock for '{}': {}", datasourceName, c.message()));
     }
 
-    private static final Cause LOCK_HELD = Causes.cause("Schema migration lock held by another node");
+    private static final Cause LOCK_HELD = Causes.cause("Schema migration lock held — skipping duplicate");
+    private final java.util.Set<String> inFlightMigrations = ConcurrentHashMap.newKeySet();
 
     private Promise<Unit> acquireLock(String datasourceName) {
+        // Local deduplication — prevent concurrent migration for the same datasource on this node
+        if (!inFlightMigrations.add(datasourceName)) {
+            return LOCK_HELD.promise();
+        }
+        // Distributed lock — prevent concurrent migration across nodes
         var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
-        if (isLockHeldByAnotherNode(lockKey)) {
+        if (isLockHeld(lockKey)) {
+            inFlightMigrations.remove(datasourceName);
             return LOCK_HELD.promise();
         }
         var lockValue = SchemaMigrationLockValue.schemaMigrationLockValue(datasourceName, self, LOCK_TTL_MS);
@@ -162,12 +171,10 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                       .mapToUnit();
     }
 
-    private boolean isLockHeldByAnotherNode(SchemaMigrationLockKey lockKey) {
+    private boolean isLockHeld(SchemaMigrationLockKey lockKey) {
         return kvStore.get(lockKey)
                       .filter(SchemaMigrationLockValue.class::isInstance)
                       .map(SchemaMigrationLockValue.class::cast)
-                      .filter(lock -> !lock.heldBy()
-                                           .equals(self))
                       .filter(lock -> !lock.isExpired())
                       .isPresent();
     }

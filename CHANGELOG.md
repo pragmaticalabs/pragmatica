@@ -4,7 +4,38 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.21.0] - Unreleased
+## [0.21.1] - 2026-03-22
+
+### Added
+- **Docker scaling test infrastructure** — 5-core + 7-worker Docker Compose setup with phase-based orchestrator, k6 load tests (steady-state + scaling verification), Maven protocol artifact upload
+- **CORE_MAX env var** — Docker containers configure core/worker role via environment variable instead of per-node TOML
+- **X-Node-Id header on all HTTP responses** — enables k6 to verify traffic distribution across nodes
+- **SWIM startup delay** — configurable cooldown after quorum (default 10s) before first probe, allowing TCP connections to stabilize
+- **SWIM revival grace period** — recently-revived members skip probing for configurable duration (default 5s)
+
+### Changed
+- **SharedScheduler consolidation** — migrated 10 production schedulers to SharedScheduler (min 8 platform threads), eliminating thread pool proliferation across SWIM, CircuitBreaker, Retry, canary evaluation, and heartbeat
+- **SWIM transport uses Netty built-in DnsNameResolver** — replaced custom DomainNameResolver with Netty's native DNS resolver, eliminating Promise chain overhead in the send path. DNS resolution stays entirely within Netty's event loop
+- **SWIM logging levels** — recv messages at TRACE (was INFO), SUSPECT/FAULTY at WARN (was INFO)
+- **SwimConfig uses TimeSpan** — replaced Duration with TimeSpan, relaxed defaults for Docker (period=1s, probeTimeout=800ms, suspectTimeout=15s)
+- **PiggybackBuffer dissemination counting** — changed from drain-on-read to peek-and-age with configurable max disseminations, preventing premature update loss
+
+### Fixed
+- **InetSocketAddress codec missing** — no codec was registered for `InetSocketAddress`, causing silent serialization failure for ALL SWIM Ping/Ack messages with piggybacked membership updates. Every probe timed out, causing universal SUSPECT cascade. Root cause of all SWIM flapping
+- **SWIM relay sequence collision** — relay Pings reused original requester's sequence number, colliding with local probes. Fixed with dedicated relay sequence and RelayInfo mapping
+- **SWIM PingReq sender address** — handlePingReq looked up requester from member list (hostname-based, possibly missing). Fixed by passing actual UDP sender address
+- **SWIM relay cleanup** — age-based expiry instead of pendingProbes presence check (which removed ALL relays since relay sequences are never in pendingProbes)
+- **SWIM state priority enforcement** — FAULTY > SUSPECT > ALIVE at same incarnation prevents stale ALIVE piggyback from overriding SUSPECT
+- **SWIM round-robin probing** — deterministic member selection instead of random, ensuring all members probed equally
+- **SWIM FAULTY member cleanup** — bounded growth with 3× suspectTimeout eviction threshold
+- **SWIM incarnation bump on Ack** — prevents stale SUSPECT piggyback from re-suspecting a node that just responded
+- **Schema migration concurrency** — local deduplication via inFlightMigrations Set prevents duplicate migrations from concurrent KV-Store notifications
+- **AppHttpConfig wiring** — Main.java now reads `[app-http]` TOML section and calls `withAppHttp()`
+- **ConfigurationProvider wiring** — Main.java now builds and wires ConfigurationProvider from TOML file
+- **Missing SqlConnector factories in node JAR** — added resource-db-async and resource-db-jdbc dependencies
+- **GossipEncryptor race condition** — resolved at quorum time instead of assembly, when certificate provider is initialized
+
+## [0.21.0] - 2026-03-21
 
 ### Added
 - **Per-datasource schema migration engine** — full migration execution engine with Flyway-style versioned (V), repeatable (R), undo (U), and baseline (B) migration types. Schema history tracked in `aether_schema_history` table per datasource. Checksum validation, transactional per-script execution, configurable failure/failover policy

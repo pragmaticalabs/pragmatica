@@ -7,12 +7,14 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.topology.TopologyGraph;
 import org.pragmatica.aether.slice.topology.TopologyParser;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.lang.Option;
 
 import java.util.List;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -27,14 +29,14 @@ import org.slf4j.LoggerFactory;
 @SuppressWarnings("JBCT-RET-01")
 public class DashboardMetricsPublisher {
     private static final Logger log = LoggerFactory.getLogger(DashboardMetricsPublisher.class);
-    private static final long DEFAULT_broadcastIntervalMs = 1000;
+    private static final long DEFAULT_BROADCAST_INTERVAL_MS = 1000;
 
     private static final double EMA_ALPHA = 0.2;
 
     private final long broadcastIntervalMs;
     private final Supplier<AetherNode> nodeSupplier;
     private final AlertManager alertManager;
-    private final ScheduledExecutorService scheduler;
+    private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     private long lastTotalInvocations = 0;
@@ -45,32 +47,32 @@ public class DashboardMetricsPublisher {
     private double emaErrorRate = 0.0;
     private double emaAvgLatencyMs = 0.0;
 
-    public DashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier,
-                                     AlertManager alertManager) {
-        this(nodeSupplier, alertManager, DEFAULT_broadcastIntervalMs);
-    }
-
-    public DashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier,
-                                     AlertManager alertManager,
-                                     long broadcastIntervalMs) {
+    private DashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier,
+                                      AlertManager alertManager,
+                                      long broadcastIntervalMs) {
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
         this.broadcastIntervalMs = broadcastIntervalMs;
-        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-                                                                        var thread = new Thread(r, "dashboard-publisher");
-                                                                        thread.setDaemon(true);
-                                                                        return thread;
-                                                                    });
+    }
+
+    public static DashboardMetricsPublisher dashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier,
+                                                                      AlertManager alertManager) {
+        return new DashboardMetricsPublisher(nodeSupplier, alertManager, DEFAULT_BROADCAST_INTERVAL_MS);
+    }
+
+    public static DashboardMetricsPublisher dashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier,
+                                                                      AlertManager alertManager,
+                                                                      long broadcastIntervalMs) {
+        return new DashboardMetricsPublisher(nodeSupplier, alertManager, broadcastIntervalMs);
     }
 
     public void start() {
         if (!running.compareAndSet(false, true)) {
             return;
         }
-        scheduler.scheduleAtFixedRate(this::publishMetrics,
-                                      broadcastIntervalMs,
-                                      broadcastIntervalMs,
-                                      TimeUnit.MILLISECONDS);
+        scheduledTask.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::publishMetrics,
+                                                                          TimeSpan.timeSpan(broadcastIntervalMs)
+                                                                                  .millis())));
         log.info("Dashboard metrics publisher started");
     }
 
@@ -78,7 +80,8 @@ public class DashboardMetricsPublisher {
         if (!running.compareAndSet(true, false)) {
             return;
         }
-        scheduler.shutdown();
+        scheduledTask.getAndSet(Option.none())
+                     .onPresent(task -> task.cancel(false));
         log.info("Dashboard metrics publisher stopped");
     }
 

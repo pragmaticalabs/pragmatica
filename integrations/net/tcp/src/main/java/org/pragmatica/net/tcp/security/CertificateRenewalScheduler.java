@@ -16,14 +16,16 @@
 
 package org.pragmatica.net.tcp.security;
 
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /// Schedules certificate renewal at 50% of remaining certificate validity.
@@ -41,7 +43,7 @@ public final class CertificateRenewalScheduler {
     private final String nodeId;
     private final String hostname;
     private final Consumer<CertificateBundle> renewalCallback;
-    private final ScheduledExecutorService scheduler;
+    private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
     private volatile Instant currentNotAfter;
 
     private CertificateRenewalScheduler(CertificateProvider provider,
@@ -54,7 +56,6 @@ public final class CertificateRenewalScheduler {
         this.hostname = hostname;
         this.renewalCallback = renewalCallback;
         this.currentNotAfter = initialNotAfter;
-        this.scheduler = Executors.newSingleThreadScheduledExecutor(this::createDaemonThread);
     }
 
     /// Factory method.
@@ -76,14 +77,9 @@ public final class CertificateRenewalScheduler {
 
     /// Stop the renewal scheduler.
     public void stop() {
-        scheduler.shutdownNow();
+        scheduledTask.getAndSet(Option.none())
+                     .onPresent(task -> task.cancel(false));
         log.info("Certificate renewal scheduler stopped");
-    }
-
-    private Thread createDaemonThread(Runnable r) {
-        var t = new Thread(r, "cert-renewal");
-        t.setDaemon(true);
-        return t;
     }
 
     private void scheduleNextRenewal() {
@@ -94,7 +90,7 @@ public final class CertificateRenewalScheduler {
             return;
         }
 
-        scheduler.schedule(this::performRenewal, renewalDelay.toMillis(), TimeUnit.MILLISECONDS);
+        scheduledTask.set(Option.some(SharedScheduler.schedule(this::performRenewal, TimeSpan.timeSpan(renewalDelay.toMillis()).millis())));
         log.info("Next certificate renewal in {}", formatDuration(renewalDelay));
     }
 
@@ -115,7 +111,7 @@ public final class CertificateRenewalScheduler {
 
     private void handleRenewalFailure(org.pragmatica.lang.Cause cause) {
         log.error("Certificate renewal failed: {}. Retrying in 1 hour.", cause.message());
-        scheduler.schedule(this::performRenewal, RETRY_HOURS, TimeUnit.HOURS);
+        scheduledTask.set(Option.some(SharedScheduler.schedule(this::performRenewal, TimeSpan.timeSpan(RETRY_HOURS).hours())));
     }
 
     private Duration calculateRenewalDelay() {

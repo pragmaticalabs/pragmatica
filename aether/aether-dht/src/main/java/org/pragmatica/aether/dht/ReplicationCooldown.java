@@ -1,12 +1,14 @@
 package org.pragmatica.aether.dht;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,7 +50,7 @@ final class DefaultReplicationCooldown implements ReplicationCooldown {
     private final long cooldownDelayMs;
     private final int ratePerSecond;
     private final AtomicBoolean complete = new AtomicBoolean(false);
-    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(DefaultReplicationCooldown::createDaemonThread);
+    private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
 
     DefaultReplicationCooldown(long cooldownDelayMs, int ratePerSecond) {
         this.cooldownDelayMs = cooldownDelayMs;
@@ -58,14 +60,17 @@ final class DefaultReplicationCooldown implements ReplicationCooldown {
     @Override
     public Promise<Unit> start() {
         var promise = Promise.<Unit>promise();
-        scheduler.schedule(() -> completeWarmup(promise), cooldownDelayMs, TimeUnit.MILLISECONDS);
+        scheduledTask.set(Option.some(SharedScheduler.schedule(() -> completeWarmup(promise),
+                                                               TimeSpan.timeSpan(cooldownDelayMs)
+                                                                       .millis())));
         return promise;
     }
 
     @Override
     @SuppressWarnings("JBCT-RET-01") // Lifecycle shutdown — void required
     public void stop() {
-        scheduler.shutdownNow();
+        scheduledTask.getAndSet(Option.none())
+                     .onPresent(task -> task.cancel(false));
     }
 
     @Override
@@ -80,11 +85,5 @@ final class DefaultReplicationCooldown implements ReplicationCooldown {
                  ratePerSecond);
         complete.set(true);
         promise.succeed(Unit.unit());
-    }
-
-    private static Thread createDaemonThread(Runnable runnable) {
-        var thread = new Thread(runnable, "replication-cooldown");
-        thread.setDaemon(true);
-        return thread;
     }
 }

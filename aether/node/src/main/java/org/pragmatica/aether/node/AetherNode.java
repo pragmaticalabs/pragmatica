@@ -1089,19 +1089,17 @@ public interface AetherNode {
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
         allEntries.addAll(aetherEntries);
         allEntries.addAll(activationKvRouter.asRouteEntries());
-        // Create gossip encryptor from certificate provider (if available)
-        var gossipEncryptor = createGossipEncryptor(config);
-        // Create SWIM health detector for core-to-core failure detection
+        // Create SWIM health detector — encryptor resolved at quorum time, not here
         var swimHealthDetector = CoreSwimHealthDetector.coreSwimHealthDetector(delegateRouter,
                                                                                config.topology(),
                                                                                serializer,
-                                                                               deserializer,
-                                                                               gossipEncryptor);
-        // Defer SWIM start until quorum is established — peers are not ready before quorum
+                                                                               deserializer);
+        // Defer SWIM start until quorum — encryptor resolved here (certificate provider guaranteed ready)
         allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
                                                  notification -> startSwimOnQuorum(notification,
                                                                                    swimHealthDetector,
-                                                                                   clusterNode.network())));
+                                                                                   clusterNode.network(),
+                                                                                   config)));
         // Wire TCP connection events to SWIM: reset FAULTY members when TCP proves they're alive
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> swimHealthDetector.onNodeConnected(connection.nodeId())));
@@ -1235,11 +1233,14 @@ public interface AetherNode {
 
     private static void startSwimOnQuorum(QuorumStateNotification notification,
                                           CoreSwimHealthDetector swimHealthDetector,
-                                          ClusterNetwork network) {
+                                          ClusterNetwork network,
+                                          AetherNodeConfig config) {
         if (notification.state() == QuorumStateNotification.State.ESTABLISHED) {
             var workerGroup = network.server()
                                      .map(org.pragmatica.net.tcp.Server::workerGroup);
-            swimHealthDetector.start(workerGroup);
+            // Resolve encryptor at quorum time — certificate provider is guaranteed ready
+            var encryptor = createGossipEncryptor(config);
+            swimHealthDetector.start(workerGroup, encryptor);
         }
     }
 
