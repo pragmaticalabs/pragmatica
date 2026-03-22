@@ -156,7 +156,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         switch (message) {
             case Ping ping -> handlePing(sender, ping);
             case Ack ack -> handleAck(ack);
-            case PingReq pingReq -> handlePingReq(pingReq);
+            case PingReq pingReq -> handlePingReq(sender, pingReq);
         }
     }
 
@@ -304,18 +304,16 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
     }
 
-    private void handlePingReq(PingReq pingReq) {
+    private void handlePingReq(InetSocketAddress requesterAddress, PingReq pingReq) {
         var target = members.get(pingReq.target());
 
         if (target == null) {
             return;
         }
 
-        // Resolve requester's address for Ack forwarding
-        var requester = members.get(pingReq.from());
-        if (requester != null) {
-            pendingRelays.put(pingReq.sequence(), requester.address());
-        }
+        // Store the actual UDP sender address for Ack forwarding — not the member list address
+        // which may be hostname-based and fail to resolve, or the member may not be in our list yet
+        pendingRelays.put(pingReq.sequence(), requesterAddress);
 
         var piggyback = piggybackBuffer.takeUpdates(config.maxPiggyback());
         var ping = Ping.ping(selfId, pingReq.sequence(), piggyback);
