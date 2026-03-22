@@ -2601,7 +2601,8 @@ public class AetherCli implements Runnable {
     SchemaCommand.HistoryCommand.class,
     SchemaCommand.MigrateCommand.class,
     SchemaCommand.UndoCommand.class,
-    SchemaCommand.BaselineCommand.class})
+    SchemaCommand.BaselineCommand.class,
+    SchemaCommand.RetryCommand.class})
     static class SchemaCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -2697,6 +2698,22 @@ public class AetherCli implements Runnable {
             public Integer call() {
                 var response = schemaParent.parent.postToNode("/api/schema/baseline/" + datasource + "?version=" + version,
                                                               "{}");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "retry", description = "Retry a failed schema migration")
+        static class RetryCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private SchemaCommand schemaParent;
+
+            @Parameters(index = "0", description = "Datasource name")
+            private String datasource;
+
+            @Override
+            public Integer call() {
+                var response = schemaParent.parent.postToNode("/api/schema/retry/" + datasource, "{}");
                 System.out.println(formatJson(response));
                 return 0;
             }

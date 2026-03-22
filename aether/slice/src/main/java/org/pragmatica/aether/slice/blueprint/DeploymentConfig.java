@@ -13,12 +13,14 @@ import java.util.List;
 /// @param maxErrorRate maximum error rate threshold (0.0-1.0)
 /// @param maxLatencyMs maximum latency threshold in milliseconds
 /// @param drainTimeoutMs blue-green drain timeout in milliseconds
+/// @param schemaRequired whether schema migrations must complete before slice activation (default true)
 @SuppressWarnings({"JBCT-VO-02", "JBCT-UTIL-02"})
 public record DeploymentConfig(Strategy strategy,
                                List<CanaryStageConfig> canaryStages,
                                double maxErrorRate,
                                long maxLatencyMs,
-                               long drainTimeoutMs) {
+                               long drainTimeoutMs,
+                               boolean schemaRequired) {
     /// Deployment strategy types.
     public enum Strategy {
         ROLLING,
@@ -52,14 +54,25 @@ public record DeploymentConfig(Strategy strategy,
                                                                     defaultCanaryStages(),
                                                                     0.01,
                                                                     500,
-                                                                    300_000);
+                                                                    300_000,
+                                                                    true);
 
-    /// Factory method.
+    /// Factory method with all parameters.
+    public static DeploymentConfig deploymentConfig(Strategy strategy,
+                                                    List<CanaryStageConfig> canaryStages,
+                                                    double maxErrorRate,
+                                                    long maxLatencyMs,
+                                                    long drainTimeoutMs,
+                                                    boolean schemaRequired) {
+        return new DeploymentConfig(strategy, List.copyOf(canaryStages), maxErrorRate, maxLatencyMs, drainTimeoutMs, schemaRequired);
+    }
+
+    /// Backward-compatible factory method (schemaRequired defaults to true).
     public static DeploymentConfig deploymentConfig(Strategy strategy,
                                                     List<CanaryStageConfig> canaryStages,
                                                     double maxErrorRate,
                                                     long maxLatencyMs,
                                                     long drainTimeoutMs) {
-        return new DeploymentConfig(strategy, List.copyOf(canaryStages), maxErrorRate, maxLatencyMs, drainTimeoutMs);
+        return deploymentConfig(strategy, canaryStages, maxErrorRate, maxLatencyMs, drainTimeoutMs, true);
     }
 }
