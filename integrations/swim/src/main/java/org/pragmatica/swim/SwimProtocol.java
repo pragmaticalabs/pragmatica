@@ -98,13 +98,14 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// Start the protocol: begin periodic probing via SharedScheduler.
+    /// First tick delayed by startupDelay to allow all TCP connections to establish after quorum.
     public Result<SwimProtocol> start() {
         if (tickFuture.get().isPresent()) {
             return SwimError.General.PROTOCOL_ALREADY_RUNNING.result();
         }
 
-        tickFuture.set(option(SharedScheduler.scheduleAtFixedRate(this::tick, config.period())));
-        LOG.info("SWIM protocol started for node {}", selfId.id());
+        tickFuture.set(option(SharedScheduler.scheduleAtFixedRate(this::tick, config.startupDelay(), config.period())));
+        LOG.info("SWIM protocol started for node {} (first probe in {}ms)", selfId.id(), config.startupDelay().millis());
         return Result.success(this);
     }
 

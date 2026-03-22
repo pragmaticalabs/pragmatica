@@ -29,13 +29,15 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param suspectTimeout  time a member stays in SUSPECT before transitioning to FAULTY
 /// @param maxPiggyback    maximum number of membership updates piggybacked per message
 /// @param revivalGrace    grace period after markAlive — don't probe recently-revived members
+/// @param startupDelay    cooldown after quorum before first probe — allows all TCP connections to establish
 @Codec
 public record SwimConfig(TimeSpan period,
                          TimeSpan probeTimeout,
                          int indirectProbes,
                          TimeSpan suspectTimeout,
                          int maxPiggyback,
-                         TimeSpan revivalGrace) {
+                         TimeSpan revivalGrace,
+                         TimeSpan startupDelay) {
 
     /// Default configuration — suitable for Docker and containerized environments.
     public static final SwimConfig DEFAULT = swimConfig(
@@ -44,7 +46,8 @@ public record SwimConfig(TimeSpan period,
         3,
         timeSpan(15).seconds(),
         8,
-        timeSpan(5).seconds()
+        timeSpan(5).seconds(),
+        timeSpan(10).seconds()
     );
 
     /// Factory with all parameters.
@@ -53,17 +56,20 @@ public record SwimConfig(TimeSpan period,
                                         int indirectProbes,
                                         TimeSpan suspectTimeout,
                                         int maxPiggyback,
-                                        TimeSpan revivalGrace) {
-        return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout, maxPiggyback, revivalGrace);
+                                        TimeSpan revivalGrace,
+                                        TimeSpan startupDelay) {
+        return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
+                              maxPiggyback, revivalGrace, startupDelay);
     }
 
-    /// Factory with all parameters except revivalGrace (uses default 5s).
+    /// Factory with defaults for revivalGrace and startupDelay.
     public static SwimConfig swimConfig(TimeSpan period,
                                         TimeSpan probeTimeout,
                                         int indirectProbes,
                                         TimeSpan suspectTimeout,
                                         int maxPiggyback) {
-        return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout, maxPiggyback, timeSpan(5).seconds());
+        return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout,
+                              maxPiggyback, timeSpan(5).seconds(), timeSpan(10).seconds());
     }
 
     /// Factory with defaults.

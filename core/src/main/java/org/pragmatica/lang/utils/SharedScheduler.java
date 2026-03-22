@@ -44,4 +44,11 @@ public final class SharedScheduler {
     public static ScheduledFuture<?> scheduleAtFixedRate(Runnable runnable, TimeSpan interval) {
         return SCHEDULER.scheduleAtFixedRate(runnable, interval.millis(), interval.millis(), TimeUnit.MILLISECONDS);
     }
+
+    /// Schedule periodic invocation with custom initial delay
+    ///
+    /// @return instance of [ScheduledFuture] that can be used to cancel scheduled task
+    public static ScheduledFuture<?> scheduleAtFixedRate(Runnable runnable, TimeSpan initialDelay, TimeSpan interval) {
+        return SCHEDULER.scheduleAtFixedRate(runnable, initialDelay.millis(), interval.millis(), TimeUnit.MILLISECONDS);
+    }
 }
