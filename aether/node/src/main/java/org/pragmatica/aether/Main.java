@@ -94,10 +94,11 @@ public record Main(String[] args) {
 
     private AetherNodeConfig wireConfigProvider(AetherNodeConfig config) {
         return findArg("--config=").map(Path::of)
-                                   .filter(p -> p.toFile().exists())
-                                   .map(this::buildConfigProvider)
-                                   .map(config::withConfigProvider)
-                                   .or(config);
+                      .filter(p -> p.toFile()
+                                    .exists())
+                      .map(this::buildConfigProvider)
+                      .map(config::withConfigProvider)
+                      .or(config);
     }
 
     private ConfigurationProvider buildConfigProvider(Path configPath) {
@@ -152,15 +153,15 @@ public record Main(String[] args) {
     }
 
     private static String findHostname(AetherNodeConfig config) {
-        return config.topology()
-                     .coreNodes()
-                     .stream()
-                     .filter(n -> n.id()
-                                   .equals(config.self()))
-                     .findFirst()
+        return Option.from(config.topology()
+                                 .coreNodes()
+                                 .stream()
+                                 .filter(n -> n.id()
+                                               .equals(config.self()))
+                                 .findFirst())
                      .map(n -> n.address()
                                 .host())
-                     .orElse("localhost");
+                     .or("localhost");
     }
 
     private SliceConfig parseSliceConfig(Option<AetherConfig> aetherConfig) {
@@ -199,7 +200,7 @@ public record Main(String[] args) {
         log.info("Management API on port {}", managementPort);
         log.info("Peers: {}", peers);
         log.info("Slice repositories: {}", sliceConfig.repositories());
-        aetherConfig.onPresent(cfg -> logConfigDetails(cfg));
+        aetherConfig.onPresent(this::logConfigDetails);
     }
 
     private void logConfigDetails(AetherConfig cfg) {

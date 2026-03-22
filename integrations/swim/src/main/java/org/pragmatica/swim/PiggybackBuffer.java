@@ -87,25 +87,6 @@ public final class PiggybackBuffer {
         return Collections.unmodifiableList(result);
     }
 
-    /// Take up to {@code max} updates from the buffer, removing them.
-    /// Returns an unmodifiable list.
-    @Deprecated
-    public List<MembershipUpdate> takeUpdates(int max) {
-        var result = new ArrayList<MembershipUpdate>(Math.min(max, buffer.size()));
-
-        for (int i = 0; i < max; i++) {
-            var item = buffer.pollFirst();
-
-            if (item == null) {
-                break;
-            }
-
-            result.add(item.update());
-        }
-
-        return Collections.unmodifiableList(result);
-    }
-
     /// Current number of buffered updates.
     public int size() {
         return buffer.size();

@@ -28,20 +28,23 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param indirectProbes  number of random members to use for indirect probing (PingReq)
 /// @param suspectTimeout  time a member stays in SUSPECT before transitioning to FAULTY
 /// @param maxPiggyback    maximum number of membership updates piggybacked per message
+/// @param revivalGrace    grace period after markAlive — don't probe recently-revived members
 @Codec
 public record SwimConfig(TimeSpan period,
                          TimeSpan probeTimeout,
                          int indirectProbes,
                          TimeSpan suspectTimeout,
-                         int maxPiggyback) {
+                         int maxPiggyback,
+                         TimeSpan revivalGrace) {
 
     /// Default configuration — suitable for Docker and containerized environments.
-    public static final SwimConfig DEFAULT = new SwimConfig(
+    public static final SwimConfig DEFAULT = swimConfig(
         timeSpan(1).seconds(),
         timeSpan(800).millis(),
         3,
         timeSpan(15).seconds(),
-        8
+        8,
+        timeSpan(5).seconds()
     );
 
     /// Factory with all parameters.
@@ -49,8 +52,18 @@ public record SwimConfig(TimeSpan period,
                                         TimeSpan probeTimeout,
                                         int indirectProbes,
                                         TimeSpan suspectTimeout,
+                                        int maxPiggyback,
+                                        TimeSpan revivalGrace) {
+        return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout, maxPiggyback, revivalGrace);
+    }
+
+    /// Factory with all parameters except revivalGrace (uses default 5s).
+    public static SwimConfig swimConfig(TimeSpan period,
+                                        TimeSpan probeTimeout,
+                                        int indirectProbes,
+                                        TimeSpan suspectTimeout,
                                         int maxPiggyback) {
-        return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout, maxPiggyback);
+        return new SwimConfig(period, probeTimeout, indirectProbes, suspectTimeout, maxPiggyback, timeSpan(5).seconds());
     }
 
     /// Factory with defaults.

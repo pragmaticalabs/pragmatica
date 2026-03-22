@@ -1,5 +1,6 @@
 package org.pragmatica.aether.dht;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -7,6 +8,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,7 +50,7 @@ final class DefaultReplicationCooldown implements ReplicationCooldown {
     private final long cooldownDelayMs;
     private final int ratePerSecond;
     private final AtomicBoolean complete = new AtomicBoolean(false);
-    private volatile ScheduledFuture<?> scheduledTask;
+    private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
 
     DefaultReplicationCooldown(long cooldownDelayMs, int ratePerSecond) {
         this.cooldownDelayMs = cooldownDelayMs;
@@ -58,20 +60,17 @@ final class DefaultReplicationCooldown implements ReplicationCooldown {
     @Override
     public Promise<Unit> start() {
         var promise = Promise.<Unit>promise();
-        scheduledTask = SharedScheduler.schedule(() -> completeWarmup(promise),
-                                                 TimeSpan.timeSpan(cooldownDelayMs)
-                                                         .millis());
+        scheduledTask.set(Option.some(SharedScheduler.schedule(() -> completeWarmup(promise),
+                                                               TimeSpan.timeSpan(cooldownDelayMs)
+                                                                       .millis())));
         return promise;
     }
 
     @Override
     @SuppressWarnings("JBCT-RET-01") // Lifecycle shutdown — void required
     public void stop() {
-        var task = scheduledTask;
-        if (task != null) {
-            task.cancel(false);
-            scheduledTask = null;
-        }
+        scheduledTask.getAndSet(Option.none())
+                     .onPresent(task -> task.cancel(false));
     }
 
     @Override

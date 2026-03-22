@@ -183,7 +183,7 @@ class ManagementServerImpl implements ManagementServer {
         this.bossGroup = bossGroup;
         this.workerGroup = workerGroup;
         this.wsAuthenticator = WebSocketAuthenticator.webSocketAuthenticator(securityValidator, securityEnabled);
-        this.metricsPublisher = new DashboardMetricsPublisher(nodeSupplier, alertManager);
+        this.metricsPublisher = DashboardMetricsPublisher.dashboardMetricsPublisher(nodeSupplier, alertManager);
         this.statusWsHandler = new StatusWebSocketHandler(wsAuthenticator);
         this.statusWsPublisher = StatusWebSocketPublisher.statusWebSocketPublisher(statusWsHandler,
                                                                                    () -> buildStatusJson(nodeSupplier));

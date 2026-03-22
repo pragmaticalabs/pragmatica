@@ -1,5 +1,6 @@
 package org.pragmatica.aether.api;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
@@ -20,7 +21,7 @@ public class StatusWebSocketPublisher {
     private final StatusWebSocketHandler handler;
     private final Supplier<String> jsonSupplier;
     private final long intervalMs;
-    private final AtomicReference<ScheduledFuture<?>> taskRef = new AtomicReference<>();
+    private final AtomicReference<Option<ScheduledFuture<?>>> taskRef = new AtomicReference<>(Option.none());
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     private StatusWebSocketPublisher(StatusWebSocketHandler handler,
@@ -46,9 +47,9 @@ public class StatusWebSocketPublisher {
         if (!running.compareAndSet(false, true)) {
             return;
         }
-        taskRef.set(SharedScheduler.scheduleAtFixedRate(this::publish,
-                                                        TimeSpan.timeSpan(intervalMs)
-                                                                .millis()));
+        taskRef.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::publish,
+                                                                    TimeSpan.timeSpan(intervalMs)
+                                                                            .millis())));
         log.info("Status WebSocket publisher started ({}ms interval)", intervalMs);
     }
 
@@ -56,10 +57,8 @@ public class StatusWebSocketPublisher {
         if (!running.compareAndSet(true, false)) {
             return;
         }
-        var task = taskRef.getAndSet(null);
-        if (task != null) {
-            task.cancel(false);
-        }
+        taskRef.getAndSet(Option.none())
+               .onPresent(task -> task.cancel(false));
         log.info("Status WebSocket publisher stopped");
     }
 

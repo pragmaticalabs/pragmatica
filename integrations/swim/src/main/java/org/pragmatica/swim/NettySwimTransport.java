@@ -17,6 +17,7 @@
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
+import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.Unpooled;
@@ -29,6 +30,8 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.socket.DatagramPacket;
 import io.netty.channel.socket.nio.NioDatagramChannel;
+import io.netty.util.concurrent.Future;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -36,6 +39,9 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
 
 /// Netty-based UDP transport for SWIM protocol messages.
 ///
@@ -51,20 +57,12 @@ public final class NettySwimTransport implements SwimTransport {
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final GossipEncryptor encryptor;
-    private final EventLoopGroup externalGroup;
-    private volatile Channel channel;
-    private volatile EventLoopGroup group;
-    private volatile boolean ownsGroup;
-
-    private NettySwimTransport(Serializer serializer, Deserializer deserializer, GossipEncryptor encryptor) {
-        this.serializer = serializer;
-        this.deserializer = deserializer;
-        this.encryptor = encryptor;
-        this.externalGroup = null;
-    }
+    private final Option<EventLoopGroup> externalGroup;
+    private final AtomicReference<Option<Channel>> channel = new AtomicReference<>(none());
+    private final AtomicReference<Option<EventLoopGroup>> group = new AtomicReference<>(none());
 
     private NettySwimTransport(Serializer serializer, Deserializer deserializer,
-                                GossipEncryptor encryptor, EventLoopGroup externalGroup) {
+                                GossipEncryptor encryptor, Option<EventLoopGroup> externalGroup) {
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.encryptor = encryptor;
@@ -74,7 +72,7 @@ public final class NettySwimTransport implements SwimTransport {
     /// Factory creating a Netty-based SWIM transport with gossip encryption.
     public static Result<SwimTransport> nettySwimTransport(Serializer serializer, Deserializer deserializer,
                                                             GossipEncryptor encryptor) {
-        return Result.success(new NettySwimTransport(serializer, deserializer, encryptor));
+        return Result.success(new NettySwimTransport(serializer, deserializer, encryptor, none()));
     }
 
     /// Factory creating a Netty-based SWIM transport without encryption.
@@ -86,18 +84,14 @@ public final class NettySwimTransport implements SwimTransport {
     /// The provided group will NOT be shut down when this transport stops.
     public static Result<SwimTransport> nettySwimTransport(Serializer serializer, Deserializer deserializer,
                                                             GossipEncryptor encryptor, EventLoopGroup eventLoopGroup) {
-        return Result.success(new NettySwimTransport(serializer, deserializer, encryptor, eventLoopGroup));
+        return Result.success(new NettySwimTransport(serializer, deserializer, encryptor, option(eventLoopGroup)));
     }
 
     @Override
     public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
-        var ch = channel;
-
-        if (ch == null) {
-            return SwimError.General.TRANSPORT_NOT_STARTED.promise();
-        }
-
-        return Promise.lift(SwimError.TransportFailure::new, () -> doSend(ch, target, message));
+        return channel.get()
+                      .map(ch -> Promise.lift(SwimError.TransportFailure::new, () -> doSend(ch, target, message)))
+                      .or(SwimError.General.TRANSPORT_NOT_STARTED.promise());
     }
 
     @Override
@@ -119,24 +113,21 @@ public final class NettySwimTransport implements SwimTransport {
 
     private static void sendEncrypted(Channel ch, InetSocketAddress target, byte[] encrypted) {
         var packet = new DatagramPacket(Unpooled.wrappedBuffer(encrypted), target);
-        ch.writeAndFlush(packet).addListener(future -> {
-            if (!future.isSuccess()) {
-                LOG.warn("UDP send failed to {}: {}", target, future.cause().getMessage());
-            }
-        });
+        ch.writeAndFlush(packet).addListener(future -> logSendFailure(future, target));
+    }
+
+    private static void logSendFailure(Future<?> future, InetSocketAddress target) {
+        if (!future.isSuccess()) {
+            LOG.warn("UDP send failed to {}: {}", target, future.cause().getMessage());
+        }
     }
 
     private void doBind(int port, SwimMessageHandler handler) throws InterruptedException {
-        if (externalGroup != null) {
-            group = externalGroup;
-            ownsGroup = false;
-        } else {
-            group = new NioEventLoopGroup(1);
-            ownsGroup = true;
-        }
+        var eventLoopGroup = externalGroup.or(() -> new NioEventLoopGroup(1));
+        group.set(option(eventLoopGroup));
 
         var bootstrap = new Bootstrap()
-            .group(group)
+            .group(eventLoopGroup)
             .channel(NioDatagramChannel.class)
             .handler(new ChannelInitializer<DatagramChannel>() {
                 @Override
@@ -145,26 +136,38 @@ public final class NettySwimTransport implements SwimTransport {
                 }
             });
 
-        channel = bootstrap.bind(port).sync().channel();
+        channel.set(option(bootstrap.bind(port).sync().channel()));
         LOG.info("SWIM transport started on port {}", port);
     }
 
     private void doStop() throws InterruptedException {
-        var ch = channel;
+        channel.getAndSet(none())
+               .onPresent(NettySwimTransport::closeChannel);
 
-        if (ch != null) {
-            ch.close().sync();
-            channel = null;
-        }
-
-        var g = group;
-
-        if (g != null && ownsGroup) {
-            g.shutdownGracefully().sync();
-            group = null;
+        if (!externalGroup.isPresent()) {
+            group.getAndSet(none())
+                 .onPresent(NettySwimTransport::shutdownGroup);
         }
 
         LOG.info("SWIM transport stopped");
+    }
+
+    @SuppressWarnings("JBCT-EX-01") // Adapter boundary: wrapping Netty I/O
+    private static void closeChannel(Channel ch) {
+        try {
+            ch.close().sync();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    @SuppressWarnings("JBCT-EX-01") // Adapter boundary: wrapping Netty I/O
+    private static void shutdownGroup(EventLoopGroup g) {
+        try {
+            g.shutdownGracefully().sync();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private SimpleChannelInboundHandler<DatagramPacket> inboundHandler(SwimMessageHandler handler) {

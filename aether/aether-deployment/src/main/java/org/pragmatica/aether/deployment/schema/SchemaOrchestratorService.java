@@ -23,13 +23,12 @@ import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
-
-import java.util.concurrent.ConcurrentHashMap;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 
 import org.slf4j.Logger;

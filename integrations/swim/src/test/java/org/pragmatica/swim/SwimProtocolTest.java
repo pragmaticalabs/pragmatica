@@ -17,7 +17,6 @@
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
@@ -36,6 +35,7 @@ import org.pragmatica.swim.SwimMessage.PingReq;
 import org.pragmatica.swim.SwimTransport.SwimMessageHandler;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.swim.SwimConfig.swimConfig;
 
 class SwimProtocolTest {
@@ -202,16 +202,17 @@ class SwimProtocolTest {
         }
 
         @Test
-        void takeUpdates_removesFromBuffer() {
+        void peekUpdates_returnsUpdatesWithoutRemoving() {
             var buffer = PiggybackBuffer.piggybackBuffer(10);
             buffer.addUpdate(new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A));
             buffer.addUpdate(new MembershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B));
 
-            var taken = buffer.takeUpdates(1);
+            var peeked = buffer.peekUpdates(1);
 
-            assertThat(taken).hasSize(1);
-            assertThat(taken.getFirst().nodeId()).isEqualTo(NODE_A);
-            assertThat(buffer.size()).isEqualTo(1);
+            assertThat(peeked).hasSize(1);
+            assertThat(peeked.getFirst().nodeId()).isEqualTo(NODE_A);
+            // peekUpdates re-queues non-evicted entries, so size stays 2
+            assertThat(buffer.size()).isEqualTo(2);
         }
 
         @Test
@@ -232,12 +233,12 @@ class SwimProtocolTest {
         }
 
         @Test
-        void takeUpdates_emptyBuffer_returnsEmpty() {
+        void peekUpdates_emptyBuffer_returnsEmpty() {
             var buffer = PiggybackBuffer.piggybackBuffer(5);
 
-            var taken = buffer.takeUpdates(3);
+            var peeked = buffer.peekUpdates(3);
 
-            assertThat(taken).isEmpty();
+            assertThat(peeked).isEmpty();
         }
     }
 

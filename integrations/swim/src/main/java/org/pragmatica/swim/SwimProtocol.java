@@ -23,9 +23,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.swim.SwimMember.MemberState;
@@ -36,6 +39,9 @@ import org.pragmatica.swim.SwimMessage.PingReq;
 import org.pragmatica.swim.SwimTransport.SwimMessageHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
 
 /// Core SWIM protocol implementation providing failure detection and membership dissemination.
 ///
@@ -60,12 +66,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     private final Map<NodeId, Long> suspectTimestamps = new ConcurrentHashMap<>();
     private final PiggybackBuffer piggybackBuffer;
     private final AtomicLong sequenceCounter = new AtomicLong(0);
-    private volatile ScheduledFuture<?> tickFuture;
-    // [Fix #7] Round-robin probe index for fair target selection
-    private int probeIndex = 0;
-    // [Fix #6] Grace period after markAlive — don't probe recently-revived members
+    private final AtomicReference<Option<ScheduledFuture<?>>> tickFuture = new AtomicReference<>(none());
+    private final AtomicInteger probeIndex = new AtomicInteger(0);
     private final Map<NodeId, Long> revivalTimestamps = new ConcurrentHashMap<>();
-    private static final long REVIVAL_GRACE_MS = 5000;
 
     /// Tracks a relayed PingReq: maps the relay's own sequence to the original requester info.
     private record RelayInfo(long originalSequence, InetSocketAddress requesterAddress, long createdAt) {}
@@ -84,6 +87,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// Factory creating a SWIM protocol instance.
+    /// Result wrapper retained for flatMap(SwimProtocol::start) composition.
+    @SuppressWarnings("JBCT-VO-02")
     public static Result<SwimProtocol> swimProtocol(SwimConfig config,
                                                     SwimTransport transport,
                                                     SwimMembershipListener listener,
@@ -94,24 +99,22 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// Start the protocol: begin periodic probing via SharedScheduler.
     public Result<SwimProtocol> start() {
-        if (tickFuture != null) {
+        if (tickFuture.get().isPresent()) {
             return SwimError.General.PROTOCOL_ALREADY_RUNNING.result();
         }
 
-        tickFuture = SharedScheduler.scheduleAtFixedRate(this::tick, config.period());
+        tickFuture.set(option(SharedScheduler.scheduleAtFixedRate(this::tick, config.period())));
         LOG.info("SWIM protocol started for node {}", selfId.id());
         return Result.success(this);
     }
 
     /// Stop the protocol.
     public Result<SwimProtocol> stop() {
-        var future = tickFuture;
-        if (future == null) {
+        if (!tickFuture.get().isPresent()) {
             return SwimError.General.PROTOCOL_NOT_RUNNING.result();
         }
 
-        future.cancel(false);
-        tickFuture = null;
+        tickFuture.getAndSet(none()).onPresent(f -> f.cancel(false));
         LOG.info("SWIM protocol stopped for node {}", selfId.id());
         return Result.success(this);
     }
@@ -141,21 +144,9 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
-        var member = members.get(nodeId);
-
-        if (member == null || member.state() == MemberState.ALIVE) {
-            return;
-        }
-
-        var alive = member.withState(MemberState.ALIVE)
-                          .withIncarnation(member.incarnation() + 1);
-        members.put(nodeId, alive);
-        suspectTimestamps.remove(nodeId);
-        // [Fix #6] Grace period — don't probe this member immediately after revival
-        revivalTimestamps.put(nodeId, System.currentTimeMillis());
-        listener.onMemberJoined(alive);
-        addMemberUpdate(alive);
-        LOG.info("Member {} externally marked ALIVE (was {})", nodeId.id(), member.state());
+        option(members.get(nodeId))
+            .filter(member -> member.state() != MemberState.ALIVE)
+            .onPresent(member -> applyAliveRevival(nodeId, member));
     }
 
     // -- SwimMessageHandler --
@@ -175,14 +166,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void tick() {
         expireSuspectMembers();
         cleanupFaultyMembers();
+        selectNextProbeTarget().onPresent(this::probeTarget);
+    }
 
-        // [Fix #7] Round-robin target selection for fair probing
-        var target = selectNextProbeTarget();
-
-        if (target == null) {
-            return;
-        }
-
+    private void probeTarget(SwimMember target) {
         var seq = sequenceCounter.incrementAndGet();
         var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback());
         var ping = Ping.ping(selfId, seq, piggyback);
@@ -198,27 +185,30 @@ public final class SwimProtocol implements SwimMessageHandler {
         var suspectTimeoutMillis = config.suspectTimeout().millis();
 
         suspectTimestamps.forEach((nodeId, timestamp) -> expireSuspectIfOverdue(nodeId, timestamp, now, suspectTimeoutMillis));
-        // [Fix #1] Clean up stale relays by age, not by pendingProbes presence
-        // Relay sequences are independent from local probe sequences
+        // Clean up stale relays by age, not by pendingProbes presence
         var relayTimeoutMillis = config.probeTimeout().millis() * 3;
         pendingRelays.entrySet().removeIf(entry -> now - entry.getValue().createdAt() > relayTimeoutMillis);
     }
 
-    /// [Fix #4] Remove FAULTY members after suspect timeout to prevent unbounded growth.
-    /// They've been FAULTY long enough — no point keeping them in the membership map.
+    /// Remove FAULTY members after suspect timeout to prevent unbounded growth.
     private void cleanupFaultyMembers() {
         var now = System.currentTimeMillis();
         var cleanupThreshold = config.suspectTimeout().millis() * 3;
 
-        members.entrySet().removeIf(entry -> {
-            var member = entry.getValue();
-            if (member.state() != MemberState.FAULTY) {
-                return false;
-            }
-            // Remove if no suspectTimestamp exists (already cleaned) or if it's old enough
-            var suspectTime = suspectTimestamps.get(member.nodeId());
-            return suspectTime == null || (now - suspectTime > cleanupThreshold);
-        });
+        members.entrySet().removeIf(entry -> isFaultyAndExpired(entry, now, cleanupThreshold));
+    }
+
+    private boolean isFaultyAndExpired(Map.Entry<NodeId, SwimMember> entry, long now, long threshold) {
+        var member = entry.getValue();
+
+        if (member.state() != MemberState.FAULTY) {
+            return false;
+        }
+
+        // Remove if no suspectTimestamp exists (already cleaned) or if it's old enough
+        return option(suspectTimestamps.get(member.nodeId()))
+            .map(suspectTime -> now - suspectTime > threshold)
+            .or(true);
     }
 
     private void expireSuspectIfOverdue(NodeId nodeId, long timestamp, long now, long suspectTimeoutMillis) {
@@ -226,11 +216,9 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
-        var member = members.get(nodeId);
-
-        if (member != null && member.state() == MemberState.SUSPECT) {
-            transitionToFaulty(member);
-        }
+        option(members.get(nodeId))
+            .filter(member -> member.state() == MemberState.SUSPECT)
+            .onPresent(this::transitionToFaulty);
 
         suspectTimestamps.remove(nodeId);
     }
@@ -238,39 +226,42 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void transitionToFaulty(SwimMember member) {
         var faulty = member.withState(MemberState.FAULTY);
         members.put(member.nodeId(), faulty);
-        // [Fix #9] Record faulty timestamp for cleanup
         suspectTimestamps.put(member.nodeId(), System.currentTimeMillis());
         listener.onMemberFaulty(faulty);
         addMemberUpdate(faulty);
         LOG.info("Member {} marked FAULTY", member.nodeId().id());
     }
 
-    /// [Fix #7] Round-robin selection: each member probed exactly once per round.
-    private SwimMember selectNextProbeTarget() {
+    /// Round-robin selection: each member probed exactly once per round.
+    private Option<SwimMember> selectNextProbeTarget() {
         var candidates = members.values().stream()
                                 .filter(this::isProbable)
                                 .toList();
 
         if (candidates.isEmpty()) {
-            return null;
+            return none();
         }
 
-        probeIndex = probeIndex % candidates.size();
-        return candidates.get(probeIndex++);
+        var index = probeIndex.getAndUpdate(i -> (i + 1) % candidates.size()) % candidates.size();
+        return option(candidates.get(index));
     }
 
     private boolean isProbable(SwimMember member) {
         if (member.state() != MemberState.ALIVE && member.state() != MemberState.SUSPECT) {
             return false;
         }
-        // [Fix #6] Skip members in revival grace period
-        var revivalTime = revivalTimestamps.get(member.nodeId());
-        if (revivalTime != null) {
-            if (System.currentTimeMillis() - revivalTime < REVIVAL_GRACE_MS) {
-                return false;
-            }
-            revivalTimestamps.remove(member.nodeId());
+
+        return option(revivalTimestamps.get(member.nodeId()))
+            .map(revivalTime -> isRevivalGraceExpired(member.nodeId(), revivalTime))
+            .or(true);
+    }
+
+    private boolean isRevivalGraceExpired(NodeId nodeId, long revivalTime) {
+        if (System.currentTimeMillis() - revivalTime < config.revivalGrace().millis()) {
+            return false;
         }
+
+        revivalTimestamps.remove(nodeId);
         return true;
     }
 
@@ -279,12 +270,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void onProbeTimeout(long seq) {
-        var probe = pendingProbes.get(seq);
+        option(pendingProbes.get(seq))
+            .onPresent(probe -> handleProbeTimeout(seq, probe));
+    }
 
-        if (probe == null) {
-            return;
-        }
-
+    private void handleProbeTimeout(long seq, PendingProbe probe) {
         if (probe.indirectSent()) {
             markSuspect(probe.targetId());
             pendingProbes.remove(seq);
@@ -315,12 +305,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void markSuspect(NodeId nodeId) {
-        var member = members.get(nodeId);
+        option(members.get(nodeId))
+            .filter(member -> member.state() == MemberState.ALIVE)
+            .onPresent(member -> applySuspect(nodeId, member));
+    }
 
-        if (member == null || member.state() != MemberState.ALIVE) {
-            return;
-        }
-
+    private void applySuspect(NodeId nodeId, SwimMember member) {
         var suspect = member.withState(MemberState.SUSPECT);
         members.put(nodeId, suspect);
         suspectTimestamps.put(nodeId, System.currentTimeMillis());
@@ -340,26 +330,31 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private void handleAck(Ack ack) {
         processPiggyback(ack.piggyback());
+        processAckProbe(ack);
+        forwardRelay(ack);
+    }
+
+    private void processAckProbe(Ack ack) {
         pendingProbes.remove(ack.sequence());
         markAliveIfNeeded(ack.from());
-        // Forward Ack to the original requester if this was a relayed probe.
-        // The relay used its OWN sequence — restore the ORIGINAL sequence for the requester.
-        var relay = pendingRelays.remove(ack.sequence());
-        if (relay != null) {
-            var forwardAck = Ack.ack(ack.from(), relay.originalSequence(), ack.piggyback());
-            transport.send(relay.requesterAddress(), forwardAck);
-        }
+    }
+
+    private void forwardRelay(Ack ack) {
+        option(pendingRelays.remove(ack.sequence()))
+            .onPresent(relay -> forwardAckToRequester(ack, relay));
+    }
+
+    private void forwardAckToRequester(Ack ack, RelayInfo relay) {
+        var forwardAck = Ack.ack(ack.from(), relay.originalSequence(), ack.piggyback());
+        transport.send(relay.requesterAddress(), forwardAck);
     }
 
     private void handlePingReq(InetSocketAddress requesterAddress, PingReq pingReq) {
-        var target = members.get(pingReq.target());
+        option(members.get(pingReq.target()))
+            .onPresent(target -> relayPingReq(requesterAddress, pingReq, target));
+    }
 
-        if (target == null) {
-            return;
-        }
-
-        // Use OWN sequence for the relay Ping to avoid collision with local probes.
-        // Map relay seq → (original seq, requester address) for Ack forwarding.
+    private void relayPingReq(InetSocketAddress requesterAddress, PingReq pingReq, SwimMember target) {
         var relaySeq = sequenceCounter.incrementAndGet();
         pendingRelays.put(relaySeq, new RelayInfo(pingReq.sequence(), requesterAddress, System.currentTimeMillis()));
 
@@ -368,19 +363,30 @@ public final class SwimProtocol implements SwimMessageHandler {
         transport.send(target.address(), ping);
     }
 
-    /// [Fix #2] Bump incarnation when marking alive via Ack — prevents stale SUSPECT piggyback from overriding.
+    /// Bump incarnation when marking alive via Ack — prevents stale SUSPECT piggyback from overriding.
     private void markAliveIfNeeded(NodeId nodeId) {
-        var member = members.get(nodeId);
+        option(members.get(nodeId))
+            .filter(member -> member.state() != MemberState.ALIVE)
+            .onPresent(member -> applyAliveFromAck(nodeId, member));
+    }
 
-        if (member == null || member.state() == MemberState.ALIVE) {
-            return;
-        }
-
+    private void applyAliveFromAck(NodeId nodeId, SwimMember member) {
         var alive = member.withState(MemberState.ALIVE)
                           .withIncarnation(member.incarnation() + 1);
         members.put(nodeId, alive);
         suspectTimestamps.remove(nodeId);
         addMemberUpdate(alive);
+    }
+
+    private void applyAliveRevival(NodeId nodeId, SwimMember member) {
+        var alive = member.withState(MemberState.ALIVE)
+                          .withIncarnation(member.incarnation() + 1);
+        members.put(nodeId, alive);
+        suspectTimestamps.remove(nodeId);
+        revivalTimestamps.put(nodeId, System.currentTimeMillis());
+        listener.onMemberJoined(alive);
+        addMemberUpdate(alive);
+        LOG.info("Member {} externally marked ALIVE (was {})", nodeId.id(), member.state());
     }
 
     private void processPiggyback(List<MembershipUpdate> updates) {
@@ -393,17 +399,16 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
-        var existing = members.get(update.nodeId());
+        var existing = option(members.get(update.nodeId()));
 
-        if (existing == null) {
+        if (existing.isPresent()) {
+            existing.onPresent(member -> applyExistingMember(member, update));
+        } else {
             applyNewMember(update);
-            return;
         }
-
-        applyExistingMember(existing, update);
     }
 
-    /// [Fix #8] Notify listener when self is suspected — application may want to log/alert.
+    /// Notify listener when self is suspected — application may want to log/alert.
     private void handleSelfUpdate(MembershipUpdate update) {
         if (update.state() == MemberState.SUSPECT || update.state() == MemberState.FAULTY) {
             LOG.warn("Self suspected/faulted by remote node, refuting with incarnation {}", update.incarnation() + 1);
@@ -420,8 +425,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
     }
 
-    /// [Fix #3] Enforce SWIM state priority at same incarnation: FAULTY > SUSPECT > ALIVE.
-    /// At equal incarnation, only allow state progression (ALIVE→SUSPECT→FAULTY), not regression.
+    /// Enforce SWIM state priority at same incarnation: FAULTY > SUSPECT > ALIVE.
+    /// At equal incarnation, only allow state progression (ALIVE->SUSPECT->FAULTY), not regression.
     private void applyExistingMember(SwimMember existing, MembershipUpdate update) {
         if (update.incarnation() < existing.incarnation()) {
             return;

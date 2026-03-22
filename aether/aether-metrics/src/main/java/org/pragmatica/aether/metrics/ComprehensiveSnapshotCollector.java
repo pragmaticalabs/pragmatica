@@ -9,6 +9,7 @@ import org.pragmatica.aether.metrics.gc.GCMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.network.NetworkMetrics;
 import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -19,6 +20,7 @@ import java.lang.management.MemoryMXBean;
 import java.lang.management.OperatingSystemMXBean;
 import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,7 +54,7 @@ public final class ComprehensiveSnapshotCollector {
     private final OperatingSystemMXBean osMxBean;
     private final MemoryMXBean memoryMxBean;
 
-    private volatile ScheduledFuture<?> collectionTask;
+    private final AtomicReference<Option<ScheduledFuture<?>>> collectionTask = new AtomicReference<>(Option.none());
     private volatile boolean started = false;
 
     private ComprehensiveSnapshotCollector(GCMetricsCollector gcCollector,
@@ -114,9 +116,9 @@ public final class ComprehensiveSnapshotCollector {
         started = true;
         gcCollector.start();
         eventLoopCollector.start();
-        collectionTask = SharedScheduler.scheduleAtFixedRate(this::collectSnapshot,
-                                                             TimeSpan.timeSpan(COLLECTION_INTERVAL_MS)
-                                                                     .millis());
+        collectionTask.set(Option.some(SharedScheduler.scheduleAtFixedRate(this::collectSnapshot,
+                                                                           TimeSpan.timeSpan(COLLECTION_INTERVAL_MS)
+                                                                                   .millis())));
         log.info("Comprehensive snapshot collection started (interval: {}ms)", COLLECTION_INTERVAL_MS);
         return unitResult();
     }
@@ -128,10 +130,8 @@ public final class ComprehensiveSnapshotCollector {
             return unitResult();
         }
         started = false;
-        if (collectionTask != null) {
-            collectionTask.cancel(false);
-            collectionTask = null;
-        }
+        collectionTask.getAndSet(Option.none())
+                      .onPresent(task -> task.cancel(false));
         gcCollector.stop();
         eventLoopCollector.stop();
         log.info("Comprehensive snapshot collection stopped");

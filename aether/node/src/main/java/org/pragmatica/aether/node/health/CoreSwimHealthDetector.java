@@ -17,23 +17,27 @@ import org.pragmatica.swim.NettySwimTransport;
 import org.pragmatica.swim.SwimConfig;
 import org.pragmatica.swim.SwimMember;
 import org.pragmatica.swim.SwimMembershipListener;
+import org.pragmatica.swim.SwimMessage;
 import org.pragmatica.swim.SwimProtocol;
 import org.pragmatica.swim.SwimTransport;
 
 import java.net.InetSocketAddress;
+import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Bridges SWIM failure detection to NCN channel management.
 /// SWIM is the sole failure detector — NCN's Ping/Pong keepalive has been removed.
 ///
 /// Cooperative model with NettyClusterNetwork (NCN):
-/// - **SWIM → NCN:** On member FAULTY/LEFT, routes DisconnectNode to close zombie TCP channels
-/// - **NCN → SWIM:** On TCP Hello handshake, onNodeConnected() resets FAULTY state
+/// - **SWIM -> NCN:** On member FAULTY/LEFT, routes DisconnectNode to close zombie TCP channels
+/// - **NCN -> SWIM:** On TCP Hello handshake, onNodeConnected() resets FAULTY state
 /// - **NCN owns:** quorum tracking, topology notifications, TCP transport
 /// - **SWIM owns:** failure detection via UDP probing (sole detector)
 ///
@@ -41,7 +45,6 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// SWIM's UDP channel runs on the same thread pool as NCN's TCP channels. This eliminates
 /// the separate NioEventLoopGroup(1) that SWIM previously created. SWIM still binds its own
 /// UDP port — future work will move the UDP binding into Server itself.
-@SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03", "JBCT-EX-01"})
 public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private static final Logger log = LoggerFactory.getLogger(CoreSwimHealthDetector.class);
 
@@ -54,8 +57,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private final Serializer serializer;
     private final Deserializer deserializer;
     private volatile GossipEncryptor encryptor;
-    private volatile SwimProtocol swimProtocol;
-    private volatile SwimTransport swimTransport;
+    private final AtomicReference<Option<SwimProtocol>> swimProtocol = new AtomicReference<>(none());
+    private final AtomicReference<Option<SwimTransport>> swimTransport = new AtomicReference<>(none());
 
     private CoreSwimHealthDetector(MessageRouter router,
                                    TopologyConfig topologyConfig,
@@ -80,28 +83,23 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     /// SWIM port = cluster port + 1.
     /// Idempotent: if SWIM is already running, this is a no-op.
     public Promise<Unit> start() {
-        return start(Option.empty(), GossipEncryptor.none());
+        return start(none(), GossipEncryptor.none());
     }
 
     /// Start the SWIM protocol with encryption, optionally reusing a shared EventLoopGroup.
     /// Encryptor is resolved at start time (quorum), not at construction — avoids race
     /// condition where certificate provider isn't initialized yet during node assembly.
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03", "JBCT-EX-01"})
     public Promise<Unit> start(Option<EventLoopGroup> sharedEventLoopGroup, GossipEncryptor gossipEncryptor) {
         this.encryptor = gossipEncryptor;
-        if (swimProtocol != null) {
+        if (swimProtocol.get()
+                        .isPresent()) {
             log.debug("SWIM already running, skipping start");
             return Promise.success(Unit.unit());
         }
         var selfPort = findSelfPort();
         var swimPort = selfPort + 1;
-        var selfHost = topologyConfig.coreNodes()
-                                     .stream()
-                                     .filter(n -> n.id()
-                                                   .equals(topologyConfig.self()))
-                                     .findFirst()
-                                     .map(n -> n.address()
-                                                .host())
-                                     .orElse("localhost");
+        var selfHost = findSelfHost();
         var selfAddress = new InetSocketAddress(selfHost, swimPort);
         return createTransport(sharedEventLoopGroup).flatMap(transport -> createAndStartProtocol(transport,
                                                                                                  selfAddress,
@@ -111,47 +109,45 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     }
 
     /// Stop the SWIM protocol and transport.
+    @SuppressWarnings("JBCT-RET-01") // Lifecycle method — void inherent
     public void stop() {
-        var protocol = swimProtocol;
-        if (protocol != null) {
-            protocol.stop();
-            swimProtocol = null;
-        }
-        var transport = swimTransport;
-        if (transport != null) {
-            transport.stop();
-            swimTransport = null;
-        }
+        swimProtocol.getAndSet(none())
+                    .onPresent(SwimProtocol::stop);
+        swimTransport.getAndSet(none())
+                     .onPresent(SwimTransport::stop);
     }
 
     /// Notify SWIM that a TCP connection was established to a peer.
     /// Resets FAULTY/SUSPECT state so SWIM can detect future departures.
     /// A completed TCP Hello handshake is proof the node is alive.
+    @SuppressWarnings("JBCT-RET-01") // Event callback — void inherent
     public void onNodeConnected(NodeId nodeId) {
-        var protocol = swimProtocol;
-        if (protocol != null) {
-            protocol.markAlive(nodeId);
-        }
+        swimProtocol.get()
+                    .onPresent(protocol -> protocol.markAlive(nodeId));
     }
 
-    // ---- SwimMembershipListener ----
+    // ---- SwimMembershipListener (void callbacks required by interface) ----
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onMemberJoined(SwimMember member) {
         log.info("SWIM member joined: {}", member.nodeId());
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onMemberSuspect(SwimMember member) {
         log.warn("SWIM member suspected: {}", member.nodeId());
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onMemberFaulty(SwimMember member) {
         log.error("SWIM member faulty: {}, routing DisconnectNode", member.nodeId());
         router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(member.nodeId()));
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onMemberLeft(NodeId leftNodeId) {
         log.warn("SWIM member left: {}, routing DisconnectNode", leftNodeId);
         router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(leftNodeId));
@@ -166,32 +162,40 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                    .or(NettySwimTransport.nettySwimTransport(serializer, deserializer, encryptor));
     }
 
-    private int findSelfPort() {
-        return topologyConfig.coreNodes()
-                             .stream()
-                             .filter(n -> n.id()
-                                           .equals(topologyConfig.self()))
-                             .findFirst()
-                             .map(n -> n.address()
-                                        .port())
-                             .orElse(0);
+    /// Finds self NodeInfo from topology, wrapping java.util.Optional at adapter boundary.
+    private Option<NodeInfo> findSelfNode() {
+        return Option.from(topologyConfig.coreNodes()
+                                         .stream()
+                                         .filter(this::isSelf)
+                                         .findFirst());
     }
 
-    @SuppressWarnings("JBCT-RET-01")
+    private int findSelfPort() {
+        return findSelfNode().map(n -> n.address()
+                                        .port())
+                           .or(0);
+    }
+
+    private String findSelfHost() {
+        return findSelfNode().map(n -> n.address()
+                                        .host())
+                           .or("localhost");
+    }
+
+    private boolean isSelf(NodeInfo node) {
+        return node.id()
+                   .equals(topologyConfig.self());
+    }
+
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
     private Result<SwimProtocol> createAndStartProtocol(SwimTransport transport,
                                                         InetSocketAddress selfAddress,
                                                         int swimPort) {
-        this.swimTransport = transport;
-        // [Fix #7] Await transport bind before starting protocol — ensures UDP port is ready
-        transport.start(swimPort,
-                        (sender, message) -> {
-                            var protocol = swimProtocol;
-                            if (protocol != null) {
-                                protocol.onMessage(sender, message);
-                            }
-                        })
+        this.swimTransport.set(option(transport));
+        transport.start(swimPort, this::delegateToProtocol)
                  .await(timeSpan(5).seconds())
-                 .onFailure(cause -> log.error("SWIM transport failed to start: {}", cause.message()));
+                 .onFailure(cause -> log.error("SWIM transport failed to start: {}",
+                                               cause.message()));
         return SwimProtocol.swimProtocol(CORE_SWIM_CONFIG,
                                          transport,
                                          this,
@@ -201,8 +205,13 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                            .map(this::storeAndSeed);
     }
 
+    private void delegateToProtocol(InetSocketAddress sender, SwimMessage message) {
+        swimProtocol.get()
+                    .onPresent(protocol -> protocol.onMessage(sender, message));
+    }
+
     private SwimProtocol storeAndSeed(SwimProtocol protocol) {
-        swimProtocol = protocol;
+        swimProtocol.set(option(protocol));
         seedMembers(protocol);
         return protocol;
     }
@@ -216,10 +225,11 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     }
 
     private static void addSeedMember(SwimProtocol protocol, NodeInfo node) {
-        var host = node.address().host();
-        var swimPort = node.address().port() + 1;
+        var host = node.address()
+                       .host();
+        var swimPort = node.address()
+                           .port() + 1;
         var swimAddress = new InetSocketAddress(host, swimPort);
-
         if (swimAddress.isUnresolved()) {
             // DNS not ready yet — schedule deferred resolution
             log.warn("SWIM seed {} unresolved, scheduling deferred DNS resolution", host);
@@ -227,13 +237,15 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                      timeSpan(2).seconds());
             return;
         }
-
         protocol.addSeedMember(node.id(), swimAddress);
     }
 
     @SuppressWarnings("JBCT-RET-01")
-    private static void addSeedMemberWithRetry(SwimProtocol protocol, NodeId nodeId,
-                                                String host, int port, int attempt) {
+    private static void addSeedMemberWithRetry(SwimProtocol protocol,
+                                               NodeId nodeId,
+                                               String host,
+                                               int port,
+                                               int attempt) {
         var address = new InetSocketAddress(host, port);
         if (address.isUnresolved()) {
             if (attempt < 10) {
@@ -245,7 +257,6 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
             }
             return;
         }
-
         log.info("SWIM seed {} resolved to {} (attempt {})", host, address.getAddress(), attempt);
         protocol.addSeedMember(nodeId, address);
     }

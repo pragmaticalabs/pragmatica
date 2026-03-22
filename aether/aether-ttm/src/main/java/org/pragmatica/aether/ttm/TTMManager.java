@@ -188,11 +188,13 @@ public interface TTMManager {
 
         private void stopEvaluation() {
             stateRef.set(TTMState.STOPPED);
-            var existing = evaluationTask.getAndSet(null);
-            if (existing != null) {
-                existing.cancel(false);
-                log.info("TTM evaluation stopped");
-            }
+            Option.option(evaluationTask.getAndSet(null))
+                  .onPresent(this::cancelEvaluationTask);
+        }
+
+        private void cancelEvaluationTask(ScheduledFuture<?> task) {
+            task.cancel(false);
+            log.info("TTM evaluation stopped");
         }
 
         private void runEvaluation() {
@@ -248,12 +250,14 @@ public interface TTMManager {
 
         private void safeInvokeCallback(Consumer<TTMForecast> callback, TTMForecast forecast) {
             Result.lift(e -> new TTMError.InferenceFailed("Callback error: " + e.getMessage()),
-                        () -> {
-                            callback.accept(forecast);
-                            return Unit.unit();
-                        })
+                        () -> invokeCallback(callback, forecast))
                   .onFailure(cause -> log.warn("Forecast callback error: {}",
                                                cause.message()));
+        }
+
+        private static Unit invokeCallback(Consumer<TTMForecast> callback, TTMForecast forecast) {
+            callback.accept(forecast);
+            return Unit.unit();
         }
     }
 }
