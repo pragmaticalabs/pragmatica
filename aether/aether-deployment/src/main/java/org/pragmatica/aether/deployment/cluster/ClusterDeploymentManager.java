@@ -8,9 +8,12 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.config.PlacementPolicy;
+import org.pragmatica.aether.slice.blueprint.BlueprintParser;
+import org.pragmatica.aether.slice.blueprint.DeploymentConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintResourcesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
@@ -23,6 +26,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintResourcesValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
@@ -1046,6 +1050,7 @@ public interface ClusterDeploymentManager {
                 // Store the ORIGINAL requested instance count — not capped at available nodes.
                 // Allocation is naturally limited by allocatableNodes(); reconcile() fills the gap
                 // when more nodes register ON_DUTY lifecycle state.
+                var schemaRequired = resolveSchemaRequired(expanded.id());
                 for (var slice : expanded.loadOrder()) {
                     var artifact = slice.artifact();
                     var requestedInstances = slice.instances();
@@ -1058,7 +1063,8 @@ public interface ClusterDeploymentManager {
                                    Blueprint.blueprint(artifact,
                                                        requestedInstances,
                                                        slice.minAvailable(),
-                                                       Option.some(expanded.id())));
+                                                       Option.some(expanded.id()),
+                                                       schemaRequired));
                     // Create SliceTargetKey — allocation happens via onSliceTargetPut notification
                     // when this command is committed by consensus
                     consensusCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
@@ -1070,6 +1076,21 @@ public interface ClusterDeploymentManager {
                 submitBatch(consensusCommands);
                 // Track in-flight blueprint for atomicity enforcement
                 trackInFlightBlueprint(expanded, previousExpanded);
+            }
+
+            /// Resolve schema_required from the blueprint's stored resources TOML.
+            /// Returns true (default) if resources are not available or the field is not set.
+            private boolean resolveSchemaRequired(BlueprintId blueprintId) {
+                var resourcesKey = BlueprintResourcesKey.blueprintResourcesKey(blueprintId);
+                return kvStore.get(resourcesKey)
+                              .filter(BlueprintResourcesValue.class::isInstance)
+                              .map(BlueprintResourcesValue.class::cast)
+                              .map(BlueprintResourcesValue::tomlContent)
+                              .flatMap(toml -> BlueprintParser.parse(toml)
+                                                              .option())
+                              .flatMap(org.pragmatica.aether.slice.blueprint.Blueprint::deploymentConfig)
+                              .map(DeploymentConfig::schemaRequired)
+                              .or(true);
             }
 
             private Option<ExpandedBlueprint> capturePreviousBlueprint(ExpandedBlueprint expanded) {
@@ -1215,7 +1236,12 @@ public interface ClusterDeploymentManager {
             }
 
             /// Check if all schema migrations are complete (not PENDING or MIGRATING).
+            /// If the slice's blueprint has schemaRequired=false, schemas are considered ready.
             private boolean areSchemasReady(SliceNodeKey sliceKey) {
+                var blueprint = blueprints.get(sliceKey.artifact());
+                if (blueprint != null && !blueprint.schemaRequired()) {
+                    return true;
+                }
                 var schemasReady = new AtomicBoolean(true);
                 kvStore.forEach(SchemaVersionKey.class,
                                 SchemaVersionValue.class,
@@ -2141,17 +2167,22 @@ public interface ClusterDeploymentManager {
     /// @param instances current desired instance count
     /// @param minInstances minimum instance count (hard floor for scale-down)
     /// @param owner the owning app blueprint ID, if this artifact was deployed via an app blueprint
-    record Blueprint(Artifact artifact, int instances, int minInstances, Option<BlueprintId> owner) {
+    /// @param schemaRequired whether schema migrations must complete before activation (default true)
+    record Blueprint(Artifact artifact, int instances, int minInstances, Option<BlueprintId> owner, boolean schemaRequired) {
         static Blueprint blueprint(Artifact artifact, int instances, int minInstances, Option<BlueprintId> owner) {
-            return new Blueprint(artifact, instances, minInstances, owner);
+            return new Blueprint(artifact, instances, minInstances, owner, true);
+        }
+
+        static Blueprint blueprint(Artifact artifact, int instances, int minInstances, Option<BlueprintId> owner, boolean schemaRequired) {
+            return new Blueprint(artifact, instances, minInstances, owner, schemaRequired);
         }
 
         static Blueprint blueprint(Artifact artifact, int instances, int minInstances) {
-            return new Blueprint(artifact, instances, minInstances, Option.empty());
+            return new Blueprint(artifact, instances, minInstances, Option.empty(), true);
         }
 
         static Blueprint blueprint(Artifact artifact, int instances) {
-            return new Blueprint(artifact, instances, 1, Option.empty());
+            return new Blueprint(artifact, instances, 1, Option.empty(), true);
         }
     }
 

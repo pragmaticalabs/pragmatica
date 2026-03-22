@@ -774,7 +774,8 @@ public interface AetherNode {
                                                                                      repository,
                                                                                      schemaManager,
                                                                                      connectionProvider,
-                                                                                     config.self());
+                                                                                     config.self(),
+                                                                                     delegateRouter);
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,

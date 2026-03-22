@@ -40,6 +40,7 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 /// Routes for datasource schema management: status, history, migrate, undo, baseline.
 public final class SchemaRoutes implements RouteSource {
     private static final Cause SCHEMA_NOT_FOUND = Causes.cause("Schema status not found for datasource");
+    private static final Cause SCHEMA_NOT_FAILED = Causes.cause("Schema is not in FAILED state — retry only applies to failed migrations");
 
     private final Supplier<AetherNode> nodeSupplier;
 
@@ -94,6 +95,10 @@ public final class SchemaRoutes implements RouteSource {
                               .withPath(aString())
                               .withQuery(QueryParameter.aString("version"))
                               .to(this::baselineDatasource)
+                              .asJson(),
+                         Route.<SchemaMigrateResponse> post("/api/schema/retry")
+                              .withPath(aString())
+                              .to(this::retryMigration)
                               .asJson());
     }
 
@@ -179,6 +184,24 @@ public final class SchemaRoutes implements RouteSource {
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
         return nodeSupplier.get()
                            .apply(List.of(command));
+    }
+
+    private Promise<SchemaMigrateResponse> retryMigration(String datasource) {
+        return lookupSchemaVersion(datasource).flatMap(current -> writeRetryStatus(current, datasource));
+    }
+
+    private Promise<SchemaMigrateResponse> writeRetryStatus(SchemaVersionValue current, String datasource) {
+        if (current.status() != SchemaStatus.FAILED) {
+            return SCHEMA_NOT_FAILED.promise();
+        }
+        var updated = SchemaVersionValue.schemaVersionValue(datasource,
+                                                            current.currentVersion(),
+                                                            current.lastMigration(),
+                                                            SchemaStatus.PENDING,
+                                                            current.artifactCoords(),
+                                                            0);
+        return applySchemaUpdate(datasource, updated)
+        .map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true, "Retry initiated for " + datasource));
     }
 
     private static int parseIntSafe(String value) {

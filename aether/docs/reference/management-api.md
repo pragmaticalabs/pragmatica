@@ -2406,6 +2406,18 @@ Undoes migrations to the specified target version. Sets status to `PENDING` at t
 }
 ```
 
+### POST /api/schema/retry/{datasource}
+
+Retries a failed schema migration by resetting status from FAILED to PENDING. Only works when the datasource is in FAILED state; returns 409 Conflict otherwise.
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Retry initiated for orders_db"
+}
+```
+
 ### POST /api/schema/baseline/{datasource}?version=N
 
 Baselines a datasource at the specified version (marks V001..V{N} as applied without executing).

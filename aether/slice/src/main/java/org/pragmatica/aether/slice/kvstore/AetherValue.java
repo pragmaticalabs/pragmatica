@@ -907,12 +907,14 @@ public sealed interface AetherValue {
     /// @param lastMigration filename of the last applied migration
     /// @param status current migration status
     /// @param artifactCoords Maven coordinates of the artifact that defined this schema
+    /// @param attemptCount number of migration attempts (for retry tracking)
     /// @param updatedAt timestamp of last update
     record SchemaVersionValue(String datasourceName,
                               int currentVersion,
                               String lastMigration,
                               SchemaStatus status,
                               String artifactCoords,
+                              int attemptCount,
                               long updatedAt) implements AetherValue {
         public static SchemaVersionValue schemaVersionValue(String datasourceName,
                                                             int currentVersion,
@@ -924,6 +926,23 @@ public sealed interface AetherValue {
                                           lastMigration,
                                           status,
                                           artifactCoords,
+                                          0,
+                                          System.currentTimeMillis());
+        }
+
+        /// Factory with explicit attempt count for retry tracking.
+        public static SchemaVersionValue schemaVersionValue(String datasourceName,
+                                                            int currentVersion,
+                                                            String lastMigration,
+                                                            SchemaStatus status,
+                                                            String artifactCoords,
+                                                            int attemptCount) {
+            return new SchemaVersionValue(datasourceName,
+                                          currentVersion,
+                                          lastMigration,
+                                          status,
+                                          artifactCoords,
+                                          attemptCount,
                                           System.currentTimeMillis());
         }
 
@@ -937,6 +956,7 @@ public sealed interface AetherValue {
                                           lastMigration,
                                           status,
                                           "",
+                                          0,
                                           System.currentTimeMillis());
         }
     }

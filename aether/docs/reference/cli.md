@@ -1066,6 +1066,9 @@ aether schema migrate orders_db
 # Undo to version 2
 aether schema undo orders_db -v 2
 
+# Retry a failed migration
+aether schema retry orders_db
+
 # Baseline at version 3
 aether schema baseline orders_db -v 3
 ```

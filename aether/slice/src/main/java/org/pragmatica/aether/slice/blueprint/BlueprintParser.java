@@ -103,7 +103,9 @@ public interface BlueprintParser {
         var drainTimeoutMs = doc.getLong("deployment", "drain_timeout_ms")
                                 .or(300_000L);
         var stages = parseCanaryStages(doc);
-        return some(DeploymentConfig.deploymentConfig(strategy, stages, maxErrorRate, maxLatencyMs, drainTimeoutMs));
+        var schemaRequired = doc.getBoolean("deployment", "schema_required")
+                                .or(true);
+        return some(DeploymentConfig.deploymentConfig(strategy, stages, maxErrorRate, maxLatencyMs, drainTimeoutMs, schemaRequired));
     }
 
     private static Strategy parseStrategy(String raw) {

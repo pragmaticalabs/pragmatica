@@ -823,7 +823,7 @@ public final class KVStoreSerializer {
 
     private static String serializeSchemaVersion(SchemaVersionValue v) {
         return v.datasourceName() + PIPE + v.currentVersion() + PIPE + v.lastMigration() + PIPE + v.status()
-                                                                                                  .name() + PIPE + v.artifactCoords() + PIPE + v.updatedAt();
+                                                                                                  .name() + PIPE + v.artifactCoords() + PIPE + v.attemptCount() + PIPE + v.updatedAt();
     }
 
     private static String serializeSchemaMigrationLock(SchemaMigrationLockValue v) {
@@ -839,8 +839,20 @@ public final class KVStoreSerializer {
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaVersionEntry(String identity, String raw) {
         var parts = raw.split("\\|", - 1);
-        if (parts.length != 6) {
-            return parseFailure("schema-version value requires 6 fields, got " + parts.length);
+        if (parts.length == 6) {
+            // Backward-compatible: 6-field format without attemptCount
+            return SchemaVersionKey.schemaVersionKey("schema-version/" + identity, true)
+                                   .map(key -> entry(key,
+                                                     new SchemaVersionValue(parts[0],
+                                                                            Integer.parseInt(parts[1]),
+                                                                            parts[2],
+                                                                            SchemaStatus.valueOf(parts[3]),
+                                                                            parts[4],
+                                                                            0,
+                                                                            Long.parseLong(parts[5]))));
+        }
+        if (parts.length != 7) {
+            return parseFailure("schema-version value requires 6 or 7 fields, got " + parts.length);
         }
         return SchemaVersionKey.schemaVersionKey("schema-version/" + identity, true)
                                .map(key -> entry(key,
@@ -849,7 +861,8 @@ public final class KVStoreSerializer {
                                                                         parts[2],
                                                                         SchemaStatus.valueOf(parts[3]),
                                                                         parts[4],
-                                                                        Long.parseLong(parts[5]))));
+                                                                        Integer.parseInt(parts[5]),
+                                                                        Long.parseLong(parts[6]))));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseSchemaMigrationLockEntry(String identity,
