@@ -693,13 +693,13 @@ public final class ConfigLoader {
                   .or(Map.of());
     }
 
-    /// Parse env format: "key1:name1:role1,role2;key2:name2:role3"
+    /// Parse env format: "key1:name1:role1,role2:authRole;key2:name2:role3"
     @SuppressWarnings("JBCT-PAT-01")
     private static Map<String, ApiKeyEntry> parseEnvApiKeys(String envValue) {
         var result = new HashMap<String, ApiKeyEntry>();
         for (var segment : envValue.split(";")) {
             var parts = segment.trim()
-                               .split(":", 3);
+                               .split(":", 4);
             if (parts.length >= 1 && !parts[0].isBlank()) {
                 var keyValue = parts[0].trim();
                 var name = parts.length >= 2
@@ -710,7 +710,10 @@ public final class ConfigLoader {
                             ? Set.of(parts[2].trim()
                                           .split(","))
                             : Set.of("service");
-                result.put(keyValue, ApiKeyEntry.apiKeyEntry(name, roles));
+                var authRole = parts.length >= 4
+                               ? parts[3].trim()
+                               : "ADMIN";
+                result.put(keyValue, ApiKeyEntry.apiKeyEntry(name, roles, authRole));
             }
         }
         return Map.copyOf(result);
@@ -729,7 +732,9 @@ public final class ConfigLoader {
                 var roles = doc.getStringList(sectionName, "roles")
                                .map(Set::copyOf)
                                .or(Set.of("service"));
-                result.put(keyValue, ApiKeyEntry.apiKeyEntry(name, roles));
+                var authRole = doc.getString(sectionName, "authorization_role")
+                                  .or("ADMIN");
+                result.put(keyValue, ApiKeyEntry.apiKeyEntry(name, roles, authRole));
             }
         }
         return Map.copyOf(result);

@@ -2,6 +2,7 @@ package org.pragmatica.aether.http.security;
 
 import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
+import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
@@ -66,7 +67,16 @@ class ApiKeySecurityValidator implements SecurityValidator {
                          .map(Role::role)
                          .flatMap(r -> r.stream())
                          .collect(Collectors.toSet());
-        return SecurityContext.securityContext(entry.name(), roles);
+        var authRole = parseAuthorizationRole(entry.authorizationRole());
+        return SecurityContext.securityContext(entry.name(), roles, authRole);
+    }
+
+    private static AuthorizationRole parseAuthorizationRole(String value) {
+        return switch (value) {
+            case "OPERATOR" -> AuthorizationRole.OPERATOR;
+            case "VIEWER" -> AuthorizationRole.VIEWER;
+            default -> AuthorizationRole.ADMIN;
+        };
     }
 
     private Option<String> extractApiKey(Map<String, List<String>> headers) {

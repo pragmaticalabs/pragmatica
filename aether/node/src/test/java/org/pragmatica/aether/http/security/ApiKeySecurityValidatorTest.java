@@ -102,7 +102,7 @@ class ApiKeySecurityValidatorTest {
     @Test
     void validate_succeeds_forNamedKeyEntry() {
         var entries = Map.of(
-            VALID_KEY, new ApiKeyEntry("my-service", Set.of("admin", "service"))
+            VALID_KEY, ApiKeyEntry.apiKeyEntry("my-service", Set.of("admin", "service"))
         );
         var validator = SecurityValidator.apiKeyValidator(entries);
         var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
@@ -141,8 +141,8 @@ class ApiKeySecurityValidatorTest {
         var key1 = "first-key-value";
         var key2 = "second-key-value";
         var entries = Map.of(
-            key1, new ApiKeyEntry("first-svc", Set.of("admin")),
-            key2, new ApiKeyEntry("second-svc", Set.of("service"))
+            key1, ApiKeyEntry.apiKeyEntry("first-svc", Set.of("admin")),
+            key2, ApiKeyEntry.apiKeyEntry("second-svc", Set.of("service"))
         );
         var validator = SecurityValidator.apiKeyValidator(entries);
 

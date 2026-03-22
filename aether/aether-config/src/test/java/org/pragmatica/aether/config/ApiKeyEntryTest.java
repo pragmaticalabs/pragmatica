@@ -52,30 +52,58 @@ class ApiKeyEntryTest {
 
     @Test
     void constructor_defaultsNullNameToUnnamed() {
-        var entry = new ApiKeyEntry(null, Set.of("admin"));
+        var entry = new ApiKeyEntry(null, Set.of("admin"), null);
 
         assertThat(entry.name()).isEqualTo("unnamed");
     }
 
     @Test
     void constructor_defaultsBlankNameToUnnamed() {
-        var entry = new ApiKeyEntry("   ", Set.of("admin"));
+        var entry = new ApiKeyEntry("   ", Set.of("admin"), null);
 
         assertThat(entry.name()).isEqualTo("unnamed");
     }
 
     @Test
     void constructor_defaultsNullRolesToService() {
-        var entry = new ApiKeyEntry("my-key", null);
+        var entry = new ApiKeyEntry("my-key", null, null);
 
         assertThat(entry.roles()).containsExactly("service");
     }
 
     @Test
     void constructor_defaultsEmptyRolesToService() {
-        var entry = new ApiKeyEntry("my-key", Set.of());
+        var entry = new ApiKeyEntry("my-key", Set.of(), null);
 
         assertThat(entry.roles()).containsExactly("service");
+    }
+
+    @Test
+    void constructor_defaultsNullAuthorizationRoleToAdmin() {
+        var entry = new ApiKeyEntry("my-key", Set.of("service"), null);
+
+        assertThat(entry.authorizationRole()).isEqualTo("ADMIN");
+    }
+
+    @Test
+    void constructor_defaultsBlankAuthorizationRoleToAdmin() {
+        var entry = new ApiKeyEntry("my-key", Set.of("service"), "  ");
+
+        assertThat(entry.authorizationRole()).isEqualTo("ADMIN");
+    }
+
+    @Test
+    void constructor_normalizesAuthorizationRoleToUpperCase() {
+        var entry = new ApiKeyEntry("my-key", Set.of("service"), "operator");
+
+        assertThat(entry.authorizationRole()).isEqualTo("OPERATOR");
+    }
+
+    @Test
+    void apiKeyEntry_withAuthorizationRole_setsRole() {
+        var entry = ApiKeyEntry.apiKeyEntry("svc", Set.of("service"), "VIEWER");
+
+        assertThat(entry.authorizationRole()).isEqualTo("VIEWER");
     }
 
     @Test
