@@ -4,6 +4,24 @@
 #   docker compose -f docker-compose.yml -f docker-compose.workers.yml up --build  # + 7 workers
 
 services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: postgres
+    hostname: postgres
+    environment:
+      POSTGRES_USER: forge
+      POSTGRES_PASSWORD: forge
+      POSTGRES_DB: forge
+    ports:
+      - "5432:5432"
+    networks:
+      - scaling-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forge"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
   aether-node-1:
     build:
       context: ../..
@@ -24,6 +42,9 @@ services:
       - "8070:8070"
     networks:
       - scaling-network
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/health"]
       interval: 5s
@@ -58,6 +79,8 @@ services:
       retries: 20
       start_period: 30s
     depends_on:
+      postgres:
+        condition: service_healthy
       aether-node-1:
         condition: service_healthy
 
@@ -88,6 +111,8 @@ services:
       retries: 20
       start_period: 30s
     depends_on:
+      postgres:
+        condition: service_healthy
       aether-node-2:
         condition: service_healthy
 
@@ -118,6 +143,8 @@ services:
       retries: 20
       start_period: 30s
     depends_on:
+      postgres:
+        condition: service_healthy
       aether-node-3:
         condition: service_healthy
 
@@ -148,6 +175,8 @@ services:
       retries: 20
       start_period: 30s
     depends_on:
+      postgres:
+        condition: service_healthy
       aether-node-4:
         condition: service_healthy
 
