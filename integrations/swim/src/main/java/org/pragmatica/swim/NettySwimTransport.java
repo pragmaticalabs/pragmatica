@@ -35,6 +35,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.net.dns.DomainNameResolver;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.slf4j.Logger;
@@ -43,14 +44,12 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 
-/// Netty-based UDP transport for SWIM protocol messages.
+/// Netty-based UDP transport for SWIM protocol messages with async DNS resolution.
 ///
-/// Currently SWIM binds its own UDP port but can share the Server's EventLoopGroup
-/// (workerGroup) to avoid creating a separate thread pool. The intended next step is
-/// to move UDP binding into Server itself — SWIM would then use Server's pre-bound
-/// UDP channel directly, eliminating the separate Bootstrap. This requires threading
-/// SWIM's handler supplier through PassiveNode/RabiaNode to Server creation, since
-/// Server is created at a lower layer than SWIM.
+/// Member addresses are stored unresolved (hostname + port). DNS resolution happens
+/// asynchronously at send time via DomainNameResolver, with TTL-based caching.
+/// This eliminates stale IPs from cached InetSocketAddress and handles containers
+/// whose DNS entries appear after SWIM starts.
 public final class NettySwimTransport implements SwimTransport {
     private static final Logger LOG = LoggerFactory.getLogger(NettySwimTransport.class);
 
@@ -58,39 +57,49 @@ public final class NettySwimTransport implements SwimTransport {
     private final Deserializer deserializer;
     private final GossipEncryptor encryptor;
     private final Option<EventLoopGroup> externalGroup;
+    private final Option<DomainNameResolver> resolver;
     private final AtomicReference<Option<Channel>> channel = new AtomicReference<>(none());
     private final AtomicReference<Option<EventLoopGroup>> group = new AtomicReference<>(none());
 
     private NettySwimTransport(Serializer serializer, Deserializer deserializer,
-                                GossipEncryptor encryptor, Option<EventLoopGroup> externalGroup) {
+                                GossipEncryptor encryptor, Option<EventLoopGroup> externalGroup,
+                                Option<DomainNameResolver> resolver) {
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.encryptor = encryptor;
         this.externalGroup = externalGroup;
+        this.resolver = resolver;
     }
 
-    /// Factory creating a Netty-based SWIM transport with gossip encryption.
+    /// Factory creating a SWIM transport with gossip encryption.
     public static Result<SwimTransport> nettySwimTransport(Serializer serializer, Deserializer deserializer,
                                                             GossipEncryptor encryptor) {
-        return Result.success(new NettySwimTransport(serializer, deserializer, encryptor, none()));
+        return Result.success(new NettySwimTransport(serializer, deserializer, encryptor, none(), none()));
     }
 
-    /// Factory creating a Netty-based SWIM transport without encryption.
+    /// Factory creating a SWIM transport without encryption.
     public static Result<SwimTransport> nettySwimTransport(Serializer serializer, Deserializer deserializer) {
         return nettySwimTransport(serializer, deserializer, GossipEncryptor.none());
     }
 
-    /// Factory creating a Netty-based SWIM transport using a shared EventLoopGroup.
-    /// The provided group will NOT be shut down when this transport stops.
+    /// Factory creating a SWIM transport using a shared EventLoopGroup.
     public static Result<SwimTransport> nettySwimTransport(Serializer serializer, Deserializer deserializer,
                                                             GossipEncryptor encryptor, EventLoopGroup eventLoopGroup) {
-        return Result.success(new NettySwimTransport(serializer, deserializer, encryptor, option(eventLoopGroup)));
+        return Result.success(new NettySwimTransport(serializer, deserializer, encryptor, option(eventLoopGroup), none()));
+    }
+
+    /// Factory creating a SWIM transport with async DNS resolution.
+    public static Result<SwimTransport> nettySwimTransport(Serializer serializer, Deserializer deserializer,
+                                                            GossipEncryptor encryptor, EventLoopGroup eventLoopGroup,
+                                                            DomainNameResolver dnsResolver) {
+        return Result.success(new NettySwimTransport(serializer, deserializer, encryptor,
+                                                      option(eventLoopGroup), option(dnsResolver)));
     }
 
     @Override
     public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
         return channel.get()
-                      .map(ch -> Promise.lift(SwimError.TransportFailure::new, () -> doSend(ch, target, message)))
+                      .map(ch -> resolveAndSend(ch, target, message))
                       .or(SwimError.General.TRANSPORT_NOT_STARTED.promise());
     }
 
@@ -102,6 +111,30 @@ public final class NettySwimTransport implements SwimTransport {
     @Override
     public Promise<Unit> stop() {
         return Promise.lift(SwimError.TransportFailure::new, this::doStop);
+    }
+
+    /// Resolve DNS asynchronously if target is unresolved, then send.
+    private Promise<Unit> resolveAndSend(Channel ch, InetSocketAddress target, SwimMessage message) {
+        if (!target.isUnresolved()) {
+            return Promise.lift(SwimError.TransportFailure::new, () -> doSend(ch, target, message));
+        }
+
+        // Async DNS resolution via our DomainNameResolver
+        return resolver.map(r -> r.resolve(target.getHostString())
+                                   .map(addr -> new InetSocketAddress(addr.ip(), target.getPort()))
+                                   .flatMap(resolved -> Promise.lift(SwimError.TransportFailure::new,
+                                                                      () -> doSend(ch, resolved, message))))
+                       .or(() -> resolveSynchronously(ch, target, message));
+    }
+
+    /// Fallback: synchronous DNS resolution when no async resolver is available.
+    private Promise<Unit> resolveSynchronously(Channel ch, InetSocketAddress target, SwimMessage message) {
+        var resolved = new InetSocketAddress(target.getHostString(), target.getPort());
+        if (resolved.isUnresolved()) {
+            LOG.warn("UDP send failed — cannot resolve {}", target.getHostString());
+            return SwimError.General.TRANSPORT_NOT_STARTED.promise();
+        }
+        return Promise.lift(SwimError.TransportFailure::new, () -> doSend(ch, resolved, message));
     }
 
     private void doSend(Channel ch, InetSocketAddress target, SwimMessage message) {
