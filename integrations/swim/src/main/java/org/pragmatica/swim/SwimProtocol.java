@@ -154,7 +154,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     @Override
     public void onMessage(InetSocketAddress sender, SwimMessage message) {
-        LOG.info("SWIM recv from {}: {}", sender, message.getClass().getSimpleName());
+        LOG.trace("SWIM recv from {}: {}", sender, message.getClass().getSimpleName());
         switch (message) {
             case Ping ping -> handlePing(sender, ping);
             case Ack ack -> handleAck(ack);
@@ -230,7 +230,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         suspectTimestamps.put(member.nodeId(), System.currentTimeMillis());
         listener.onMemberFaulty(faulty);
         addMemberUpdate(faulty);
-        LOG.info("Member {} marked FAULTY", member.nodeId().id());
+        LOG.warn("Member {} marked FAULTY", member.nodeId().id());
     }
 
     /// Round-robin selection: each member probed exactly once per round.
@@ -317,7 +317,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         suspectTimestamps.put(nodeId, System.currentTimeMillis());
         listener.onMemberSuspect(suspect);
         addMemberUpdate(suspect);
-        LOG.info("Member {} marked SUSPECT", nodeId.id());
+        LOG.warn("Member {} marked SUSPECT", nodeId.id());
     }
 
     // -- Message handlers --
