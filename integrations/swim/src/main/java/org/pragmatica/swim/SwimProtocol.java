@@ -57,7 +57,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     private final InetSocketAddress selfAddress;
     private final Map<NodeId, SwimMember> members = new ConcurrentHashMap<>();
     private final Map<Long, PendingProbe> pendingProbes = new ConcurrentHashMap<>();
-    private final Map<Long, InetSocketAddress> pendingRelays = new ConcurrentHashMap<>();
+    private final Map<Long, RelayInfo> pendingRelays = new ConcurrentHashMap<>();
+
+    /// Tracks a relayed PingReq: maps the relay's own sequence to the original requester info.
+    private record RelayInfo(long originalSequence, InetSocketAddress requesterAddress) {}
     private final Map<NodeId, Long> suspectTimestamps = new ConcurrentHashMap<>();
     private final PiggybackBuffer piggybackBuffer;
     private final AtomicLong sequenceCounter = new AtomicLong(0);
@@ -297,11 +300,12 @@ public final class SwimProtocol implements SwimMessageHandler {
         processPiggyback(ack.piggyback());
         pendingProbes.remove(ack.sequence());
         markAliveIfNeeded(ack.from());
-        // Forward Ack to the original requester if this was a relayed probe
-        var requester = pendingRelays.remove(ack.sequence());
-        if (requester != null) {
-            var forwardAck = Ack.ack(ack.from(), ack.sequence(), ack.piggyback());
-            transport.send(requester, forwardAck);
+        // Forward Ack to the original requester if this was a relayed probe.
+        // The relay used its OWN sequence — restore the ORIGINAL sequence for the requester.
+        var relay = pendingRelays.remove(ack.sequence());
+        if (relay != null) {
+            var forwardAck = Ack.ack(ack.from(), relay.originalSequence(), ack.piggyback());
+            transport.send(relay.requesterAddress(), forwardAck);
         }
     }
 
@@ -312,12 +316,13 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
-        // Store the actual UDP sender address for Ack forwarding — not the member list address
-        // which may be hostname-based and fail to resolve, or the member may not be in our list yet
-        pendingRelays.put(pingReq.sequence(), requesterAddress);
+        // Use OWN sequence for the relay Ping to avoid collision with local probes.
+        // Map relay seq → (original seq, requester address) for Ack forwarding.
+        var relaySeq = sequenceCounter.incrementAndGet();
+        pendingRelays.put(relaySeq, new RelayInfo(pingReq.sequence(), requesterAddress));
 
         var piggyback = piggybackBuffer.takeUpdates(config.maxPiggyback());
-        var ping = Ping.ping(selfId, pingReq.sequence(), piggyback);
+        var ping = Ping.ping(selfId, relaySeq, piggyback);
         transport.send(target.address(), ping);
     }
 
