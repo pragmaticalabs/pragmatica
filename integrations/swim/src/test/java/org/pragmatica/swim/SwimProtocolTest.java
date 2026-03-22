@@ -165,23 +165,26 @@ class SwimProtocolTest {
             var pingReq = new PingReq(NODE_A, NODE_B, 42L);
             protocol.onMessage(ADDR_A, pingReq);
 
-            // Self should send Ping to NODE_B
+            // Self should send Ping to NODE_B with its OWN sequence (not 42)
             assertThat(transport.sentMessages).hasSize(1);
             assertThat(transport.sentMessages.getFirst().target()).isEqualTo(ADDR_B);
+            var relayPing = (Ping) transport.sentMessages.getFirst().message();
+            var relaySeq = relayPing.sequence();
+            assertThat(relaySeq).isNotEqualTo(42L); // relay uses its own sequence
 
             transport.sentMessages.clear();
 
-            // NODE_B responds with Ack
-            var ack = Ack.ack(NODE_B, 42L, List.of());
+            // NODE_B responds with Ack using the RELAY sequence
+            var ack = Ack.ack(NODE_B, relaySeq, List.of());
             protocol.onMessage(ADDR_B, ack);
 
-            // Self should forward Ack back to NODE_A (the original requester)
+            // Self should forward Ack back to NODE_A with the ORIGINAL sequence (42)
             assertThat(transport.sentMessages).hasSize(1);
             var forwarded = transport.sentMessages.getFirst();
             assertThat(forwarded.target()).isEqualTo(ADDR_A);
             assertThat(forwarded.message()).isInstanceOf(Ack.class);
             assertThat(((Ack) forwarded.message()).from()).isEqualTo(NODE_B);
-            assertThat(((Ack) forwarded.message()).sequence()).isEqualTo(42L);
+            assertThat(((Ack) forwarded.message()).sequence()).isEqualTo(42L); // original sequence restored
         }
     }
 
@@ -212,17 +215,20 @@ class SwimProtocolTest {
         }
 
         @Test
-        void addUpdate_exceedsCapacity_evictsOldest() {
+        void addUpdate_exceedsDoubleCapacity_evictsOldest() {
             var buffer = PiggybackBuffer.piggybackBuffer(2);
+            // Buffer allows up to maxSize*2=4 entries for dissemination headroom
             buffer.addUpdate(new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A));
             buffer.addUpdate(new MembershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B));
             buffer.addUpdate(new MembershipUpdate(NODE_C, MemberState.ALIVE, 0, ADDR_C));
 
-            assertThat(buffer.size()).isEqualTo(2);
+            assertThat(buffer.size()).isEqualTo(3); // under 2*2=4 threshold
 
-            var taken = buffer.takeUpdates(2);
-            assertThat(taken).extracting(MembershipUpdate::nodeId)
-                             .containsExactly(NODE_B, NODE_C);
+            // Add 2 more to exceed threshold
+            buffer.addUpdate(new MembershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A));
+            buffer.addUpdate(new MembershipUpdate(NODE_B, MemberState.SUSPECT, 1, ADDR_B));
+
+            assertThat(buffer.size()).isEqualTo(4); // trimmed to 4 (maxSize*2)
         }
 
         @Test

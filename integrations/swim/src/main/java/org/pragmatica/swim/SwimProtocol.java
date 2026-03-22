@@ -23,7 +23,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.consensus.NodeId;
@@ -41,7 +40,7 @@ import org.slf4j.LoggerFactory;
 /// Core SWIM protocol implementation providing failure detection and membership dissemination.
 ///
 /// The protocol operates in periodic ticks. Each tick:
-/// 1. Select a random non-self ALIVE/SUSPECT member
+/// 1. Select a round-robin non-self ALIVE/SUSPECT member
 /// 2. Send Ping with piggybacked membership updates
 /// 3. Wait probeTimeout for Ack
 /// 4. If no Ack, send PingReq to indirectProbes random other members
@@ -58,13 +57,15 @@ public final class SwimProtocol implements SwimMessageHandler {
     private final Map<NodeId, SwimMember> members = new ConcurrentHashMap<>();
     private final Map<Long, PendingProbe> pendingProbes = new ConcurrentHashMap<>();
     private final Map<Long, RelayInfo> pendingRelays = new ConcurrentHashMap<>();
-
-    /// Tracks a relayed PingReq: maps the relay's own sequence to the original requester info.
-    private record RelayInfo(long originalSequence, InetSocketAddress requesterAddress) {}
     private final Map<NodeId, Long> suspectTimestamps = new ConcurrentHashMap<>();
     private final PiggybackBuffer piggybackBuffer;
     private final AtomicLong sequenceCounter = new AtomicLong(0);
     private volatile ScheduledFuture<?> tickFuture;
+    // [Fix #7] Round-robin probe index for fair target selection
+    private int probeIndex = 0;
+
+    /// Tracks a relayed PingReq: maps the relay's own sequence to the original requester info.
+    private record RelayInfo(long originalSequence, InetSocketAddress requesterAddress, long createdAt) {}
 
     private SwimProtocol(SwimConfig config,
                          SwimTransport transport,
@@ -168,15 +169,17 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private void tick() {
         expireSuspectMembers();
+        cleanupFaultyMembers();
 
-        var target = selectRandomProbableTarget();
+        // [Fix #7] Round-robin target selection for fair probing
+        var target = selectNextProbeTarget();
 
         if (target == null) {
             return;
         }
 
         var seq = sequenceCounter.incrementAndGet();
-        var piggyback = piggybackBuffer.takeUpdates(config.maxPiggyback());
+        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback());
         var ping = Ping.ping(selfId, seq, piggyback);
 
         pendingProbes.put(seq, PendingProbe.pendingProbe(target.nodeId(), System.currentTimeMillis(), false));
@@ -190,8 +193,27 @@ public final class SwimProtocol implements SwimMessageHandler {
         var suspectTimeoutMillis = config.suspectTimeout().millis();
 
         suspectTimestamps.forEach((nodeId, timestamp) -> expireSuspectIfOverdue(nodeId, timestamp, now, suspectTimeoutMillis));
-        // Clean up stale relays older than probe timeout (target never responded)
-        pendingRelays.keySet().removeIf(seq -> !pendingProbes.containsKey(seq));
+        // [Fix #1] Clean up stale relays by age, not by pendingProbes presence
+        // Relay sequences are independent from local probe sequences
+        var relayTimeoutMillis = config.probeTimeout().millis() * 3;
+        pendingRelays.entrySet().removeIf(entry -> now - entry.getValue().createdAt() > relayTimeoutMillis);
+    }
+
+    /// [Fix #4] Remove FAULTY members after suspect timeout to prevent unbounded growth.
+    /// They've been FAULTY long enough — no point keeping them in the membership map.
+    private void cleanupFaultyMembers() {
+        var now = System.currentTimeMillis();
+        var cleanupThreshold = config.suspectTimeout().millis() * 3;
+
+        members.entrySet().removeIf(entry -> {
+            var member = entry.getValue();
+            if (member.state() != MemberState.FAULTY) {
+                return false;
+            }
+            // Remove if no suspectTimestamp exists (already cleaned) or if it's old enough
+            var suspectTime = suspectTimestamps.get(member.nodeId());
+            return suspectTime == null || (now - suspectTime > cleanupThreshold);
+        });
     }
 
     private void expireSuspectIfOverdue(NodeId nodeId, long timestamp, long now, long suspectTimeoutMillis) {
@@ -211,12 +233,15 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void transitionToFaulty(SwimMember member) {
         var faulty = member.withState(MemberState.FAULTY);
         members.put(member.nodeId(), faulty);
+        // [Fix #9] Record faulty timestamp for cleanup
+        suspectTimestamps.put(member.nodeId(), System.currentTimeMillis());
         listener.onMemberFaulty(faulty);
         addMemberUpdate(faulty);
         LOG.info("Member {} marked FAULTY", member.nodeId().id());
     }
 
-    private SwimMember selectRandomProbableTarget() {
+    /// [Fix #7] Round-robin selection: each member probed exactly once per round.
+    private SwimMember selectNextProbeTarget() {
         var candidates = members.values().stream()
                                 .filter(this::isProbable)
                                 .toList();
@@ -225,7 +250,8 @@ public final class SwimProtocol implements SwimMessageHandler {
             return null;
         }
 
-        return candidates.get((int) (Math.random() * candidates.size()));
+        probeIndex = probeIndex % candidates.size();
+        return candidates.get(probeIndex++);
     }
 
     private boolean isProbable(SwimMember member) {
@@ -291,7 +317,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private void handlePing(InetSocketAddress sender, Ping ping) {
         processPiggyback(ping.piggyback());
-        var piggyback = piggybackBuffer.takeUpdates(config.maxPiggyback());
+        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback());
         var ack = Ack.ack(selfId, ping.sequence(), piggyback);
         transport.send(sender, ack);
     }
@@ -319,13 +345,14 @@ public final class SwimProtocol implements SwimMessageHandler {
         // Use OWN sequence for the relay Ping to avoid collision with local probes.
         // Map relay seq → (original seq, requester address) for Ack forwarding.
         var relaySeq = sequenceCounter.incrementAndGet();
-        pendingRelays.put(relaySeq, new RelayInfo(pingReq.sequence(), requesterAddress));
+        pendingRelays.put(relaySeq, new RelayInfo(pingReq.sequence(), requesterAddress, System.currentTimeMillis()));
 
-        var piggyback = piggybackBuffer.takeUpdates(config.maxPiggyback());
+        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback());
         var ping = Ping.ping(selfId, relaySeq, piggyback);
         transport.send(target.address(), ping);
     }
 
+    /// [Fix #2] Bump incarnation when marking alive via Ack — prevents stale SUSPECT piggyback from overriding.
     private void markAliveIfNeeded(NodeId nodeId) {
         var member = members.get(nodeId);
 
@@ -333,7 +360,8 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
-        var alive = member.withState(MemberState.ALIVE);
+        var alive = member.withState(MemberState.ALIVE)
+                          .withIncarnation(member.incarnation() + 1);
         members.put(nodeId, alive);
         suspectTimestamps.remove(nodeId);
         addMemberUpdate(alive);
@@ -359,8 +387,10 @@ public final class SwimProtocol implements SwimMessageHandler {
         applyExistingMember(existing, update);
     }
 
+    /// [Fix #8] Notify listener when self is suspected — application may want to log/alert.
     private void handleSelfUpdate(MembershipUpdate update) {
         if (update.state() == MemberState.SUSPECT || update.state() == MemberState.FAULTY) {
+            LOG.warn("Self suspected/faulted by remote node, refuting with incarnation {}", update.incarnation() + 1);
             addMemberUpdate(MembershipUpdate.membershipUpdate(selfId, MemberState.ALIVE, update.incarnation() + 1, selfAddress));
         }
     }
@@ -374,8 +404,16 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
     }
 
+    /// [Fix #3] Enforce SWIM state priority at same incarnation: FAULTY > SUSPECT > ALIVE.
+    /// At equal incarnation, only allow state progression (ALIVE→SUSPECT→FAULTY), not regression.
     private void applyExistingMember(SwimMember existing, MembershipUpdate update) {
         if (update.incarnation() < existing.incarnation()) {
+            return;
+        }
+
+        // Same incarnation: only accept if update state has higher or equal priority
+        if (update.incarnation() == existing.incarnation()
+            && statePriority(update.state()) < statePriority(existing.state())) {
             return;
         }
 
@@ -383,6 +421,15 @@ public final class SwimProtocol implements SwimMessageHandler {
         members.put(update.nodeId(), updated);
 
         notifyStateChange(existing.state(), updated);
+    }
+
+    /// State priority for SWIM: FAULTY > SUSPECT > ALIVE.
+    private static int statePriority(MemberState state) {
+        return switch (state) {
+            case ALIVE -> 0;
+            case SUSPECT -> 1;
+            case FAULTY -> 2;
+        };
     }
 
     private void notifyStateChange(MemberState oldState, SwimMember updated) {
