@@ -4,10 +4,13 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.serialization.SliceCodec.TypeCodec;
 
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
 
 import static org.pragmatica.serialization.SliceCodec.deterministicTag;
+import static org.pragmatica.serialization.SliceCodec.readCompact;
 import static org.pragmatica.serialization.SliceCodec.readString;
+import static org.pragmatica.serialization.SliceCodec.writeCompact;
 import static org.pragmatica.serialization.SliceCodec.writeString;
 
 /// Registry of all node-level types for serialization.
@@ -38,7 +41,20 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.swim.SwimCodecs.CODECS);
         // Manual entries for types in shared packages (can't use processor without registry name conflict)
         all.add(methodNameCodec());
+        all.add(inetSocketAddressCodec());
         return SliceCodec.sliceCodec(parent, all);
+    }
+
+    /// InetSocketAddress codec — uses createUnresolved to avoid blocking DNS on deserialization.
+    /// Wire format: hostname (string) + port (compact int).
+    private static TypeCodec<InetSocketAddress> inetSocketAddressCodec() {
+        return new TypeCodec<>(InetSocketAddress.class,
+                               deterministicTag("java.net.InetSocketAddress"),
+                               (codec, buf, val) -> {
+                                   writeString(buf, val.getHostString());
+                                   writeCompact(buf, val.getPort());
+                               },
+                               (codec, buf) -> InetSocketAddress.createUnresolved(readString(buf), readCompact(buf)));
     }
 
     private static TypeCodec<MethodName> methodNameCodec() {

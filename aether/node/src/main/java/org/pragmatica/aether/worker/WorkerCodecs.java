@@ -15,7 +15,14 @@ import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.serialization.SliceCodec.TypeCodec;
 import org.pragmatica.swim.SwimCodecs;
 
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
+
+import static org.pragmatica.serialization.SliceCodec.deterministicTag;
+import static org.pragmatica.serialization.SliceCodec.readCompact;
+import static org.pragmatica.serialization.SliceCodec.readString;
+import static org.pragmatica.serialization.SliceCodec.writeCompact;
+import static org.pragmatica.serialization.SliceCodec.writeString;
 
 /// Registry of all worker-level types for serialization.
 /// Collects generated codec registries from dependencies and worker-specific types.
@@ -48,6 +55,20 @@ public sealed interface WorkerCodecs {
         all.addAll(org.pragmatica.dht.DhtCodecs.CODECS);
         // SWIM codecs
         all.addAll(SwimCodecs.CODECS);
+        // Manual entry — JDK type without @Codec, uses createUnresolved to avoid DNS blocking
+        all.add(inetSocketAddressCodec());
         return SliceCodec.sliceCodec(parent, all);
+    }
+
+    /// InetSocketAddress codec — uses createUnresolved to avoid blocking DNS on deserialization.
+    /// Wire format: hostname (string) + port (compact int).
+    private static TypeCodec<InetSocketAddress> inetSocketAddressCodec() {
+        return new TypeCodec<>(InetSocketAddress.class,
+                               deterministicTag("java.net.InetSocketAddress"),
+                               (codec, buf, val) -> {
+                                   writeString(buf, val.getHostString());
+                                   writeCompact(buf, val.getPort());
+                               },
+                               (codec, buf) -> InetSocketAddress.createUnresolved(readString(buf), readCompact(buf)));
     }
 }
