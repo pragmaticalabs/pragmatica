@@ -9,7 +9,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
-import org.pragmatica.net.dns.DomainNameResolver;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.swim.GossipEncryptor;
@@ -155,24 +154,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
     // ---- Internal ----
     private Result<SwimTransport> createTransport(Option<EventLoopGroup> sharedEventLoopGroup) {
-        return sharedEventLoopGroup.map(group -> {
-                                            var dnsResolver = createDnsResolver(group);
-                                            return NettySwimTransport.nettySwimTransport(serializer,
-                                                                                         deserializer,
-                                                                                         encryptor,
-                                                                                         group,
-                                                                                         dnsResolver);
-                                        })
+        return sharedEventLoopGroup.map(group -> NettySwimTransport.nettySwimTransport(serializer, deserializer, encryptor, group))
                                    .or(NettySwimTransport.nettySwimTransport(serializer, deserializer, encryptor));
-    }
-
-    private static DomainNameResolver createDnsResolver(EventLoopGroup eventLoop) {
-        var dnsServers = io.netty.resolver.dns.DefaultDnsServerAddressStreamProvider.defaultAddressList()
-                           .stream()
-                           .map(java.net.InetSocketAddress::getAddress)
-                           .toList();
-        log.info("SWIM DNS resolver using servers: {}", dnsServers);
-        return DomainNameResolver.domainNameResolver(dnsServers, eventLoop);
     }
 
     /// Finds self NodeInfo from topology, wrapping java.util.Optional at adapter boundary.
@@ -243,7 +226,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                        .host();
         var swimPort = node.address()
                            .port() + 1;
-        // Store as UNRESOLVED — the DomainNameResolver in NettySwimTransport resolves at send time.
+        // Store as UNRESOLVED — Netty's DnsNameResolver in NettySwimTransport resolves at send time.
         // This eliminates stale IPs and handles containers whose DNS entries appear after SWIM starts.
         var swimAddress = InetSocketAddress.createUnresolved(host, swimPort);
         protocol.addSeedMember(node.id(), swimAddress);

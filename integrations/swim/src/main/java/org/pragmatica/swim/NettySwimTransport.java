@@ -16,6 +16,7 @@
 
 package org.pragmatica.swim;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -30,12 +31,13 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.socket.DatagramPacket;
 import io.netty.channel.socket.nio.NioDatagramChannel;
+import io.netty.resolver.dns.DnsNameResolver;
+import io.netty.resolver.dns.DnsNameResolverBuilder;
 import io.netty.util.concurrent.Future;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.net.dns.DomainNameResolver;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.slf4j.Logger;
@@ -43,11 +45,12 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Unit.unit;
 
 /// Netty-based UDP transport for SWIM protocol messages with async DNS resolution.
 ///
 /// Member addresses are stored unresolved (hostname + port). DNS resolution happens
-/// asynchronously at send time via DomainNameResolver, with TTL-based caching.
+/// asynchronously at send time via Netty's built-in DnsNameResolver, with TTL-based caching.
 /// This eliminates stale IPs from cached InetSocketAddress and handles containers
 /// whose DNS entries appear after SWIM starts.
 public final class NettySwimTransport implements SwimTransport {
@@ -57,24 +60,22 @@ public final class NettySwimTransport implements SwimTransport {
     private final Deserializer deserializer;
     private final GossipEncryptor encryptor;
     private final Option<EventLoopGroup> externalGroup;
-    private final Option<DomainNameResolver> resolver;
     private final AtomicReference<Option<Channel>> channel = new AtomicReference<>(none());
     private final AtomicReference<Option<EventLoopGroup>> group = new AtomicReference<>(none());
+    private final AtomicReference<Option<DnsNameResolver>> nettyResolver = new AtomicReference<>(none());
 
     private NettySwimTransport(Serializer serializer, Deserializer deserializer,
-                                GossipEncryptor encryptor, Option<EventLoopGroup> externalGroup,
-                                Option<DomainNameResolver> resolver) {
+                                GossipEncryptor encryptor, Option<EventLoopGroup> externalGroup) {
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.encryptor = encryptor;
         this.externalGroup = externalGroup;
-        this.resolver = resolver;
     }
 
     /// Factory creating a SWIM transport with gossip encryption.
     public static Result<SwimTransport> nettySwimTransport(Serializer serializer, Deserializer deserializer,
                                                             GossipEncryptor encryptor) {
-        return Result.success(new NettySwimTransport(serializer, deserializer, encryptor, none(), none()));
+        return Result.success(new NettySwimTransport(serializer, deserializer, encryptor, none()));
     }
 
     /// Factory creating a SWIM transport without encryption.
@@ -83,17 +84,10 @@ public final class NettySwimTransport implements SwimTransport {
     }
 
     /// Factory creating a SWIM transport using a shared EventLoopGroup.
+    /// Netty's DnsNameResolver is created internally during bind using this event loop.
     public static Result<SwimTransport> nettySwimTransport(Serializer serializer, Deserializer deserializer,
                                                             GossipEncryptor encryptor, EventLoopGroup eventLoopGroup) {
-        return Result.success(new NettySwimTransport(serializer, deserializer, encryptor, option(eventLoopGroup), none()));
-    }
-
-    /// Factory creating a SWIM transport with async DNS resolution.
-    public static Result<SwimTransport> nettySwimTransport(Serializer serializer, Deserializer deserializer,
-                                                            GossipEncryptor encryptor, EventLoopGroup eventLoopGroup,
-                                                            DomainNameResolver dnsResolver) {
-        return Result.success(new NettySwimTransport(serializer, deserializer, encryptor,
-                                                      option(eventLoopGroup), option(dnsResolver)));
+        return Result.success(new NettySwimTransport(serializer, deserializer, encryptor, option(eventLoopGroup)));
     }
 
     @Override
@@ -119,15 +113,36 @@ public final class NettySwimTransport implements SwimTransport {
             return Promise.lift(SwimError.TransportFailure::new, () -> doSend(ch, target, message));
         }
 
-        // Async DNS resolution via our DomainNameResolver
-        return resolver.map(r -> r.resolve(target.getHostString())
-                                   .map(addr -> new InetSocketAddress(addr.ip(), target.getPort()))
-                                   .flatMap(resolved -> Promise.lift(SwimError.TransportFailure::new,
-                                                                      () -> doSend(ch, resolved, message))))
-                       .or(() -> resolveSynchronously(ch, target, message));
+        return nettyResolver.get()
+                             .map(resolver -> resolveWithNetty(resolver, ch, target, message))
+                             .or(() -> resolveSynchronously(ch, target, message));
     }
 
-    /// Fallback: synchronous DNS resolution when no async resolver is available.
+    /// Async DNS resolution via Netty's built-in DnsNameResolver.
+    private Promise<Unit> resolveWithNetty(DnsNameResolver resolver, Channel ch,
+                                            InetSocketAddress target, SwimMessage message) {
+        return Promise.promise(promise -> resolver.resolve(target.getHostString())
+                                                  .addListener((Future<InetAddress> f) -> completeResolution(f, ch, target, message, promise)));
+    }
+
+    @SuppressWarnings("JBCT-EX-01") // Adapter boundary: bridging Netty Future callback to Promise
+    private void completeResolution(Future<InetAddress> future, Channel ch,
+                                     InetSocketAddress target, SwimMessage message, Promise<Unit> promise) {
+        if (future.isSuccess()) {
+            var resolved = new InetSocketAddress(future.getNow(), target.getPort());
+            try {
+                doSend(ch, resolved, message);
+                promise.succeed(unit());
+            } catch (Exception e) {
+                promise.fail(new SwimError.TransportFailure(e));
+            }
+        } else {
+            LOG.warn("DNS resolution failed for {}: {}", target.getHostString(), future.cause().getMessage());
+            promise.fail(new SwimError.TransportFailure(future.cause()));
+        }
+    }
+
+    /// Fallback: synchronous DNS resolution when no Netty resolver is available.
     private Promise<Unit> resolveSynchronously(Channel ch, InetSocketAddress target, SwimMessage message) {
         var resolved = new InetSocketAddress(target.getHostString(), target.getPort());
         if (resolved.isUnresolved()) {
@@ -159,6 +174,11 @@ public final class NettySwimTransport implements SwimTransport {
         var eventLoopGroup = externalGroup.or(() -> new NioEventLoopGroup(1));
         group.set(option(eventLoopGroup));
 
+        var dnsResolver = new DnsNameResolverBuilder(eventLoopGroup.next())
+            .channelType(NioDatagramChannel.class)
+            .build();
+        nettyResolver.set(option(dnsResolver));
+
         var bootstrap = new Bootstrap()
             .group(eventLoopGroup)
             .channel(NioDatagramChannel.class)
@@ -174,6 +194,9 @@ public final class NettySwimTransport implements SwimTransport {
     }
 
     private void doStop() throws InterruptedException {
+        nettyResolver.getAndSet(none())
+                     .onPresent(DnsNameResolver::close);
+
         channel.getAndSet(none())
                .onPresent(NettySwimTransport::closeChannel);
 
