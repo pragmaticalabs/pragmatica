@@ -41,9 +41,7 @@ option.toResult(NOT_FOUND);
 
 // Combine multiple Options — all must be present
 Option.all(firstName, lastName, email)
-      .map((first, last, mail) -> new Contact(first, last, mail));
-// or, better
-//    .map(Contact::new);
+      .map(Contact::new);
 ```
 
 The conversion methods matter. `Option` is not an island — it flows into `Result` and `Promise` when the context demands it.
@@ -137,8 +135,8 @@ The real power shows in composition. `Result.all()` collects independent validat
 
 ```java
 record ValidRegistration(Email email, Password password, PhoneNumber phoneNumber) {
-    public static validRegistration(Registration raw) {
-        Result.all(Email.email(raw.email()), 
+    public static Result<ValidRegistration> validRegistration(Registration raw) {
+        return Result.all(Email.email(raw.email()),
                    Password.password(raw.password()), 
                    PhoneNumber.phoneNumber(raw.phone()))
               .map(ValidRegistration::new);
@@ -191,7 +189,7 @@ public Promise<Dashboard> loadUserDashboard(UserId userId) {
 }
 ```
 
-Three async calls, all independent, all in parallel. Result combined when all complete. If any fails, the whole thing fails — with a meaningful `Cause`, not a wrapped exception.
+Three async calls, all independent, all in parallel. Result combined when all complete. If any fails, the whole thing fails — with a meaningful `Cause`.
 
 For "first success wins" semantics:
 
