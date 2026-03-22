@@ -63,6 +63,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     private volatile ScheduledFuture<?> tickFuture;
     // [Fix #7] Round-robin probe index for fair target selection
     private int probeIndex = 0;
+    // [Fix #6] Grace period after markAlive — don't probe recently-revived members
+    private final Map<NodeId, Long> revivalTimestamps = new ConcurrentHashMap<>();
+    private static final long REVIVAL_GRACE_MS = 5000;
 
     /// Tracks a relayed PingReq: maps the relay's own sequence to the original requester info.
     private record RelayInfo(long originalSequence, InetSocketAddress requesterAddress, long createdAt) {}
@@ -148,6 +151,8 @@ public final class SwimProtocol implements SwimMessageHandler {
                           .withIncarnation(member.incarnation() + 1);
         members.put(nodeId, alive);
         suspectTimestamps.remove(nodeId);
+        // [Fix #6] Grace period — don't probe this member immediately after revival
+        revivalTimestamps.put(nodeId, System.currentTimeMillis());
         listener.onMemberJoined(alive);
         addMemberUpdate(alive);
         LOG.info("Member {} externally marked ALIVE (was {})", nodeId.id(), member.state());
@@ -255,7 +260,18 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private boolean isProbable(SwimMember member) {
-        return member.state() == MemberState.ALIVE || member.state() == MemberState.SUSPECT;
+        if (member.state() != MemberState.ALIVE && member.state() != MemberState.SUSPECT) {
+            return false;
+        }
+        // [Fix #6] Skip members in revival grace period
+        var revivalTime = revivalTimestamps.get(member.nodeId());
+        if (revivalTime != null) {
+            if (System.currentTimeMillis() - revivalTime < REVIVAL_GRACE_MS) {
+                return false;
+            }
+            revivalTimestamps.remove(member.nodeId());
+        }
+        return true;
     }
 
     private void scheduleProbeTimeout(long seq) {

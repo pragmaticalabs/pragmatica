@@ -8,6 +8,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -181,14 +182,16 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                         InetSocketAddress selfAddress,
                                                         int swimPort) {
         this.swimTransport = transport;
-        // Start transport to bind the UDP port for receiving messages
+        // [Fix #7] Await transport bind before starting protocol — ensures UDP port is ready
         transport.start(swimPort,
                         (sender, message) -> {
                             var protocol = swimProtocol;
                             if (protocol != null) {
                                 protocol.onMessage(sender, message);
                             }
-                        });
+                        })
+                 .await(timeSpan(5).seconds())
+                 .onFailure(cause -> log.error("SWIM transport failed to start: {}", cause.message()));
         return SwimProtocol.swimProtocol(CORE_SWIM_CONFIG,
                                          transport,
                                          this,
@@ -213,11 +216,37 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     }
 
     private static void addSeedMember(SwimProtocol protocol, NodeInfo node) {
-        var swimPort = node.address()
-                           .port() + 1;
-        var swimAddress = new InetSocketAddress(node.address()
-                                                    .host(),
-                                                swimPort);
+        var host = node.address().host();
+        var swimPort = node.address().port() + 1;
+        var swimAddress = new InetSocketAddress(host, swimPort);
+
+        if (swimAddress.isUnresolved()) {
+            // DNS not ready yet — schedule deferred resolution
+            log.warn("SWIM seed {} unresolved, scheduling deferred DNS resolution", host);
+            SharedScheduler.schedule(() -> addSeedMemberWithRetry(protocol, node.id(), host, swimPort, 1),
+                                     timeSpan(2).seconds());
+            return;
+        }
+
         protocol.addSeedMember(node.id(), swimAddress);
+    }
+
+    @SuppressWarnings("JBCT-RET-01")
+    private static void addSeedMemberWithRetry(SwimProtocol protocol, NodeId nodeId,
+                                                String host, int port, int attempt) {
+        var address = new InetSocketAddress(host, port);
+        if (address.isUnresolved()) {
+            if (attempt < 10) {
+                log.warn("SWIM seed {} still unresolved (attempt {}), retrying...", host, attempt);
+                SharedScheduler.schedule(() -> addSeedMemberWithRetry(protocol, nodeId, host, port, attempt + 1),
+                                         timeSpan(2).seconds());
+            } else {
+                log.error("SWIM seed {} permanently unresolved after {} attempts", host, attempt);
+            }
+            return;
+        }
+
+        log.info("SWIM seed {} resolved to {} (attempt {})", host, address.getAddress(), attempt);
+        protocol.addSeedMember(nodeId, address);
     }
 }
