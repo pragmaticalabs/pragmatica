@@ -153,7 +153,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     @Override
     public void onMessage(InetSocketAddress sender, SwimMessage message) {
-        LOG.trace("SWIM recv from {}: {}", sender, message.getClass().getSimpleName());
+        LOG.info("SWIM recv from {}: {}", sender, message.getClass().getSimpleName());
         switch (message) {
             case Ping ping -> handlePing(sender, ping);
             case Ack ack -> handleAck(ack);
