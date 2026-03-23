@@ -7,6 +7,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.parse.DataSize;
 import org.pragmatica.lang.parse.Number;
 
 import java.nio.file.Path;
@@ -120,6 +121,13 @@ public final class ConfigLoader {
 
     private static int parseInt(TomlDocument doc, String section, String key, int defaultValue) {
         return doc.getInt(section, key)
+                  .or(defaultValue);
+    }
+
+    private static int parseDataSize(TomlDocument doc, String section, String key, int defaultValue) {
+        return doc.getString(section, key)
+                  .flatMap(v -> DataSize.dataSize(v).option())
+                  .map(DataSize::bytesAsInt)
                   .or(defaultValue);
     }
 
@@ -263,9 +271,13 @@ public final class ConfigLoader {
                                                "forward_timeout",
                                                "forward_timeout_ms",
                                                AppHttpConfig.DEFAULT_FORWARD_TIMEOUT);
+        var maxRequestSize = parseDataSize(doc,
+                                           "app-http",
+                                           "max_request_size",
+                                           AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE);
         var apiKeys = resolveApiKeys(doc);
         if (enabled || !apiKeys.isEmpty()) {
-            builder.appHttp(AppHttpConfig.appHttpConfig(enabled, port, apiKeys, forwardTimeout)
+            builder.appHttp(AppHttpConfig.appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize)
                                          .unwrap());
         }
     }

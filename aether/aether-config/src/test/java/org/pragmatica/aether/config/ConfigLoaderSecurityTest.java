@@ -221,6 +221,69 @@ class ConfigLoaderSecurityTest {
     }
 
     @Test
+    void loadFromString_parsesMaxRequestSize() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            max_request_size = "5MB"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().maxRequestSize()).isEqualTo(5 * 1024 * 1024);
+            });
+    }
+
+    @Test
+    void loadFromString_usesDefaultMaxRequestSize_whenNotSpecified() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().maxRequestSize()).isEqualTo(AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE);
+            });
+    }
+
+    @Test
+    void loadFromString_parsesMaxRequestSizeInKB() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            max_request_size = "512KB"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().maxRequestSize()).isEqualTo(512 * 1024);
+            });
+    }
+
+    @Test
+    void loadFromString_parsesMaxRequestSizeInGB() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            max_request_size = "1GB"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().maxRequestSize()).isEqualTo(1024 * 1024 * 1024);
+            });
+    }
+
+    @Test
     void loadFromString_richApiKeysDefaultNameAndRolesWhenOmitted() {
         var toml = MINIMAL_CLUSTER + """
 

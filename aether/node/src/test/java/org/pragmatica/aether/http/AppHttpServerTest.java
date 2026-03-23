@@ -161,6 +161,45 @@ class AppHttpServerTest {
         assertThat(response.body()).contains("title");
     }
 
+    @Test
+    void request_exceeding_max_size_returns_413() throws Exception {
+        // Create server with very small max request size (1KB)
+        var smallConfig = AppHttpConfig.appHttpConfig(TEST_PORT).withMaxRequestSize(1024);
+        var smallServer = AppHttpServer.appHttpServer(smallConfig,
+                                                       SELF_NODE,
+                                                       registry,
+                                                       Option.none(),
+                                                       Option.none(),
+                                                       Option.none(),
+                                                       Option.none(),
+                                                       Option.none(),
+                                                       Option.none(),
+                                                       Option.none(),
+                                                       Option.none(),
+                                                       Option.none());
+        smallServer.start().await();
+
+        // Send a request body larger than 1KB
+        var largeBody = "x".repeat(2048);
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create("http://localhost:" + TEST_PORT + "/test"))
+                                 .POST(HttpRequest.BodyPublishers.ofString(largeBody))
+                                 .header("Content-Type", "application/json")
+                                 .build();
+
+        var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+        // Netty's HttpObjectAggregator returns 413 when content exceeds max size
+        assertThat(response.statusCode()).isEqualTo(413);
+        smallServer.stop().await();
+    }
+
+    @Test
+    void default_config_has_10mb_max_request_size() {
+        var config = AppHttpConfig.appHttpConfig();
+        assertThat(config.maxRequestSize()).isEqualTo(10 * 1024 * 1024);
+    }
+
     private void registerNodeRoute(String method, String path, NodeId nodeId) {
         var key = NodeRoutesKey.nodeRoutesKey(nodeId, TEST_ARTIFACT);
         var route = RouteEntry.activeRoute(method, path, "create");

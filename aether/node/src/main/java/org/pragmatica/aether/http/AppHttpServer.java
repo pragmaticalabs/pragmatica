@@ -171,7 +171,6 @@ public interface AppHttpServer {
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
 class AppHttpServerImpl implements AppHttpServer {
     private static final Logger log = LoggerFactory.getLogger(AppHttpServerImpl.class);
-    private static final int MAX_CONTENT_LENGTH = 16 * 1024 * 1024;
 
     private final AppHttpConfig config;
     private final NodeId selfNodeId;
@@ -271,7 +270,7 @@ class AppHttpServerImpl implements AppHttpServer {
     private HttpServerConfig buildServerConfig() {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http",
                                                              config.port())
-                                           .withMaxContentLength(MAX_CONTENT_LENGTH);
+                                           .withMaxContentLength(config.maxRequestSize());
         return tls.fold(() -> serverConfig, serverConfig::withTls);
     }
 
