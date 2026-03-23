@@ -2,6 +2,8 @@ package org.pragmatica.aether.http.adapter.impl;
 
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.http.routing.MultipartParser;
+import org.pragmatica.http.routing.MultipartRequest;
 import org.pragmatica.http.routing.PathUtils;
 import org.pragmatica.http.routing.RequestContext;
 import org.pragmatica.http.routing.Route;
@@ -37,6 +39,7 @@ public final class SliceRequestContext implements RequestContext {
 
     private Supplier<List<String>> pathParamsSupplier = lazy(() -> pathParamsSupplier = value(initPathParams()));
     private Supplier<Map<String, String>> headersSupplier = lazy(() -> headersSupplier = value(initRequestHeaders()));
+    private Supplier<Result<MultipartRequest>> multipartSupplier = lazy(() -> multipartSupplier = value(initMultipart()));
 
     private SliceRequestContext(HttpRequestContext httpContext,
                                 Route<?> route,
@@ -114,6 +117,20 @@ public final class SliceRequestContext implements RequestContext {
     @Override
     public HttpHeaders responseHeaders() {
         return responseHeaders;
+    }
+
+    @Override
+    public Result<MultipartRequest> multipartRequest() {
+        return multipartSupplier.get();
+    }
+
+    @Override
+    public boolean isMultipart() {
+        return MultipartParser.isMultipart(requestHeaders().get("content-type"));
+    }
+
+    private Result<MultipartRequest> initMultipart() {
+        return MultipartParser.parse(httpContext.body(), httpContext.headers(), httpContext.path());
     }
 
     private List<String> initPathParams() {
