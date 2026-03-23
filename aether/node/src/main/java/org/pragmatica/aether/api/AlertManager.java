@@ -174,6 +174,15 @@ public class AlertManager {
     private void resolveAlert(String alertKey, String metric, NodeId nodeId, double value, ActiveAlert alert) {
         activeAlerts.remove(alertKey);
         addToHistory(metric, nodeId, value, alert.severity, "RESOLVED");
+        broadcastAlertResolved(metric, nodeId);
+    }
+
+    private void broadcastAlertResolved(String metric, NodeId nodeId) {
+        var message = "{\"type\":\"ALERT_RESOLVED\",\"timestamp\":" + System.currentTimeMillis()
+                      + ",\"data\":{\"metric\":\"" + escapeJson(metric)
+                      + "\",\"nodeId\":\"" + escapeJson(nodeId.id())
+                      + "\",\"resolvedAt\":" + System.currentTimeMillis() + "}}";
+        DashboardWebSocketHandler.broadcast(message);
     }
 
     private Option<String> handleAlertValue(String alertKey,
