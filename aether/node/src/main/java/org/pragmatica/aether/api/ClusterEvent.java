@@ -35,7 +35,14 @@ public record ClusterEvent(Instant timestamp,
         CONNECTION_ESTABLISHED,
         CONNECTION_FAILED,
         COMMUNITY_SCALE_REQUEST,
-        COMMUNITY_METRICS_SNAPSHOT
+        COMMUNITY_METRICS_SNAPSHOT,
+        ACCESS_DENIED,
+        NODE_LIFECYCLE_CHANGED,
+        CONFIG_CHANGED,
+        BACKUP_CREATED,
+        BACKUP_RESTORED,
+        BLUEPRINT_DEPLOYED,
+        BLUEPRINT_DELETED
     }
 
     public enum Severity {

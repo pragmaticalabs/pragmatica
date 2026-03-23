@@ -1,5 +1,7 @@
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.api.OperationalEvent;
+import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
@@ -161,7 +163,16 @@ public final class NodeLifecycleRoutes implements RouteSource {
                      .map(_ -> new TransitionResult(true,
                                                     nodeIdStr,
                                                     newState.name(),
-                                                    "Transition to " + newState + " initiated"));
+                                                    "Transition to " + newState + " initiated"))
+                     .onSuccess(r -> auditAndEmitLifecycleTransition(r, newState));
+    }
+
+    private void auditAndEmitLifecycleTransition(TransitionResult result, NodeLifecycleState newState) {
+        AuditLog.nodeLifecycleTransition(result.nodeId(), result.state(), result.success(), result.message());
+        nodeSupplier.get()
+                    .route(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged(result.nodeId(),
+                                                                                       newState.name(),
+                                                                                       "api"));
     }
 
     private Promise<List<Long>> applyLifecycleCommand(NodeId nodeId,

@@ -27,7 +27,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 102 | Multi-blueprint lifecycle independence | Complete | Blueprint-scoped artifact ownership (`owningBlueprint` in SliceTargetValue), artifact exclusivity enforcement (rejects duplicate artifact across blueprints), owner-filtered blueprint deletion (only removes owned artifacts), rolling update deletion guard, KV-Store restore with ownership. Tier 1 correctness for multi-blueprint clusters |
 | 126 | Blueprint Artifacts | Complete | Blueprint packaged as JAR with resources.toml and schema/ |
 | 127 | Config Separation | Complete | App config (blueprint) vs infra config (node) with hierarchical merge |
-| 128 | Schema Migration Engine | Complete | End-to-end migration engine (V/R/U/B types), history table, checksum validation, orchestrator with exclusive consensus locking, CDM readiness gating (blocks ACTIVATE until COMPLETED), DatasourceConnectionProvider for SqlConnector provisioning, schema directory convention (`schema/` root = `[database]`, subdirectories = `[database.<name>]`), strict datasource resolution (no fallback), REST API, CLI |
+| 128 | Schema Migration Engine | Complete | End-to-end migration engine (V/R/U/B types), history table, checksum validation, orchestrator with exclusive consensus locking, CDM readiness gating (blocks ACTIVATE until COMPLETED), DatasourceConnectionProvider for SqlConnector provisioning, schema directory convention (`schema/` root = `[database]`, subdirectories = `[database.<name>]`), strict datasource resolution (no fallback), REST API, CLI. v0.21.2: failure recovery (auto-retry with exponential backoff 5s/15s/45s for transient failures, manual retry via REST/CLI), natural language SchemaEvent hierarchy, failure classification (transient vs permanent), `schema_required` blueprint config |
 | 130 | Deployment State Machine (RFC-0014) | Complete | Documented CDM/NDM handoff protocol, 11-state lifecycle, schema migration gate, dependency-gated activation, failure classification (fatal/transient), quorum loss/restoration, reconciliation algorithm, blueprint atomicity, drain eviction protocol |
 | 131 | Consensus Operation Retry | Complete | All NDM consensus operations (state transitions, topic subscriptions, scheduled tasks, endpoints) use unified `applyWithRetry` with 30s timeout × 2 retries. Prevents activation failures under consensus pipeline saturation |
 | 129 | Endpoint Config | Complete | `[endpoints.*]` sections in aether.toml for infrastructure endpoints |
@@ -66,6 +66,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 69 | HttpForwarder (reusable) | Complete | Extracted HTTP forwarding with round-robin selection, retry with backoff, node departure failover. Used by both AppHttpServer and passive LB |
 | 105 | Server UDP support | Complete | `Server` supports optional UDP port binding alongside TCP via `ServerConfig.withUdpPort()`. UDP DatagramChannel shares workerGroup with TCP (no extra thread pool). Foundation for SWIM integration and future lightweight UDP messaging |
 | 106 | Shared EventLoopGroups | Complete | HTTP servers (AppHttpServer, ManagementServer, AetherPassiveLB) share Server's boss/worker EventLoopGroups instead of creating their own. Reduces per-node thread pools from 6+ to 2. `HttpServer.httpServer()` overload accepts external groups; `NettyHttpServer.createShared()` skips group shutdown on stop |
+| 137 | SharedScheduler consolidation | Complete | Unified shared scheduler (min 8 platform threads) replaces per-subsystem thread pools. 10 production schedulers migrated: SWIM, CircuitBreaker, Retry, canary evaluation, heartbeat, and others. Eliminates thread pool proliferation |
 
 ## Messaging (Pub-Sub)
 
@@ -96,6 +97,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 33 | Distributed hash table | Battle-tested | Consistent hash ring (150 vnodes, 1024 partitions), quorum R/W, anti-entropy repair (CRC32 digest exchange, migration on mismatch), re-replication on node departure (DHTRebalancer), per-use-case config via `scoped()` |
 | 105 | Hybrid Logical Clock | Complete | `integrations/hlc/` module. HlcTimestamp (48-bit microseconds + 16-bit counter packed into long), HlcClock (thread-safe, ReentrantLock), drift detection, counter overflow protection. Foundation for causal ordering |
 | 106 | DHT versioned writes | Complete | HLC-stamped puts with atomic version comparison in storage. Rejects stale writes (version ≤ current). Synchronous notification delivery via `withSuccess()` preserves causal write ordering. Superseded flag in PutResponse skips stale notifications. Full replication (`DHTConfig.FULL`) for control plane maps |
+| 139 | KV-Store durable backup | Complete | Cluster metadata (slice targets, node lifecycle, config) serialized to TOML file in local git repo. Git provides versioning, history, diffs, optional remote push. BackupService with automatic periodic + on-change triggers. REST API (`POST /api/backup`, `GET /api/backups`, `POST /api/backup/restore`), CLI (`aether backup trigger/list/restore`). Delivered in v0.19.3 |
 | 34 | Configuration service | Complete | TOML-based config with runtime overrides via KV-Store, environment variable interpolation, system property fallback |
 | 107 | Centralized timeout configuration | Complete | All operator-facing timeouts externalized to `TimeoutsConfig` with 13 subsystem groups (invocation, forwarding, deployment, rolling update, cluster, consensus, election, SWIM, observability, DHT, worker, security, repository, scaling). TOML `[timeouts.*]` sections with human-readable duration strings. Legacy `_ms` fields supported with automatic migration. See [timeout-configuration.md](timeout-configuration.md) |
 
@@ -156,6 +158,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 52 | Dynamic log levels | Complete | Runtime log level adjustment per logger via KV-Store. CLI and API control |
 | 53 | E2E test framework | Battle-tested | Testcontainers-based cluster testing with 10 test classes on bridge networking. Container DNS for inter-node communication, network partition/disconnect/reconnect support. Tests: ArtifactRepository, NodeFailure, RollingRestart, SwimDetection, NodeDrain, NetworkPartition, SliceLifecycle, TopologyGrowth, LoadBalancerFailover, LeaderIsolation |
 | 76 | Forge integration tests | Battle-tested | In-process EmberCluster tests: 16 test classes covering cluster formation, node failure, chaos, rolling updates, pub-sub delivery, invocation metrics, graceful shutdown, network partitions. Class-level cluster setup, health-endpoint readiness polling, `@Tag("Heavy")` for 5 resource-intensive tests |
+| 136 | Docker scaling test infrastructure | Complete | 5-core + 7-worker Docker Compose setup with phase-based orchestrator, k6 load tests (steady-state + scaling verification), Maven protocol artifact upload, CORE_MAX env var for role assignment, X-Node-Id response header for traffic distribution verification |
 
 ## Developer Tooling
 
@@ -168,6 +171,9 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 58 | Web dashboard | Partial (WIP) | Forge dashboard complete (cluster visualization, load generation, chaos injection, metrics, scaling events, deployment timing). Node management dashboard in active development — missing observability depth UI, invocation trace viewer, log level management |
 | 77 | Topology graph | Complete | Compile-time topology extraction (envelope v6): HTTP routes, resources, pub-sub topics from `.manifest` files. REST `GET /api/topology`, WebSocket `INITIAL_STATE`. Swim-lane SVG layout: per-slice lanes with inputs (endpoints/subscribers) left, slice center, outputs (resources/publishers) right. Manhattan routing for cross-slice topic connectors (right gutter) and dependency edges (left gutter). HSL color-coded topic groups, hover highlighting, search filtering |
 | 78 | `jbct add-slice` command | Complete | Scaffolds a new slice into an existing project: creates interface, test, routes.toml, config, and dependency manifest in a dedicated sub-package (enforcing one-slice-per-package convention) |
+| 138 | Core value objects | Complete | Reusable validated value objects in `org.pragmatica.lang.vo`: Email, Url, NonBlankString, Uuid, IsoDateTime. Factory methods with Result-based validation following JBCT parse-don't-validate pattern |
+| 140 | V1.0.0 roadmap | Complete | Evolutionary implementation protocol with phased milestones, feature prioritization, and release criteria for Aether 1.0 |
+| 141 | GitHub Issues as worklog | Complete | GitHub Issues adopted as primary work tracking and project log, replacing ad-hoc documentation |
 | 79 | IDE plugins | Planned | Slice development plugins for IntelliJ IDEA (native), VS Code, Eclipse, NetBeans. Shared LSP backend for routes.toml support, JBCT diagnostics, TOML schema validation. IntelliJ gets gutter icons, inspections, run configs |
 
 ## Node Operations
@@ -203,7 +209,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 80 | SWIM failure detection | Complete | UDP-based protocol with periodic probes, indirect probing, piggybacked membership updates. Standalone `integrations/swim/` module. Sole failure detector — NCN Ping/Pong removed. Shares Server's workerGroup (no separate thread pool). Used for both worker-to-worker and core-to-core health detection via `CoreSwimHealthDetector` |
+| 80 | SWIM failure detection | Complete | UDP-based protocol with periodic probes, indirect probing, piggybacked membership updates. Standalone `integrations/swim/` module. Sole failure detector — NCN Ping/Pong removed. Shares Server's workerGroup (no separate thread pool). Used for both worker-to-worker and core-to-core health detection via `CoreSwimHealthDetector`. Stabilized in v0.21.1: 13 bugs fixed (InetSocketAddress codec, relay sequence collision, state priority enforcement, round-robin probing, FAULTY cleanup, incarnation bump on Ack, PingReq sender address, relay cleanup). Netty built-in DnsNameResolver for transport. Startup delay + revival grace period |
 | 81 | Worker node | Complete | Passive compute nodes that run slices without participating in Rabia consensus. Role-aware AetherNode with observer consensus mode, ForwardingClusterNode for KV writes, SWIM + Governor + WorkerDeploymentManager. Full slice lifecycle: receives directives from CDM, self-assigns instances via consistent hashing, loads/activates slices, publishes endpoints. Single binary (`aether-node.jar`) for both core and worker roles. WORKER→CORE promotion supported |
 | 82 | Governor election | Complete | Pure deterministic computation — lowest ALIVE NodeId from SWIM membership, scoped to own group. No election messages exchanged. Governor cleanup removes dead node DHT entries. Reconciliation on new governor election. GovernorAnnouncement published to consensus for core-side discovery |
 | 83 | Worker endpoint registry | Complete | `WorkerEndpointRegistry` removed (Phase 2a) — replaced by unified `EndpointRegistry` fed by DHT `ReplicatedMap` subscription events. SliceInvoker uses single registry for both core and worker endpoints |
@@ -234,9 +240,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 |------|-----------|-------------|
 | Security | No per-endpoint role authorization (all API keys get same access) | RBAC Tier 2 (#63) |
 | Security | Node certificates are self-signed (no external CA integration) | External CA provider SPI implementation |
-| Data durability | No KV-Store backup/restore; quorum loss = data loss | KV-Store State Backup (#72) |
 | Networking | Single-region only; no multi-region deployment | Not yet planned |
-| Storage | KV-Store in-memory only (recovered from peers via consensus) | KV-Store State Backup (#72) |
 
 ## Planned Features
 
@@ -249,7 +253,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 65 | Spot instance support | Planned | Elastic pool of spot/preemptible instances for cost-optimized scaling. Core (on-demand) + elastic (spot) pools. Prerequisite: Cloud Integration. Deferred from worker pool Phase 2 to Phase 3 |
 | 66 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts. Prerequisite: Cloud Integration |
 | 67 | ~~TLS certificate management~~ | ~~Complete~~ | ~~Moved to Security section (features 88-91)~~ |
-| 69 | KV-Store state backup | Planned | Periodic KV-Store snapshots to durable storage (filesystem, S3). Disaster recovery when quorum permanently lost |
+| 69 | ~~KV-Store state backup~~ | ~~Complete~~ | ~~Delivered in v0.19.3 — moved to Storage & Data section~~ |
 | 70 | Aether runtime rolling upgrade | Planned | Upgrade Aether node software across running cluster without downtime. Node-by-node with health verification |
 | 71 | Email notification resource | Complete | Phase 1: `integrations/net/smtp` (async Netty SMTP client), `integrations/email-http` (HTTP sender with SendGrid/Mailgun/Postmark/Resend SPI), `aether/resource/notification` (ResourceFactory + @Notify qualifier). SMTP and HTTP backends with retry. 57 tests |
 | 103 | Per-blueprint artifact scoping (Tier 2) | Planned | Per-blueprint SliceTargetKey scoping for multi-tenant clusters. Blueprint-scoped CDM maps, WorkerSliceDirectiveKey blueprint scoping, Management API `blueprintId` parameter. Prerequisite: Tier 1 (#102) |
@@ -261,10 +265,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 24 |
-| Complete | 106 |
+| Complete | 113 |
 | Partial | 1 |
-| Planned | 10 |
-| Total | 141 |
+| Planned | 7 |
+| Total | 145 |
 
 **Battle-tested features (24):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), E2E test framework, Forge integration tests
 
@@ -285,10 +289,9 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Per-route rate limiting | — |
 | Spot instance support | Cloud Integration (complete) |
 | Cluster expense tracking | Cloud Integration (complete) |
-| ~~KV-Store state backup~~ | ~~Complete in 0.19.3~~ |
 | Aether runtime rolling upgrade | Official container or binaries |
 | Per-blueprint artifact scoping (Tier 2) | Multi-blueprint lifecycle Tier 1 (#102) |
 
 ---
 
-*Last updated: 2026-03-21 (v0.21.0)*
+*Last updated: 2026-03-22 (v0.22.0)*

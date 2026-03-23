@@ -260,6 +260,70 @@ public final class ClusterEventAggregator {
                                                          .id())));
     }
 
+    // --- Operational event handlers ---
+
+    public void onAccessDenied(OperationalEvent.AccessDenied event) {
+        buffer.add(ClusterEvent.clusterEvent(EventType.ACCESS_DENIED,
+                                             Severity.WARNING,
+                                             "Access denied for " + event.principal() + " on " + event.method() + " " + event.path(),
+                                             Map.of("principal", event.principal(),
+                                                    "method", event.method(),
+                                                    "path", event.path(),
+                                                    "actualRole", event.actualRole(),
+                                                    "requiredRole", event.requiredRole())));
+    }
+
+    public void onNodeLifecycleChanged(OperationalEvent.NodeLifecycleChanged event) {
+        buffer.add(ClusterEvent.clusterEvent(EventType.NODE_LIFECYCLE_CHANGED,
+                                             Severity.INFO,
+                                             "Node " + event.nodeId() + " lifecycle: " + event.transition(),
+                                             Map.of("nodeId", event.nodeId(),
+                                                    "transition", event.transition(),
+                                                    "requestedBy", event.requestedBy())));
+    }
+
+    public void onConfigChanged(OperationalEvent.ConfigChanged event) {
+        buffer.add(ClusterEvent.clusterEvent(EventType.CONFIG_CHANGED,
+                                             Severity.INFO,
+                                             "Config " + event.action() + ": " + event.key() + " (" + event.scope() + ")",
+                                             Map.of("key", event.key(),
+                                                    "scope", event.scope(),
+                                                    "action", event.action(),
+                                                    "requestedBy", event.requestedBy())));
+    }
+
+    public void onBackupCreated(OperationalEvent.BackupCreated event) {
+        buffer.add(ClusterEvent.clusterEvent(EventType.BACKUP_CREATED,
+                                             Severity.INFO,
+                                             "Backup created: " + event.commitId(),
+                                             Map.of("commitId", event.commitId(),
+                                                    "requestedBy", event.requestedBy())));
+    }
+
+    public void onBackupRestored(OperationalEvent.BackupRestored event) {
+        buffer.add(ClusterEvent.clusterEvent(EventType.BACKUP_RESTORED,
+                                             Severity.WARNING,
+                                             "Backup restored: " + event.commitId(),
+                                             Map.of("commitId", event.commitId(),
+                                                    "requestedBy", event.requestedBy())));
+    }
+
+    public void onBlueprintDeployed(OperationalEvent.BlueprintDeployed event) {
+        buffer.add(ClusterEvent.clusterEvent(EventType.BLUEPRINT_DEPLOYED,
+                                             Severity.INFO,
+                                             "Blueprint deployed: " + event.artifactCoords(),
+                                             Map.of("artifactCoords", event.artifactCoords(),
+                                                    "requestedBy", event.requestedBy())));
+    }
+
+    public void onBlueprintDeleted(OperationalEvent.BlueprintDeleted event) {
+        buffer.add(ClusterEvent.clusterEvent(EventType.BLUEPRINT_DELETED,
+                                             Severity.INFO,
+                                             "Blueprint deleted: " + event.artifactId(),
+                                             Map.of("artifactId", event.artifactId(),
+                                                    "requestedBy", event.requestedBy())));
+    }
+
     public void onConnectionFailed(NetworkServiceMessage.ConnectionFailed event) {
         buffer.add(ClusterEvent.clusterEvent(EventType.CONNECTION_FAILED,
                                              Severity.WARNING,

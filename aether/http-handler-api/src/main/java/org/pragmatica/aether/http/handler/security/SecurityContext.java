@@ -15,20 +15,24 @@ import static org.pragmatica.lang.Result.success;
 /// Created during security validation and passed to slice handlers
 /// for access control decisions.
 ///
-/// @param principal the authenticated identity
-/// @param roles     assigned roles/permissions
-/// @param claims    additional metadata (e.g., JWT claims)
+/// @param principal         the authenticated identity
+/// @param roles             assigned roles/permissions
+/// @param claims            additional metadata (e.g., JWT claims)
+/// @param authorizationRole hierarchical role for management API access control
 @Codec
 public record SecurityContext(Principal principal,
                               Set<Role> roles,
-                              Map<String, String> claims) {
-    private static final SecurityContext ANONYMOUS_CONTEXT = securityContext(Principal.ANONYMOUS, Set.of(), Map.of());
+                              Map<String, String> claims,
+                              AuthorizationRole authorizationRole) {
+    private static final SecurityContext ANONYMOUS_CONTEXT =
+        securityContext(Principal.ANONYMOUS, Set.of(), Map.of(), AuthorizationRole.VIEWER);
 
     /// Canonical constructor with validation.
     public SecurityContext {
         Objects.requireNonNull(principal, "principal");
         Objects.requireNonNull(roles, "roles");
         Objects.requireNonNull(claims, "claims");
+        Objects.requireNonNull(authorizationRole, "authorizationRole");
     }
 
     /// Create anonymous (unauthenticated) context.
@@ -37,6 +41,7 @@ public record SecurityContext(Principal principal,
     }
 
     /// Create context for API key authentication.
+    /// Defaults to ADMIN authorization role for backward compatibility.
     ///
     /// @param keyName the API key identifier
     /// @return Result containing security context with SERVICE role or validation error
@@ -48,6 +53,7 @@ public record SecurityContext(Principal principal,
     }
 
     /// Create context for API key authentication with custom roles.
+    /// Defaults to ADMIN authorization role for backward compatibility.
     ///
     /// @param keyName the API key identifier
     /// @param roles   assigned roles
@@ -57,6 +63,19 @@ public record SecurityContext(Principal principal,
                         .map(p -> securityContext(p,
                                                   roles,
                                                   Map.of()));
+    }
+
+    /// Create context for API key authentication with custom roles and authorization role.
+    ///
+    /// @param keyName           the API key identifier
+    /// @param roles             assigned roles
+    /// @param authorizationRole hierarchical authorization role
+    /// @return Result containing security context or validation error
+    public static Result<SecurityContext> securityContext(String keyName,
+                                                          Set<Role> roles,
+                                                          AuthorizationRole authorizationRole) {
+        return Principal.principal(keyName, PrincipalType.API_KEY)
+                        .map(p -> securityContext(p, roles, Map.of(), authorizationRole));
     }
 
     /// Create context for bearer token (JWT) authentication.
@@ -70,11 +89,21 @@ public record SecurityContext(Principal principal,
                         .map(p -> securityContext(p, roles, claims));
     }
 
-    /// Create context with all parameters (pre-validated principal).
+    /// Create context with all parameters except authorization role (pre-validated principal).
+    /// Defaults to ADMIN for backward compatibility.
     public static SecurityContext securityContext(Principal principal, Set<Role> roles, Map<String, String> claims) {
+        return securityContext(principal, roles, claims, AuthorizationRole.ADMIN);
+    }
+
+    /// Create context with all parameters including authorization role (pre-validated principal).
+    public static SecurityContext securityContext(Principal principal,
+                                                  Set<Role> roles,
+                                                  Map<String, String> claims,
+                                                  AuthorizationRole authorizationRole) {
         return Result.all(success(principal),
                           success(roles),
-                          success(claims))
+                          success(claims),
+                          success(authorizationRole))
                      .map(SecurityContext::new)
                      .unwrap();
     }

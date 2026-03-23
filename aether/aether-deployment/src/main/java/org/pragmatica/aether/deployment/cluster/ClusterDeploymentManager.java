@@ -2,6 +2,7 @@ package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.deployment.AuditLog;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -2062,6 +2063,11 @@ public interface ClusterDeploymentManager {
             }
 
             private void emitScalingEvent(Artifact artifact, int currentCount, int desiredCount) {
+                if (currentCount < desiredCount) {
+                    AuditLog.reconciliationScaleUp(artifact.asString(), currentCount, desiredCount);
+                } else {
+                    AuditLog.reconciliationScaleDown(artifact.asString(), currentCount, desiredCount);
+                }
                 router.route(ReconciliationAdjustment.reconciliationAdjustment(artifact, currentCount, desiredCount));
             }
 

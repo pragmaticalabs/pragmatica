@@ -23,9 +23,13 @@ import org.pragmatica.aether.api.routes.SchemaRoutes;
 import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.api.routes.StatusRoutes;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
+import org.pragmatica.aether.http.handler.security.RoleEnforcer;
+import org.pragmatica.aether.http.handler.security.RoutePermission;
+import org.pragmatica.aether.http.handler.security.RoutePermissionRegistry;
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.http.security.SecurityError;
+import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
@@ -49,6 +53,7 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.TlsConfig;
 
@@ -222,9 +227,10 @@ class ManagementServerImpl implements ManagementServer {
                                                                  scheduledTaskStateRegistry));
         routeSources.add(ClusterTopologyRoutes.clusterTopologyRoutes(nodeSupplier));
         routeSources.add(BackupRoutes.backupRoutes(() -> nodeSupplier.get()
-                                                                     .backupService()));
+                                                                     .backupService(),
+                                                   nodeSupplier));
         routeSources.add(SchemaRoutes.schemaRoutes(nodeSupplier));
-        dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm)));
+        dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm, nodeSupplier)));
         this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
         // Legacy routes using RouteHandler for dynamic content types
         this.legacyRoutes = List.of(MavenProtocolRoutes.mavenProtocolRoutes(nodeSupplier));
@@ -523,10 +529,35 @@ class ManagementServerImpl implements ManagementServer {
         var httpContext = toManagementRequestContext(ctx, path);
         var policy = RouteSecurityPolicy.apiKeyRequired();
         var methodName = method.name();
+        var permission = RoutePermissionRegistry.resolve(methodName, path);
         return securityValidator.validate(httpContext, policy)
+                                .flatMap(sc -> enforceAndAuditDenial(sc, permission, methodName, path))
                                 .onFailure(cause -> handleManagementSecurityFailure(response, cause, path, methodName))
                                 .onSuccess(sc -> logManagementAccess(sc, methodName, path))
                                 .isSuccess();
+    }
+
+    private Result<org.pragmatica.aether.http.handler.security.SecurityContext> enforceAndAuditDenial(
+            org.pragmatica.aether.http.handler.security.SecurityContext sc,
+            RoutePermission permission,
+            String method,
+            String path) {
+        return RoleEnforcer.enforce(sc, permission)
+                           .onFailure(_ -> auditAccessDenied(sc, method, path, permission));
+    }
+
+    private void auditAccessDenied(org.pragmatica.aether.http.handler.security.SecurityContext sc,
+                                    String method,
+                                    String path,
+                                    RoutePermission permission) {
+        var principal = sc.isAuthenticated()
+                        ? sc.principal().value()
+                        : "anonymous";
+        var actualRole = sc.authorizationRole().name();
+        var requiredRole = permission.minimumRole().name();
+        AuditLog.accessDenied(principal, method, path, actualRole, requiredRole);
+        nodeSupplier.get()
+                    .route(OperationalEvent.AccessDenied.accessDenied(principal, method, path, actualRole, requiredRole));
     }
 
     private static void logManagementAccess(org.pragmatica.aether.http.handler.security.SecurityContext securityContext,
@@ -554,11 +585,7 @@ class ManagementServerImpl implements ManagementServer {
     @SuppressWarnings("JBCT-PAT-01")
     private void handleManagementSecurityFailure(ResponseWriter response, Cause cause, String path, String method) {
         AuditLog.authFailure("mgmt", cause.message(), method, path);
-        var status = switch (cause) {
-            case SecurityError.MissingCredentials _ -> HttpStatus.UNAUTHORIZED;
-            case SecurityError.InvalidCredentials _ -> HttpStatus.FORBIDDEN;
-            default -> HttpStatus.UNAUTHORIZED;
-        };
+        var status = resolveSecurityErrorStatus(cause);
         if (status == HttpStatus.UNAUTHORIZED) {
             response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"")
                     .error(status,
@@ -566,5 +593,15 @@ class ManagementServerImpl implements ManagementServer {
         } else {
             response.error(status, cause.message());
         }
+    }
+
+    private static HttpStatus resolveSecurityErrorStatus(Cause cause) {
+        return switch (cause) {
+            case SecurityError.MissingCredentials _ -> HttpStatus.UNAUTHORIZED;
+            case SecurityError.InvalidCredentials _ -> HttpStatus.FORBIDDEN;
+            case SecurityError.AccessDenied _ -> HttpStatus.FORBIDDEN;
+            case RoleEnforcer.AuthorizationError.AccessDenied _ -> HttpStatus.FORBIDDEN;
+            default -> HttpStatus.UNAUTHORIZED;
+        };
     }
 }

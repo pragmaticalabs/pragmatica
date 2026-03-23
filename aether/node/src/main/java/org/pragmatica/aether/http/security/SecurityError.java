@@ -17,4 +17,7 @@ public sealed interface SecurityError extends Cause {
 
     /// Invalid or expired credentials.
     record InvalidCredentials(String message) implements SecurityError {}
+
+    /// Authenticated principal lacks sufficient authorization level.
+    record AccessDenied(String message) implements SecurityError {}
 }
