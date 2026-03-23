@@ -1,6 +1,7 @@
 package org.pragmatica.aether.http.security;
 
 import org.pragmatica.aether.config.ApiKeyEntry;
+import org.pragmatica.aether.config.JwtConfig;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.Principal;
 import org.pragmatica.aether.http.handler.security.Role;
@@ -37,6 +38,14 @@ public interface SecurityValidator {
     /// @return SecurityValidator for API key authentication with custom roles
     static SecurityValidator apiKeyValidator(Map<String, ApiKeyEntry> keyEntries) {
         return new ApiKeySecurityValidator(keyEntries);
+    }
+
+    /// Create JWT validator with given configuration.
+    ///
+    /// @param jwtConfig JWT configuration including JWKS URL and claim settings
+    /// @return SecurityValidator for JWT Bearer token authentication
+    static SecurityValidator jwtValidator(JwtConfig jwtConfig) {
+        return new JwtSecurityValidator(jwtConfig);
     }
 
     /// Create a no-op validator that allows all requests (for disabled security).

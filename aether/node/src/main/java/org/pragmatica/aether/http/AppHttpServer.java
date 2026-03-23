@@ -228,7 +228,10 @@ class AppHttpServerImpl implements AppHttpServer {
     private static SecurityValidator buildSecurityValidator(AppHttpConfig config) {
         return switch (config.securityMode()) {
             case API_KEY -> SecurityValidator.apiKeyValidator(config.apiKeys());
-            case NONE, JWT -> SecurityValidator.noOpValidator();
+            case JWT -> config.jwtConfig()
+                              .map(SecurityValidator::jwtValidator)
+                              .or(SecurityValidator.noOpValidator());
+            case NONE -> SecurityValidator.noOpValidator();
         };
     }
 
@@ -388,7 +391,8 @@ class AppHttpServerImpl implements AppHttpServer {
     private RouteSecurityPolicy resolveSecurityPolicy() {
         return switch (config.securityMode()) {
             case API_KEY -> RouteSecurityPolicy.apiKeyRequired();
-            case NONE, JWT -> RouteSecurityPolicy.publicRoute();
+            case JWT -> RouteSecurityPolicy.bearerTokenRequired();
+            case NONE -> RouteSecurityPolicy.publicRoute();
         };
     }
 
@@ -555,13 +559,28 @@ class AppHttpServerImpl implements AppHttpServer {
         var status = switch (cause) {
             case SecurityError.MissingCredentials _ -> HttpStatus.UNAUTHORIZED;
             case SecurityError.InvalidCredentials _ -> HttpStatus.FORBIDDEN;
+            case SecurityError.TokenExpired _ -> HttpStatus.UNAUTHORIZED;
+            case SecurityError.SignatureInvalid _ -> HttpStatus.FORBIDDEN;
+            case SecurityError.IssuerMismatch _ -> HttpStatus.FORBIDDEN;
+            case SecurityError.AudienceMismatch _ -> HttpStatus.FORBIDDEN;
+            case SecurityError.KeyNotFound _ -> HttpStatus.UNAUTHORIZED;
+            case SecurityError.JwksFetchFailed _ -> HttpStatus.UNAUTHORIZED;
             default -> HttpStatus.UNAUTHORIZED;
         };
         AuditLog.authFailure(requestId, cause.message(), method, path);
         if (status == HttpStatus.UNAUTHORIZED) {
-            response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
+            addAuthenticateHeader(response);
         }
         sendProblem(response, status, cause.message(), path, requestId);
+    }
+
+    private void addAuthenticateHeader(ResponseWriter response) {
+        var authScheme = switch (config.securityMode()) {
+            case JWT -> "Bearer realm=\"Aether\"";
+            case API_KEY -> "ApiKey realm=\"Aether\"";
+            case NONE -> "ApiKey realm=\"Aether\"";
+        };
+        response.header("WWW-Authenticate", authScheme);
     }
 
     private Option<HttpNodeRouteKey> findMatchingLocalRoute(Set<HttpNodeRouteKey> localRoutes,

@@ -31,6 +31,17 @@ public sealed interface RouteSecurityPolicy {
         }
     }
 
+    /// Bearer token (JWT) required - must provide valid Authorization: Bearer header.
+    @SuppressWarnings("JBCT-VO-02")
+    record BearerTokenRequired() implements RouteSecurityPolicy {
+        private static final BearerTokenRequired INSTANCE = new BearerTokenRequired();
+
+        /// Factory for BearerTokenRequired policy.
+        public static Result<BearerTokenRequired> bearerTokenRequired() {
+            return success(INSTANCE);
+        }
+    }
+
     @SuppressWarnings("unused")
     record unused() implements RouteSecurityPolicy {}
 
@@ -46,11 +57,18 @@ public sealed interface RouteSecurityPolicy {
                              .unwrap();
     }
 
+    /// Create bearer token required policy.
+    static RouteSecurityPolicy bearerTokenRequired() {
+        return BearerTokenRequired.bearerTokenRequired()
+                                  .unwrap();
+    }
+
     /// Parse policy from string representation (for KV-Store serialization).
     static RouteSecurityPolicy fromString(String value) {
         return switch (value) {
             case "PUBLIC" -> publicRoute();
             case "API_KEY" -> apiKeyRequired();
+            case "BEARER_TOKEN" -> bearerTokenRequired();
             default -> publicRoute();
         };
     }
@@ -60,6 +78,7 @@ public sealed interface RouteSecurityPolicy {
         return switch (this) {
             case Public() -> "PUBLIC";
             case ApiKeyRequired() -> "API_KEY";
+            case BearerTokenRequired() -> "BEARER_TOKEN";
             default -> "PUBLIC";
         };
     }

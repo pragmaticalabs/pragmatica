@@ -1,5 +1,6 @@
 package org.pragmatica.aether.config;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -18,12 +19,14 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param forwardTimeout     timeout for HTTP forwarding requests
 /// @param maxRequestSize     maximum request body size in bytes
 /// @param securityMode       authentication mode for app HTTP endpoints (NONE, API_KEY, JWT)
+/// @param jwtConfig          JWT configuration (present only when securityMode is JWT)
 public record AppHttpConfig(boolean enabled,
                             int port,
                             Map<String, ApiKeyEntry> apiKeys,
                             TimeSpan forwardTimeout,
                             int maxRequestSize,
-                            SecurityMode securityMode) {
+                            SecurityMode securityMode,
+                            Option<JwtConfig> jwtConfig) {
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
     public static final TimeSpan DEFAULT_FORWARD_TIMEOUT = timeSpan(5).seconds();
     public static final int DEFAULT_MAX_REQUEST_SIZE = 10 * 1024 * 1024; // 10MB
@@ -35,14 +38,25 @@ public record AppHttpConfig(boolean enabled,
         maxRequestSize = normalizeMaxRequestSize(maxRequestSize);
     }
 
-    /// Factory method following JBCT naming convention.
+    /// Factory method following JBCT naming convention (with JWT config).
+    public static Result<AppHttpConfig> appHttpConfig(boolean enabled,
+                                                      int port,
+                                                      Map<String, ApiKeyEntry> apiKeys,
+                                                      TimeSpan forwardTimeout,
+                                                      int maxRequestSize,
+                                                      SecurityMode securityMode,
+                                                      Option<JwtConfig> jwtConfig) {
+        return success(new AppHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode, jwtConfig));
+    }
+
+    /// Factory method following JBCT naming convention (backward compat, no JWT).
     public static Result<AppHttpConfig> appHttpConfig(boolean enabled,
                                                       int port,
                                                       Map<String, ApiKeyEntry> apiKeys,
                                                       TimeSpan forwardTimeout,
                                                       int maxRequestSize,
                                                       SecurityMode securityMode) {
-        return success(new AppHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode));
+        return success(new AppHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode, Option.empty()));
     }
 
     /// Factory method with default security mode (inferred from apiKeys).
@@ -51,7 +65,7 @@ public record AppHttpConfig(boolean enabled,
                                                       Map<String, ApiKeyEntry> apiKeys,
                                                       TimeSpan forwardTimeout,
                                                       int maxRequestSize) {
-        return success(new AppHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, SecurityMode.NONE));
+        return success(new AppHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, SecurityMode.NONE, Option.empty()));
     }
 
     /// Default (disabled) configuration.
@@ -92,37 +106,41 @@ public record AppHttpConfig(boolean enabled,
     }
 
     public AppHttpConfig withEnabled(boolean enabled) {
-        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode).unwrap();
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode, jwtConfig).unwrap();
     }
 
     public AppHttpConfig withPort(int port) {
-        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode).unwrap();
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode, jwtConfig).unwrap();
     }
 
     /// Backward-compat: wraps each key string with default metadata.
     /// Automatically upgrades security mode to API_KEY when keys are provided.
     public AppHttpConfig withApiKeys(Set<String> apiKeys) {
         var mode = apiKeys.isEmpty() ? securityMode : SecurityMode.API_KEY;
-        return appHttpConfig(enabled, port, wrapSimpleKeys(apiKeys), forwardTimeout, maxRequestSize, mode).unwrap();
+        return appHttpConfig(enabled, port, wrapSimpleKeys(apiKeys), forwardTimeout, maxRequestSize, mode, jwtConfig).unwrap();
     }
 
     /// Rich config: accepts pre-built key-to-entry map.
     /// Automatically upgrades security mode to API_KEY when keys are provided.
     public AppHttpConfig withApiKeyMap(Map<String, ApiKeyEntry> apiKeys) {
         var mode = apiKeys.isEmpty() ? securityMode : SecurityMode.API_KEY;
-        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, mode).unwrap();
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, mode, jwtConfig).unwrap();
     }
 
     public AppHttpConfig withForwardTimeout(TimeSpan forwardTimeout) {
-        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode).unwrap();
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode, jwtConfig).unwrap();
     }
 
     public AppHttpConfig withMaxRequestSize(int maxRequestSize) {
-        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode).unwrap();
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode, jwtConfig).unwrap();
     }
 
     public AppHttpConfig withSecurityMode(SecurityMode securityMode) {
-        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode).unwrap();
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode, jwtConfig).unwrap();
+    }
+
+    public AppHttpConfig withJwtConfig(JwtConfig jwtConfig) {
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode, Option.some(jwtConfig)).unwrap();
     }
 
     private static int normalizeMaxRequestSize(int maxRequestSize) {

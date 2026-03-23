@@ -280,10 +280,26 @@ public final class ConfigLoader {
         var apiKeys = resolveApiKeys(doc);
         // Auto-upgrade: if no explicit security_mode but apiKeys are present, infer API_KEY (backward compat)
         var securityMode = explicitMode.or(apiKeys.isEmpty() ? SecurityMode.NONE : SecurityMode.API_KEY);
+        var jwtConfig = parseJwtConfig(doc);
         if (enabled || !apiKeys.isEmpty()) {
-            builder.appHttp(AppHttpConfig.appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode)
+            builder.appHttp(AppHttpConfig.appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode, jwtConfig)
                                          .unwrap());
         }
+    }
+
+    private static Option<JwtConfig> parseJwtConfig(TomlDocument doc) {
+        return doc.getString("app-http", "jwks_url")
+                  .map(jwksUrl -> buildJwtConfig(doc, jwksUrl));
+    }
+
+    private static JwtConfig buildJwtConfig(TomlDocument doc, String jwksUrl) {
+        var issuer = doc.getString("app-http", "issuer");
+        var audience = doc.getString("app-http", "audience");
+        var roleClaim = doc.getString("app-http", "role_claim")
+                           .or(JwtConfig.DEFAULT_ROLE_CLAIM);
+        var cacheTtl = parseLong(doc, "app-http", "jwks_cache_ttl_seconds", JwtConfig.DEFAULT_CACHE_TTL_SECONDS);
+        return JwtConfig.jwtConfig(jwksUrl, issuer, audience, roleClaim, cacheTtl)
+                        .unwrap();
     }
 
     private static void populateBackupConfig(TomlDocument doc, AetherConfig.Builder builder) {
