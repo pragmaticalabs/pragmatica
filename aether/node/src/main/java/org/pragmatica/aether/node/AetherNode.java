@@ -1173,7 +1173,7 @@ public interface AetherNode {
                                                                      .securityEnabled();
                                      var mgmtSecurityValidator = mgmtSecurityEnabled
                                                                  ? SecurityValidator.apiKeyValidator(config.appHttp()
-                                                                                                           .apiKeyValues())
+                                                                                                           .apiKeys())
                                                                  : SecurityValidator.noOpValidator();
                                      var managementServer = ManagementServer.managementServer(config.managementPort(),
                                                                                               () -> node,

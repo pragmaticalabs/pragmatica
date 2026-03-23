@@ -275,9 +275,13 @@ public final class ConfigLoader {
                                            "app-http",
                                            "max_request_size",
                                            AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE);
+        var explicitMode = doc.getString("app-http", "security_mode")
+                              .flatMap(SecurityMode::securityMode);
         var apiKeys = resolveApiKeys(doc);
+        // Auto-upgrade: if no explicit security_mode but apiKeys are present, infer API_KEY (backward compat)
+        var securityMode = explicitMode.or(apiKeys.isEmpty() ? SecurityMode.NONE : SecurityMode.API_KEY);
         if (enabled || !apiKeys.isEmpty()) {
-            builder.appHttp(AppHttpConfig.appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize)
+            builder.appHttp(AppHttpConfig.appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode)
                                          .unwrap());
         }
     }

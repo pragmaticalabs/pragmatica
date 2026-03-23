@@ -3,6 +3,7 @@ package org.pragmatica.aether.http;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.update.DeploymentStrategy;
 import org.pragmatica.aether.update.DeploymentStrategyCoordinator;
 import org.pragmatica.aether.update.VersionRouting;
@@ -15,6 +16,7 @@ import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.aether.http.security.SecurityValidator;
@@ -209,9 +211,7 @@ class AppHttpServerImpl implements AppHttpServer {
         this.clusterNetwork = clusterNetwork;
         this.serializer = serializer;
         this.deserializer = deserializer;
-        this.securityValidator = config.securityEnabled()
-                                 ? SecurityValidator.apiKeyValidator(config.apiKeyValues())
-                                 : SecurityValidator.noOpValidator();
+        this.securityValidator = buildSecurityValidator(config);
         this.tls = tls;
         this.metricsCollector = metricsCollector;
         this.bossGroup = bossGroup;
@@ -223,6 +223,13 @@ class AppHttpServerImpl implements AppHttpServer {
                                                 serializer,
                                                 deserializer,
                                                 config);
+    }
+
+    private static SecurityValidator buildSecurityValidator(AppHttpConfig config) {
+        return switch (config.securityMode()) {
+            case API_KEY -> SecurityValidator.apiKeyValidator(config.apiKeys());
+            case NONE, JWT -> SecurityValidator.noOpValidator();
+        };
     }
 
     private static Option<HttpForwarder> buildHttpForwarder(NodeId selfNodeId,
@@ -379,9 +386,10 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     private RouteSecurityPolicy resolveSecurityPolicy() {
-        return config.securityEnabled()
-               ? RouteSecurityPolicy.apiKeyRequired()
-               : RouteSecurityPolicy.publicRoute();
+        return switch (config.securityMode()) {
+            case API_KEY -> RouteSecurityPolicy.apiKeyRequired();
+            case NONE, JWT -> RouteSecurityPolicy.publicRoute();
+        };
     }
 
     @SuppressWarnings("JBCT-RET-01")
@@ -398,17 +406,18 @@ class AppHttpServerImpl implements AppHttpServer {
         if (config.securityEnabled()) {
             AuditLog.authSuccess(requestId, principal, method, path);
         }
-        InvocationContext.runWithContext(requestId,
-                                         principal,
-                                         selfNodeId.id(),
-                                         0,
-                                         true,
-                                         () -> dispatchToRoute(request,
-                                                               response,
-                                                               routeTable,
-                                                               method,
-                                                               normalizedPath,
-                                                               requestId));
+        ScopedValue.where(SecurityContextHolder.scopedValue(), securityContext)
+                   .run(() -> InvocationContext.runWithContext(requestId,
+                                                              principal,
+                                                              selfNodeId.id(),
+                                                              0,
+                                                              true,
+                                                              () -> dispatchToRoute(request,
+                                                                                    response,
+                                                                                    routeTable,
+                                                                                    method,
+                                                                                    normalizedPath,
+                                                                                    requestId)));
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Dispatcher method — decomposition would scatter routing logic

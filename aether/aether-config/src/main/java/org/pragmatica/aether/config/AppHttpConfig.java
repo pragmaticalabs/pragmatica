@@ -17,11 +17,13 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param apiKeys            API key map: raw key string to entry metadata (empty map disables security)
 /// @param forwardTimeout     timeout for HTTP forwarding requests
 /// @param maxRequestSize     maximum request body size in bytes
+/// @param securityMode       authentication mode for app HTTP endpoints (NONE, API_KEY, JWT)
 public record AppHttpConfig(boolean enabled,
                             int port,
                             Map<String, ApiKeyEntry> apiKeys,
                             TimeSpan forwardTimeout,
-                            int maxRequestSize) {
+                            int maxRequestSize,
+                            SecurityMode securityMode) {
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
     public static final TimeSpan DEFAULT_FORWARD_TIMEOUT = timeSpan(5).seconds();
     public static final int DEFAULT_MAX_REQUEST_SIZE = 10 * 1024 * 1024; // 10MB
@@ -38,28 +40,40 @@ public record AppHttpConfig(boolean enabled,
                                                       int port,
                                                       Map<String, ApiKeyEntry> apiKeys,
                                                       TimeSpan forwardTimeout,
+                                                      int maxRequestSize,
+                                                      SecurityMode securityMode) {
+        return success(new AppHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode));
+    }
+
+    /// Factory method with default security mode (inferred from apiKeys).
+    public static Result<AppHttpConfig> appHttpConfig(boolean enabled,
+                                                      int port,
+                                                      Map<String, ApiKeyEntry> apiKeys,
+                                                      TimeSpan forwardTimeout,
                                                       int maxRequestSize) {
-        return success(new AppHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize));
+        return success(new AppHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, SecurityMode.NONE));
     }
 
     /// Default (disabled) configuration.
     public static AppHttpConfig appHttpConfig() {
-        return appHttpConfig(false, DEFAULT_APP_HTTP_PORT, Map.of(), DEFAULT_FORWARD_TIMEOUT, DEFAULT_MAX_REQUEST_SIZE).unwrap();
+        return appHttpConfig(false, DEFAULT_APP_HTTP_PORT, Map.of(), DEFAULT_FORWARD_TIMEOUT, DEFAULT_MAX_REQUEST_SIZE, SecurityMode.NONE).unwrap();
     }
 
     /// Enabled on default port.
     public static AppHttpConfig appHttpConfig(boolean enabled) {
-        return appHttpConfig(enabled, DEFAULT_APP_HTTP_PORT, Map.of(), DEFAULT_FORWARD_TIMEOUT, DEFAULT_MAX_REQUEST_SIZE).unwrap();
+        return appHttpConfig(enabled, DEFAULT_APP_HTTP_PORT, Map.of(), DEFAULT_FORWARD_TIMEOUT, DEFAULT_MAX_REQUEST_SIZE, SecurityMode.NONE).unwrap();
     }
 
     /// Enabled on specified port.
     public static AppHttpConfig appHttpConfig(int port) {
-        return appHttpConfig(true, port, Map.of(), DEFAULT_FORWARD_TIMEOUT, DEFAULT_MAX_REQUEST_SIZE).unwrap();
+        return appHttpConfig(true, port, Map.of(), DEFAULT_FORWARD_TIMEOUT, DEFAULT_MAX_REQUEST_SIZE, SecurityMode.NONE).unwrap();
     }
 
     /// Create enabled config with API keys for security (backward-compat convenience).
+    /// Automatically sets security mode to API_KEY when keys are provided.
     public static AppHttpConfig appHttpConfig(int port, Set<String> apiKeys) {
-        return appHttpConfig(true, port, wrapSimpleKeys(apiKeys), DEFAULT_FORWARD_TIMEOUT, DEFAULT_MAX_REQUEST_SIZE).unwrap();
+        var mode = apiKeys.isEmpty() ? SecurityMode.NONE : SecurityMode.API_KEY;
+        return appHttpConfig(true, port, wrapSimpleKeys(apiKeys), DEFAULT_FORWARD_TIMEOUT, DEFAULT_MAX_REQUEST_SIZE, mode).unwrap();
     }
 
     /// Raw API key values for backward-compatible security checks.
@@ -72,35 +86,43 @@ public record AppHttpConfig(boolean enabled,
         return port + nodeIndex;
     }
 
-    /// Check if security is enabled (has API keys configured).
+    /// Check if security is enabled (security mode is not NONE).
     public boolean securityEnabled() {
-        return ! apiKeys.isEmpty();
+        return securityMode != SecurityMode.NONE;
     }
 
     public AppHttpConfig withEnabled(boolean enabled) {
-        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize).unwrap();
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode).unwrap();
     }
 
     public AppHttpConfig withPort(int port) {
-        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize).unwrap();
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode).unwrap();
     }
 
     /// Backward-compat: wraps each key string with default metadata.
+    /// Automatically upgrades security mode to API_KEY when keys are provided.
     public AppHttpConfig withApiKeys(Set<String> apiKeys) {
-        return appHttpConfig(enabled, port, wrapSimpleKeys(apiKeys), forwardTimeout, maxRequestSize).unwrap();
+        var mode = apiKeys.isEmpty() ? securityMode : SecurityMode.API_KEY;
+        return appHttpConfig(enabled, port, wrapSimpleKeys(apiKeys), forwardTimeout, maxRequestSize, mode).unwrap();
     }
 
     /// Rich config: accepts pre-built key-to-entry map.
+    /// Automatically upgrades security mode to API_KEY when keys are provided.
     public AppHttpConfig withApiKeyMap(Map<String, ApiKeyEntry> apiKeys) {
-        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize).unwrap();
+        var mode = apiKeys.isEmpty() ? securityMode : SecurityMode.API_KEY;
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, mode).unwrap();
     }
 
     public AppHttpConfig withForwardTimeout(TimeSpan forwardTimeout) {
-        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize).unwrap();
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode).unwrap();
     }
 
     public AppHttpConfig withMaxRequestSize(int maxRequestSize) {
-        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize).unwrap();
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode).unwrap();
+    }
+
+    public AppHttpConfig withSecurityMode(SecurityMode securityMode) {
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode).unwrap();
     }
 
     private static int normalizeMaxRequestSize(int maxRequestSize) {

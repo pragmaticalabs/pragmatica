@@ -284,6 +284,94 @@ class ConfigLoaderSecurityTest {
     }
 
     @Test
+    void loadFromString_parsesSecurityModeApiKey() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            security_mode = "api-key"
+            api_keys = ["key1"]
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.API_KEY);
+                assertThat(config.appHttp().securityEnabled()).isTrue();
+            });
+    }
+
+    @Test
+    void loadFromString_parsesSecurityModeNone() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            security_mode = "none"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.NONE);
+                assertThat(config.appHttp().securityEnabled()).isFalse();
+            });
+    }
+
+    @Test
+    void loadFromString_defaultsSecurityModeToNoneWhenNotSpecified() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.NONE);
+            });
+    }
+
+    @Test
+    void loadFromString_autoUpgradesSecurityModeWhenApiKeysPresent() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            api_keys = ["key1"]
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                // No explicit security_mode, but apiKeys present -> auto-upgrade to API_KEY
+                assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.API_KEY);
+                assertThat(config.appHttp().securityEnabled()).isTrue();
+            });
+    }
+
+    @Test
+    void loadFromString_explicitNoneOverridesApiKeyAutoUpgrade() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            security_mode = "none"
+            api_keys = ["key1"]
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                // Explicit "none" is honored even with apiKeys present
+                // (keys are stored but not enforced)
+                assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.NONE);
+                assertThat(config.appHttp().securityEnabled()).isFalse();
+            });
+    }
+
+    @Test
     void loadFromString_richApiKeysDefaultNameAndRolesWhenOmitted() {
         var toml = MINIMAL_CLUSTER + """
 
