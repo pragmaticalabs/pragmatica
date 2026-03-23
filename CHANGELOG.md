@@ -4,7 +4,9 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.22.0] - Unreleased
+## [0.23.0] - Unreleased
+
+## [0.22.0] - 2026-03-23
 
 ### Added
 - **RBAC Tier 2 — role-based authorization** — three hierarchical roles (ADMIN/OPERATOR/VIEWER) with per-route enforcement in the management API pipeline. RoutePermissionRegistry resolves permissions by HTTP method and path prefix. 403 Forbidden for authorization failures. TOML config `authorization_role` field on API keys (defaults to ADMIN for backward compat). Independent security audit passed clean — all 40+ mutation routes verified
