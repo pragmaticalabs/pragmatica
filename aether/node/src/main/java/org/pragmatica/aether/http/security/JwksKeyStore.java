@@ -32,7 +32,7 @@ import static org.pragmatica.lang.Result.success;
 /// Keys are cached with a configurable TTL. On cache miss for an unknown kid,
 /// the store refreshes from the remote JWKS endpoint (supporting key rotation).
 @SuppressWarnings({"JBCT-RET-03", "JBCT-EX-01", "JBCT-PAT-01"})
-class JwksKeyStore {
+class JwksKeyStore implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(JwksKeyStore.class);
     private static final JsonMapper JSON = JsonMapper.defaultJsonMapper();
     private static final TypeToken<Map<String, Object>> MAP_TYPE = new TypeToken<>() {};
@@ -58,6 +58,11 @@ class JwksKeyStore {
         this.httpClient = httpClient;
     }
 
+    @Override
+    public void close() {
+        httpClient.close();
+    }
+
     /// Find a public key by kid and algorithm.
     /// If kid not found in cache, attempts a refresh from the JWKS endpoint.
     Result<PublicKey> findKey(String kid, String alg) {
@@ -69,7 +74,8 @@ class JwksKeyStore {
 
     private void refreshIfExpired() {
         var now = System.currentTimeMillis();
-        if (now - lastFetchTime.get() > cacheTtlMs) {
+        var lastFetch = lastFetchTime.get();
+        if (now - lastFetch > cacheTtlMs && lastFetchTime.compareAndSet(lastFetch, now)) {
             fetchAndCacheKeys();
         }
     }
@@ -87,15 +93,27 @@ class JwksKeyStore {
 
     @SuppressWarnings("unchecked")
     private void applyJwksResponse(Map<String, Object> jwksMap) {
-        var keys = (List<Map<String, Object>>) jwksMap.get("keys");
-        if (keys == null) {
-            return;
-        }
+        Option.option((List<Map<String, Object>>) jwksMap.get("keys"))
+              .onPresent(this::refreshKeyCache);
+    }
+
+    private void refreshKeyCache(List<Map<String, Object>> keys) {
+        var newCache = new ConcurrentHashMap<String, PublicKey>();
+        keys.forEach(keyData -> cacheKeyInto(newCache, keyData));
         rawKeys.set(keys);
         keyCache.clear();
-        keys.forEach(this::cacheKey);
+        keyCache.putAll(newCache);
         lastFetchTime.set(System.currentTimeMillis());
         log.debug("JWKS refreshed: {} keys cached from {}", keys.size(), jwksUrl);
+    }
+
+    private void cacheKeyInto(ConcurrentHashMap<String, PublicKey> targetCache, Map<String, Object> keyData) {
+        var kid = stringValue(keyData, "kid");
+        var kty = stringValue(keyData, "kty");
+        if (kid.isEmpty()) {
+            return;
+        }
+        buildPublicKey(kty, keyData).onSuccess(key -> targetCache.put(kid, key));
     }
 
     private void cacheKey(Map<String, Object> keyData) {
@@ -147,11 +165,9 @@ class JwksKeyStore {
             case "P-521" -> "secp521r1";
             default -> throw new IllegalArgumentException("Unsupported curve: " + crv);
         };
-        var kpg = java.security.KeyPairGenerator.getInstance("EC");
-        var ecSpec = new java.security.spec.ECGenParameterSpec(curveName);
-        kpg.initialize(ecSpec);
-        var kp = kpg.generateKeyPair();
-        return ((java.security.interfaces.ECPublicKey) kp.getPublic()).getParams();
+        var params = java.security.AlgorithmParameters.getInstance("EC");
+        params.init(new java.security.spec.ECGenParameterSpec(curveName));
+        return params.getParameterSpec(ECParameterSpec.class);
     }
 
     private Result<Map<String, Object>> fetchJwks() {

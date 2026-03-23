@@ -46,6 +46,7 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
@@ -244,15 +245,12 @@ class AppHttpServerImpl implements AppHttpServer {
                                                             Option<Serializer> serializer,
                                                             Option<Deserializer> deserializer,
                                                             AppHttpConfig config) {
-        if (clusterNetwork.isEmpty() || serializer.isEmpty() || deserializer.isEmpty()) {
-            return Option.none();
-        }
-        return Option.some(HttpForwarder.httpForwarder(selfNodeId,
-                                                       routeRegistry,
-                                                       clusterNetwork.unwrap(),
-                                                       serializer.unwrap(),
-                                                       deserializer.unwrap(),
-                                                       config.forwardTimeout()));
+        return clusterNetwork.flatMap(net -> serializer.flatMap(ser -> deserializer.map(des -> HttpForwarder.httpForwarder(selfNodeId,
+                                                                                                                           routeRegistry,
+                                                                                                                           net,
+                                                                                                                           ser,
+                                                                                                                           des,
+                                                                                                                           config.forwardTimeout()))));
     }
 
     @Override
@@ -293,12 +291,12 @@ class AppHttpServerImpl implements AppHttpServer {
     private Promise<Unit> startH3Server() {
         var quicTls = tls.map(QuicSslContextFactory::createServer)
                          .or(QuicSslContextFactory.createSelfSignedServer());
-        if (quicTls.isFailure()) {
-            var errorMsg = quicTls.fold(cause -> cause.message(), _ -> "");
-            log.error("Failed to create QUIC SSL context: {}", errorMsg);
-            return Promise.success(unit());
-        }
-        var quicSslContext = quicTls.unwrap();
+        return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context: {}", cause.message()))
+                      .map(this::startH3WithSslContext)
+                      .or(Promise.success(unit()));
+    }
+
+    private Promise<Unit> startH3WithSslContext(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3", config.port())
                                            .withMaxContentLength(config.maxRequestSize());
         var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig, quicSslContext, this::handleRequest, wg))
@@ -337,13 +335,11 @@ class AppHttpServerImpl implements AppHttpServer {
     @Override
     public Promise<Unit> stop() {
         var h1Stop = Option.option(serverRef.get())
-                           .fold(() -> Promise.success(unit()),
-                                 server -> server.stop()
-                                                 .onSuccessRun(() -> log.info("App HTTP/1.1 server stopped")));
+                           .map(server -> server.stop().onSuccessRun(() -> log.info("App HTTP/1.1 server stopped")))
+                           .or(Promise.success(unit()));
         var h3Stop = Option.option(h3ServerRef.get())
-                           .fold(() -> Promise.success(unit()),
-                                 server -> server.stop()
-                                                 .onSuccessRun(() -> log.info("App HTTP/3 server stopped")));
+                           .map(server -> server.stop().onSuccessRun(() -> log.info("App HTTP/3 server stopped")))
+                           .or(Promise.success(unit()));
         return h1Stop.flatMap(_ -> h3Stop);
     }
 
@@ -605,22 +601,26 @@ class AppHttpServerImpl implements AppHttpServer {
                                        String path,
                                        String requestId,
                                        String method) {
-        var status = switch (cause) {
-            case SecurityError.MissingCredentials _ -> HttpStatus.UNAUTHORIZED;
-            case SecurityError.InvalidCredentials _ -> HttpStatus.FORBIDDEN;
-            case SecurityError.TokenExpired _ -> HttpStatus.UNAUTHORIZED;
-            case SecurityError.SignatureInvalid _ -> HttpStatus.FORBIDDEN;
-            case SecurityError.IssuerMismatch _ -> HttpStatus.FORBIDDEN;
-            case SecurityError.AudienceMismatch _ -> HttpStatus.FORBIDDEN;
-            case SecurityError.KeyNotFound _ -> HttpStatus.UNAUTHORIZED;
-            case SecurityError.JwksFetchFailed _ -> HttpStatus.UNAUTHORIZED;
-            default -> HttpStatus.UNAUTHORIZED;
-        };
+        var statusAndMessage = mapSecurityError(cause);
         AuditLog.authFailure(requestId, cause.message(), method, path);
-        if (status == HttpStatus.UNAUTHORIZED) {
+        if (statusAndMessage.status() == HttpStatus.UNAUTHORIZED) {
             addAuthenticateHeader(response);
         }
-        sendProblem(response, status, cause.message(), path, requestId);
+        sendProblem(response, statusAndMessage.status(), statusAndMessage.clientMessage(), path, requestId);
+    }
+
+    private record SecurityStatusMessage(HttpStatus status, String clientMessage) {}
+
+    private static SecurityStatusMessage mapSecurityError(Cause cause) {
+        return switch (cause) {
+            case SecurityError.MissingCredentials _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Authentication required");
+            case SecurityError.TokenExpired _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Token expired");
+            case SecurityError.SignatureInvalid _, SecurityError.IssuerMismatch _,
+                 SecurityError.AudienceMismatch _, SecurityError.KeyNotFound _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN, "Invalid token");
+            case SecurityError.InvalidCredentials _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN, "Invalid credentials");
+            case SecurityError.JwksFetchFailed _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Authentication temporarily unavailable");
+            default -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Authentication failed");
+        };
     }
 
     private void addAuthenticateHeader(ResponseWriter response) {
@@ -661,8 +661,8 @@ class AppHttpServerImpl implements AppHttpServer {
         normalizedPath.startsWith(normalizedPrefix));
     }
 
+    @SuppressWarnings("JBCT-NULL-01") // Adapter boundary: path may be null from external HTTP request parsing
     private String normalizePath(String path) {
-        // Boundary guard: path may be null from external HTTP request parsing
         if (path == null || path.isBlank()) {
             return "/";
         }
@@ -830,15 +830,24 @@ class AppHttpServerImpl implements AppHttpServer {
         var ser = serializer.unwrap();
         var network = clusterNetwork.unwrap();
         // Deserialize the request context
-        HttpRequestContext context;
-        try{
-            context = des.decode(request.requestData());
-        } catch (Exception e) {
-            log.error("Failed to deserialize forward request [{}]: {}", request.requestId(), e.getMessage());
-            sendForwardError(network, request, "Deserialization failed: " + e.getMessage());
-            return;
-        }
-        // Find local router for this request
+        Result.<HttpRequestContext, byte[]>lift1(des::decode, request.requestData())
+              .onFailure(cause -> logAndSendForwardError(network, request, "Deserialization failed", cause))
+              .onSuccess(context -> dispatchForwardedRequest(context, request, network, ser));
+    }
+
+    private void logAndSendForwardError(ClusterNetwork network,
+                                          HttpForwardRequest request,
+                                          String prefix,
+                                          Cause cause) {
+        log.error("{} [{}]: {}", prefix, request.requestId(), cause.message());
+        sendForwardError(network, request, prefix + ": " + cause.message());
+    }
+
+    @SuppressWarnings("JBCT-RET-01")
+    private void dispatchForwardedRequest(HttpRequestContext context,
+                                          HttpForwardRequest request,
+                                          ClusterNetwork network,
+                                          Serializer ser) {
         var method = context.method();
         var path = context.path();
         var normalizedPath = normalizePath(path);
@@ -848,19 +857,12 @@ class AppHttpServerImpl implements AppHttpServer {
             sendForwardError(network, request, "Route not found locally");
             return;
         }
-        // Handle the request locally with metrics
         var routeInfo = resolveRouteInfo(method, normalizedPath);
         var startTime = System.nanoTime();
-        routeInfo.onPresent(info -> recordMetricsStart(info));
+        routeInfo.onPresent(this::recordMetricsStart);
         routerOpt.unwrap()
                  .handle(context)
-                 .onSuccess(responseData -> handleForwardSuccess(network,
-                                                                 request,
-                                                                 ser,
-                                                                 responseData,
-                                                                 routeInfo,
-                                                                 startTime,
-                                                                 context))
+                 .onSuccess(responseData -> handleForwardSuccess(network, request, ser, responseData, routeInfo, startTime, context))
                  .onFailure(cause -> handleForwardFailure(network, request, cause, routeInfo, startTime, context));
     }
 
@@ -899,19 +901,21 @@ class AppHttpServerImpl implements AppHttpServer {
                                     HttpForwardRequest request,
                                     Serializer ser,
                                     HttpResponseData responseData) {
-        try{
-            var payload = ser.encode(responseData);
-            var forwardResponse = new HttpForwardResponse(selfNodeId,
-                                                          request.correlationId(),
-                                                          request.requestId(),
-                                                          true,
-                                                          payload);
-            network.send(request.sender(), forwardResponse);
-            log.trace("Sent forward success response [{}]", request.requestId());
-        } catch (Exception e) {
-            log.error("Failed to serialize forward response [{}]: {}", request.requestId(), e.getMessage());
-            sendForwardError(network, request, "Response serialization failed");
-        }
+        Result.lift1(ser::encode, responseData)
+              .onSuccess(payload -> sendForwardPayload(network, request, payload))
+              .onFailure(cause -> logAndSendForwardError(network, request, "Response serialization failed", cause));
+    }
+
+    private void sendForwardPayload(ClusterNetwork network,
+                                    HttpForwardRequest request,
+                                    byte[] payload) {
+        var forwardResponse = new HttpForwardResponse(selfNodeId,
+                                                      request.correlationId(),
+                                                      request.requestId(),
+                                                      true,
+                                                      payload);
+        network.send(request.sender(), forwardResponse);
+        log.trace("Sent forward success response [{}]", request.requestId());
     }
 
     private void sendForwardError(ClusterNetwork network,

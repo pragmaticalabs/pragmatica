@@ -78,30 +78,31 @@ class JwtSecurityValidator implements SecurityValidator {
             .flatMap(this::validateAudience);
     }
 
-    private static Result<Map<String, Object>> validateExpiration(Map<String, Object> payload) {
+    private Result<Map<String, Object>> validateExpiration(Map<String, Object> payload) {
         return Option.option(payload.get("exp"))
                      .toResult(new SecurityError.TokenExpired("Missing exp claim"))
                      .flatMap(exp -> checkNotExpired(exp, payload));
     }
 
-    private static Result<Map<String, Object>> checkNotExpired(Object exp, Map<String, Object> payload) {
+    private Result<Map<String, Object>> checkNotExpired(Object exp, Map<String, Object> payload) {
         var expSeconds = tolong(exp);
         var now = System.currentTimeMillis() / 1000;
-        return expSeconds > now
+        var skew = config.clockSkewSeconds();
+        return expSeconds + skew > now
                ? success(payload)
-               : new SecurityError.TokenExpired("Token expired at " + expSeconds).result();
+               : new SecurityError.TokenExpired("Token expired").result();
     }
 
     private Result<Map<String, Object>> validateIssuer(Map<String, Object> payload) {
         return config.issuer()
-                     .fold(() -> success(payload),
-                           expected -> matchClaim(payload, "iss", expected, "Issuer"));
+                     .map(expected -> matchClaim(payload, "iss", expected, "Issuer"))
+                     .or(success(payload));
     }
 
     private Result<Map<String, Object>> validateAudience(Map<String, Object> payload) {
         return config.audience()
-                     .fold(() -> success(payload),
-                           expected -> matchAudienceClaim(payload, expected));
+                     .map(expected -> matchAudienceClaim(payload, expected))
+                     .or(success(payload));
     }
 
     private static Result<Map<String, Object>> matchClaim(Map<String, Object> payload,
@@ -113,26 +114,30 @@ class JwtSecurityValidator implements SecurityValidator {
                            .or("");
         return expected.equals(actual)
                ? success(payload)
-               : new SecurityError.IssuerMismatch(label + " mismatch: expected " + expected + ", got " + actual).result();
+               : new SecurityError.IssuerMismatch(label + " mismatch").result();
     }
 
     @SuppressWarnings("unchecked")
     private static Result<Map<String, Object>> matchAudienceClaim(Map<String, Object> payload,
                                                                    String expected) {
-        var audValue = payload.get("aud");
-        if (audValue == null) {
-            return new SecurityError.AudienceMismatch("Missing aud claim").result();
-        }
+        return Option.option(payload.get("aud"))
+                     .toResult(new SecurityError.AudienceMismatch("Missing aud claim"))
+                     .flatMap(audValue -> checkAudienceValue(audValue, expected, payload));
+    }
+
+    private static Result<Map<String, Object>> checkAudienceValue(Object audValue,
+                                                                   String expected,
+                                                                   Map<String, Object> payload) {
         if (audValue instanceof String s) {
             return expected.equals(s)
                    ? success(payload)
-                   : new SecurityError.AudienceMismatch("Audience mismatch: expected " + expected + ", got " + s).result();
+                   : new SecurityError.AudienceMismatch("Audience mismatch").result();
         }
         if (audValue instanceof List<?> list) {
             var match = list.stream().anyMatch(v -> expected.equals(String.valueOf(v)));
             return match
                    ? success(payload)
-                   : new SecurityError.AudienceMismatch("Audience mismatch: " + expected + " not in " + list).result();
+                   : new SecurityError.AudienceMismatch("Audience mismatch").result();
         }
         return new SecurityError.AudienceMismatch("Unexpected aud claim type").result();
     }
@@ -185,7 +190,7 @@ class JwtSecurityValidator implements SecurityValidator {
     private static Map<String, String> extractStringClaims(Map<String, Object> payload) {
         return payload.entrySet()
                       .stream()
-                      .filter(e -> e.getValue() != null)
+                      .filter(e -> Option.option(e.getValue()).isPresent())
                       .collect(Collectors.toMap(Map.Entry::getKey, e -> String.valueOf(e.getValue())));
     }
 
@@ -207,7 +212,7 @@ class JwtSecurityValidator implements SecurityValidator {
                            .stream()
                            .filter(e -> "authorization".equalsIgnoreCase(e.getKey()))
                            .map(Map.Entry::getValue)
-                           .filter(values -> values != null && !values.isEmpty())
+                           .flatMap(values -> Option.option(values).filter(v -> !v.isEmpty()).stream())
                            .map(List::getFirst)
                            .filter(v -> v.regionMatches(true, 0, BEARER_PREFIX, 0, BEARER_PREFIX.length()))
                            .map(v -> v.substring(BEARER_PREFIX.length()).trim())

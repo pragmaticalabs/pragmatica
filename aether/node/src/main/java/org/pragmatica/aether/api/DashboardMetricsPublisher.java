@@ -47,13 +47,17 @@ public class DashboardMetricsPublisher {
     private final AtomicReference<Option<ScheduledFuture<?>>> scheduledTask = new AtomicReference<>(Option.none());
     private final AtomicBoolean running = new AtomicBoolean(false);
 
-    private long lastTotalInvocations = 0;
-    private long lastTotalSuccess = 0;
-    private long lastTotalFailure = 0;
-    private double emaRps = 0.0;
-    private double emaSuccessRate = 1.0;
-    private double emaErrorRate = 0.0;
-    private double emaAvgLatencyMs = 0.0;
+    private final AtomicReference<EmaState> emaState = new AtomicReference<>(EmaState.INITIAL);
+
+    private record EmaState(long lastTotalInvocations,
+                            long lastTotalSuccess,
+                            long lastTotalFailure,
+                            double emaRps,
+                            double emaSuccessRate,
+                            double emaErrorRate,
+                            double emaAvgLatencyMs) {
+        static final EmaState INITIAL = new EmaState(0, 0, 0, 0.0, 1.0, 0.0, 0.0);
+    }
 
     private DashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier,
                                       AlertManager alertManager,
@@ -93,14 +97,14 @@ public class DashboardMetricsPublisher {
         log.info("Dashboard metrics publisher stopped");
     }
 
+    @SuppressWarnings("JBCT-EX-01") // Infrastructure boundary: scheduled task must not propagate exceptions
     private void publishMetrics() {
         if (DashboardWebSocketHandler.connectedClients() == 0) {
             return;
         }
-        try{
+        try {
             var message = buildMetricsUpdate();
             DashboardWebSocketHandler.broadcast(message);
-            // Check thresholds and broadcast alerts
             checkAndBroadcastAlerts();
         } catch (Exception e) {
             log.error("Error publishing metrics", e);
@@ -287,6 +291,21 @@ public class DashboardMetricsPublisher {
 
     @SuppressWarnings("JBCT-PAT-01")
     private String buildAggregates() {
+        var rawTotals = computeRawTotals();
+        var percentiles = computePercentiles(rawTotals.allSamples, rawTotals.totalSamples);
+        var newEma = computeEma(rawTotals);
+        emaState.set(newEma);
+        return formatAggregates(newEma, percentiles);
+    }
+
+    private record RawTotals(long totalInvocations,
+                             long totalSuccess,
+                             long totalFailure,
+                             double weightedLatency,
+                             long totalSamples,
+                             List<long[]> allSamples) {}
+
+    private RawTotals computeRawTotals() {
         var node = nodeSupplier.get();
         var snapshots = node.invocationMetrics()
                             .snapshot();
@@ -307,32 +326,37 @@ public class DashboardMetricsPublisher {
                 totalSamples += metrics.latencySamples().length;
             }
         }
-        // Compute percentiles from merged latency samples
-        var percentiles = computePercentiles(allSamples, totalSamples);
-        // Clamp to 0: counters can decrease when nodes restart and metrics reset
-        long deltaInvocations = Math.max(0, totalInvocations - lastTotalInvocations);
-        long deltaSuccess = Math.max(0, totalSuccess - lastTotalSuccess);
+        return new RawTotals(totalInvocations, totalSuccess, totalFailure, weightedLatency, totalSamples, allSamples);
+    }
+
+    private EmaState computeEma(RawTotals totals) {
+        var prev = emaState.get();
+        long deltaInvocations = Math.max(0, totals.totalInvocations - prev.lastTotalInvocations);
+        long deltaSuccess = Math.max(0, totals.totalSuccess - prev.lastTotalSuccess);
         double instantRps = deltaInvocations / (broadcastIntervalMs / 1000.0);
         double instantSuccessRate = deltaInvocations > 0
                                     ? (double) deltaSuccess / deltaInvocations
                                     : 1.0;
         double instantErrorRate = 1.0 - instantSuccessRate;
-        double avgLatencyMs = totalInvocations > 0
-                              ? weightedLatency / totalInvocations
+        double avgLatencyMs = totals.totalInvocations > 0
+                              ? totals.weightedLatency / totals.totalInvocations
                               : 0.0;
-        emaRps = EMA_ALPHA * instantRps + (1 - EMA_ALPHA) * emaRps;
-        emaSuccessRate = EMA_ALPHA * instantSuccessRate + (1 - EMA_ALPHA) * emaSuccessRate;
-        emaErrorRate = EMA_ALPHA * instantErrorRate + (1 - EMA_ALPHA) * emaErrorRate;
-        emaAvgLatencyMs = EMA_ALPHA * avgLatencyMs + (1 - EMA_ALPHA) * emaAvgLatencyMs;
-        lastTotalInvocations = totalInvocations;
-        lastTotalSuccess = totalSuccess;
-        lastTotalFailure = totalFailure;
+        return new EmaState(totals.totalInvocations,
+                            totals.totalSuccess,
+                            totals.totalFailure,
+                            EMA_ALPHA * instantRps + (1 - EMA_ALPHA) * prev.emaRps,
+                            EMA_ALPHA * instantSuccessRate + (1 - EMA_ALPHA) * prev.emaSuccessRate,
+                            EMA_ALPHA * instantErrorRate + (1 - EMA_ALPHA) * prev.emaErrorRate,
+                            EMA_ALPHA * avgLatencyMs + (1 - EMA_ALPHA) * prev.emaAvgLatencyMs);
+    }
+
+    private static String formatAggregates(EmaState ema, double[] percentiles) {
         return String.format("{\"rps\":%.2f,\"successRate\":%.4f,\"errorRate\":%.4f,\"avgLatencyMs\":%.2f,"
                              + "\"p50\":%.2f,\"p95\":%.2f,\"p99\":%.2f}",
-                             emaRps,
-                             emaSuccessRate,
-                             emaErrorRate,
-                             emaAvgLatencyMs,
+                             ema.emaRps,
+                             ema.emaSuccessRate,
+                             ema.emaErrorRate,
+                             ema.emaAvgLatencyMs,
                              percentiles[0],
                              percentiles[1],
                              percentiles[2]);

@@ -308,7 +308,8 @@ public final class ConfigLoader {
         var roleClaim = doc.getString("app-http", "role_claim")
                            .or(JwtConfig.DEFAULT_ROLE_CLAIM);
         var cacheTtl = parseLong(doc, "app-http", "jwks_cache_ttl_seconds", JwtConfig.DEFAULT_CACHE_TTL_SECONDS);
-        return JwtConfig.jwtConfig(jwksUrl, issuer, audience, roleClaim, cacheTtl)
+        var clockSkew = parseLong(doc, "app-http", "clock_skew_seconds", JwtConfig.DEFAULT_CLOCK_SKEW_SECONDS);
+        return JwtConfig.jwtConfig(jwksUrl, issuer, audience, roleClaim, cacheTtl, clockSkew)
                         .unwrap();
     }
 
