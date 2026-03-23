@@ -52,6 +52,17 @@ document.addEventListener('alpine:init', function() {
                     }
                 });
 
+                // Reset invocation sort state when entering Requests page
+                this.$watch('currentPage', function(page) {
+                    if (page === 'requests') {
+                        InvocationTable.sortField = 'count';
+                        InvocationTable.sortDir = -1;
+                        InvocationTable.expandedRow = null;
+                        self.invocationSort.field = 'count';
+                        self.invocationSort.dir = -1;
+                    }
+                });
+
                 // Bug 2 fix: Watch per-node toggle and rebuild charts with
                 // the appropriate series configuration.
                 this.$watch('$store.metrics.perNode', function() {
@@ -64,10 +75,13 @@ document.addEventListener('alpine:init', function() {
                     }
                 });
 
-                // Resize handler for charts
-                window.addEventListener('resize', function() {
-                    self.resizeCharts();
-                });
+                // Resize handler for charts (guarded against accumulation)
+                if (!window._aetherResizeAttached) {
+                    window._aetherResizeAttached = true;
+                    window.addEventListener('resize', function() {
+                        self.resizeCharts();
+                    });
+                }
             },
 
             onWsMessage(name, data) {
@@ -87,6 +101,8 @@ document.addEventListener('alpine:init', function() {
                         Alpine.store('governors').updateFromWsDashboard(data.data);
                         Alpine.store('strategies').updateFromWsDashboard(data.data);
                         Alpine.store('streams').updateFromWsDashboard(data.data);
+                        // Issue 13: Seed initial history point so charts are not blank
+                        Alpine.store('metrics').seedFromInitialState(data.data);
                     } else if (data.type === 'METRICS_UPDATE' && data.data) {
                         Alpine.store('cluster').updateFromWsDashboard(data.data);
                         Alpine.store('metrics').updateFromWsDashboard(data.data);
@@ -100,7 +116,9 @@ document.addEventListener('alpine:init', function() {
                         this.updateSparklines();
                         this.updateCharts();
                     } else if (data.type === 'ALERT' || data.type === 'ALERT_RESOLVED') {
-                        Alpine.store('alerts').updateFromWs(data);
+                        Alpine.store('alerts').updateFromWs(data.data || data);
+                    } else if (data.type === 'HISTORY') {
+                        Alpine.store('alerts').updateFromWsHistory(data.data || data);
                     }
                 }
                 if (name === 'events') {
@@ -147,6 +165,12 @@ document.addEventListener('alpine:init', function() {
             },
 
             initSparklines() {
+                // Issue 10: Destroy existing sparkline instances before reinit
+                var self = this;
+                Object.keys(this.sparklines).forEach(function(key) {
+                    Sparkline.destroy(self.sparklines[key]);
+                });
+                this.sparklines = {};
                 var refs = this.$refs;
                 if (refs.sparkRps) this.sparklines.rps = Sparkline.create(refs.sparkRps, 'rgba(88,166,255,0.8)');
                 if (refs.sparkP50) this.sparklines.p50 = Sparkline.create(refs.sparkP50, 'rgba(63,185,80,0.8)');

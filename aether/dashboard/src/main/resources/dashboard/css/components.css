@@ -1154,3 +1154,117 @@ tbody tr:hover { background: var(--bg-tertiary); }
 
 /* Streams Table */
 .streams-table { width: 100%; }
+
+/* Notification Toast (Issue 17) */
+.notification-container {
+    position: fixed;
+    top: var(--space-md);
+    right: var(--space-md);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    max-width: 420px;
+    pointer-events: none;
+}
+
+.notification {
+    pointer-events: auto;
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-size-sm);
+    font-family: var(--font-sans);
+    color: var(--text-primary);
+    border-left: 3px solid transparent;
+    animation: notification-slide-in 0.2s ease-out;
+}
+
+.notification-error {
+    background: rgba(248, 81, 73, 0.12);
+    border-left-color: var(--accent-red);
+}
+
+.notification-warning {
+    background: rgba(210, 153, 34, 0.12);
+    border-left-color: var(--accent-orange);
+}
+
+.notification-info {
+    background: rgba(88, 166, 255, 0.12);
+    border-left-color: var(--accent-blue);
+}
+
+.notification-fade-out {
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+@keyframes notification-slide-in {
+    from { opacity: 0; transform: translateX(20px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+/* Per-channel WS indicators (Issue 20) */
+.ws-channels {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--font-size-xs);
+    font-family: var(--font-mono);
+    padding: 2px var(--space-sm);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+}
+
+.ws-channel-label {
+    color: var(--text-secondary);
+    margin-right: 2px;
+}
+
+.ws-channel-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.ws-channel-dot.ch-connected {
+    background: var(--accent-green);
+    box-shadow: 0 0 4px rgba(63, 185, 80, 0.5);
+}
+
+.ws-channel-dot.ch-disconnected {
+    background: var(--accent-red);
+    box-shadow: 0 0 4px rgba(248, 81, 73, 0.5);
+}
+
+/* Invocation Detail Row (Issue 9) */
+.invocation-detail-row td {
+    padding: 0;
+    border-bottom: 1px solid var(--border-light);
+}
+
+.invocation-detail {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    padding: var(--space-sm) var(--space-lg);
+    background: var(--bg-tertiary);
+    font-size: var(--font-size-sm);
+}
+
+.invocation-detail .detail-label {
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.invocation-detail .detail-value {
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+}
+
+.invocation-detail .detail-hint {
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+    margin-left: auto;
+}

@@ -19,8 +19,12 @@
                 <h1 class="header-title">AETHER</h1>
             </div>
             <div class="header-right">
-                <span class="ws-indicator" :class="wsConnected ? 'connected' : 'disconnected'"
-                      x-text="wsConnected ? 'WS ●' : 'WS ○'"></span>
+                <span class="ws-channels">
+                    <span class="ws-channel-label">WS</span>
+                    <span class="ws-channel-dot" :class="WsManager.connections.status && WsManager.connections.status.connected ? 'ch-connected' : 'ch-disconnected'" title="status"></span>
+                    <span class="ws-channel-dot" :class="WsManager.connections.dashboard && WsManager.connections.dashboard.connected ? 'ch-connected' : 'ch-disconnected'" title="dashboard"></span>
+                    <span class="ws-channel-dot" :class="WsManager.connections.events && WsManager.connections.events.connected ? 'ch-connected' : 'ch-disconnected'" title="events"></span>
+                </span>
                 <span class="header-stat">Uptime: <span x-text="formatUptime($store.cluster.uptimeSeconds)"></span></span>
                 <span class="header-stat">Nodes: <span x-text="$store.cluster.nodes.length + '/' + $store.cluster.targetClusterSize"></span>
                     <span class="health-dot" :class="$store.cluster.healthy ? 'healthy' : 'unhealthy'"></span>
@@ -289,9 +293,26 @@
                                     <td x-text="inv.method"></td>
                                     <td x-text="inv.artifact"></td>
                                     <td x-text="formatNumber(inv.count)"></td>
-                                    <td x-text="formatPercent(1 - inv.errorRate)"></td>
+                                    <td x-text="formatPercent(inv.successRate)"></td>
                                     <td x-text="formatLatency(inv.avgDurationMs)"></td>
                                     <td x-text="inv.slowCalls"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                        <tbody>
+                            <template x-for="inv in filteredInvocations()" :key="'detail:' + inv.artifact + ':' + inv.method">
+                                <tr class="invocation-detail-row" x-show="InvocationTable.isExpanded(inv)" x-transition>
+                                    <td colspan="6">
+                                        <div class="invocation-detail">
+                                            <span class="detail-label">Slow calls:</span>
+                                            <span class="detail-value" x-text="inv.slowCalls"></span>
+                                            <span class="detail-label">Success:</span>
+                                            <span class="detail-value" x-text="formatNumber(inv.successCount)"></span>
+                                            <span class="detail-label">Failures:</span>
+                                            <span class="detail-value" x-text="formatNumber(inv.failureCount)"></span>
+                                            <span class="detail-hint">Per-call details available via REST API.</span>
+                                        </div>
+                                    </td>
                                 </tr>
                             </template>
                         </tbody>

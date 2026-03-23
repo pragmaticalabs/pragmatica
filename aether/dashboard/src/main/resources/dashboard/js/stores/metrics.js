@@ -132,7 +132,9 @@ document.addEventListener('alpine:init', function() {
             h.p50.push(this.p50);
             h.p95.push(this.p95);
             h.p99.push(this.p99);
-            if (h.timestamps.length > this.maxHistory) {
+            // Trim to time range, with maxHistory as absolute cap
+            var cutoff = now - this.timeRangeSeconds();
+            while (h.timestamps.length > 0 && (h.timestamps[0] < cutoff || h.timestamps.length > this.maxHistory)) {
                 h.timestamps.shift();
                 h.rps.shift();
                 h.successRate.shift();
@@ -170,6 +172,65 @@ document.addEventListener('alpine:init', function() {
 
         setTimeRange(range) {
             this.timeRange = range;
+            this.trimHistoryToRange();
+        },
+
+        timeRangeSeconds() {
+            var map = { '5m': 300, '15m': 900, '1h': 3600, '2h': 7200 };
+            return map[this.timeRange] || 300;
+        },
+
+        trimHistoryToRange() {
+            var h = this.history;
+            if (h.timestamps.length === 0) return;
+            var cutoff = Date.now() / 1000 - this.timeRangeSeconds();
+            var startIdx = 0;
+            while (startIdx < h.timestamps.length && h.timestamps[startIdx] < cutoff) {
+                startIdx++;
+            }
+            if (startIdx === 0) return;
+            h.timestamps = h.timestamps.slice(startIdx);
+            h.rps = h.rps.slice(startIdx);
+            h.successRate = h.successRate.slice(startIdx);
+            h.p50 = h.p50.slice(startIdx);
+            h.p95 = h.p95.slice(startIdx);
+            h.p99 = h.p99.slice(startIdx);
+            Object.keys(h.cpu).forEach(function(k) { h.cpu[k] = h.cpu[k].slice(startIdx); });
+            Object.keys(h.heap).forEach(function(k) { h.heap[k] = h.heap[k].slice(startIdx); });
+            Object.keys(h.nodeRps).forEach(function(k) { h.nodeRps[k] = h.nodeRps[k].slice(startIdx); });
+            Object.keys(h.nodeLatency).forEach(function(k) { h.nodeLatency[k] = h.nodeLatency[k].slice(startIdx); });
+            Object.keys(h.nodeSuccessRate).forEach(function(k) { h.nodeSuccessRate[k] = h.nodeSuccessRate[k].slice(startIdx); });
+        },
+
+        seedFromInitialState(data) {
+            // Issue 13: Populate first data point from initial state so charts are not blank
+            if (this.history.timestamps.length > 0) return;
+            var now = Date.now() / 1000;
+            if (data.aggregates) {
+                this.rps = data.aggregates.rps || 0;
+                this.successRate = data.aggregates.successRate != null ? data.aggregates.successRate : 1;
+                this.avgLatencyMs = data.aggregates.avgLatencyMs || 0;
+                this.p50 = this.avgLatencyMs * 0.8;
+                this.p95 = this.avgLatencyMs * 2.5;
+                this.p99 = this.avgLatencyMs * 5;
+            }
+            if (data.metricsHistory) {
+                var mh = data.metricsHistory;
+                this.history.timestamps = mh.timestamps || [now];
+                this.history.rps = mh.rps || [this.rps];
+                this.history.successRate = mh.successRate || [this.successRate];
+                this.history.p50 = mh.p50 || [this.p50];
+                this.history.p95 = mh.p95 || [this.p95];
+                this.history.p99 = mh.p99 || [this.p99];
+            } else {
+                this.lastHistoryPush = now;
+                this.history.timestamps.push(now);
+                this.history.rps.push(this.rps);
+                this.history.successRate.push(this.successRate);
+                this.history.p50.push(this.p50);
+                this.history.p95.push(this.p95);
+                this.history.p99.push(this.p99);
+            }
         }
     });
 });

@@ -14,8 +14,7 @@ window.Formatters = {
     },
 
     percent: function(rate) {
-        if (rate == null) return '0%';
-        if (rate > 1) return rate.toFixed(1) + '%';
+        if (rate == null || isNaN(rate)) return '\u2014';
         return (rate * 100).toFixed(1) + '%';
     },
 
