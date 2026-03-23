@@ -9,7 +9,11 @@ public sealed interface StreamError extends Cause {
         BUFFER_CLOSED("Ring buffer is closed"),
         BUFFER_EMPTY("Ring buffer is empty"),
         STREAM_ALREADY_EXISTS("Stream already exists"),
-        STREAM_CLOSED("Stream has been closed");
+        STREAM_CLOSED("Stream has been closed"),
+        CONSUMER_ALREADY_SUBSCRIBED("Consumer group already subscribed to this partition"),
+        CONSUMER_NOT_FOUND("Consumer group not found for this partition"),
+        CONSUMER_STALLED("Consumer is stalled due to processing failure"),
+        CONSUMER_RUNTIME_CLOSED("Consumer runtime has been closed");
 
         private final String message;
 
@@ -48,6 +52,13 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Partition %d out of range for stream '%s' (partitions: %d)".formatted(partition, streamName, partitionCount);
+        }
+    }
+
+    record EventProcessingFailed(String streamName, int partition, long offset, String reason) implements StreamError {
+        @Override
+        public String message() {
+            return "Event processing failed at %s[%d]@%d: %s".formatted(streamName, partition, offset, reason);
         }
     }
 }
