@@ -89,9 +89,9 @@ document.addEventListener('alpine:init', function() {
                 this.successRate = data.aggregates.successRate != null ? data.aggregates.successRate : 1;
                 this.errorRate = data.aggregates.errorRate || 0;
                 this.avgLatencyMs = data.aggregates.avgLatencyMs || 0;
-                this.p50 = this.avgLatencyMs * 0.8;
-                this.p95 = this.avgLatencyMs * 2.5;
-                this.p99 = this.avgLatencyMs * 5;
+                this.p50 = data.aggregates.p50 != null ? data.aggregates.p50 : this.avgLatencyMs * 0.8;
+                this.p95 = data.aggregates.p95 != null ? data.aggregates.p95 : this.avgLatencyMs * 2.5;
+                this.p99 = data.aggregates.p99 != null ? data.aggregates.p99 : this.avgLatencyMs * 5;
             }
             if (data.nodeMetrics) {
                 this.nodeMetrics = data.nodeMetrics;
@@ -210,9 +210,9 @@ document.addEventListener('alpine:init', function() {
                 this.rps = data.aggregates.rps || 0;
                 this.successRate = data.aggregates.successRate != null ? data.aggregates.successRate : 1;
                 this.avgLatencyMs = data.aggregates.avgLatencyMs || 0;
-                this.p50 = this.avgLatencyMs * 0.8;
-                this.p95 = this.avgLatencyMs * 2.5;
-                this.p99 = this.avgLatencyMs * 5;
+                this.p50 = data.aggregates.p50 != null ? data.aggregates.p50 : this.avgLatencyMs * 0.8;
+                this.p95 = data.aggregates.p95 != null ? data.aggregates.p95 : this.avgLatencyMs * 2.5;
+                this.p99 = data.aggregates.p99 != null ? data.aggregates.p99 : this.avgLatencyMs * 5;
             }
             if (data.metricsHistory) {
                 var mh = data.metricsHistory;
