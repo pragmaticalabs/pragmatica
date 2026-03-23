@@ -52,6 +52,7 @@
         <module>environment</module>
         <module>resource</module>
         <module>slice</module>
+        <module>aether-stream</module>
         <module>cli</module>
         <module>lb</module>
         <module>ember</module>
@@ -275,6 +276,11 @@
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>slice</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>aether-stream</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
