@@ -55,6 +55,10 @@ public class CodecProcessor extends AbstractProcessor {
     }
 
     private void processRecord(TypeElement element, Map<String, List<String>> packageToCodecNames) {
+        if (!validateRecordFields(element)) {
+            return;
+        }
+
         var tag = extractTag(element);
         var result = generator.generateRecordCodec(element, tag);
 
@@ -62,6 +66,19 @@ public class CodecProcessor extends AbstractProcessor {
             registerCodec(element, packageToCodecNames);
             note(element, "Generated codec: " + element.getSimpleName() + "Codec");
         }
+    }
+
+    private boolean validateRecordFields(TypeElement element) {
+        var unregistered = generator.validateRecordFields(element);
+        var recordName = element.getQualifiedName().toString();
+
+        for (var field : unregistered) {
+            error(element, "Field '" + field.fieldName() + "' of type '" + field.typeName()
+                + "' in @Codec record '" + recordName + "' has no codec. "
+                + "Add @Codec to " + field.typeName() + " or use a type with a registered codec.");
+        }
+
+        return unregistered.isEmpty();
     }
 
     private void processEnum(TypeElement element, Map<String, List<String>> packageToCodecNames) {
@@ -96,7 +113,7 @@ public class CodecProcessor extends AbstractProcessor {
             var tag = extractTag(subtypeElement);
 
             if (subtypeKind == ElementKind.RECORD) {
-                if (generator.generateRecordCodec(subtypeElement, tag)) {
+                if (validateRecordFields(subtypeElement) && generator.generateRecordCodec(subtypeElement, tag)) {
                     registerCodec(subtypeElement, packageToCodecNames);
                     note(subtypeElement, "Generated codec: " + subtypeElement.getSimpleName() + "Codec");
                 }
@@ -133,7 +150,7 @@ public class CodecProcessor extends AbstractProcessor {
             var tag = extractTag(nested);
 
             if (nestedKind == ElementKind.RECORD) {
-                if (generator.generateRecordCodec(nested, tag)) {
+                if (validateRecordFields(nested) && generator.generateRecordCodec(nested, tag)) {
                     registerCodec(nested, packageToCodecNames);
                     note(nested, "Generated codec for nested type: " + nested.getSimpleName() + "Codec");
                 }

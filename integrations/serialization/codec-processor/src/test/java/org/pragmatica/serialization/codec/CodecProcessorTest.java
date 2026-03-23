@@ -140,6 +140,158 @@ class CodecProcessorTest {
     }
 
     @Nested
+    class FieldValidationTests {
+        @Test
+        void validation_emitsError_forUnregisteredFieldType() {
+            var source = JavaFileObjects.forSourceString("com.example.BadRecord",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+                import java.net.InetSocketAddress;
+
+                @Codec
+                public record BadRecord(String name, InetSocketAddress address) {}
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("Field 'address' of type 'java.net.InetSocketAddress'");
+            assertThat(compilation).hadErrorContaining("has no codec");
+        }
+
+        @Test
+        void validation_succeeds_forCodecAnnotatedFieldType() {
+            var enumSource = JavaFileObjects.forSourceString("com.example.Role",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+
+                @Codec
+                public enum Role { ADMIN, USER }
+                """);
+            var recordSource = JavaFileObjects.forSourceString("com.example.Account",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+
+                @Codec
+                public record Account(String name, Role role) {}
+                """);
+
+            var compilation = compileWith(enumSource, recordSource);
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.AccountCodec");
+        }
+
+        @Test
+        void validation_succeeds_forBuiltinTypes() {
+            var source = JavaFileObjects.forSourceString("com.example.BuiltinRecord",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+                import java.util.List;
+                import java.util.Map;
+                import java.util.Set;
+
+                @Codec
+                public record BuiltinRecord(
+                    String name,
+                    int count,
+                    long timestamp,
+                    boolean active,
+                    double score,
+                    List<String> tags,
+                    Map<String, String> metadata,
+                    Set<String> categories
+                ) {}
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.BuiltinRecordCodec");
+        }
+
+        @Test
+        void validation_succeeds_forListOfCodecType() {
+            var itemSource = JavaFileObjects.forSourceString("com.example.Item",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+
+                @Codec
+                public record Item(String value) {}
+                """);
+            var containerSource = JavaFileObjects.forSourceString("com.example.Container",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+                import java.util.List;
+
+                @Codec
+                public record Container(List<Item> items) {}
+                """);
+
+            var compilation = compileWith(itemSource, containerSource);
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.ContainerCodec");
+        }
+
+        @Test
+        void validation_emitsError_forUnregisteredFieldInSealedSubtype() {
+            var source = JavaFileObjects.forSourceString("com.example.Message",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+                import java.net.URI;
+
+                @Codec
+                public sealed interface Message permits Message.Text, Message.Link {
+                    @Codec(tag = 1)
+                    record Text(String content) implements Message {}
+
+                    @Codec(tag = 2)
+                    record Link(URI url) implements Message {}
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("Field 'url' of type 'java.net.URI'");
+            assertThat(compilation).hadErrorContaining("has no codec");
+        }
+
+        @Test
+        void validation_succeeds_forByteArrayField() {
+            var source = JavaFileObjects.forSourceString("com.example.Binary",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+
+                @Codec
+                public record Binary(String name, byte[] data) {}
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.BinaryCodec");
+        }
+    }
+
+    @Nested
     class RegistryTests {
         @Test
         void registry_generatesCodecsList_forPackage() {
