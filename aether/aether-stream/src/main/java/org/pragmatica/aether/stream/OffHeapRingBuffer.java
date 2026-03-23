@@ -1,6 +1,7 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 
 import java.lang.foreign.Arena;
@@ -159,7 +160,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     /// Apply retention policy, evicting events that exceed any limit.
-    @SuppressWarnings("JBCT-RET-01") // Mutation operation on off-heap data structure
+    @Contract
     public void applyRetention(RetentionPolicy policy) {
         evictByCount(policy.maxCount());
         evictBySize(policy.maxBytes());
@@ -167,7 +168,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     /// Evict events older than the retention duration.
-    @SuppressWarnings("JBCT-RET-01") // Mutation operation on off-heap data structure
+    @Contract
     public void evictByAge(long maxAgeMs) {
         var cutoff = System.currentTimeMillis() - maxAgeMs;
         while (eventCount() > 0) {
@@ -180,7 +181,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
     }
 
-    @SuppressWarnings("JBCT-RET-01") // AutoCloseable contract requires void
+    @Contract
     @Override
     public void close() {
         if (closed.compareAndSet(false, true)) {

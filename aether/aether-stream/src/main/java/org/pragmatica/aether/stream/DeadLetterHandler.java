@@ -1,5 +1,7 @@
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.lang.Contract;
+
 import java.util.List;
 
 /// Handles dead-letter storage for events that failed processing.
@@ -8,7 +10,7 @@ import java.util.List;
 /// here with metadata for later inspection or reprocessing.
 public interface DeadLetterHandler {
     /// Record a dead-letter event.
-    @SuppressWarnings("JBCT-RET-01") // Side-effect recording; callers use fire-and-forget
+    @Contract
     void record(String streamName,
                 int partition,
                 long offset,

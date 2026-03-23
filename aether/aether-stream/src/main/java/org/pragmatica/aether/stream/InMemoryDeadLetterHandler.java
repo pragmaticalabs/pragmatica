@@ -1,6 +1,7 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.stream.DeadLetterHandler.DeadLetterEntry;
+import org.pragmatica.lang.Contract;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -12,7 +13,7 @@ import static org.pragmatica.lang.Option.option;
 final class InMemoryDeadLetterHandler implements DeadLetterHandler {
     private final ConcurrentHashMap<String, CopyOnWriteArrayList<DeadLetterEntry>> entries = new ConcurrentHashMap<>();
 
-    @SuppressWarnings("JBCT-RET-01") // Side-effect recording; callers use fire-and-forget
+    @Contract
     @Override
     public void record(String streamName,
                        int partition,
@@ -21,20 +22,22 @@ final class InMemoryDeadLetterHandler implements DeadLetterHandler {
                        String errorMessage,
                        int attemptCount) {
         var entry = DeadLetterEntry.deadLetterEntry(streamName,
-                                                     partition,
-                                                     offset,
-                                                     payload,
-                                                     errorMessage,
-                                                     attemptCount,
-                                                     System.currentTimeMillis());
-        entries.computeIfAbsent(streamName, _ -> new CopyOnWriteArrayList<>())
+                                                    partition,
+                                                    offset,
+                                                    payload,
+                                                    errorMessage,
+                                                    attemptCount,
+                                                    System.currentTimeMillis());
+        entries.computeIfAbsent(streamName,
+                                _ -> new CopyOnWriteArrayList<>())
                .add(entry);
     }
 
     @Override
     public List<DeadLetterEntry> read(String streamName, int maxCount) {
-        return option(entries.get(streamName))
-            .map(list -> list.stream().limit(maxCount).toList())
-            .or(List.of());
+        return option(entries.get(streamName)).map(list -> list.stream()
+                                                               .limit(maxCount)
+                                                               .toList())
+                     .or(List.of());
     }
 }

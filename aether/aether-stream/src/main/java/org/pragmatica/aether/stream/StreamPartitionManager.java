@@ -1,6 +1,7 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -30,16 +31,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Returns failure if a stream with the same name already exists.
     public Result<Unit> createStream(StreamConfig config) {
         return option(streams.putIfAbsent(config.name(), StreamEntry.fromConfig(config)))
-            .fold(() -> success(unit()),
-                  _ -> StreamError.General.STREAM_ALREADY_EXISTS.result());
+        .fold(() -> success(unit()), _ -> StreamError.General.STREAM_ALREADY_EXISTS.result());
     }
 
     /// Destroy a stream, closing all ring buffers.
     /// Returns failure if the stream does not exist.
     public Result<Unit> destroyStream(String streamName) {
-        return option(streams.remove(streamName))
-            .toResult(new StreamError.StreamNotFound(streamName))
-            .flatMap(StreamPartitionManager::closeEntry);
+        return option(streams.remove(streamName)).toResult(new StreamError.StreamNotFound(streamName))
+                     .flatMap(StreamPartitionManager::closeEntry);
     }
 
     /// Publish an event to the appropriate partition.
@@ -59,8 +58,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// Get metadata about a stream.
     public Option<StreamInfo> streamInfo(String streamName) {
-        return option(streams.get(streamName))
-            .map(entry -> buildStreamInfo(streamName, entry));
+        return option(streams.get(streamName)).map(entry -> buildStreamInfo(streamName, entry));
     }
 
     /// List all streams managed by this node.
@@ -72,7 +70,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                       .toList();
     }
 
-    @SuppressWarnings("JBCT-RET-01") // AutoCloseable contract requires void
+    @Contract
     @Override
     public void close() {
         streams.values()
@@ -155,7 +153,7 @@ public final class StreamPartitionManager implements AutoCloseable {
             return new StreamEntry(config, buffers);
         }
 
-        @SuppressWarnings("JBCT-RET-01") // AutoCloseable contract requires void
+        @Contract
         @Override
         public void close() {
             for (var buffer : partitions) {

@@ -1,6 +1,7 @@
 package org.pragmatica.aether.http.security;
 
 import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
@@ -62,7 +63,7 @@ class JwksKeyStore implements AutoCloseable {
     }
 
     @Override
-    @SuppressWarnings("JBCT-RET-01") // AutoCloseable contract requires void
+    @Contract
     public void close() {
         httpClient.close();
     }

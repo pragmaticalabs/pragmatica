@@ -1,6 +1,7 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.ConsumerConfig;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -72,8 +73,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     @Override
     public Option<Long> cursorPosition(String streamName, int partition, String consumerGroup) {
         var key = ConsumerKey.consumerKey(streamName, partition, consumerGroup);
-        return option(consumers.get(key))
-            .map(ConsumerState::cursor);
+        return option(consumers.get(key)).map(ConsumerState::cursor);
     }
 
     @Override
@@ -81,7 +81,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         return dlHandler;
     }
 
-    @SuppressWarnings("JBCT-RET-01") // AutoCloseable contract requires void
+    @Contract
     @Override
     public void close() {
         if (closed.compareAndSet(false, true)) {
