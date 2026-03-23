@@ -38,7 +38,6 @@ import static org.pragmatica.lang.Result.success;
 /// Data (circular region):
 ///   Raw serialized event bytes, appended sequentially with wrap-around.
 public final class OffHeapRingBuffer implements AutoCloseable {
-
     // Header field offsets
     private static final long HEADER_HEAD_OFFSET = 0;
     private static final long HEADER_TAIL_OFFSET = 8;
@@ -80,14 +79,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var indexSize = INDEX_ENTRY_SIZE * capacity;
         var totalSize = HEADER_SIZE + indexSize + dataRegionSize;
         var segment = arena.allocate(totalSize, 64);
-
-        segment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, -1L);
+        segment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, - 1L);
         segment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, 0L);
         segment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, 0L);
         segment.set(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS, 0L);
         segment.set(ValueLayout.JAVA_LONG, HEADER_DATA_SIZE, dataRegionSize);
         segment.set(ValueLayout.JAVA_LONG, HEADER_CAPACITY, capacity);
-
         return new OffHeapRingBuffer(arena, segment, capacity, dataRegionSize);
     }
 
@@ -103,18 +100,14 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         if (payload.length > dataRegionSize) {
             return new StreamError.EventTooLarge(payload.length, dataRegionSize).result();
         }
-
         evictForSpace(payload.length);
-
         var currentHead = headOffset();
         var newOffset = currentHead + 1;
         var slotIndex = Math.floorMod(newOffset, capacity);
-
         var dataPos = Math.floorMod(dataWritePos(), dataRegionSize);
         writeDataBytes(dataPos, payload);
         writeIndexEntry(slotIndex, dataPos, payload.length, timestamp);
         updateHeaderAfterAppend(newOffset, payload.length);
-
         return success(newOffset);
     }
 
@@ -126,10 +119,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         if (closed.get()) {
             return StreamError.General.BUFFER_CLOSED.result();
         }
-
         var tail = tailOffset();
         var head = headOffset();
-
         if (head < 0) {
             return success(List.of());
         }
@@ -139,14 +130,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         if (fromOffset > head) {
             return success(List.of());
         }
-
         var count = (int) Math.min(maxEvents, head - fromOffset + 1);
         var events = new ArrayList<RawEvent>(count);
-
         for (long offset = fromOffset; offset < fromOffset + count; offset++) {
             events.add(readSingleEvent(offset));
         }
-
         return success(List.copyOf(events));
     }
 
@@ -171,6 +159,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     /// Apply retention policy, evicting events that exceed any limit.
+    @SuppressWarnings("JBCT-RET-01") // Mutation operation on off-heap data structure
     public void applyRetention(RetentionPolicy policy) {
         evictByCount(policy.maxCount());
         evictBySize(policy.maxBytes());
@@ -178,13 +167,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     /// Evict events older than the retention duration.
+    @SuppressWarnings("JBCT-RET-01") // Mutation operation on off-heap data structure
     public void evictByAge(long maxAgeMs) {
         var cutoff = System.currentTimeMillis() - maxAgeMs;
-
         while (eventCount() > 0) {
             var tailSlot = Math.floorMod(tailOffset(), capacity);
             var timestamp = readTimestamp(tailSlot);
-
             if (timestamp >= cutoff) {
                 break;
             }
@@ -192,6 +180,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
     }
 
+    @SuppressWarnings("JBCT-RET-01") // AutoCloseable contract requires void
     @Override
     public void close() {
         if (closed.compareAndSet(false, true)) {
@@ -200,19 +189,14 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     // --- Private helpers ---
-
     private long dataWritePos() {
         return segment.get(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS);
     }
 
     private void writeDataBytes(long dataPos, byte[] payload) {
         var remaining = dataRegionSize - dataPos;
-
         if (remaining >= payload.length) {
-            MemorySegment.copy(
-                MemorySegment.ofArray(payload), 0,
-                segment, dataStart + dataPos, payload.length
-            );
+            MemorySegment.copy(MemorySegment.ofArray(payload), 0, segment, dataStart + dataPos, payload.length);
         } else {
             copyWrappedData(dataPos, payload, remaining);
         }
@@ -220,14 +204,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     private void copyWrappedData(long dataPos, byte[] payload, long firstChunkSize) {
         var src = MemorySegment.ofArray(payload);
-
         MemorySegment.copy(src, 0, segment, dataStart + dataPos, firstChunkSize);
         MemorySegment.copy(src, firstChunkSize, segment, dataStart, payload.length - firstChunkSize);
     }
 
     private void writeIndexEntry(long slotIndex, long dataPos, int dataLength, long timestamp) {
         var indexPos = indexStart + slotIndex * INDEX_ENTRY_SIZE;
-
         segment.set(ValueLayout.JAVA_LONG, indexPos + INDEX_DATA_OFFSET, dataPos);
         segment.set(ValueLayout.JAVA_INT, indexPos + INDEX_DATA_LENGTH, dataLength);
         segment.set(ValueLayout.JAVA_LONG, indexPos + INDEX_TIMESTAMP, timestamp);
@@ -245,28 +227,23 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         var dataPos = segment.get(ValueLayout.JAVA_LONG, indexPos + INDEX_DATA_OFFSET);
         var dataLen = segment.get(ValueLayout.JAVA_INT, indexPos + INDEX_DATA_LENGTH);
         var timestamp = segment.get(ValueLayout.JAVA_LONG, indexPos + INDEX_TIMESTAMP);
-
         var eventBytes = readDataBytes(dataPos, dataLen);
-
         return RawEvent.rawEvent(offset, eventBytes, timestamp);
     }
 
     private byte[] readDataBytes(long dataPos, int dataLen) {
         var eventBytes = new byte[dataLen];
         var remaining = dataRegionSize - dataPos;
-
         if (remaining >= dataLen) {
             MemorySegment.copy(segment, dataStart + dataPos, MemorySegment.ofArray(eventBytes), 0, dataLen);
         } else {
             readWrappedData(dataPos, eventBytes, remaining);
         }
-
         return eventBytes;
     }
 
     private void readWrappedData(long dataPos, byte[] dest, long firstChunkSize) {
         var dst = MemorySegment.ofArray(dest);
-
         MemorySegment.copy(segment, dataStart + dataPos, dst, 0, firstChunkSize);
         MemorySegment.copy(segment, dataStart, dst, firstChunkSize, dest.length - firstChunkSize);
     }
@@ -280,7 +257,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         while (eventCount() >= capacity) {
             evictOldest();
         }
-
         while (needsDataEviction(payloadLength) && eventCount() > 0) {
             evictOldest();
         }
@@ -294,30 +270,26 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         if (eventCount() == 0) {
             return 0;
         }
-
         var tail = tailOffset();
         var head = headOffset();
         var tailSlot = Math.floorMod(tail, capacity);
         var headSlot = Math.floorMod(head, capacity);
-
-        var tailDataPos = segment.get(ValueLayout.JAVA_LONG, indexStart + tailSlot * INDEX_ENTRY_SIZE + INDEX_DATA_OFFSET);
-        var headDataPos = segment.get(ValueLayout.JAVA_LONG, indexStart + headSlot * INDEX_ENTRY_SIZE + INDEX_DATA_OFFSET);
+        var tailDataPos = segment.get(ValueLayout.JAVA_LONG,
+                                      indexStart + tailSlot * INDEX_ENTRY_SIZE + INDEX_DATA_OFFSET);
+        var headDataPos = segment.get(ValueLayout.JAVA_LONG,
+                                      indexStart + headSlot * INDEX_ENTRY_SIZE + INDEX_DATA_OFFSET);
         var headDataLen = segment.get(ValueLayout.JAVA_INT, indexStart + headSlot * INDEX_ENTRY_SIZE + INDEX_DATA_LENGTH);
-
         var headEnd = headDataPos + headDataLen;
-
         return (headEnd >= tailDataPos)
-            ? headEnd - tailDataPos
-            : (dataRegionSize - tailDataPos) + headEnd;
+               ? headEnd - tailDataPos
+               : (dataRegionSize - tailDataPos) + headEnd;
     }
 
     private void evictOldest() {
         var tail = tailOffset();
-
         if (tail > headOffset()) {
             return;
         }
-
         segment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, tail + 1);
         segment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, eventCount() - 1);
     }
@@ -336,7 +308,6 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     /// A raw event read from the ring buffer.
     public record RawEvent(long offset, byte[] data, long timestamp) {
-
         public static RawEvent rawEvent(long offset, byte[] data, long timestamp) {
             return new RawEvent(offset, data, timestamp);
         }

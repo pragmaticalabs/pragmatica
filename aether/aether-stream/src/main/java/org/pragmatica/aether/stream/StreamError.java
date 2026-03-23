@@ -4,7 +4,6 @@ import org.pragmatica.lang.Cause;
 
 /// Error types for stream ring buffer operations.
 public sealed interface StreamError extends Cause {
-
     enum General implements StreamError {
         BUFFER_CLOSED("Ring buffer is closed"),
         BUFFER_EMPTY("Ring buffer is empty"),
@@ -14,13 +13,10 @@ public sealed interface StreamError extends Cause {
         CONSUMER_NOT_FOUND("Consumer group not found for this partition"),
         CONSUMER_STALLED("Consumer is stalled due to processing failure"),
         CONSUMER_RUNTIME_CLOSED("Consumer runtime has been closed");
-
         private final String message;
-
         General(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;
@@ -51,7 +47,9 @@ public sealed interface StreamError extends Cause {
     record PartitionOutOfRange(String streamName, int partition, int partitionCount) implements StreamError {
         @Override
         public String message() {
-            return "Partition %d out of range for stream '%s' (partitions: %d)".formatted(partition, streamName, partitionCount);
+            return "Partition %d out of range for stream '%s' (partitions: %d)".formatted(partition,
+                                                                                          streamName,
+                                                                                          partitionCount);
         }
     }
 
