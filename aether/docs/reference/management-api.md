@@ -2653,3 +2653,129 @@ Common HTTP status codes:
 - `403 Forbidden` -- Invalid API key
 - `404 Not Found` -- Resource not found
 - `500 Internal Server Error` -- Server error
+
+---
+
+## App HTTP Security
+
+The app HTTP server (serving slice-generated endpoints) supports configurable authentication. Three security modes are available:
+
+### Security Modes
+
+| Mode | Header | Description |
+|------|--------|-------------|
+| `none` | -- | No authentication (default, backward compatible) |
+| `api-key` | `X-API-Key` | Reuses management API key infrastructure |
+| `jwt` | `Authorization: Bearer <token>` | JWT with JWKS validation (RS256/ES256) |
+
+### Health Endpoint Bypass
+
+Health endpoints always bypass authentication regardless of security mode:
+- `GET /health/live` -- Liveness probe
+- `GET /health/ready` -- Readiness probe
+
+### SecurityContext Propagation
+
+When authentication succeeds, a `SecurityContext` is created and propagated to slice handlers via `SecurityContextHolder`. The context contains:
+- **Principal** -- authenticated identity (API key name or JWT subject)
+- **Roles** -- assigned roles (`ADMIN`, `SERVICE`, etc.)
+- **Claims** -- additional metadata (JWT claims when using JWT mode)
+- **AuthorizationRole** -- hierarchical role for RBAC (`ADMIN`, `OPERATOR`, `VIEWER`)
+
+Slice handlers can access the security context to make authorization decisions.
+
+### Configuration
+
+#### Mode: None (Default)
+
+No authentication. All requests are allowed with a system principal.
+
+```toml
+[app-http]
+enabled = true
+port = 8070
+# security_mode defaults to "none" when omitted
+```
+
+#### Mode: API Key
+
+Reuses the same `api-keys` configuration as the management API. Requests must include `X-API-Key` header.
+
+```toml
+[app-http]
+enabled = true
+port = 8070
+security_mode = "api-key"
+
+# Simple key list (all keys get ADMIN authorization)
+api_keys = ["my-secret-key-1", "my-secret-key-2"]
+```
+
+Or with rich key configuration including RBAC roles:
+
+```toml
+[app-http]
+enabled = true
+port = 8070
+security_mode = "api-key"
+
+[app-http.api-keys.my-admin-key]
+name = "admin-service"
+roles = ["admin"]
+authorization_role = "ADMIN"
+
+[app-http.api-keys.my-viewer-key]
+name = "monitoring"
+roles = ["service"]
+authorization_role = "VIEWER"
+```
+
+When `security_mode` is omitted but API keys are present, the mode is automatically upgraded to `api-key` for backward compatibility.
+
+#### Mode: JWT
+
+Token-based authentication using JWKS (JSON Web Key Set) for public key validation. Supports RS256 and ES256 algorithms using JDK crypto (no external libraries).
+
+```toml
+[app-http]
+enabled = true
+port = 8070
+security_mode = "jwt"
+jwks_url = "https://auth.example.com/.well-known/jwks.json"
+issuer = "https://auth.example.com/"
+audience = "my-api"
+role_claim = "role"
+jwks_cache_ttl_seconds = 3600
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `jwks_url` | Yes | -- | JWKS endpoint URL for public key fetching |
+| `issuer` | No | _(skip validation)_ | Expected `iss` claim value |
+| `audience` | No | _(skip validation)_ | Expected `aud` claim value |
+| `role_claim` | No | `"role"` | JWT claim name for role extraction |
+| `jwks_cache_ttl_seconds` | No | `3600` | JWKS key cache TTL in seconds |
+
+### Request Size Limits
+
+The app HTTP server enforces a configurable maximum request body size:
+
+```toml
+[app-http]
+enabled = true
+max_request_size = "5MB"
+```
+
+The `max_request_size` field accepts human-readable data size values:
+
+| Format | Example | Bytes |
+|--------|---------|-------|
+| `KB` | `"512KB"` | 524,288 |
+| `MB` | `"5MB"` | 5,242,880 |
+| `GB` | `"1GB"` | 1,073,741,824 |
+
+Default: `10MB` (10,485,760 bytes). Requests exceeding this limit receive `413 Request Entity Too Large`.
+
+### Multipart File Upload
+
+The app HTTP server supports multipart file uploads via Netty's `HttpPostRequestDecoder`. Multipart requests are subject to the same `max_request_size` limit. Slice-generated routes with file upload parameters automatically handle multipart decoding.
