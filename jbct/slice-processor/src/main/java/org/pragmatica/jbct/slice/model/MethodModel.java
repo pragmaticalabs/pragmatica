@@ -26,6 +26,7 @@ public record MethodModel(String name,
                            List<ResourceQualifierModel> interceptors,
                            List<ResourceQualifierModel> subscriptions,
                            List<ResourceQualifierModel> scheduled,
+                           List<ResourceQualifierModel> streamSubscriptions,
                            Option<KeyExtractorInfo> keyExtractor,
                            Option<MethodParameterInfo> multiParamKeyParam) {
 
@@ -37,11 +38,13 @@ public record MethodModel(String name,
     private static final String RESOURCE_QUALIFIER_ANNOTATION = "org.pragmatica.aether.slice.annotation.ResourceQualifier";
     private static final String SUBSCRIBER_TYPE = "org.pragmatica.aether.slice.Subscriber";
     private static final String SCHEDULED_TYPE = "org.pragmatica.aether.slice.Scheduled";
+    private static final String STREAM_SUBSCRIBER_TYPE = "org.pragmatica.aether.slice.StreamSubscriber";
 
     public MethodModel {
         interceptors = List.copyOf(interceptors);
         subscriptions = List.copyOf(subscriptions);
         scheduled = List.copyOf(scheduled);
+        streamSubscriptions = List.copyOf(streamSubscriptions);
         parameters = List.copyOf(parameters);
     }
 
@@ -72,6 +75,38 @@ public record MethodModel(String name,
     /// Check if this method has any scheduled invocations.
     public boolean hasScheduled() {
         return !scheduled.isEmpty();
+    }
+
+    /// Check if this method has any stream subscriptions.
+    public boolean hasStreamSubscriptions() {
+        return !streamSubscriptions.isEmpty();
+    }
+
+    /// Returns true if the method parameter is List<T> (batch stream consumer).
+    public boolean isBatchStreamConsumer() {
+        if (streamSubscriptions.isEmpty() || parameters.size() != 1) {
+            return false;
+        }
+        var paramType = parameters.getFirst().type();
+        return paramType instanceof DeclaredType dt
+               && dt.asElement().toString().equals("java.util.List");
+    }
+
+    /// Extract the stream event type from consumer method parameter.
+    /// For single: parameter type T.
+    /// For batch: element type T from List<T>.
+    public Option<String> streamConsumerEventType() {
+        if (streamSubscriptions.isEmpty() || parameters.size() != 1) {
+            return Option.none();
+        }
+        var paramType = parameters.getFirst().type();
+        if (paramType instanceof DeclaredType dt) {
+            if (dt.asElement().toString().equals("java.util.List") && !dt.getTypeArguments().isEmpty()) {
+                return Option.some(dt.getTypeArguments().getFirst().toString());
+            }
+            return Option.some(dt.toString());
+        }
+        return Option.none();
     }
 
     /// Returns true if this method has zero parameters.
@@ -131,6 +166,7 @@ public record MethodModel(String name,
         var methodInterceptors = methodAnnotations.interceptors();
         var methodSubscriptions = methodAnnotations.subscriptions();
         var methodScheduled = methodAnnotations.scheduled();
+        var methodStreamSubscriptions = methodAnnotations.streamSubscriptions();
         var paramInfos = buildParameterInfos(params, env);
 
         // Validate subscription methods
@@ -145,6 +181,12 @@ public record MethodModel(String name,
             return scheduledValidation.flatMap(_ -> Result.success(null)); // propagate error
         }
 
+        // Validate stream subscription methods
+        var streamSubValidation = validateStreamSubscriptions(methodStreamSubscriptions, paramInfos, name, returnType);
+        if (streamSubValidation.isFailure()) {
+            return streamSubValidation.flatMap(_ -> Result.success(null)); // propagate error
+        }
+
         return validateKeyAnnotations(paramInfos, name)
         .flatMap(_ -> resolveKeyInfo(paramInfos, env, methodInterceptors, name))
         .map(keyResult -> new MethodModel(name,
@@ -155,6 +197,7 @@ public record MethodModel(String name,
                                            methodInterceptors,
                                            methodSubscriptions,
                                            methodScheduled,
+                                           methodStreamSubscriptions,
                                            keyResult.keyExtractor(),
                                            keyResult.multiParamKeyParam()));
     }
@@ -245,30 +288,35 @@ public record MethodModel(String name,
 
     private record MethodAnnotations(List<ResourceQualifierModel> interceptors,
                                       List<ResourceQualifierModel> subscriptions,
-                                      List<ResourceQualifierModel> scheduled) {}
+                                      List<ResourceQualifierModel> scheduled,
+                                      List<ResourceQualifierModel> streamSubscriptions) {}
 
     /// Extract method-level annotations with @ResourceQualifier meta-annotation.
-    /// Splits them into interceptors, subscriptions, and scheduled based on resource type.
+    /// Splits them into interceptors, subscriptions, scheduled, and stream subscriptions based on resource type.
     private static MethodAnnotations extractMethodAnnotations(ExecutableElement method,
                                                                ProcessingEnvironment env) {
         var interceptors = new ArrayList<ResourceQualifierModel>();
         var subscriptions = new ArrayList<ResourceQualifierModel>();
         var scheduled = new ArrayList<ResourceQualifierModel>();
+        var streamSubscriptions = new ArrayList<ResourceQualifierModel>();
         for (var annotation : method.getAnnotationMirrors()) {
             ResourceQualifierModel.fromAnnotationMirror(annotation, env)
-                                  .onPresent(model -> classifyAnnotation(model, interceptors, subscriptions, scheduled));
+                                  .onPresent(model -> classifyAnnotation(model, interceptors, subscriptions, scheduled, streamSubscriptions));
         }
-        return new MethodAnnotations(interceptors, subscriptions, scheduled);
+        return new MethodAnnotations(interceptors, subscriptions, scheduled, streamSubscriptions);
     }
 
     private static void classifyAnnotation(ResourceQualifierModel model,
                                             List<ResourceQualifierModel> interceptors,
                                             List<ResourceQualifierModel> subscriptions,
-                                            List<ResourceQualifierModel> scheduled) {
+                                            List<ResourceQualifierModel> scheduled,
+                                            List<ResourceQualifierModel> streamSubscriptions) {
         if (SUBSCRIBER_TYPE.equals(model.resourceType().toString())) {
             subscriptions.add(model);
         } else if (SCHEDULED_TYPE.equals(model.resourceType().toString())) {
             scheduled.add(model);
+        } else if (STREAM_SUBSCRIBER_TYPE.equals(model.resourceType().toString())) {
+            streamSubscriptions.add(model);
         } else {
             interceptors.add(model);
         }
@@ -317,6 +365,31 @@ public record MethodModel(String name,
             var typeArg = dt.getTypeArguments().getFirst().toString();
             if (!"org.pragmatica.lang.Unit".equals(typeArg)) {
                 return Causes.cause("Scheduled method '" + methodName
+                                    + "' must return Promise<Unit>, found: Promise<" + typeArg + ">")
+                             .result();
+            }
+        }
+        return Result.success(Unit.unit());
+    }
+
+    private static Result<Unit> validateStreamSubscriptions(List<ResourceQualifierModel> streamSubscriptions,
+                                                              List<MethodParameterInfo> params,
+                                                              String methodName,
+                                                              TypeMirror returnType) {
+        if (streamSubscriptions.isEmpty()) {
+            return Result.success(Unit.unit());
+        }
+        // Stream subscription methods must have exactly one parameter (T or List<T>)
+        if (params.size() != 1) {
+            return Causes.cause("Stream subscription method '" + methodName
+                                + "' must have exactly one parameter (the event type or List<event type>), found: " + params.size())
+                         .result();
+        }
+        // Return type must be Promise<Unit>
+        if (returnType instanceof DeclaredType dt && !dt.getTypeArguments().isEmpty()) {
+            var typeArg = dt.getTypeArguments().getFirst().toString();
+            if (!"org.pragmatica.lang.Unit".equals(typeArg)) {
+                return Causes.cause("Stream subscription method '" + methodName
                                     + "' must return Promise<Unit>, found: Promise<" + typeArg + ">")
                              .result();
             }

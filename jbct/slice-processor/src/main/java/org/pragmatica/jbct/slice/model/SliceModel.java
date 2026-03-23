@@ -206,6 +206,19 @@ public record SliceModel(String packageName,
                       .toList();
     }
 
+    /// Check if any method has stream subscriptions.
+    public boolean hasStreamSubscriptions() {
+        return methods.stream()
+                      .anyMatch(MethodModel::hasStreamSubscriptions);
+    }
+
+    /// Get all methods that have stream subscriptions.
+    public List<MethodModel> streamSubscriptionMethods() {
+        return methods.stream()
+                      .filter(MethodModel::hasStreamSubscriptions)
+                      .toList();
+    }
+
     public String factoryMethodName() {
         return factoryMethod.getSimpleName()
                             .toString();

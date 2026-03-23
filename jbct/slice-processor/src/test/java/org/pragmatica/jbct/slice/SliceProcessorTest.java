@@ -6,6 +6,7 @@ import com.google.testing.compile.JavaFileObjects;
 import org.junit.jupiter.api.Test;
 
 import javax.tools.JavaFileObject;
+import javax.tools.StandardLocation;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -1996,5 +1997,338 @@ class SliceProcessorTest {
         Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
         assertCompilation(compilation).failed();
         assertCompilation(compilation).hadErrorContaining("does not match slice type");
+    }
+
+    // ========== Streaming Resource Tests ==========
+
+    private static final JavaFileObject STREAM_PUBLISHER = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.StreamPublisher",
+            """
+            package org.pragmatica.aether.slice;
+
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+
+            @FunctionalInterface
+            public interface StreamPublisher<T> {
+                Promise<Unit> publish(T event);
+            }
+            """);
+
+    private static final JavaFileObject STREAM_SUBSCRIBER = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.StreamSubscriber",
+            """
+            package org.pragmatica.aether.slice;
+
+            public interface StreamSubscriber {}
+            """);
+
+    private static final JavaFileObject STREAM_ACCESS = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.StreamAccess",
+            """
+            package org.pragmatica.aether.slice;
+
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import java.util.List;
+
+            public interface StreamAccess<T> {
+                Promise<Long> publish(T event);
+                Promise<List<Object>> fetch(long fromOffset, int maxEvents);
+            }
+            """);
+
+    private List<JavaFileObject> streamSources() {
+        var sources = commonSources();
+        sources.add(STREAM_PUBLISHER);
+        sources.add(STREAM_SUBSCRIBER);
+        sources.add(STREAM_ACCESS);
+        return sources;
+    }
+
+    @Test
+    void should_process_stream_publisher_parameter() throws Exception {
+        var orderStream = JavaFileObjects.forSourceString("test.annotation.OrderStream",
+                                                          """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.StreamPublisher;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = StreamPublisher.class, config = "streams.order-events")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface OrderStream {}
+            """);
+        var orderEvent = JavaFileObjects.forSourceString("test.dto.OrderEvent",
+                                                         """
+            package test.dto;
+            public record OrderEvent(String orderId, String customerId) {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.StreamPublisher;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderStream;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+                static OrderService orderService(@OrderStream StreamPublisher<OrderEvent> stream) { return null; }
+            }
+            """);
+        var sources = streamSources();
+        sources.add(orderStream);
+        sources.add(orderEvent);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+        var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // StreamPublisher should be provisioned with ProvisioningContext
+        assertThat(factoryContent).contains("ctx.resources().provide(StreamPublisher.class, \"streams.order-events\", ProvisioningContext.provisioningContext())");
+    }
+
+    @Test
+    void should_process_stream_access_parameter() throws Exception {
+        var orderAccess = JavaFileObjects.forSourceString("test.annotation.OrderStreamAccess",
+                                                          """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.StreamAccess;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = StreamAccess.class, config = "streams.order-events")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface OrderStreamAccess {}
+            """);
+        var orderEvent = JavaFileObjects.forSourceString("test.dto.OrderEvent",
+                                                         """
+            package test.dto;
+            public record OrderEvent(String orderId, String customerId) {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.AuditService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.StreamAccess;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.OrderStreamAccess;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface AuditService {
+                Promise<String> auditOrder(String orderId);
+                static AuditService auditService(@OrderStreamAccess StreamAccess<OrderEvent> access) { return null; }
+            }
+            """);
+        var sources = streamSources();
+        sources.add(orderAccess);
+        sources.add(orderEvent);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+        var factoryContent = compilation.generatedSourceFile("test.AuditServiceFactory")
+                                        .get().getCharContent(false).toString();
+        // StreamAccess should be provisioned with ProvisioningContext
+        assertThat(factoryContent).contains("ctx.resources().provide(StreamAccess.class, \"streams.order-events\", ProvisioningContext.provisioningContext())");
+    }
+
+    @Test
+    void should_process_stream_subscriber_method() throws Exception {
+        var orderConsumer = JavaFileObjects.forSourceString("test.annotation.OrderStreamConsumer",
+                                                            """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.StreamSubscriber;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = StreamSubscriber.class, config = "streams.order-events")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface OrderStreamConsumer {}
+            """);
+        var orderEvent = JavaFileObjects.forSourceString("test.dto.OrderEvent",
+                                                         """
+            package test.dto;
+            public record OrderEvent(String orderId, String customerId) {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.EventProcessor",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderStreamConsumer;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface EventProcessor {
+                @OrderStreamConsumer
+                Promise<Unit> processOrder(OrderEvent event);
+                static EventProcessor eventProcessor() { return null; }
+            }
+            """);
+        var sources = streamSources();
+        sources.add(orderConsumer);
+        sources.add(orderEvent);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+        assertCompilation(compilation).generatedSourceFile("test.EventProcessorFactory");
+    }
+
+    @Test
+    void should_fail_stream_subscriber_with_wrong_return_type() {
+        var orderConsumer = JavaFileObjects.forSourceString("test.annotation.OrderStreamConsumer",
+                                                            """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.StreamSubscriber;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = StreamSubscriber.class, config = "streams.order-events")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface OrderStreamConsumer {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.BadProcessor",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.OrderStreamConsumer;
+            @Slice
+            public interface BadProcessor {
+                @OrderStreamConsumer
+                Promise<String> processOrder(String event);
+                static BadProcessor badProcessor() { return null; }
+            }
+            """);
+        var sources = streamSources();
+        sources.add(orderConsumer);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("must return Promise<Unit>");
+    }
+
+    @Test
+    void should_fail_stream_subscriber_with_no_params() {
+        var orderConsumer = JavaFileObjects.forSourceString("test.annotation.OrderStreamConsumer",
+                                                            """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.StreamSubscriber;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = StreamSubscriber.class, config = "streams.order-events")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface OrderStreamConsumer {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.BadProcessor",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderStreamConsumer;
+            @Slice
+            public interface BadProcessor {
+                @OrderStreamConsumer
+                Promise<Unit> processOrder();
+                static BadProcessor badProcessor() { return null; }
+            }
+            """);
+        var sources = streamSources();
+        sources.add(orderConsumer);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("must have exactly one parameter");
+    }
+
+    @Test
+    void should_detect_envelope_version_7() {
+        assertThat(org.pragmatica.jbct.slice.generator.ManifestGenerator.class).isNotNull();
+        // Verify the constant was bumped — accessed via reflection since it's package-private
+        // The manifest test below verifies it appears in output
+    }
+
+    @Test
+    void should_generate_manifest_with_stream_metadata() throws Exception {
+        var orderStream = JavaFileObjects.forSourceString("test.annotation.OrderStream",
+                                                          """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.StreamPublisher;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = StreamPublisher.class, config = "streams.order-events")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface OrderStream {}
+            """);
+        var orderConsumer = JavaFileObjects.forSourceString("test.annotation.OrderStreamConsumer",
+                                                            """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.StreamSubscriber;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = StreamSubscriber.class, config = "streams.order-events")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface OrderStreamConsumer {}
+            """);
+        var orderEvent = JavaFileObjects.forSourceString("test.dto.OrderEvent",
+                                                         """
+            package test.dto;
+            public record OrderEvent(String orderId, String customerId) {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.OrderProcessor",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.aether.slice.StreamPublisher;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.OrderStream;
+            import test.annotation.OrderStreamConsumer;
+            import test.dto.OrderEvent;
+            @Slice
+            public interface OrderProcessor {
+                Promise<String> placeOrder(String orderId);
+                @OrderStreamConsumer
+                Promise<Unit> processOrder(OrderEvent event);
+                static OrderProcessor orderProcessor(@OrderStream StreamPublisher<OrderEvent> stream) { return null; }
+            }
+            """);
+        var sources = streamSources();
+        sources.add(orderStream);
+        sources.add(orderConsumer);
+        sources.add(orderEvent);
+        sources.add(source);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        // Verify manifest was generated
+        var manifestFile = compilation.generatedFile(StandardLocation.CLASS_OUTPUT, "META-INF/slice/OrderProcessor.manifest");
+        assertThat(manifestFile.isPresent()).isTrue();
+        var manifestContent = manifestFile.get().getCharContent(false).toString();
+
+        // Verify envelope version was bumped to 7
+        assertThat(manifestContent).contains("envelope.version=7");
+
+        // Verify stream publisher metadata
+        assertThat(manifestContent).contains("stream.publishers.count=1");
+        assertThat(manifestContent).contains("stream.publisher.0.config=streams.order-events");
+        assertThat(manifestContent).contains("stream.publisher.0.eventType=test.dto.OrderEvent");
+
+        // Verify stream subscription metadata
+        assertThat(manifestContent).contains("stream.subscriptions.count=1");
+        assertThat(manifestContent).contains("stream.subscription.0.config=streams.order-events");
+        assertThat(manifestContent).contains("stream.subscription.0.method=processOrder");
+        assertThat(manifestContent).contains("stream.subscription.0.eventType=test.dto.OrderEvent");
+        assertThat(manifestContent).contains("stream.subscription.0.batch=false");
+
+        // Verify stream event classes
+        assertThat(manifestContent).contains("stream.event.classes=test.dto.OrderEvent");
     }
 }

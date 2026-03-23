@@ -110,7 +110,7 @@ public class FactoryClassGenerator {
         importTracker.use("org.pragmatica.lang.type.TypeToken");
         importTracker.use("org.pragmatica.aether.slice.ResourceProviderFacade");
         importTracker.use("org.pragmatica.serialization.SliceCodec");
-        if (model.hasMethodInterceptors() || model.dependencies().stream().anyMatch(DependencyModel::isPublisher)) {
+        if (model.hasMethodInterceptors() || model.dependencies().stream().anyMatch(dep -> dep.isPublisher() || dep.isStreamResource())) {
             importTracker.use("org.pragmatica.aether.slice.ProvisioningContext");
             importTracker.use("org.pragmatica.lang.Functions.Fn1");
         }
@@ -1039,13 +1039,13 @@ public class FactoryClassGenerator {
     }
 
     /// Generate resource provisioning call: ctx.resources().provide(Type.class, "config.section")
-    /// Publisher resources require ProvisioningContext for runtime extensions (TopicSubscriptionRegistry, SliceInvoker).
+    /// Publisher and stream resources require ProvisioningContext for runtime extensions.
     private String generateResourceProvideCall(DependencyModel resource) {
         return resource.resourceQualifier()
                        .map(qualifier -> {
                            var typeName = qualifier.resourceTypeSimpleName();
                            var configSection = escapeJavaString(qualifier.configSection());
-                           if (resource.isPublisher()) {
+                           if (resource.isPublisher() || resource.isStreamResource()) {
                                return "ctx.resources().provide(" + typeName + ".class, \""
                                       + configSection + "\", ProvisioningContext.provisioningContext())";
                            }
@@ -1159,6 +1159,7 @@ public class FactoryClassGenerator {
             collectResponseCodecEntry(method, importTracker, seen, entries);
         }
         collectPublisherMessageCodecEntries(model, importTracker, seen, entries);
+        collectStreamEventCodecEntries(model, importTracker, seen, entries);
         collectDependencyProxyCodecEntries(proxyMethodsCache, importTracker, seen, entries);
         return entries;
     }
@@ -1200,6 +1201,22 @@ public class FactoryClassGenerator {
                 dep.publisherMessageType()
                    .onPresent(msgType -> addCodecEntryByName(msgType, importTracker, seen, entries));
             }
+        }
+    }
+
+    private void collectStreamEventCodecEntries(SliceModel model, ImportTracker importTracker,
+                                                    Set<String> seen, List<CodecTypeEntry> entries) {
+        // From StreamPublisher<T> and StreamAccess<T> dependencies
+        for (var dep : model.dependencies()) {
+            if (dep.isStreamResource()) {
+                dep.streamEventType()
+                   .onPresent(eventType -> addCodecEntryByName(eventType, importTracker, seen, entries));
+            }
+        }
+        // From stream subscription methods
+        for (var method : model.streamSubscriptionMethods()) {
+            method.streamConsumerEventType()
+                  .onPresent(eventType -> addCodecEntryByName(eventType, importTracker, seen, entries));
         }
     }
 

@@ -43,6 +43,8 @@ public record DependencyModel(String parameterName,
 
     private static final String SLICE_ANNOTATION = "org.pragmatica.aether.slice.annotation.Slice";
     private static final String PUBLISHER_TYPE = "org.pragmatica.aether.slice.Publisher";
+    private static final String STREAM_PUBLISHER_TYPE = "org.pragmatica.aether.slice.StreamPublisher";
+    private static final String STREAM_ACCESS_TYPE = "org.pragmatica.aether.slice.StreamAccess";
 
     public static Result<DependencyModel> dependencyModel(VariableElement param, ProcessingEnvironment env) {
         var paramName = param.getSimpleName()
@@ -105,10 +107,37 @@ public record DependencyModel(String parameterName,
                                 .or(false);
     }
 
+    /// Check if this dependency is a StreamPublisher resource.
+    public boolean isStreamPublisher() {
+        return resourceQualifier.map(q -> STREAM_PUBLISHER_TYPE.equals(q.resourceType().toString()))
+                                .or(false);
+    }
+
+    /// Check if this dependency is a StreamAccess resource.
+    public boolean isStreamAccess() {
+        return resourceQualifier.map(q -> STREAM_ACCESS_TYPE.equals(q.resourceType().toString()))
+                                .or(false);
+    }
+
+    /// Check if this dependency is any stream resource (StreamPublisher or StreamAccess).
+    public boolean isStreamResource() {
+        return isStreamPublisher() || isStreamAccess();
+    }
+
     /// Extract message type from Publisher<T> generic parameter.
     /// Returns the qualified type name of T, or empty if not a Publisher or no type arg.
     public Option<String> publisherMessageType() {
         if (!isPublisher() || !(interfaceType instanceof DeclaredType dt)) {
+            return Option.none();
+        }
+        var typeArgs = dt.getTypeArguments();
+        return typeArgs.isEmpty() ? Option.none() : Option.some(typeArgs.getFirst().toString());
+    }
+
+    /// Extract event type from StreamPublisher<T> or StreamAccess<T> generic parameter.
+    /// Returns the qualified type name of T, or empty if not a stream resource or no type arg.
+    public Option<String> streamEventType() {
+        if ((!isStreamPublisher() && !isStreamAccess()) || !(interfaceType instanceof DeclaredType dt)) {
             return Option.none();
         }
         var typeArgs = dt.getTypeArguments();
