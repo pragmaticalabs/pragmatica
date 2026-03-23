@@ -392,4 +392,51 @@ class ConfigLoaderSecurityTest {
                 assertThat(entry.roles()).containsExactly("service");
             });
     }
+
+    @Test
+    void loadFromString_parsesProtocolH3() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            protocol = "h3"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().httpProtocol()).isEqualTo(HttpProtocol.H3);
+            });
+    }
+
+    @Test
+    void loadFromString_parsesProtocolBoth() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            protocol = "both"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().httpProtocol()).isEqualTo(HttpProtocol.BOTH);
+            });
+    }
+
+    @Test
+    void loadFromString_defaultsProtocolToH1() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().httpProtocol()).isEqualTo(HttpProtocol.H1);
+            });
+    }
 }

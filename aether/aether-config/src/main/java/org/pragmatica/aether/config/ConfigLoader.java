@@ -126,7 +126,8 @@ public final class ConfigLoader {
 
     private static int parseDataSize(TomlDocument doc, String section, String key, int defaultValue) {
         return doc.getString(section, key)
-                  .flatMap(v -> DataSize.dataSize(v).option())
+                  .flatMap(v -> DataSize.dataSize(v)
+                                        .option())
                   .map(DataSize::bytesAsInt)
                   .or(defaultValue);
     }
@@ -271,18 +272,27 @@ public final class ConfigLoader {
                                                "forward_timeout",
                                                "forward_timeout_ms",
                                                AppHttpConfig.DEFAULT_FORWARD_TIMEOUT);
-        var maxRequestSize = parseDataSize(doc,
-                                           "app-http",
-                                           "max_request_size",
-                                           AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE);
+        var maxRequestSize = parseDataSize(doc, "app-http", "max_request_size", AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE);
         var explicitMode = doc.getString("app-http", "security_mode")
                               .flatMap(SecurityMode::securityMode);
         var apiKeys = resolveApiKeys(doc);
         // Auto-upgrade: if no explicit security_mode but apiKeys are present, infer API_KEY (backward compat)
-        var securityMode = explicitMode.or(apiKeys.isEmpty() ? SecurityMode.NONE : SecurityMode.API_KEY);
+        var securityMode = explicitMode.or(apiKeys.isEmpty()
+                                           ? SecurityMode.NONE
+                                           : SecurityMode.API_KEY);
         var jwtConfig = parseJwtConfig(doc);
+        var httpProtocol = doc.getString("app-http", "protocol")
+                              .flatMap(HttpProtocol::httpProtocol)
+                              .or(HttpProtocol.H1);
         if (enabled || !apiKeys.isEmpty()) {
-            builder.appHttp(AppHttpConfig.appHttpConfig(enabled, port, apiKeys, forwardTimeout, maxRequestSize, securityMode, jwtConfig)
+            builder.appHttp(AppHttpConfig.appHttpConfig(enabled,
+                                                        port,
+                                                        apiKeys,
+                                                        forwardTimeout,
+                                                        maxRequestSize,
+                                                        securityMode,
+                                                        jwtConfig,
+                                                        httpProtocol)
                                          .unwrap());
         }
     }

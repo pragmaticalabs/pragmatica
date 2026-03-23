@@ -3,6 +3,7 @@ package org.pragmatica.aether.http;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.update.DeploymentStrategy;
 import org.pragmatica.aether.update.DeploymentStrategyCoordinator;
@@ -47,6 +48,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -189,6 +191,7 @@ class AppHttpServerImpl implements AppHttpServer {
     private final Option<DeploymentStrategyCoordinator> strategyCoordinator;
     private final Option<HttpForwarder> httpForwarder;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
+    private final AtomicReference<HttpServer> h3ServerRef = new AtomicReference<>();
     private final AtomicReference<RouteTable> routeTableRef = new AtomicReference<>(RouteTable.empty());
     private final AtomicBoolean routeSyncReceived = new AtomicBoolean(false);
 
@@ -263,18 +266,53 @@ class AppHttpServerImpl implements AppHttpServer {
             log.info("App HTTP server is disabled");
             return Promise.success(unit());
         }
-        log.info("Starting App HTTP server on port {}", config.port());
+        log.info("Starting App HTTP server on port {} (protocol: {})", config.port(), config.httpProtocol());
         rebuildRouter();
+        var protocol = config.httpProtocol();
+        if (protocol.includesH1()) {
+            return startH1Server()
+                .flatMap(_ -> protocol.includesH3() ? startH3Server() : Promise.success(unit()));
+        }
+        return startH3Server();
+    }
+
+    private Promise<Unit> startH1Server() {
         var serverConfig = buildServerConfig();
-        var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
-                                                                                                this::handleRequest,
-                                                                                                bg,
-                                                                                                wg)))
-                                     .or(HttpServer.httpServer(serverConfig, this::handleRequest));
-        return serverPromise.map(this::registerStartedServer)
+        java.util.function.BiConsumer<org.pragmatica.http.server.RequestContext,
+            org.pragmatica.http.server.ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
+                      ? this::handleRequestWithAltSvc
+                      : this::handleRequest;
+        var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig, handler, bg, wg)))
+                                     .or(HttpServer.httpServer(serverConfig, handler));
+        return serverPromise.map(this::registerStartedH1Server)
                             .onFailure(cause -> log.error("Failed to start App HTTP server on port {}: {}",
                                                           config.port(),
                                                           cause.message()));
+    }
+
+    private Promise<Unit> startH3Server() {
+        var quicTls = tls.map(QuicSslContextFactory::createServer)
+                         .or(QuicSslContextFactory.createSelfSignedServer());
+        if (quicTls.isFailure()) {
+            var errorMsg = quicTls.fold(cause -> cause.message(), _ -> "");
+            log.error("Failed to create QUIC SSL context: {}", errorMsg);
+            return Promise.success(unit());
+        }
+        var quicSslContext = quicTls.unwrap();
+        var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3", config.port())
+                                           .withMaxContentLength(config.maxRequestSize());
+        var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig, quicSslContext, this::handleRequest, wg))
+                                       .or(HttpServer.http3Server(serverConfig, quicSslContext, this::handleRequest));
+        return serverPromise.map(this::registerStartedH3Server)
+                            .onFailure(cause -> log.error("Failed to start App HTTP/3 server on port {}: {}",
+                                                          config.port(),
+                                                          cause.message()));
+    }
+
+    private void handleRequestWithAltSvc(org.pragmatica.http.server.RequestContext request,
+                                         org.pragmatica.http.server.ResponseWriter response) {
+        response.header("Alt-Svc", "h3=\":" + config.port() + "\"; ma=3600");
+        handleRequest(request, response);
     }
 
     private HttpServerConfig buildServerConfig() {
@@ -284,18 +322,29 @@ class AppHttpServerImpl implements AppHttpServer {
         return tls.fold(() -> serverConfig, serverConfig::withTls);
     }
 
-    private Unit registerStartedServer(HttpServer server) {
+    private Unit registerStartedH1Server(HttpServer server) {
         serverRef.set(server);
-        log.info("App HTTP server started on port {}", server.port());
+        log.info("App HTTP server started on port {} (HTTP/1.1)", server.port());
+        return unit();
+    }
+
+    private Unit registerStartedH3Server(HttpServer server) {
+        h3ServerRef.set(server);
+        log.info("App HTTP server started on port {} (HTTP/3 QUIC)", server.port());
         return unit();
     }
 
     @Override
     public Promise<Unit> stop() {
-        return Option.option(serverRef.get())
-                     .fold(() -> Promise.success(unit()),
-                           server -> server.stop()
-                                           .onSuccessRun(() -> log.info("App HTTP server stopped")));
+        var h1Stop = Option.option(serverRef.get())
+                           .fold(() -> Promise.success(unit()),
+                                 server -> server.stop()
+                                                 .onSuccessRun(() -> log.info("App HTTP/1.1 server stopped")));
+        var h3Stop = Option.option(h3ServerRef.get())
+                           .fold(() -> Promise.success(unit()),
+                                 server -> server.stop()
+                                                 .onSuccessRun(() -> log.info("App HTTP/3 server stopped")));
+        return h1Stop.flatMap(_ -> h3Stop);
     }
 
     @Override
