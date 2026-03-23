@@ -108,4 +108,14 @@ public final class AuditLog {
     public static void schemaManualRetry(String datasource) {
         AUDIT.info("SCHEMA_MANUAL_RETRY datasource={}", datasource);
     }
+
+    /// Log authorization denial — principal lacked required role for the requested endpoint.
+    public static void accessDenied(String principal,
+                                     String method,
+                                     String path,
+                                     String actualRole,
+                                     String requiredRole) {
+        AUDIT.warn("ACCESS_DENIED principal={} method={} path={} role={} required={}",
+                   principal, method, path, actualRole, requiredRole);
+    }
 }

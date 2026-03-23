@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
+import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.RoleEnforcer;
 import org.pragmatica.aether.http.handler.security.RoutePermissionRegistry;
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
@@ -120,6 +121,34 @@ class AuthorizationPipelineTest {
             runPipeline(VIEWER_KEY, "POST", "/api/blueprint/validate")
                 .onFailureRun(() -> fail("Expected success for blueprint validation"));
         }
+
+        @Test
+        void pipeline_denied_viewerDeletesLogLevel() {
+            runPipeline(VIEWER_KEY, "DELETE", "/api/logging/levels/com.example")
+                .onSuccessRun(() -> fail("Expected failure"))
+                .onFailure(AuthorizationPipelineTest::assertAccessDenied);
+        }
+
+        @Test
+        void pipeline_denied_viewerUploadsMavenArtifact() {
+            runPipeline(VIEWER_KEY, "PUT", "/repository/org/example/artifact/1.0/artifact-1.0.jar")
+                .onSuccessRun(() -> fail("Expected failure"))
+                .onFailure(AuthorizationPipelineTest::assertAccessDenied);
+        }
+
+        @Test
+        void pipeline_denied_viewerTriggersSchemaUndo() {
+            runPipeline(VIEWER_KEY, "POST", "/api/schema/undo/orders_db")
+                .onSuccessRun(() -> fail("Expected failure"))
+                .onFailure(AuthorizationPipelineTest::assertAccessDenied);
+        }
+
+        @Test
+        void pipeline_denied_viewerTriggersSchemaBaseline() {
+            runPipeline(VIEWER_KEY, "POST", "/api/schema/baseline/orders_db")
+                .onSuccessRun(() -> fail("Expected failure"))
+                .onFailure(AuthorizationPipelineTest::assertAccessDenied);
+        }
     }
 
     @Nested
@@ -207,6 +236,13 @@ class AuthorizationPipelineTest {
                 .onSuccessRun(() -> fail("Expected failure"))
                 .onFailure(AuthorizationPipelineTest::assertAccessDenied);
         }
+
+        @Test
+        void pipeline_denied_operatorDeletesLogLevel() {
+            runPipeline(OPERATOR_KEY, "DELETE", "/api/logging/levels/com.example")
+                .onSuccessRun(() -> fail("Expected failure"))
+                .onFailure(AuthorizationPipelineTest::assertAccessDenied);
+        }
     }
 
     @Nested
@@ -280,6 +316,49 @@ class AuthorizationPipelineTest {
                      .flatMap(sc -> RoleEnforcer.enforce(sc, permission))
                      .onSuccessRun(() -> fail("Expected failure"))
                      .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.InvalidCredentials.class));
+        }
+    }
+
+    @Nested
+    class DefaultRoleHandling {
+        @Test
+        void pipeline_defaultsToAdmin_whenAuthorizationRoleOmitted() {
+            var keyWithNoRole = "no-role-key-value-1";
+            var entries = Map.of(
+                keyWithNoRole, ApiKeyEntry.apiKeyEntry("no-role-svc", Set.of("service"))
+            );
+            var validatorNoRole = SecurityValidator.apiKeyValidator(entries);
+            var request = createRequest(keyWithNoRole, "POST", "/api/blueprint");
+            var permission = RoutePermissionRegistry.resolve("POST", "/api/blueprint");
+            validatorNoRole.validate(request, policy)
+                           .flatMap(sc -> RoleEnforcer.enforce(sc, permission))
+                           .onFailureRun(() -> fail("Expected success — default ADMIN role"))
+                           .onSuccess(sc -> assertThat(sc.authorizationRole()).isEqualTo(AuthorizationRole.ADMIN));
+        }
+
+        @Test
+        void pipeline_defaultsToAdmin_whenAuthorizationRoleInvalid() {
+            var keyWithBadRole = "bad-role-key-value1";
+            var entries = Map.of(
+                keyWithBadRole, ApiKeyEntry.apiKeyEntry("bad-role-svc", Set.of("service"), "SUPERUSER")
+            );
+            var validatorBadRole = SecurityValidator.apiKeyValidator(entries);
+            var request = createRequest(keyWithBadRole, "POST", "/api/blueprint");
+            var permission = RoutePermissionRegistry.resolve("POST", "/api/blueprint");
+            validatorBadRole.validate(request, policy)
+                            .flatMap(sc -> RoleEnforcer.enforce(sc, permission))
+                            .onFailureRun(() -> fail("Expected success — invalid role defaults to ADMIN"))
+                            .onSuccess(sc -> assertThat(sc.authorizationRole()).isEqualTo(AuthorizationRole.ADMIN));
+        }
+    }
+
+    @Nested
+    class AnonymousContext {
+        @Test
+        void anonymousContext_hasViewerRole() {
+            var ctx = SecurityContext.securityContext();
+            assertThat(ctx.authorizationRole()).isEqualTo(AuthorizationRole.VIEWER);
+            assertThat(ctx.isAuthenticated()).isFalse();
         }
     }
 

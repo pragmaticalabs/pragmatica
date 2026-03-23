@@ -8,6 +8,8 @@ import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -24,6 +26,7 @@ import java.util.stream.Collectors;
 /// Checks X-API-Key header against configured valid keys.
 /// Stores SHA-256 hashes of keys — raw key values are never held in memory.
 class ApiKeySecurityValidator implements SecurityValidator {
+    private static final Logger log = LoggerFactory.getLogger(ApiKeySecurityValidator.class);
     private static final String API_KEY_HEADER = "X-API-Key";
     private final Map<String, ApiKeyEntry> keyEntries;
 
@@ -73,9 +76,13 @@ class ApiKeySecurityValidator implements SecurityValidator {
 
     private static AuthorizationRole parseAuthorizationRole(String value) {
         return switch (value) {
+            case "ADMIN" -> AuthorizationRole.ADMIN;
             case "OPERATOR" -> AuthorizationRole.OPERATOR;
             case "VIEWER" -> AuthorizationRole.VIEWER;
-            default -> AuthorizationRole.ADMIN;
+            default -> {
+                log.warn("Unknown authorization role '{}', defaulting to ADMIN", value);
+                yield AuthorizationRole.ADMIN;
+            }
         };
     }
 

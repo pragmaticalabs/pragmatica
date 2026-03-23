@@ -24,6 +24,7 @@ import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.api.routes.StatusRoutes;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.RoleEnforcer;
+import org.pragmatica.aether.http.handler.security.RoutePermission;
 import org.pragmatica.aether.http.handler.security.RoutePermissionRegistry;
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.http.security.AuditLog;
@@ -51,6 +52,7 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.TlsConfig;
 
@@ -527,10 +529,31 @@ class ManagementServerImpl implements ManagementServer {
         var methodName = method.name();
         var permission = RoutePermissionRegistry.resolve(methodName, path);
         return securityValidator.validate(httpContext, policy)
-                                .flatMap(sc -> RoleEnforcer.enforce(sc, permission))
+                                .flatMap(sc -> enforceAndAuditDenial(sc, permission, methodName, path))
                                 .onFailure(cause -> handleManagementSecurityFailure(response, cause, path, methodName))
                                 .onSuccess(sc -> logManagementAccess(sc, methodName, path))
                                 .isSuccess();
+    }
+
+    private static Result<org.pragmatica.aether.http.handler.security.SecurityContext> enforceAndAuditDenial(
+            org.pragmatica.aether.http.handler.security.SecurityContext sc,
+            RoutePermission permission,
+            String method,
+            String path) {
+        return RoleEnforcer.enforce(sc, permission)
+                           .onFailure(_ -> auditAccessDenied(sc, method, path, permission));
+    }
+
+    private static void auditAccessDenied(org.pragmatica.aether.http.handler.security.SecurityContext sc,
+                                           String method,
+                                           String path,
+                                           RoutePermission permission) {
+        var principal = sc.isAuthenticated()
+                        ? sc.principal().value()
+                        : "anonymous";
+        AuditLog.accessDenied(principal, method, path,
+                              sc.authorizationRole().name(),
+                              permission.minimumRole().name());
     }
 
     private static void logManagementAccess(org.pragmatica.aether.http.handler.security.SecurityContext securityContext,
