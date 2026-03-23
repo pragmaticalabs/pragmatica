@@ -162,6 +162,10 @@ public final class KVStoreSerializer {
             case SchemaMigrationLockKey _ -> "schema-lock";
             case AbTestKey _ -> "ab-test";
             case AbTestRoutingKey _ -> "ab-test-routing";
+            case StreamMetadataKey _ -> "stream-meta";
+            case StreamPartitionAssignmentKey _ -> "stream-assign";
+            case StreamCursorCheckpointKey _ -> "stream-cursor";
+            case StreamRegistrationKey _ -> "stream-reg";
         };
     }
 
@@ -216,6 +220,10 @@ public final class KVStoreSerializer {
             case SchemaMigrationLockValue v -> serializeSchemaMigrationLock(v);
             case AbTestValue v -> serializeAbTest(v);
             case AbTestRoutingValue v -> serializeAbTestRouting(v);
+            case StreamMetadataValue v -> serializeStreamMetadata(v);
+            case StreamPartitionAssignmentValue v -> serializeStreamPartitionAssignment(v);
+            case StreamCursorCheckpointValue v -> serializeStreamCursorCheckpoint(v);
+            case StreamRegistrationValue v -> serializeStreamRegistration(v);
         };
     }
 
@@ -957,6 +965,32 @@ public final class KVStoreSerializer {
         var map = new LinkedHashMap<AetherKey, AetherValue>();
         entries.forEach(e -> map.put(e.getKey(), e.getValue()));
         return map;
+    }
+
+    private static String serializeStreamMetadata(StreamMetadataValue v) {
+        return v.streamName() + PIPE + v.partitionCount() + PIPE + v.retention() + PIPE + v.retentionValue()
+               + PIPE + v.maxEventSize() + PIPE + v.backpressure() + PIPE + v.owningBlueprint() + PIPE + v.createdAt();
+    }
+
+    private static String serializeStreamPartitionAssignment(StreamPartitionAssignmentValue v) {
+        var sb = new StringBuilder();
+        for (var a : v.assignments()) {
+            if (!sb.isEmpty()) {
+                sb.append(';');
+            }
+            sb.append(a.partition())
+              .append(':')
+              .append(a.consumerNode().id());
+        }
+        return sb + PIPE + v.updatedAt();
+    }
+
+    private static String serializeStreamCursorCheckpoint(StreamCursorCheckpointValue v) {
+        return v.committedOffset() + PIPE + v.commitTimestamp();
+    }
+
+    private static String serializeStreamRegistration(StreamRegistrationValue v) {
+        return v.nodeId().id() + PIPE + v.consumerGroup() + PIPE + v.batchMode() + PIPE + v.eventType();
     }
 
     private static <T> Result<T> parseFailure(String detail) {

@@ -1055,4 +1055,87 @@ public sealed interface AetherValue {
             return new AbTestRoutingValue(testId, splitRuleJson, variantVersionsJson);
         }
     }
+
+    /// Stream metadata stored in consensus.
+    /// Contains stream configuration replicated across the cluster.
+    ///
+    /// @param streamName the stream identifier
+    /// @param partitionCount number of partitions
+    /// @param retention retention mode: "time", "count", or "size"
+    /// @param retentionValue value interpreted by retention mode
+    /// @param maxEventSize maximum serialized event size
+    /// @param backpressure behavior when ring buffer is full: "block", "drop-oldest", "reject"
+    /// @param owningBlueprint blueprint that declared this stream
+    /// @param createdAt timestamp when stream was created
+    record StreamMetadataValue(String streamName,
+                               int partitionCount,
+                               String retention,
+                               String retentionValue,
+                               String maxEventSize,
+                               String backpressure,
+                               String owningBlueprint,
+                               long createdAt) implements AetherValue {
+        public static StreamMetadataValue streamMetadataValue(String streamName,
+                                                              int partitionCount,
+                                                              String retention,
+                                                              String retentionValue,
+                                                              String maxEventSize,
+                                                              String backpressure,
+                                                              String owningBlueprint) {
+            return new StreamMetadataValue(streamName, partitionCount, retention, retentionValue,
+                                           maxEventSize, backpressure, owningBlueprint,
+                                           System.currentTimeMillis());
+        }
+    }
+
+    /// Stream partition assignment for a consumer group.
+    /// Maps partitions to consumer nodes.
+    ///
+    /// @param assignments list of partition-to-node assignments
+    /// @param updatedAt timestamp of last assignment update
+    record StreamPartitionAssignmentValue(List<PartitionAssignment> assignments,
+                                          long updatedAt) implements AetherValue {
+        /// Single partition-to-node assignment.
+        public record PartitionAssignment(int partition, NodeId consumerNode) {
+            public static PartitionAssignment partitionAssignment(int partition, NodeId consumerNode) {
+                return new PartitionAssignment(partition, consumerNode);
+            }
+        }
+
+        public static StreamPartitionAssignmentValue streamPartitionAssignmentValue(
+                List<PartitionAssignment> assignments) {
+            return new StreamPartitionAssignmentValue(List.copyOf(assignments),
+                                                      System.currentTimeMillis());
+        }
+    }
+
+    /// Stream cursor checkpoint for a consumer group on a specific partition.
+    /// Periodically persisted to consensus for crash recovery.
+    ///
+    /// @param committedOffset the last successfully processed offset
+    /// @param commitTimestamp timestamp of the commit
+    record StreamCursorCheckpointValue(long committedOffset,
+                                       long commitTimestamp) implements AetherValue {
+        public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset) {
+            return new StreamCursorCheckpointValue(committedOffset, System.currentTimeMillis());
+        }
+    }
+
+    /// Stream registration linking a stream subscription to a slice method handler.
+    ///
+    /// @param nodeId the node hosting this consumer
+    /// @param consumerGroup the consumer group name
+    /// @param batchMode whether this consumer processes events in batches
+    /// @param eventType fully qualified event type name
+    record StreamRegistrationValue(NodeId nodeId,
+                                   String consumerGroup,
+                                   boolean batchMode,
+                                   String eventType) implements AetherValue {
+        public static StreamRegistrationValue streamRegistrationValue(NodeId nodeId,
+                                                                      String consumerGroup,
+                                                                      boolean batchMode,
+                                                                      String eventType) {
+            return new StreamRegistrationValue(nodeId, consumerGroup, batchMode, eventType);
+        }
+    }
 }

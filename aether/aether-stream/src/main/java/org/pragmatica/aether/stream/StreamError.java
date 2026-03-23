@@ -7,7 +7,9 @@ public sealed interface StreamError extends Cause {
 
     enum General implements StreamError {
         BUFFER_CLOSED("Ring buffer is closed"),
-        BUFFER_EMPTY("Ring buffer is empty");
+        BUFFER_EMPTY("Ring buffer is empty"),
+        STREAM_ALREADY_EXISTS("Stream already exists"),
+        STREAM_CLOSED("Stream has been closed");
 
         private final String message;
 
@@ -32,6 +34,20 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Cursor at offset %d has expired, oldest available is %d".formatted(requestedOffset, tailOffset);
+        }
+    }
+
+    record StreamNotFound(String streamName) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream not found: " + streamName;
+        }
+    }
+
+    record PartitionOutOfRange(String streamName, int partition, int partitionCount) implements StreamError {
+        @Override
+        public String message() {
+            return "Partition %d out of range for stream '%s' (partitions: %d)".formatted(partition, streamName, partitionCount);
         }
     }
 }
