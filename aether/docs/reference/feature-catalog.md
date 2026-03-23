@@ -155,6 +155,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 49 | REST management API | Battle-tested | 60+ endpoints across 13 route classes: status, health, blueprints, slices, scaling, rolling updates, config, thresholds, alerts, aspects, logging, TTM, invocation metrics, controller config, node lifecycle |
 | 50 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, metrics, health, scale, artifact, blueprint, update, invocation-metrics, controller, alerts, thresholds, aspects, traces, observability, config, logging, events, node lifecycle/drain/activate/shutdown |
 | 51 | WebSocket streams | Complete | `/ws/dashboard` (metrics), `/ws/status` (cluster state), `/ws/events` (real-time cluster events with delta broadcasting) |
+| 146 | In-memory streaming (preview) | Complete | StreamPublisher/StreamSubscriber/StreamAccess API, OffHeapRingBuffer (MemorySegment), StreamPartitionManager, annotation processor (envelope v7), consumer runtime (RETRY/SKIP/STALL), dead-letter handler, REST API, CLI |
 | 52 | Dynamic log levels | Complete | Runtime log level adjustment per logger via KV-Store. CLI and API control |
 | 53 | E2E test framework | Battle-tested | Testcontainers-based cluster testing with 10 test classes on bridge networking. Container DNS for inter-node communication, network partition/disconnect/reconnect support. Tests: ArtifactRepository, NodeFailure, RollingRestart, SwimDetection, NodeDrain, NetworkPartition, SliceLifecycle, TopologyGrowth, LoadBalancerFailover, LeaderIsolation |
 | 76 | Forge integration tests | Battle-tested | In-process EmberCluster tests: 16 test classes covering cluster formation, node failure, chaos, rolling updates, pub-sub delivery, invocation metrics, graceful shutdown, network partitions. Class-level cluster setup, health-endpoint readiness polling, `@Tag("Heavy")` for 5 resource-intensive tests |
@@ -265,10 +266,10 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | Status | Count |
 |--------|-------|
 | Battle-tested | 24 |
-| Complete | 113 |
+| Complete | 115 |
 | Partial | 1 |
-| Planned | 7 |
-| Total | 145 |
+| Planned | 5 |
+| Total | 146 |
 
 **Battle-tested features (24):** Blueprint management, Slice lifecycle, Rolling updates, Auto-healing, CPU-based auto-scaling, Rabia consensus, Leader election, Quorum state management, Topology management, Distributed KV-Store, Service-to-service invocation, Version routing, Artifact repository, Distributed hash table, System metrics, Cluster metrics API, Prometheus export, REST management API, Forge simulator, Graceful quorum degradation, Health check endpoint, Message delivery (pub-sub), E2E test framework, Forge integration tests
 
@@ -284,7 +285,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 |---------|---------------|
 | ~~Per-data-source DB schema management~~ | ~~Complete in 0.21.0~~ |
 | ~~Canary & blue-green deployment~~ | ~~Complete in 0.21.0~~ |
-| RBAC Tier 2 — per-endpoint authorization | RBAC Tier 1 complete |
+| ~~RBAC Tier 2 — per-endpoint authorization~~ | ~~Complete in 0.22.0~~ |
 | ~~TLS certificate management~~ | ~~Complete in 0.19.3~~ |
 | Per-route rate limiting | — |
 | Spot instance support | Cloud Integration (complete) |
@@ -294,4 +295,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-03-22 (v0.22.0)*
+*Last updated: 2026-03-23 (v0.23.0)*

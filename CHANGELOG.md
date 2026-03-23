@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.23.0] - Unreleased
 
+### Added
+- **In-memory streaming (preview)** — ordered, replayable, consumer-paced streaming as a first-class Aether resource
+  - `StreamPublisher<T>`, `StreamSubscriber`, `StreamAccess<T>` — slice-developer API with `@PartitionKey` annotation for partition routing
+  - `OffHeapRingBuffer` — off-heap ring buffer using `MemorySegment` with circular wrap-around and retention eviction (count/size/age)
+  - `StreamPartitionManager` — governor-local produce/consume with per-stream partition management
+  - Annotation processor: detects stream resources, generates manifest entries, envelope format v7
+  - `StreamConsumerRuntime` — push-based delivery with RETRY (exponential backoff), SKIP, and STALL error strategies
+  - `DeadLetterHandler` — in-memory dead-letter storage for failed events
+  - REST API: `GET /api/streams`, `GET /api/streams/{name}`, `POST /api/streams/{name}/publish`, `GET /api/streams/{name}/{partition}/read`
+  - CLI: `aether stream list`, `aether stream status`, `aether stream publish`
+  - KV-Store types for stream metadata, partition assignments, cursor checkpoints
+  - 140+ tests across the streaming stack
+
 ## [0.22.0] - 2026-03-23
 
 ### Added
