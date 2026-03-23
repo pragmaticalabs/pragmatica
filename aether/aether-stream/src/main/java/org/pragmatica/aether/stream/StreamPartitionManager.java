@@ -5,6 +5,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -109,10 +110,40 @@ public final class StreamPartitionManager implements AutoCloseable {
         return success(unit());
     }
 
+    /// Get per-partition details for a specific partition of a stream.
+    public Result<PartitionInfo> partitionInfo(String streamName, int partition) {
+        return resolvePartitionBuffer(streamName, partition)
+                   .map(buffer -> PartitionInfo.partitionInfo(partition,
+                                                              buffer.headOffset(),
+                                                              buffer.tailOffset(),
+                                                              buffer.eventCount()));
+    }
+
+    /// Get all partition details for a stream.
+    public Result<List<PartitionInfo>> allPartitionInfo(String streamName) {
+        var entry = streams.get(streamName);
+        if (entry == null) {
+            return new StreamError.StreamNotFound(streamName).result();
+        }
+        var infos = new ArrayList<PartitionInfo>();
+        for (int i = 0; i < entry.partitions().length; i++) {
+            var buffer = entry.partitions()[i];
+            infos.add(PartitionInfo.partitionInfo(i, buffer.headOffset(), buffer.tailOffset(), buffer.eventCount()));
+        }
+        return success(List.copyOf(infos));
+    }
+
     /// Record for stream information.
     public record StreamInfo(String name, int partitions, long totalEvents, long totalBytes) {
         public static StreamInfo streamInfo(String name, int partitions, long totalEvents, long totalBytes) {
             return new StreamInfo(name, partitions, totalEvents, totalBytes);
+        }
+    }
+
+    /// Record for per-partition details.
+    public record PartitionInfo(int partition, long headOffset, long tailOffset, long eventCount) {
+        public static PartitionInfo partitionInfo(int partition, long headOffset, long tailOffset, long eventCount) {
+            return new PartitionInfo(partition, headOffset, tailOffset, eventCount);
         }
     }
 

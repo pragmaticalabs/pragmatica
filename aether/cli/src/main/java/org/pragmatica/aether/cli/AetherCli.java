@@ -18,6 +18,7 @@ import java.time.Instant;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.Callable;
 
@@ -82,7 +83,8 @@ AetherCli.BackupCommand.class,
 AetherCli.SchemaCommand.class,
 AetherCli.CanaryCommand.class,
 AetherCli.BlueGreenCommand.class,
-AetherCli.AbTestCommand.class})
+AetherCli.AbTestCommand.class,
+AetherCli.StreamCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -3111,6 +3113,72 @@ public class AetherCli implements Runnable {
             public Integer call() {
                 var body = "{\"winner\":\"" + winner + "\"}";
                 var response = abParent.parent.postToNode("/api/ab-test/" + testId + "/conclude", body);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+    }
+
+    // ===== Stream Commands =====
+    @Command(name = "stream",
+    description = "Manage event streams",
+    subcommands = {StreamCommand.ListCommand.class,
+    StreamCommand.StatusCommand.class,
+    StreamCommand.PublishCommand.class})
+    static class StreamCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        @Command(name = "list", description = "List all streams")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private StreamCommand streamParent;
+
+            @Override
+            public Integer call() {
+                var response = streamParent.parent.fetchFromNode("/api/streams");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "status", description = "Show stream details")
+        static class StatusCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private StreamCommand streamParent;
+
+            @Parameters(index = "0", description = "Stream name")
+            private String name;
+
+            @Override
+            public Integer call() {
+                var response = streamParent.parent.fetchFromNode("/api/streams/" + name);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "publish", description = "Publish a message to a stream")
+        static class PublishCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private StreamCommand streamParent;
+
+            @Parameters(index = "0", description = "Stream name")
+            private String name;
+
+            @Parameters(index = "1", description = "Message content")
+            private String message;
+
+            @Override
+            public Integer call() {
+                var encoded = Base64.getEncoder().encodeToString(message.getBytes());
+                var body = "{\"data\":\"" + encoded + "\"}";
+                var response = streamParent.parent.postToNode("/api/streams/" + name + "/publish", body);
                 System.out.println(formatJson(response));
                 return 0;
             }

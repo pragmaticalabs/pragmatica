@@ -63,6 +63,7 @@ public sealed interface RoutePermissionRegistry {
             "/api/alerts/clear",
             "/api/config",
             "/api/invocation-metrics/strategy",
+            "/api/streams",
             "/repository/"
         );
 

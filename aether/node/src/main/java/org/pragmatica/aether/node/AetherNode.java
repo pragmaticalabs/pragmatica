@@ -63,6 +63,7 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
 import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
+import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -242,6 +243,9 @@ public interface AetherNode {
 
     /// Get the backup service for this node.
     BackupService backupService();
+
+    /// Get the stream partition manager for local stream operations.
+    StreamPartitionManager streamPartitionManager();
 
     /// Get the number of currently connected peer nodes in the cluster.
     /// This is a network-level count, not based on metrics exchange.
@@ -437,6 +441,7 @@ public interface AetherNode {
                           DeploymentMap deploymentMap,
                           ClusterEventAggregator eventAggregator,
                           BackupService backupService,
+                          StreamPartitionManager streamPartitionManager,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
                           Option<ManagementServer> managementServer,
@@ -478,6 +483,7 @@ public interface AetherNode {
                 scheduledTaskManager.stop();
                 snapshotCollector.stop();
                 SliceRuntime.clear();
+                streamPartitionManager.close();
                 // 4. Stop SWIM health detector
                 swimHealthDetector.stop();
                 // 5. Deregister from discovery provider
@@ -1105,6 +1111,8 @@ public interface AetherNode {
         // Wire TCP connection events to SWIM: reset FAULTY members when TCP proves they're alive
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> swimHealthDetector.onNodeConnected(connection.nodeId())));
+        // Create stream partition manager for local stream operations
+        var streamPartitionManager = StreamPartitionManager.streamPartitionManager();
         // Create the node first (without management server reference)
         var startTimeMs = System.currentTimeMillis();
         var node = new aetherNode(config,
@@ -1148,6 +1156,7 @@ public interface AetherNode {
                                   deploymentMap,
                                   eventAggregator,
                                   BackupService.disabled(),
+                                  streamPartitionManager,
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
                                   Option.empty(),
@@ -1223,6 +1232,7 @@ public interface AetherNode {
                                                            deploymentMap,
                                                            eventAggregator,
                                                            BackupService.disabled(),
+                                                           streamPartitionManager,
                                                            eventLoopMetricsCollector,
                                                            swimHealthDetector,
                                                            Option.some(managementServer),
