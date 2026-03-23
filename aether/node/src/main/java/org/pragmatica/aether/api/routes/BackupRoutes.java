@@ -16,9 +16,11 @@
 
 package org.pragmatica.aether.api.routes;
 
+import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.aether.backup.BackupService.BackupInfo;
 import org.pragmatica.aether.http.security.AuditLog;
+import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Promise;
@@ -30,13 +32,16 @@ import java.util.stream.Stream;
 /// Routes for cluster backup management: trigger, list, restore.
 public final class BackupRoutes implements RouteSource {
     private final Supplier<BackupService> backupServiceSupplier;
+    private final Supplier<AetherNode> nodeSupplier;
 
-    private BackupRoutes(Supplier<BackupService> backupServiceSupplier) {
+    private BackupRoutes(Supplier<BackupService> backupServiceSupplier, Supplier<AetherNode> nodeSupplier) {
         this.backupServiceSupplier = backupServiceSupplier;
+        this.nodeSupplier = nodeSupplier;
     }
 
-    public static BackupRoutes backupRoutes(Supplier<BackupService> backupServiceSupplier) {
-        return new BackupRoutes(backupServiceSupplier);
+    public static BackupRoutes backupRoutes(Supplier<BackupService> backupServiceSupplier,
+                                            Supplier<AetherNode> nodeSupplier) {
+        return new BackupRoutes(backupServiceSupplier, nodeSupplier);
     }
 
     record BackupResponse(boolean success, String message) {
@@ -65,7 +70,15 @@ public final class BackupRoutes implements RouteSource {
                                                                                          cause.message()),
                                                   _ -> BackupResponse.backupResponse(true, "Backup completed"));
         AuditLog.backupCreated(response.success(), response.message());
+        emitBackupCreated(response);
         return response;
+    }
+
+    private void emitBackupCreated(BackupResponse response) {
+        if (response.success()) {
+            nodeSupplier.get()
+                        .route(OperationalEvent.BackupCreated.backupCreated("latest", "api"));
+        }
     }
 
     private List<BackupInfo> listBackups() {
@@ -81,6 +94,14 @@ public final class BackupRoutes implements RouteSource {
                                                                                          cause.message()),
                                                   _ -> BackupResponse.backupResponse(true, "Restore completed"));
         AuditLog.backupRestored(response.success(), request.commit(), response.message());
+        emitBackupRestored(request.commit(), response);
         return Promise.success(response);
+    }
+
+    private void emitBackupRestored(String commitId, BackupResponse response) {
+        if (response.success()) {
+            nodeSupplier.get()
+                        .route(OperationalEvent.BackupRestored.backupRestored(commitId, "api"));
+        }
     }
 }

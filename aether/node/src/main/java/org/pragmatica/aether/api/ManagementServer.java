@@ -29,6 +29,7 @@ import org.pragmatica.aether.http.handler.security.RoutePermissionRegistry;
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.http.security.SecurityError;
+import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
@@ -226,9 +227,10 @@ class ManagementServerImpl implements ManagementServer {
                                                                  scheduledTaskStateRegistry));
         routeSources.add(ClusterTopologyRoutes.clusterTopologyRoutes(nodeSupplier));
         routeSources.add(BackupRoutes.backupRoutes(() -> nodeSupplier.get()
-                                                                     .backupService()));
+                                                                     .backupService(),
+                                                   nodeSupplier));
         routeSources.add(SchemaRoutes.schemaRoutes(nodeSupplier));
-        dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm)));
+        dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm, nodeSupplier)));
         this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
         // Legacy routes using RouteHandler for dynamic content types
         this.legacyRoutes = List.of(MavenProtocolRoutes.mavenProtocolRoutes(nodeSupplier));
@@ -535,7 +537,7 @@ class ManagementServerImpl implements ManagementServer {
                                 .isSuccess();
     }
 
-    private static Result<org.pragmatica.aether.http.handler.security.SecurityContext> enforceAndAuditDenial(
+    private Result<org.pragmatica.aether.http.handler.security.SecurityContext> enforceAndAuditDenial(
             org.pragmatica.aether.http.handler.security.SecurityContext sc,
             RoutePermission permission,
             String method,
@@ -544,16 +546,18 @@ class ManagementServerImpl implements ManagementServer {
                            .onFailure(_ -> auditAccessDenied(sc, method, path, permission));
     }
 
-    private static void auditAccessDenied(org.pragmatica.aether.http.handler.security.SecurityContext sc,
-                                           String method,
-                                           String path,
-                                           RoutePermission permission) {
+    private void auditAccessDenied(org.pragmatica.aether.http.handler.security.SecurityContext sc,
+                                    String method,
+                                    String path,
+                                    RoutePermission permission) {
         var principal = sc.isAuthenticated()
                         ? sc.principal().value()
                         : "anonymous";
-        AuditLog.accessDenied(principal, method, path,
-                              sc.authorizationRole().name(),
-                              permission.minimumRole().name());
+        var actualRole = sc.authorizationRole().name();
+        var requiredRole = permission.minimumRole().name();
+        AuditLog.accessDenied(principal, method, path, actualRole, requiredRole);
+        nodeSupplier.get()
+                    .route(OperationalEvent.AccessDenied.accessDenied(principal, method, path, actualRole, requiredRole));
     }
 
     private static void logManagementAccess(org.pragmatica.aether.http.handler.security.SecurityContext securityContext,

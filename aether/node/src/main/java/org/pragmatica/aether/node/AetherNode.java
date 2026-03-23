@@ -5,6 +5,7 @@ import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.api.ClusterEventAggregatorConfig;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
+import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.config.ConfigService;
@@ -1649,6 +1650,17 @@ public interface AetherNode {
                                               eventAggregator::onConnectionEstablished));
         entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionFailed.class,
                                               eventAggregator::onConnectionFailed));
+        // Operational audit events — routed to event aggregator for dashboard/API consumption
+        entries.add(MessageRouter.Entry.route(OperationalEvent.AccessDenied.class, eventAggregator::onAccessDenied));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.NodeLifecycleChanged.class,
+                                              eventAggregator::onNodeLifecycleChanged));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.ConfigChanged.class, eventAggregator::onConfigChanged));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.BackupCreated.class, eventAggregator::onBackupCreated));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.BackupRestored.class, eventAggregator::onBackupRestored));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeployed.class,
+                                              eventAggregator::onBlueprintDeployed));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
+                                              eventAggregator::onBlueprintDeleted));
         // Invocation messages
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));

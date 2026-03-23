@@ -1,7 +1,9 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.DynamicConfigManager;
+import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.http.security.AuditLog;
+import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.api.ManagementApiResponses.ConfigRemovedResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ConfigSetResponse;
 import org.pragmatica.consensus.NodeId;
@@ -12,6 +14,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
@@ -19,13 +22,15 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 /// Routes for dynamic configuration management: get, set, remove config overrides.
 public final class ConfigRoutes implements RouteSource {
     private final DynamicConfigManager configManager;
+    private final Supplier<AetherNode> nodeSupplier;
 
-    private ConfigRoutes(DynamicConfigManager configManager) {
+    private ConfigRoutes(DynamicConfigManager configManager, Supplier<AetherNode> nodeSupplier) {
         this.configManager = configManager;
+        this.nodeSupplier = nodeSupplier;
     }
 
-    public static ConfigRoutes configRoutes(DynamicConfigManager configManager) {
-        return new ConfigRoutes(configManager);
+    public static ConfigRoutes configRoutes(DynamicConfigManager configManager, Supplier<AetherNode> nodeSupplier) {
+        return new ConfigRoutes(configManager, nodeSupplier);
     }
 
     // Request DTO
@@ -66,7 +71,7 @@ public final class ConfigRoutes implements RouteSource {
                   .filter(id -> !id.isEmpty())
                   .fold(() -> configManager.setConfig(req.key(),
                                                       req.value())
-                                           .onSuccess(_ -> AuditLog.configSet(req.key(), "cluster"))
+                                           .onSuccess(_ -> auditAndEmitConfigSet(req.key(), "cluster"))
                                            .map(_ -> new ConfigSetResponse("config_set",
                                                                            req.key(),
                                                                            req.value())),
@@ -75,7 +80,8 @@ public final class ConfigRoutes implements RouteSource {
                                            .flatMap(nodeId -> configManager.setNodeConfig(req.key(),
                                                                                           req.value(),
                                                                                           nodeId)
-                                                                           .onSuccess(_ -> AuditLog.configSet(req.key(), "node:" + nodeIdStr))
+                                                                           .onSuccess(_ -> auditAndEmitConfigSet(req.key(),
+                                                                                                                     "node:" + nodeIdStr))
                                                                            .map(_ -> new ConfigSetResponse("config_set",
                                                                                                            req.key(),
                                                                                                            req.value()))));
@@ -98,7 +104,7 @@ public final class ConfigRoutes implements RouteSource {
             return ConfigError.KEY_REQUIRED.promise();
         }
         return configManager.removeConfig(key)
-                            .onSuccess(_ -> AuditLog.configRemoved(key, "cluster"))
+                            .onSuccess(_ -> auditAndEmitConfigRemove(key, "cluster"))
                             .map(_ -> new ConfigRemovedResponse("config_removed", key));
     }
 
@@ -109,8 +115,20 @@ public final class ConfigRoutes implements RouteSource {
         return NodeId.nodeId(nodeIdStr)
                      .async()
                      .flatMap(nodeId -> configManager.removeNodeConfig(key, nodeId)
-                                                     .onSuccess(_ -> AuditLog.configRemoved(key, "node:" + nodeIdStr))
+                                                     .onSuccess(_ -> auditAndEmitConfigRemove(key, "node:" + nodeIdStr))
                                                      .map(_ -> new ConfigRemovedResponse("config_removed", key)));
+    }
+
+    private void auditAndEmitConfigSet(String key, String scope) {
+        AuditLog.configSet(key, scope);
+        nodeSupplier.get()
+                    .route(OperationalEvent.ConfigChanged.configChanged(key, scope, "set", "api"));
+    }
+
+    private void auditAndEmitConfigRemove(String key, String scope) {
+        AuditLog.configRemoved(key, scope);
+        nodeSupplier.get()
+                    .route(OperationalEvent.ConfigChanged.configChanged(key, scope, "remove", "api"));
     }
 
     private enum ConfigError implements Cause {

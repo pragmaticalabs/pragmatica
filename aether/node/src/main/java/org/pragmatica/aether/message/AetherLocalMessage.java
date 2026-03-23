@@ -12,6 +12,7 @@ import org.pragmatica.messaging.Message;
 ///
 ///   - {@link org.pragmatica.aether.metrics.deployment.DeploymentEvent} - Slice deployment lifecycle events
 ///   - {@link org.pragmatica.aether.invoke.SliceFailureEvent} - Invocation failure events
+///   - {@link org.pragmatica.aether.api.OperationalEvent} - Operational audit events (security, lifecycle, config, backup, blueprint)
 ///
 ///
 ///
