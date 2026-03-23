@@ -23,7 +23,7 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 public class ManifestGenerator {
-    static final int ENVELOPE_FORMAT_VERSION = 6;
+    static final int ENVELOPE_FORMAT_VERSION = 7;
 
     private final Filer filer;
     private final DependencyVersionResolver versionResolver;
@@ -105,10 +105,10 @@ public class ManifestGenerator {
                                           .or(() -> "UNRESOLVED"));
                 index++;
             }
-            // Resources (exclude publishers — they get their own section)
+            // Resources (exclude publishers and stream resources — they get their own sections)
             var resources = model.dependencies()
                                  .stream()
-                                 .filter(dep -> dep.isResource() && !dep.isPublisher())
+                                 .filter(dep -> dep.isResource() && !dep.isPublisher() && !dep.isStreamResource())
                                  .toList();
             props.setProperty("resources.count", String.valueOf(resources.size()));
             for (int resIndex = 0; resIndex < resources.size(); resIndex++) {
@@ -177,6 +177,54 @@ public class ManifestGenerator {
                 publishers.get(pubIndex)
                           .publisherMessageType()
                           .onPresent(mt -> props.setProperty(pubPrefix + "messageType", mt));
+            }
+            // Stream publisher metadata
+            var streamPublishers = model.dependencies()
+                                        .stream()
+                                        .filter(DependencyModel::isStreamPublisher)
+                                        .toList();
+            props.setProperty("stream.publishers.count", String.valueOf(streamPublishers.size()));
+            for (int spIndex = 0; spIndex < streamPublishers.size(); spIndex++) {
+                var spPrefix = "stream.publisher." + spIndex + ".";
+                var sp = streamPublishers.get(spIndex);
+                sp.resourceQualifier()
+                  .onPresent(rq -> props.setProperty(spPrefix + "config", rq.configSection()));
+                sp.streamEventType()
+                  .onPresent(et -> props.setProperty(spPrefix + "eventType", et));
+            }
+            // Stream subscription metadata
+            var streamSubMethods = model.streamSubscriptionMethods();
+            int streamSubIndex = 0;
+            for (var method : streamSubMethods) {
+                for (var streamSub : method.streamSubscriptions()) {
+                    var ssPrefix = "stream.subscription." + streamSubIndex + ".";
+                    props.setProperty(ssPrefix + "config", streamSub.configSection());
+                    props.setProperty(ssPrefix + "method", method.name());
+                    method.streamConsumerEventType()
+                          .onPresent(et -> props.setProperty(ssPrefix + "eventType", et));
+                    props.setProperty(ssPrefix + "batch", String.valueOf(method.isBatchStreamConsumer()));
+                    streamSubIndex++;
+                }
+            }
+            props.setProperty("stream.subscriptions.count", String.valueOf(streamSubIndex));
+            // Stream access metadata
+            var streamAccessDeps = model.dependencies()
+                                        .stream()
+                                        .filter(DependencyModel::isStreamAccess)
+                                        .toList();
+            props.setProperty("stream.access.count", String.valueOf(streamAccessDeps.size()));
+            for (int saIndex = 0; saIndex < streamAccessDeps.size(); saIndex++) {
+                var saPrefix = "stream.access." + saIndex + ".";
+                var sa = streamAccessDeps.get(saIndex);
+                sa.resourceQualifier()
+                  .onPresent(rq -> props.setProperty(saPrefix + "config", rq.configSection()));
+                sa.streamEventType()
+                  .onPresent(et -> props.setProperty(saPrefix + "eventType", et));
+            }
+            // Stream event codec classes (union of all stream event types)
+            var streamEventTypes = collectStreamEventTypes(model);
+            if (!streamEventTypes.isEmpty()) {
+                props.setProperty("stream.event.classes", String.join(",", streamEventTypes));
             }
             // Metadata
             props.setProperty("generated.timestamp",
@@ -266,6 +314,26 @@ public class ManifestGenerator {
 
     private boolean isStandardType(String typeName) {
         return typeName.startsWith("java.lang.") || typeName.startsWith("java.util.") || typeName.equals("void") || typeName.equals("int") || typeName.equals("long") || typeName.equals("boolean") || typeName.equals("double") || typeName.equals("float");
+    }
+
+    /// Collect all distinct stream event types from publishers, subscribers, and access resources.
+    private List<String> collectStreamEventTypes(SliceModel model) {
+        var types = new ArrayList<String>();
+        // From StreamPublisher and StreamAccess parameters
+        model.dependencies()
+             .stream()
+             .filter(DependencyModel::isStreamResource)
+             .flatMap(dep -> dep.streamEventType().stream())
+             .forEach(types::add);
+        // From stream subscription methods
+        model.streamSubscriptionMethods()
+             .stream()
+             .flatMap(m -> m.streamConsumerEventType().stream())
+             .forEach(types::add);
+        return types.stream()
+                    .filter(name -> !isStandardType(name))
+                    .distinct()
+                    .collect(Collectors.toList());
     }
 
     private String getArtifactIdFromEnv() {

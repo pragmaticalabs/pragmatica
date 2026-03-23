@@ -1247,4 +1247,200 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> SCHEMA_MIGRATION_LOCK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid schema-lock key format: %s");
     Fn1<Cause, String> AB_TEST_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid ab-test key format: %s");
     Fn1<Cause, String> AB_TEST_ROUTING_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid ab-test-routing key format: %s");
+
+    // Stream key format errors
+    Fn1<Cause, String> STREAM_METADATA_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-meta key format: %s");
+    Fn1<Cause, String> STREAM_PARTITION_ASSIGNMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-assign key format: %s");
+    Fn1<Cause, String> STREAM_CURSOR_CHECKPOINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-cursor key format: %s");
+    Fn1<Cause, String> STREAM_REGISTRATION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-reg key format: %s");
+
+    /// Stream metadata key format:
+    /// ```
+    /// stream-meta/{streamName}
+    /// ```
+    /// Stores stream existence, partition count, and configuration.
+    /// Written by CDM when a blueprint with streams is deployed.
+    record StreamMetadataKey(String streamName) implements AetherKey {
+        private static final String PREFIX = "stream-meta/";
+
+        @Override
+        public String asString() {
+            return PREFIX + streamName;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static StreamMetadataKey streamMetadataKey(String streamName) {
+            return new StreamMetadataKey(streamName);
+        }
+
+        public static Result<StreamMetadataKey> streamMetadataKey(String key, boolean isKey) {
+            if (!key.startsWith(PREFIX)) {
+                return STREAM_METADATA_KEY_FORMAT_ERROR.apply(key)
+                                                       .result();
+            }
+            var name = key.substring(PREFIX.length());
+            if (name.isEmpty()) {
+                return STREAM_METADATA_KEY_FORMAT_ERROR.apply(key)
+                                                       .result();
+            }
+            return success(new StreamMetadataKey(name));
+        }
+    }
+
+    /// Stream partition assignment key format:
+    /// ```
+    /// stream-assign/{streamName}/{consumerGroup}
+    /// ```
+    /// Maps partitions to consumer nodes for a consumer group.
+    record StreamPartitionAssignmentKey(String streamName,
+                                        String consumerGroup) implements AetherKey {
+        private static final String PREFIX = "stream-assign/";
+
+        @Override
+        public String asString() {
+            return PREFIX + streamName + "/" + consumerGroup;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static StreamPartitionAssignmentKey streamPartitionAssignmentKey(String streamName,
+                                                                                String consumerGroup) {
+            return new StreamPartitionAssignmentKey(streamName, consumerGroup);
+        }
+
+        public static Result<StreamPartitionAssignmentKey> streamPartitionAssignmentKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return STREAM_PARTITION_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key)
+                                                                   .result();
+            }
+            var content = key.substring(PREFIX.length());
+            var slashIndex = content.indexOf('/');
+            if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return STREAM_PARTITION_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key)
+                                                                   .result();
+            }
+            var streamName = content.substring(0, slashIndex);
+            var consumerGroup = content.substring(slashIndex + 1);
+            return success(new StreamPartitionAssignmentKey(streamName, consumerGroup));
+        }
+    }
+
+    /// Stream cursor checkpoint key format:
+    /// ```
+    /// stream-cursor/{streamName}/{partitionIndex}/{consumerGroup}
+    /// ```
+    /// Periodic cursor checkpoint for a consumer group on a specific partition.
+    record StreamCursorCheckpointKey(String streamName,
+                                     int partitionIndex,
+                                     String consumerGroup) implements AetherKey {
+        private static final String PREFIX = "stream-cursor/";
+
+        @Override
+        public String asString() {
+            return PREFIX + streamName + "/" + partitionIndex + "/" + consumerGroup;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static StreamCursorCheckpointKey streamCursorCheckpointKey(String streamName,
+                                                                          int partitionIndex,
+                                                                          String consumerGroup) {
+            return new StreamCursorCheckpointKey(streamName, partitionIndex, consumerGroup);
+        }
+
+        public static Result<StreamCursorCheckpointKey> streamCursorCheckpointKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return STREAM_CURSOR_CHECKPOINT_KEY_FORMAT_ERROR.apply(key)
+                                                                .result();
+            }
+            var content = key.substring(PREFIX.length());
+            var parts = content.split("/");
+            if (parts.length != 3) {
+                return STREAM_CURSOR_CHECKPOINT_KEY_FORMAT_ERROR.apply(key)
+                                                                .result();
+            }
+            return Number.parseInt(parts[1])
+                         .map(partition -> new StreamCursorCheckpointKey(parts[0], partition, parts[2]));
+        }
+    }
+
+    /// Stream registration key format:
+    /// ```
+    /// stream-reg/{streamName}/{configSection}/{groupId}:{artifactId}:{version}/{methodName}
+    /// ```
+    /// Maps stream subscriptions to slice method handlers for stream consumption.
+    record StreamRegistrationKey(String streamName,
+                                 String configSection,
+                                 Artifact artifact,
+                                 MethodName methodName) implements AetherKey {
+        private static final String PREFIX = "stream-reg/";
+
+        @Override
+        public String asString() {
+            return PREFIX + streamName + "/" + configSection + "/"
+                   + artifact.asString() + "/" + methodName.name();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static StreamRegistrationKey streamRegistrationKey(String streamName,
+                                                                   String configSection,
+                                                                   Artifact artifact,
+                                                                   MethodName methodName) {
+            return new StreamRegistrationKey(streamName, configSection, artifact, methodName);
+        }
+
+        public static Result<StreamRegistrationKey> streamRegistrationKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return STREAM_REGISTRATION_KEY_FORMAT_ERROR.apply(key)
+                                                           .result();
+            }
+            var content = key.substring(PREFIX.length());
+            var firstSlash = content.indexOf('/');
+            if (firstSlash == - 1) {
+                return STREAM_REGISTRATION_KEY_FORMAT_ERROR.apply(key)
+                                                           .result();
+            }
+            var streamName = content.substring(0, firstSlash);
+            var rest = content.substring(firstSlash + 1);
+            var secondSlash = rest.indexOf('/');
+            if (secondSlash == - 1) {
+                return STREAM_REGISTRATION_KEY_FORMAT_ERROR.apply(key)
+                                                           .result();
+            }
+            var configSection = rest.substring(0, secondSlash);
+            var rest2 = rest.substring(secondSlash + 1);
+            var lastSlash = rest2.lastIndexOf('/');
+            if (lastSlash == - 1) {
+                return STREAM_REGISTRATION_KEY_FORMAT_ERROR.apply(key)
+                                                           .result();
+            }
+            var artifactPart = rest2.substring(0, lastSlash);
+            var methodPart = rest2.substring(lastSlash + 1);
+            if (streamName.isEmpty() || configSection.isEmpty() || methodPart.isEmpty()) {
+                return STREAM_REGISTRATION_KEY_FORMAT_ERROR.apply(key)
+                                                           .result();
+            }
+            return Result.all(Artifact.artifact(artifactPart),
+                              MethodName.methodName(methodPart))
+                         .map((artifact, method) -> new StreamRegistrationKey(streamName, configSection, artifact, method));
+        }
+    }
 }

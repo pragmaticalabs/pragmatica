@@ -2520,6 +2520,125 @@ Baselines a datasource at the specified version (marks V001..V{N} as applied wit
 
 ---
 
+## Stream Management
+
+Endpoints for managing event streams. Streams must be created via stream configuration in blueprints.
+
+### List Streams
+
+```
+GET /api/streams
+```
+
+**Auth:** ALL_AUTHENTICATED
+
+**Response:**
+```json
+{
+  "streams": [
+    {
+      "name": "events",
+      "partitions": 4,
+      "totalEvents": 1024,
+      "totalBytes": 65536
+    }
+  ]
+}
+```
+
+### Stream Info
+
+```
+GET /api/streams/{name}
+```
+
+**Auth:** ALL_AUTHENTICATED
+
+**Response:**
+```json
+{
+  "name": "events",
+  "partitions": 4,
+  "totalEvents": 1024,
+  "totalBytes": 65536,
+  "partitionDetails": [
+    {
+      "partition": 0,
+      "headOffset": 255,
+      "tailOffset": 0,
+      "eventCount": 256
+    }
+  ]
+}
+```
+
+### Partition Details
+
+```
+GET /api/streams/{name}/{partition}
+```
+
+**Auth:** ALL_AUTHENTICATED
+
+**Response:**
+```json
+{
+  "partition": 0,
+  "headOffset": 255,
+  "tailOffset": 0,
+  "eventCount": 256
+}
+```
+
+### Publish Event
+
+```
+POST /api/streams/{name}/publish
+```
+
+**Auth:** OPERATOR_AND_ABOVE
+
+**Request:**
+```json
+{
+  "data": "<base64-encoded-payload>"
+}
+```
+
+**Response:**
+```json
+{
+  "offset": 256
+}
+```
+
+### Read Events
+
+```
+GET /api/streams/{name}/{partition}/read?from={offset}&max={count}
+```
+
+**Auth:** ALL_AUTHENTICATED
+
+**Query Parameters:**
+- `from` (optional, default 0) -- Starting offset
+- `max` (optional, default 100) -- Maximum number of events to return
+
+**Response:**
+```json
+{
+  "events": [
+    {
+      "offset": 0,
+      "data": "<base64-encoded-payload>",
+      "timestamp": 1711234567890
+    }
+  ]
+}
+```
+
+---
+
 All errors return JSON with an `error` field:
 
 ```json

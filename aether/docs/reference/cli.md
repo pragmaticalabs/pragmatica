@@ -1099,6 +1099,47 @@ aether schema baseline orders_db -v 3
 
 ---
 
+## Stream Management
+
+### `aether stream list`
+
+List all event streams with metadata.
+
+```bash
+aether stream list
+```
+
+### `aether stream status <name>`
+
+Show detailed stream info including per-partition details.
+
+```bash
+aether stream status my-events
+```
+
+### `aether stream publish <name> <message>`
+
+Publish a text message to a stream. The message is base64-encoded automatically.
+
+```bash
+aether stream publish my-events "Hello, world!"
+```
+
+### Examples
+
+```bash
+# List all streams
+aether stream list
+
+# Check stream details
+aether stream status user-events
+
+# Publish a message
+aether stream publish user-events "order_created:12345"
+```
+
+---
+
 ## Exit Codes
 
 | Code | Meaning |
