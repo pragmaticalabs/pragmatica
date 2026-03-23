@@ -92,12 +92,13 @@ public final class QuicSslContextFactory {
         }
     }
 
+    @SuppressWarnings("JBCT-NULL-01") // Netty API requires nullable password parameter
     private static QuicSslContextBuilder configureIdentity(KeyMaterial keyMaterial) {
         return switch (keyMaterial) {
             case KeyMaterial.FromFile(var certFile, var keyFile, var password) ->
-                QuicSslContextBuilder.forServer(keyFile, password, certFile);
+                QuicSslContextBuilder.forServer(keyFile, password.or((String) null), certFile);
             case KeyMaterial.FromCerts(var key, var password, var chain) ->
-                QuicSslContextBuilder.forServer(key, password, chain);
+                QuicSslContextBuilder.forServer(key, password.or((String) null), chain);
         };
     }
 
@@ -127,9 +128,9 @@ public final class QuicSslContextFactory {
 
     // ===== Key Material =====
     private sealed interface KeyMaterial {
-        record FromFile(java.io.File certFile, java.io.File keyFile, String password) implements KeyMaterial {}
+        record FromFile(java.io.File certFile, java.io.File keyFile, Option<String> password) implements KeyMaterial {}
         record FromCerts(java.security.PrivateKey key,
-                         String password,
+                         Option<String> password,
                          X509Certificate[] chain) implements KeyMaterial {}
     }
 
@@ -147,7 +148,7 @@ public final class QuicSslContextFactory {
     private static Result<KeyMaterial> generateSelfSigned() {
         try {
             var ssc = new SelfSignedCertificate();
-            return Result.success(new KeyMaterial.FromFile(ssc.certificate(), ssc.privateKey(), null));
+            return Result.success(new KeyMaterial.FromFile(ssc.certificate(), ssc.privateKey(), Option.empty()));
         } catch (Exception e) {
             return new TlsError.SelfSignedGenerationFailed(e).result();
         }
@@ -166,7 +167,7 @@ public final class QuicSslContextFactory {
             return new TlsError.PrivateKeyLoadFailed(keyPath,
                 new java.io.FileNotFoundException("Private key file not found or not readable: " + keyPath)).result();
         }
-        return Result.success(new KeyMaterial.FromFile(certFile, keyFile, password.or((String) null)));
+        return Result.success(new KeyMaterial.FromFile(certFile, keyFile, password));
     }
 
     @SuppressWarnings("JBCT-UTIL-01")
@@ -175,11 +176,20 @@ public final class QuicSslContextFactory {
             var certFactory = CertificateFactory.getInstance("X.509");
             var cert = (X509Certificate) certFactory.generateCertificate(new ByteArrayInputStream(certPem));
             var keySpec = new java.security.spec.PKCS8EncodedKeySpec(parsePemKey(keyPem));
-            var keyFactory = java.security.KeyFactory.getInstance("RSA");
-            var privateKey = keyFactory.generatePrivate(keySpec);
-            return Result.success(new KeyMaterial.FromCerts(privateKey, null, new X509Certificate[]{cert}));
+            var privateKey = loadPrivateKey(keySpec);
+            return Result.success(new KeyMaterial.FromCerts(privateKey, Option.empty(), new X509Certificate[]{cert}));
         } catch (Exception e) {
             return new TlsError.ContextBuildFailed(e).result();
+        }
+    }
+
+    @SuppressWarnings("JBCT-EX-01") // Key algorithm detection: try RSA first, fall back to EC
+    private static java.security.PrivateKey loadPrivateKey(java.security.spec.PKCS8EncodedKeySpec keySpec)
+        throws java.security.GeneralSecurityException {
+        try {
+            return java.security.KeyFactory.getInstance("RSA").generatePrivate(keySpec);
+        } catch (java.security.spec.InvalidKeySpecException _) {
+            return java.security.KeyFactory.getInstance("EC").generatePrivate(keySpec);
         }
     }
 

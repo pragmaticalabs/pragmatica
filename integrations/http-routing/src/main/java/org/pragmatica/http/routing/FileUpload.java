@@ -2,8 +2,6 @@ package org.pragmatica.http.routing;
 
 import org.pragmatica.lang.Option;
 
-import java.util.Objects;
-
 import static org.pragmatica.lang.Option.option;
 
 /// Represents an uploaded file from a multipart request.
@@ -18,12 +16,6 @@ public record FileUpload(String fieldName,
                          String contentType,
                          byte[] content,
                          long size) {
-    public FileUpload {
-        Objects.requireNonNull(fieldName, "fieldName");
-        Objects.requireNonNull(filename, "filename");
-        Objects.requireNonNull(contentType, "contentType");
-        Objects.requireNonNull(content, "content");
-    }
 
     /// Factory method for creating a file upload with size derived from content.
     public static FileUpload fileUpload(String fieldName, String filename, String contentType, byte[] content) {

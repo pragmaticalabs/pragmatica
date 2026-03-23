@@ -4,7 +4,6 @@ import org.pragmatica.lang.Option;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 import static org.pragmatica.lang.Option.option;
 
@@ -14,10 +13,6 @@ import static org.pragmatica.lang.Option.option;
 /// @param files  uploaded files in order
 public record MultipartRequest(Map<String, String> fields,
                                 List<FileUpload> files) {
-    public MultipartRequest {
-        Objects.requireNonNull(fields, "fields");
-        Objects.requireNonNull(files, "files");
-    }
 
     /// Factory method for creating a multipart request.
     public static MultipartRequest multipartRequest(Map<String, String> fields, List<FileUpload> files) {

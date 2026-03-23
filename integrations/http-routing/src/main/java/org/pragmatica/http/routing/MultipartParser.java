@@ -33,7 +33,7 @@ public sealed interface MultipartParser {
 
     /// Check whether the given Content-Type header indicates multipart/form-data.
     static boolean isMultipart(String contentType) {
-        return contentType != null && contentType.toLowerCase().startsWith("multipart/form-data");
+        return isMultipart(Option.option(contentType));
     }
 
     /// Parse a multipart request from raw body bytes and Content-Type header.
@@ -43,13 +43,10 @@ public sealed interface MultipartParser {
     /// @param uri         the request URI (used by Netty decoder)
     /// @return parsed multipart request or error
     static Result<MultipartRequest> parse(byte[] body, String contentType, String uri) {
-        if (contentType == null) {
-            return MultipartError.General.MISSING_CONTENT_TYPE.result();
-        }
-        if (!isMultipart(contentType)) {
-            return MultipartError.General.NOT_MULTIPART.result();
-        }
-        return Result.lift(MultipartParser::liftParseError, () -> doParse(body, contentType, uri));
+        return Option.option(contentType)
+                     .toResult(MultipartError.General.MISSING_CONTENT_TYPE)
+                     .filter(MultipartError.General.NOT_MULTIPART, ct -> isMultipart(ct))
+                     .flatMap(ct -> Result.lift(MultipartParser::liftParseError, () -> doParse(body, ct, uri)));
     }
 
     /// Parse multipart from request headers map and body.
@@ -64,6 +61,7 @@ public sealed interface MultipartParser {
                           .or(MultipartError.General.MISSING_CONTENT_TYPE.result());
     }
 
+    @SuppressWarnings("JBCT-EX-01") // Infrastructure resource cleanup: Netty decoder and request must be released
     private static MultipartRequest doParse(byte[] body, String contentType, String uri) {
         var content = Unpooled.wrappedBuffer(body);
         var nettyRequest = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.POST, uri, content);
@@ -119,16 +117,11 @@ public sealed interface MultipartParser {
     }
 
     private static Option<String> extractContentType(Map<String, List<String>> headers) {
-        var lowercase = Option.option(headers.get("content-type"))
-                              .filter(values -> !values.isEmpty())
-                              .map(List::getFirst);
-
-        if (lowercase.isPresent()) {
-            return lowercase;
-        }
-
-        return Option.option(headers.get("Content-Type"))
+        return Option.option(headers.get("content-type"))
                      .filter(values -> !values.isEmpty())
-                     .map(List::getFirst);
+                     .map(List::getFirst)
+                     .orElse(() -> Option.option(headers.get("Content-Type"))
+                                        .filter(values -> !values.isEmpty())
+                                        .map(List::getFirst));
     }
 }

@@ -4,6 +4,9 @@ import org.pragmatica.lang.Cause;
 
 /// Errors that can occur during multipart request parsing.
 public sealed interface MultipartError extends Cause {
+    MultipartError NOT_MULTIPART = General.NOT_MULTIPART;
+    MultipartError MISSING_CONTENT_TYPE = General.MISSING_CONTENT_TYPE;
+
     /// The request is not a multipart request.
     enum General implements MultipartError {
         NOT_MULTIPART("Request is not multipart/form-data"),

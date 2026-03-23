@@ -90,15 +90,14 @@ final class Http3Server {
     }
 
     Promise<Unit> stop() {
-        return Promise.promise(promise -> {
-            log.info("Stopping HTTP/3 server on port {}", port);
-            if (serverChannel.isEmpty()) {
-                cleanupAndComplete(promise);
-            } else {
-                serverChannel.onPresent(channel -> channel.close()
-                                                          .addListener(_ -> cleanupAndComplete(promise)));
-            }
-        });
+        return Promise.promise(this::initiateShutdown);
+    }
+
+    private void initiateShutdown(Promise<Unit> promise) {
+        log.info("Stopping HTTP/3 server on port {}", port);
+        serverChannel.onPresent(channel -> channel.close()
+                                                   .addListener(_ -> cleanupAndComplete(promise)))
+                     .onEmpty(() -> cleanupAndComplete(promise));
     }
 
     private void cleanupAndComplete(Promise<Unit> promise) {
@@ -252,7 +251,7 @@ final class Http3Server {
             dispatch(ctx);
         }
 
-        @SuppressWarnings("JBCT-PAT-01") // Netty handler dispatch
+        @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"}) // Netty handler boundary: must catch exceptions to send error response
         private void dispatch(ChannelHandlerContext ctx) {
             var requestId = IdGenerator.generate("req");
             var requestContext = buildRequestContext(requestId);
@@ -277,10 +276,9 @@ final class Http3Server {
 
         private RequestContext buildRequestContext(String requestId) {
             var h3Headers = headersFrame.headers();
-            var methodStr = h3Headers.method() != null ? h3Headers.method().toString() : "GET";
-            var pathStr = h3Headers.path() != null ? h3Headers.path().toString() : "/";
-            var method = HttpMethod.httpMethod(methodStr)
-                                   .fold(_ -> HttpMethod.GET, v -> v);
+            var methodStr = Option.option(h3Headers.method()).map(CharSequence::toString).or("GET");
+            var pathStr = Option.option(h3Headers.path()).map(CharSequence::toString).or("/");
+            var method = HttpMethod.httpMethod(methodStr).or(HttpMethod.GET);
             var pathAndQuery = pathStr.split("\\?", 2);
             var path = pathAndQuery[0];
             var queryParams = parseQueryParams(pathAndQuery.length > 1 ? pathAndQuery[1] : "");
@@ -343,6 +341,7 @@ final class Http3Server {
     private static class Http3ResponseWriter implements ResponseWriter {
         private final ChannelHandlerContext ctx;
         private final String requestId;
+        // Thread-safe: each Http3ResponseWriter is created per-stream and accessed only from the Netty event loop thread
         private final Map<String, String> pendingHeaders = new HashMap<>();
         private final AtomicBoolean written = new AtomicBoolean(false);
 

@@ -110,19 +110,16 @@ public sealed interface DataSize {
         }
 
         var valueStr = matcher.group(1);
-        var unit = matcher.group(2);
+        var unit = Option.option(matcher.group(2)).or("B");
 
-        return parseLongValue(valueStr, unit == null ? "B" : unit)
+        return parseLongValue(valueStr, unit)
             .flatMap(DataSize::validateNonNegative);
     }
 
     private static Result<Long> parseLongValue(String valueStr, String unit) {
-        try {
-            var value = Long.parseLong(valueStr);
-            return success(toBytes(value, unit.toUpperCase()));
-        } catch (NumberFormatException _) {
-            return new DataSizeError.InvalidValue(valueStr, unit).result();
-        }
+        return Result.lift1(Long::parseLong, valueStr)
+                     .map(value -> toBytes(value, unit.toUpperCase()))
+                     .mapError(_ -> new DataSizeError.InvalidValue(valueStr, unit));
     }
 
     private static long toBytes(long value, String unit) {
@@ -142,6 +139,10 @@ public sealed interface DataSize {
     }
 
     record DataSizeValue(long bytes) implements DataSize {
+        public DataSizeValue {
+            assert bytes >= 0 : "DataSizeValue bytes must be non-negative";
+        }
+
         @Override
         public String toString() {
             return formatSize(bytes);
@@ -170,7 +171,7 @@ public sealed interface DataSize {
     record unused() implements DataSize {
         @Override
         public long bytes() {
-            throw new UnsupportedOperationException();
+            return 0L;
         }
     }
 }
