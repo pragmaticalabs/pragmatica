@@ -987,3 +987,170 @@ tbody tr:hover { background: var(--bg-tertiary); }
 .legend-line.dotted {
     background: repeating-linear-gradient(90deg, var(--text-muted) 0, var(--text-muted) 4px, transparent 4px, transparent 8px);
 }
+
+/* Schema Migration */
+.schema-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.schema-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    border-bottom: 1px solid var(--border-light);
+    font-size: var(--font-size-sm);
+}
+
+.schema-row:last-child { border-bottom: none; }
+
+.schema-name {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 120px;
+}
+
+.schema-badge {
+    font-size: var(--font-size-xs);
+    padding: 1px var(--space-sm);
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.schema-badge.completed {
+    background: rgba(63, 185, 80, 0.25);
+    color: var(--accent-green);
+}
+
+.schema-badge.pending {
+    background: rgba(210, 153, 34, 0.25);
+    color: var(--accent-orange);
+}
+
+.schema-badge.migrating {
+    background: rgba(88, 166, 255, 0.25);
+    color: var(--accent-blue);
+}
+
+.schema-badge.failed {
+    background: rgba(248, 81, 73, 0.3);
+    color: var(--accent-red);
+}
+
+.schema-badge.unknown {
+    background: rgba(139, 148, 158, 0.2);
+    color: var(--text-secondary);
+}
+
+.schema-version {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--accent-cyan);
+    font-weight: 600;
+}
+
+.schema-migration {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Governors / Communities Table */
+.governors-table { width: 100%; }
+
+.mono-text {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+}
+
+.member-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+}
+
+.member-badge {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    padding: 1px var(--space-sm);
+    border-radius: var(--radius-sm);
+    background: rgba(88, 166, 255, 0.15);
+    color: var(--accent-blue);
+    white-space: nowrap;
+}
+
+/* Deployment Strategies */
+.strategy-section {
+    margin-bottom: var(--space-md);
+}
+
+.strategy-section:last-child { margin-bottom: 0; }
+
+.strategy-section-title {
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+    margin-bottom: var(--space-sm);
+    padding-bottom: var(--space-xs);
+    border-bottom: 1px solid var(--border-light);
+}
+
+.strategy-card {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    padding: var(--space-sm) var(--space-md);
+    margin-bottom: var(--space-sm);
+}
+
+.strategy-card:last-child { margin-bottom: 0; }
+
+.strategy-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--space-xs);
+}
+
+.strategy-card-details {
+    display: flex;
+    gap: var(--space-md);
+    flex-wrap: wrap;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+}
+
+.strategy-routing {
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+}
+
+.strategy-env {
+    font-weight: 600;
+}
+
+.strategy-env.blue { color: var(--accent-blue); }
+.strategy-env.green { color: var(--accent-green); }
+
+/* Status badge additions for strategies */
+.status-badge.completed {
+    background: rgba(139, 148, 158, 0.2);
+    color: var(--text-secondary);
+}
+
+.status-badge.pending {
+    background: rgba(210, 153, 34, 0.25);
+    color: var(--accent-orange);
+}
+
+/* Streams Table */
+.streams-table { width: 100%; }

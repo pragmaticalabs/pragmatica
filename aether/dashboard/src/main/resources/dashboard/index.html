@@ -134,6 +134,46 @@
                                 </div>
                             </div>
                         </div>
+                        <!-- Schema Migration Status -->
+                        <div class="panel" x-show="$store.schema.datasources.length > 0">
+                            <h2 class="panel-header">
+                                SCHEMA MIGRATIONS
+                                <span class="panel-count" x-text="$store.schema.datasources.length + ' DATASOURCES'"></span>
+                            </h2>
+                            <div class="schema-list">
+                                <template x-for="ds in $store.schema.datasources" :key="ds.name">
+                                    <div class="schema-row">
+                                        <span class="schema-name" x-text="ds.name"></span>
+                                        <span class="schema-badge" :class="$store.schema.statusClass(ds.status)" x-text="ds.status"></span>
+                                        <span class="schema-version" x-text="'v' + ds.currentVersion"></span>
+                                        <span class="schema-migration" x-text="ds.lastMigration"></span>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+
+                        <!-- Operations Summary -->
+                        <div class="panel" x-show="$store.governors.clusterTopology">
+                            <h2 class="panel-header">CLUSTER COMPOSITION</h2>
+                            <div class="metrics-grid">
+                                <div class="metric-cell">
+                                    <div class="metric-value" x-text="$store.governors.coreCount()"></div>
+                                    <div class="metric-label">CORE NODES</div>
+                                </div>
+                                <div class="metric-cell">
+                                    <div class="metric-value" x-text="$store.governors.workerCount()"></div>
+                                    <div class="metric-label">WORKER NODES</div>
+                                </div>
+                                <div class="metric-cell">
+                                    <div class="metric-value" x-text="$store.governors.governors.length"></div>
+                                    <div class="metric-label">COMMUNITIES</div>
+                                </div>
+                                <div class="metric-cell">
+                                    <div class="metric-value" x-text="$store.governors.totalMembers()"></div>
+                                    <div class="metric-label">TOTAL MEMBERS</div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -348,6 +388,125 @@
                         </div>
                     </template>
                 </div>
+
+                <!-- Governors / Communities -->
+                <div class="panel" x-show="$store.governors.governors.length > 0">
+                    <h2 class="panel-header">
+                        GOVERNORS / COMMUNITIES
+                        <span class="panel-count" x-text="$store.governors.governors.length + ' COMMUNITIES'"></span>
+                    </h2>
+                    <table class="governors-table">
+                        <thead><tr><th>Governor</th><th>Community</th><th>Members</th><th>Member IDs</th></tr></thead>
+                        <tbody>
+                            <template x-for="gov in $store.governors.governors" :key="gov.governorId + gov.community">
+                                <tr>
+                                    <td><span class="mono-text" x-text="gov.governorId"></span></td>
+                                    <td x-text="gov.community"></td>
+                                    <td x-text="gov.memberCount"></td>
+                                    <td>
+                                        <div class="member-badges">
+                                            <template x-for="m in (gov.members || [])" :key="m">
+                                                <span class="member-badge" x-text="m"></span>
+                                            </template>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                    <div x-show="$store.governors.governors.length === 0" class="no-data">No governors registered</div>
+                </div>
+
+                <!-- Deployment Strategies -->
+                <div class="panel" x-show="$store.strategies.totalActive() > 0">
+                    <h2 class="panel-header">
+                        DEPLOYMENT STRATEGIES
+                        <span class="panel-count" x-text="$store.strategies.totalActive() + ' ACTIVE'"></span>
+                    </h2>
+
+                    <!-- Canary Deployments -->
+                    <template x-if="$store.strategies.canaries.length > 0">
+                        <div class="strategy-section">
+                            <h3 class="strategy-section-title">Canary Deployments</h3>
+                            <template x-for="c in $store.strategies.canaries" :key="c.canaryId">
+                                <div class="strategy-card">
+                                    <div class="strategy-card-header">
+                                        <span class="mono-text" x-text="c.artifactBase"></span>
+                                        <span class="status-badge" :class="$store.strategies.stateClass(c.state)" x-text="c.state"></span>
+                                    </div>
+                                    <div class="strategy-card-details">
+                                        <span x-text="c.oldVersion + ' → ' + c.newVersion"></span>
+                                        <span x-text="'Stage ' + c.currentStage + '/' + c.totalStages"></span>
+                                        <span x-text="c.newInstances + ' instances'"></span>
+                                        <span class="strategy-routing" x-text="c.routing"></span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+
+                    <!-- Blue-Green Deployments -->
+                    <template x-if="$store.strategies.blueGreen.length > 0">
+                        <div class="strategy-section">
+                            <h3 class="strategy-section-title">Blue-Green Deployments</h3>
+                            <template x-for="bg in $store.strategies.blueGreen" :key="bg.deploymentId">
+                                <div class="strategy-card">
+                                    <div class="strategy-card-header">
+                                        <span class="mono-text" x-text="bg.artifactBase"></span>
+                                        <span class="status-badge" :class="$store.strategies.stateClass(bg.state)" x-text="bg.state"></span>
+                                    </div>
+                                    <div class="strategy-card-details">
+                                        <span class="strategy-env blue" x-text="'Blue: ' + bg.blueVersion"></span>
+                                        <span class="strategy-env green" x-text="'Green: ' + bg.greenVersion"></span>
+                                        <span x-text="'Active: ' + bg.activeEnvironment"></span>
+                                        <span class="strategy-routing" x-text="bg.routing"></span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+
+                    <!-- A/B Tests -->
+                    <template x-if="$store.strategies.abTests.length > 0">
+                        <div class="strategy-section">
+                            <h3 class="strategy-section-title">A/B Tests</h3>
+                            <template x-for="ab in $store.strategies.abTests" :key="ab.testId">
+                                <div class="strategy-card">
+                                    <div class="strategy-card-header">
+                                        <span class="mono-text" x-text="ab.artifactBase"></span>
+                                        <span class="status-badge" :class="$store.strategies.stateClass(ab.state)" x-text="ab.state"></span>
+                                    </div>
+                                    <div class="strategy-card-details">
+                                        <span x-text="'Baseline: ' + ab.baselineVersion"></span>
+                                        <span x-text="ab.variantCount + ' variants'"></span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+                </div>
+
+                <!-- Streams -->
+                <div class="panel" x-show="$store.streams.streams.length > 0">
+                    <h2 class="panel-header">
+                        STREAMS
+                        <span class="panel-count" x-text="$store.streams.streams.length + ' STREAMS'"></span>
+                    </h2>
+                    <table class="streams-table">
+                        <thead><tr><th>Name</th><th>Partitions</th><th>Total Events</th><th>Total Bytes</th></tr></thead>
+                        <tbody>
+                            <template x-for="s in $store.streams.streams" :key="s.name">
+                                <tr>
+                                    <td><span class="mono-text" x-text="s.name"></span></td>
+                                    <td x-text="s.partitions"></td>
+                                    <td x-text="formatNumber(s.totalEvents)"></td>
+                                    <td x-text="formatBytes(s.totalBytes)"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                    <div x-show="$store.streams.streams.length === 0" class="no-data">No streams registered</div>
+                </div>
             </div>
 
             <!-- Config Page -->
@@ -459,6 +618,10 @@
     <script src="js/stores/events.js"></script>
     <script src="js/stores/alerts.js"></script>
     <script src="js/stores/deployments.js"></script>
+    <script src="js/stores/schema.js"></script>
+    <script src="js/stores/governors.js"></script>
+    <script src="js/stores/strategies.js"></script>
+    <script src="js/stores/streams.js"></script>
     <script src="js/stores/topology.js"></script>
     <script src="js/stores/forge.js"></script>
     <script src="js/components/sparkline.js"></script>

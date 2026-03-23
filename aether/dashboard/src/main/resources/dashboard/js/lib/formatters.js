@@ -38,5 +38,13 @@ window.Formatters = {
         if (ms < 1000) return ms + 'ms';
         if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
         return Math.floor(ms / 60000) + 'm ' + Math.floor((ms % 60000) / 1000) + 's';
+    },
+
+    bytes: function(b) {
+        if (b == null || b === 0) return '0 B';
+        if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB';
+        if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB';
+        if (b >= 1024) return (b / 1024).toFixed(1) + ' KB';
+        return b + ' B';
     }
 };

@@ -83,11 +83,19 @@ document.addEventListener('alpine:init', function() {
                         Alpine.store('deployments').updateFromWsDashboard(data.data);
                         Alpine.store('topology').updateFromWsDashboard(data.data);
                         Alpine.store('alerts').updateFromInitialState(data.data);
+                        Alpine.store('schema').updateFromWsDashboard(data.data);
+                        Alpine.store('governors').updateFromWsDashboard(data.data);
+                        Alpine.store('strategies').updateFromWsDashboard(data.data);
+                        Alpine.store('streams').updateFromWsDashboard(data.data);
                     } else if (data.type === 'METRICS_UPDATE' && data.data) {
                         Alpine.store('cluster').updateFromWsDashboard(data.data);
                         Alpine.store('metrics').updateFromWsDashboard(data.data);
                         Alpine.store('deployments').updateFromWsDashboard(data.data);
                         Alpine.store('topology').updateFromWsDashboard(data.data);
+                        Alpine.store('schema').updateFromWsDashboard(data.data);
+                        Alpine.store('governors').updateFromWsDashboard(data.data);
+                        Alpine.store('strategies').updateFromWsDashboard(data.data);
+                        Alpine.store('streams').updateFromWsDashboard(data.data);
                         Alpine.store('metrics').updateNodeHistory(Alpine.store('cluster').nodes);
                         this.updateSparklines();
                         this.updateCharts();
@@ -132,6 +140,10 @@ document.addEventListener('alpine:init', function() {
                 Alpine.store('alerts').refresh();
                 Alpine.store('alerts').refreshThresholds();
                 Alpine.store('topology').refresh();
+                Alpine.store('schema').refresh();
+                Alpine.store('governors').refresh();
+                Alpine.store('strategies').refresh();
+                Alpine.store('streams').refresh();
             },
 
             initSparklines() {
@@ -284,6 +296,7 @@ document.addEventListener('alpine:init', function() {
             formatLatency(ms) { return Formatters.latency(ms); },
             formatPercent(r) { return Formatters.percent(r); },
             formatTime(t) { return Formatters.time(t); },
+            formatBytes(b) { return Formatters.bytes(b); },
 
             avgCpu() {
                 var nodes = Alpine.store('cluster').nodes;

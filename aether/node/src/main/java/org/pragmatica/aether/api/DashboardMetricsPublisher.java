@@ -4,6 +4,10 @@ import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.DeploymentMap.SliceDeploymentInfo;
 import org.pragmatica.aether.deployment.DeploymentMap.SliceInstanceInfo;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.topology.TopologyGraph;
 import org.pragmatica.aether.slice.topology.TopologyParser;
 import org.pragmatica.consensus.NodeId;
@@ -11,6 +15,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.Option;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -171,6 +176,21 @@ public class DashboardMetricsPublisher {
         // Topology (static — only changes on deploy/undeploy)
         appendTopology(sb, node);
         sb.append(",");
+        // Schema migration status
+        appendSchema(sb, node);
+        sb.append(",");
+        // Governor/community status
+        appendGovernors(sb, node);
+        sb.append(",");
+        // Cluster topology (core/worker counts)
+        appendClusterTopology(sb, node);
+        sb.append(",");
+        // Deployment strategies (canary, blue-green, A/B)
+        appendStrategies(sb, node);
+        sb.append(",");
+        // Streams
+        appendStreams(sb, node);
+        sb.append(",");
         // Current metrics snapshot
         sb.append("\"metrics\":")
           .append(buildMetricsData());
@@ -231,6 +251,21 @@ public class DashboardMetricsPublisher {
           .append(",");
         // Topology (included so late-connecting clients get updated topology)
         appendTopology(sb, node);
+        sb.append(",");
+        // Schema migration status
+        appendSchema(sb, node);
+        sb.append(",");
+        // Governor/community status
+        appendGovernors(sb, node);
+        sb.append(",");
+        // Cluster topology (core/worker counts)
+        appendClusterTopology(sb, node);
+        sb.append(",");
+        // Deployment strategies (canary, blue-green, A/B)
+        appendStrategies(sb, node);
+        sb.append(",");
+        // Streams
+        appendStreams(sb, node);
         sb.append("}");
         return sb.toString();
     }
@@ -395,6 +430,150 @@ public class DashboardMetricsPublisher {
             firstEdge = false;
         }
         sb.append("]}");
+    }
+
+    private void appendSchema(StringBuilder sb, AetherNode node) {
+        var entries = new ArrayList<SchemaVersionValue>();
+        node.kvStore()
+            .forEach(SchemaVersionKey.class,
+                     SchemaVersionValue.class,
+                     (_, value) -> entries.add(value));
+        sb.append("\"schema\":{\"datasources\":[");
+        boolean first = true;
+        for (var entry : entries) {
+            if (!first) sb.append(",");
+            sb.append("{\"name\":\"")
+              .append(escapeJson(entry.datasourceName()))
+              .append("\",\"status\":\"")
+              .append(entry.status().name())
+              .append("\",\"currentVersion\":")
+              .append(entry.currentVersion())
+              .append(",\"lastMigration\":\"")
+              .append(escapeJson(entry.lastMigration()))
+              .append("\",\"attemptCount\":")
+              .append(entry.attemptCount())
+              .append("}");
+            first = false;
+        }
+        sb.append("]}");
+    }
+
+    private void appendGovernors(StringBuilder sb, AetherNode node) {
+        sb.append("\"governors\":[");
+        var governors = new ArrayList<String>();
+        node.kvStore()
+            .forEach(GovernorAnnouncementKey.class,
+                     GovernorAnnouncementValue.class,
+                     (key, value) -> governors.add(formatGovernor(key, value)));
+        sb.append(String.join(",", governors));
+        sb.append("]");
+    }
+
+    private String formatGovernor(GovernorAnnouncementKey key, GovernorAnnouncementValue value) {
+        var sb = new StringBuilder();
+        sb.append("{\"governorId\":\"")
+          .append(escapeJson(value.governorId().id()))
+          .append("\",\"community\":\"")
+          .append(escapeJson(key.communityId()))
+          .append("\",\"memberCount\":")
+          .append(value.memberCount())
+          .append(",\"members\":[");
+        boolean first = true;
+        for (var member : value.members()) {
+            if (!first) sb.append(",");
+            sb.append("\"").append(escapeJson(member.id())).append("\"");
+            first = false;
+        }
+        sb.append("]}");
+        return sb.toString();
+    }
+
+    private void appendClusterTopology(StringBuilder sb, AetherNode node) {
+        var topologyConfig = node.topologyConfig();
+        var coreNodeIds = node.initialTopology();
+        var connectedCount = node.connectedNodeCount();
+        var coreCount = coreNodeIds.size();
+        var workerCount = Math.max(0, connectedCount - coreCount);
+        sb.append("\"clusterTopology\":{\"coreCount\":")
+          .append(coreCount)
+          .append(",\"workerCount\":")
+          .append(workerCount)
+          .append(",\"coreMax\":")
+          .append(topologyConfig.coreMax())
+          .append(",\"clusterSize\":")
+          .append(topologyConfig.clusterSize())
+          .append("}");
+    }
+
+    private void appendStrategies(StringBuilder sb, AetherNode node) {
+        sb.append("\"strategies\":{");
+        // Canaries
+        sb.append("\"canaries\":[");
+        var canaries = node.canaryDeploymentManager().allCanaries();
+        boolean first = true;
+        for (var canary : canaries) {
+            if (!first) sb.append(",");
+            sb.append("{\"canaryId\":\"").append(escapeJson(canary.canaryId()))
+              .append("\",\"artifactBase\":\"").append(escapeJson(canary.artifactBase().asString()))
+              .append("\",\"oldVersion\":\"").append(escapeJson(canary.oldVersion().toString()))
+              .append("\",\"newVersion\":\"").append(escapeJson(canary.newVersion().toString()))
+              .append("\",\"state\":\"").append(canary.state().name())
+              .append("\",\"routing\":\"").append(escapeJson(canary.routing().toString()))
+              .append("\",\"currentStage\":").append(canary.currentStageIndex() + 1)
+              .append(",\"totalStages\":").append(canary.stages().size())
+              .append(",\"newInstances\":").append(canary.newInstances())
+              .append("}");
+            first = false;
+        }
+        sb.append("],");
+        // Blue-green
+        sb.append("\"blueGreen\":[");
+        var blueGreenList = node.blueGreenDeploymentManager().allDeployments();
+        first = true;
+        for (var bg : blueGreenList) {
+            if (!first) sb.append(",");
+            sb.append("{\"deploymentId\":\"").append(escapeJson(bg.deploymentId()))
+              .append("\",\"artifactBase\":\"").append(escapeJson(bg.artifactBase().asString()))
+              .append("\",\"blueVersion\":\"").append(escapeJson(bg.blueVersion().toString()))
+              .append("\",\"greenVersion\":\"").append(escapeJson(bg.greenVersion().toString()))
+              .append("\",\"state\":\"").append(bg.state().name())
+              .append("\",\"activeEnvironment\":\"").append(bg.activeEnvironment().name())
+              .append("\",\"routing\":\"").append(escapeJson(bg.routing().toString()))
+              .append("\"}");
+            first = false;
+        }
+        sb.append("],");
+        // A/B tests
+        sb.append("\"abTests\":[");
+        var abTests = node.abTestManager().allTests();
+        first = true;
+        for (var test : abTests) {
+            if (!first) sb.append(",");
+            sb.append("{\"testId\":\"").append(escapeJson(test.testId()))
+              .append("\",\"artifactBase\":\"").append(escapeJson(test.artifactBase().asString()))
+              .append("\",\"baselineVersion\":\"").append(escapeJson(test.baselineVersion().toString()))
+              .append("\",\"state\":\"").append(test.state().name())
+              .append("\",\"variantCount\":").append(test.variantVersions().size())
+              .append("}");
+            first = false;
+        }
+        sb.append("]}");
+    }
+
+    private void appendStreams(StringBuilder sb, AetherNode node) {
+        sb.append("\"streams\":[");
+        var streams = node.streamPartitionManager().listStreams();
+        boolean first = true;
+        for (var stream : streams) {
+            if (!first) sb.append(",");
+            sb.append("{\"name\":\"").append(escapeJson(stream.name()))
+              .append("\",\"partitions\":").append(stream.partitions())
+              .append(",\"totalEvents\":").append(stream.totalEvents())
+              .append(",\"totalBytes\":").append(stream.totalBytes())
+              .append("}");
+            first = false;
+        }
+        sb.append("]");
     }
 
     private static String escapeJson(String value) {
