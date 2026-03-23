@@ -4,8 +4,6 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.math.BigInteger;
 import java.net.URI;
@@ -25,6 +23,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.lang.Result.success;
 
 /// Fetches, caches, and manages JWKS (JSON Web Key Set) public keys.
@@ -35,7 +36,9 @@ import static org.pragmatica.lang.Result.success;
 class JwksKeyStore implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(JwksKeyStore.class);
     private static final JsonMapper JSON = JsonMapper.defaultJsonMapper();
+
     private static final TypeToken<Map<String, Object>> MAP_TYPE = new TypeToken<>() {};
+
     private static final Base64.Decoder BASE64URL = Base64.getUrlDecoder();
 
     private final String jwksUrl;
@@ -59,6 +62,7 @@ class JwksKeyStore implements AutoCloseable {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01") // AutoCloseable contract requires void
     public void close() {
         httpClient.close();
     }
@@ -88,7 +92,9 @@ class JwksKeyStore implements AutoCloseable {
 
     private void fetchAndCacheKeys() {
         fetchJwks().onSuccess(this::applyJwksResponse)
-                   .onFailure(cause -> log.warn("Failed to fetch JWKS from {}: {}", jwksUrl, cause.message()));
+                 .onFailure(cause -> log.warn("Failed to fetch JWKS from {}: {}",
+                                              jwksUrl,
+                                              cause.message()));
     }
 
     @SuppressWarnings("unchecked")
@@ -141,7 +147,8 @@ class JwksKeyStore implements AutoCloseable {
         var n = decodeBigInteger(stringValue(keyData, "n"));
         var e = decodeBigInteger(stringValue(keyData, "e"));
         var spec = new RSAPublicKeySpec(n, e);
-        return KeyFactory.getInstance("RSA").generatePublic(spec);
+        return KeyFactory.getInstance("RSA")
+                         .generatePublic(spec);
     }
 
     private static Result<PublicKey> buildEcPublicKey(Map<String, Object> keyData) {
@@ -155,7 +162,8 @@ class JwksKeyStore implements AutoCloseable {
         var ecParams = resolveEcParams(crv);
         var point = new ECPoint(x, y);
         var spec = new ECPublicKeySpec(point, ecParams);
-        return KeyFactory.getInstance("EC").generatePublic(spec);
+        return KeyFactory.getInstance("EC")
+                         .generatePublic(spec);
     }
 
     private static ECParameterSpec resolveEcParams(String crv) throws Exception {
@@ -176,15 +184,17 @@ class JwksKeyStore implements AutoCloseable {
 
     private Map<String, Object> doFetchJwks() throws Exception {
         var request = HttpRequest.newBuilder()
-                                .uri(URI.create(jwksUrl))
-                                .header("Accept", "application/json")
-                                .GET()
-                                .build();
+                                 .uri(URI.create(jwksUrl))
+                                 .header("Accept", "application/json")
+                                 .GET()
+                                 .build();
         var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
             throw new RuntimeException("JWKS fetch returned HTTP " + response.statusCode());
         }
-        return JSON.readString(response.body(), MAP_TYPE).unwrap();
+        return JSON.readString(response.body(),
+                               MAP_TYPE)
+                   .unwrap();
     }
 
     private static SecurityError fetchFailed(Throwable t) {

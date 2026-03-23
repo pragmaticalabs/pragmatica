@@ -17,8 +17,8 @@ final class JwtSignatureVerifier {
 
     /// Verify the JWT signature against the provided public key.
     static Result<JwtTokenParser.ParsedJwt> verify(JwtTokenParser.ParsedJwt jwt, PublicKey key) {
-        return resolveAlgorithm(jwt.header().alg())
-            .flatMap(jdkAlg -> performVerification(jwt, key, jdkAlg));
+        return resolveAlgorithm(jwt.header()
+                                   .alg()).flatMap(jdkAlg -> performVerification(jwt, key, jdkAlg));
     }
 
     private static Result<String> resolveAlgorithm(String jwtAlg) {
@@ -35,18 +35,19 @@ final class JwtSignatureVerifier {
 
     @SuppressWarnings("JBCT-EX-01")
     private static Result<JwtTokenParser.ParsedJwt> performVerification(JwtTokenParser.ParsedJwt jwt,
-                                                                         PublicKey key,
-                                                                         String jdkAlg) {
-        return Result.lift(JwtSignatureVerifier::verificationFailed,
-                           () -> verifySignatureRaw(jwt, key, jdkAlg));
+                                                                        PublicKey key,
+                                                                        String jdkAlg) {
+        return Result.lift(JwtSignatureVerifier::verificationFailed, () -> verifySignatureRaw(jwt, key, jdkAlg));
     }
 
+    @SuppressWarnings({"JBCT-EX-01"}) // Adapter boundary: JDK Signature API throws checked exceptions
     private static JwtTokenParser.ParsedJwt verifySignatureRaw(JwtTokenParser.ParsedJwt jwt,
-                                                                PublicKey key,
-                                                                String jdkAlg) throws Exception {
+                                                               PublicKey key,
+                                                               String jdkAlg) throws Exception {
         var sig = Signature.getInstance(jdkAlg);
         sig.initVerify(key);
-        sig.update(jwt.signedContent().getBytes(StandardCharsets.US_ASCII));
+        sig.update(jwt.signedContent()
+                      .getBytes(StandardCharsets.US_ASCII));
         var signatureBytes = maybeConvertEcSignature(jwt.signature(), jdkAlg);
         if (!sig.verify(signatureBytes)) {
             throw new SecurityException("Signature verification failed");
@@ -74,12 +75,17 @@ final class JwtSignatureVerifier {
         var r = trimLeadingZeros(raw, 0, half);
         var s = trimLeadingZeros(raw, half, raw.length);
         // Add leading zero if high bit is set (to prevent negative interpretation)
-        var rLen = r.length + (r[0] < 0 ? 1 : 0);
-        var sLen = s.length + (s[0] < 0 ? 1 : 0);
+        var rLen = r.length + (r[0]< 0
+                               ? 1
+                               : 0);
+        var sLen = s.length + (s[0]< 0
+                               ? 1
+                               : 0);
         var totalLen = 2 + rLen + 2 + sLen;
         var der = new byte[2 + totalLen];
         var pos = 0;
-        der[pos++] = 0x30; // SEQUENCE tag
+        der[pos++] = 0x30;
+        // SEQUENCE tag
         der[pos++] = (byte) totalLen;
         pos = writeInteger(der, pos, r, rLen);
         writeInteger(der, pos, s, sLen);
@@ -87,10 +93,11 @@ final class JwtSignatureVerifier {
     }
 
     private static int writeInteger(byte[] der, int pos, byte[] value, int fieldLen) {
-        der[pos++] = 0x02; // INTEGER tag
+        der[pos++] = 0x02;
+        // INTEGER tag
         der[pos++] = (byte) fieldLen;
         if (fieldLen > value.length) {
-            der[pos++] = 0x00; // padding byte
+            der[pos++] = 0x00;
         }
         System.arraycopy(value, 0, der, pos, value.length);
         return pos + value.length;
