@@ -221,7 +221,7 @@ document.addEventListener('alpine:init', function() {
                 }
                 if (refs.chartSuccess) {
                     var sucSeries = perNode && nodeNames.length > 0 ? nodeNames : ['Success Rate'];
-                    this.charts.success = TimeSeries.create(refs.chartSuccess, { series: sucSeries, height: 180, fill: !perNode, yLabel: '%' });
+                    this.charts.success = TimeSeries.create(refs.chartSuccess, { series: sucSeries, height: 180, fill: !perNode, yLabel: '%', yRange: [0, 1.05] });
                 }
                 if (refs.chartCpu && nodeNames.length > 0) {
                     this.charts.cpu = TimeSeries.create(refs.chartCpu, { series: nodeNames, height: 180, yLabel: '%' });

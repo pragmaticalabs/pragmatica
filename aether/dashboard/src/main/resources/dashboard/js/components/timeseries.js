@@ -31,7 +31,10 @@ window.TimeSeries = {
             height: height,
             cursor: { show: true, drag: { x: false, y: false } },
             legend: { show: series.length > 2 },
-            scales: { x: { time: true } },
+            scales: {
+                x: { time: true },
+                y: opts.yRange ? { range: function() { return opts.yRange; } } : {}
+            },
             axes: [
                 { stroke: '#8b949e', grid: { stroke: 'rgba(48,54,61,0.5)' }, ticks: { stroke: 'rgba(48,54,61,0.5)' }, font: '11px -apple-system,sans-serif', labelFont: '11px -apple-system,sans-serif' },
                 { stroke: '#8b949e', grid: { stroke: 'rgba(48,54,61,0.5)' }, ticks: { stroke: 'rgba(48,54,61,0.5)' }, font: '11px -apple-system,sans-serif', labelFont: '11px -apple-system,sans-serif', label: opts.yLabel || '' }
