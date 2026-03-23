@@ -13,6 +13,9 @@ document.addEventListener('alpine:init', function() {
         timeRange: '5m',
         perNode: false,
         entryPoints: [],
+        lastHistoryPush: 0,
+        historyMinInterval: 1.5,
+        nodeMetrics: {},
         history: {
             timestamps: [],
             rps: [],
@@ -21,7 +24,10 @@ document.addEventListener('alpine:init', function() {
             p95: [],
             p99: [],
             cpu: {},
-            heap: {}
+            heap: {},
+            nodeRps: {},
+            nodeLatency: {},
+            nodeSuccessRate: {}
         },
         maxHistory: 300,
 
@@ -87,6 +93,9 @@ document.addEventListener('alpine:init', function() {
                 this.p95 = this.avgLatencyMs * 2.5;
                 this.p99 = this.avgLatencyMs * 5;
             }
+            if (data.nodeMetrics) {
+                this.nodeMetrics = data.nodeMetrics;
+            }
             if (data.invocations && data.invocations.length > 0) {
                 this.entryPoints = data.invocations.map(function(inv) {
                     return {
@@ -111,6 +120,11 @@ document.addEventListener('alpine:init', function() {
 
         pushHistory() {
             var now = Date.now() / 1000;
+            // Bug 3 fix: Deduplicate history pushes from concurrent REST + WS sources.
+            // Without this guard, both sources push points <1s apart causing saw-tooth artifacts.
+            if (now - this.lastHistoryPush < this.historyMinInterval) return;
+            this.lastHistoryPush = now;
+
             var h = this.history;
             h.timestamps.push(now);
             h.rps.push(this.rps);
@@ -137,6 +151,20 @@ document.addEventListener('alpine:init', function() {
                 h.heap[node.nodeId].push(node.heapUsedMb || 0);
                 if (h.cpu[node.nodeId].length > 300) h.cpu[node.nodeId].shift();
                 if (h.heap[node.nodeId].length > 300) h.heap[node.nodeId].shift();
+
+                // Per-node metric history for per-node chart view
+                if (!h.nodeRps[node.nodeId]) h.nodeRps[node.nodeId] = [];
+                if (!h.nodeLatency[node.nodeId]) h.nodeLatency[node.nodeId] = [];
+                if (!h.nodeSuccessRate[node.nodeId]) h.nodeSuccessRate[node.nodeId] = [];
+                var rps = (node.rps != null) ? node.rps : 0;
+                var latency = (node.avgLatencyMs != null) ? node.avgLatencyMs : 0;
+                var sr = (node.successRate != null) ? node.successRate : 1;
+                h.nodeRps[node.nodeId].push(rps);
+                h.nodeLatency[node.nodeId].push(latency);
+                h.nodeSuccessRate[node.nodeId].push(sr);
+                if (h.nodeRps[node.nodeId].length > 300) h.nodeRps[node.nodeId].shift();
+                if (h.nodeLatency[node.nodeId].length > 300) h.nodeLatency[node.nodeId].shift();
+                if (h.nodeSuccessRate[node.nodeId].length > 300) h.nodeSuccessRate[node.nodeId].shift();
             });
         },
 
