@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **QUIC message delivery** — DataHandler replaces Hello handler after handshake; messages were silently dropped post-Hello
 - **QUIC message framing** — added LengthFieldBasedFrameDecoder to QUIC stream pipelines; QUIC streams are byte-oriented like TCP, not message-framed
 - **QUIC message routing** — incoming messages now routed to MessageRouter via onMessageReceived callback
+- **QUIC idle timeout** — disabled per RFC 9000 §10.1; peer-to-peer connections died after 30s of no traffic between consensus rounds (only leader→peer had regular MetricsPing traffic)
+- **Passive LB event loop** — uses own groups instead of TCP server groups (QUIC has no TCP server)
 
 ## [0.23.1] - 2026-03-24
 
