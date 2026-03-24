@@ -177,7 +177,21 @@ phase_soak() {
     echo "  Chaos log:  $REPORT_DIR/chaos-$TIMESTAMP.log"
     echo "  Grafana:    http://localhost:3000 (dashboards for visual analysis)"
 
-    return $K6_EXIT
+    echo ""
+    echo "=== Running Soak Verdict ==="
+    local VERDICT_EXIT=0
+    "$LIB_DIR/soak-verdict.sh" || VERDICT_EXIT=$?
+
+    echo ""
+    echo "=== Generating Soak Report ==="
+    local REPORT_FILE="$REPORT_DIR/soak-report-$TIMESTAMP.md"
+    "$LIB_DIR/soak-report.sh" "$REPORT_FILE"
+    echo "Report written to: $REPORT_FILE"
+
+    if [ "$K6_EXIT" -ne 0 ]; then
+        return $K6_EXIT
+    fi
+    return $VERDICT_EXIT
 }
 
 run_all() {
