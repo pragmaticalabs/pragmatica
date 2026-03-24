@@ -14,8 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **AppHttpServer: HTTP/3 via Netty QUIC** — `Http3Server` with dual-stack H1+H3 support, `QuicSslContextFactory`, `Alt-Svc` header for protocol upgrade hints, `HttpProtocol` config enum
 - **Dashboard: new panels** — schema migration status, governor/community, deployment strategies (canary/blue-green/A/B), streams, cluster composition (core/worker counts)
 - **Operational audit events** — 7 event types in cluster event stream (AccessDenied, NodeLifecycleChanged, ConfigChanged, BackupCreated/Restored, BlueprintDeployed/Deleted)
-- **`@CodecFor` annotation** — compile-time + runtime codec validation for external types. Auto-generates codecs for enums/records, `REQUIRED_TYPES` validated at startup. Eliminates silent serialization failures permanently
+- **`@CodecFor` annotation** — compile-time + runtime codec validation for external types. Manual codecs required (no auto-generation), `REQUIRED_TYPES` validated at startup. Three-layer safety net: compile-time field check, `@CodecFor` declaration, runtime startup validation. Eliminates silent serialization failures permanently
 - **Codec processor compile-time field validation** — ERROR for `@Codec` records with unregistered field types
+- **ManagementServer HTTP/3** — dual-stack H1+H3 support matching AppHttpServer, `management_protocol` TOML config
+- **NettyHttpOperations** — HTTP/1.1 + HTTP/3 client via Netty QUIC, alternative to JDK HttpClient. Full HTTP/3 stack (server + client) complete
+- **Manual codecs for core types** — TimeSpan, Email, Url, NonBlankString, Uuid, IsoDateTime registered in NodeCodecs via `@CodecFor` with hand-written codecs
 
 ### Fixed
 - **Dashboard: 24 audit issues** — alert data unwrapping, ALERT_RESOLVED broadcast, INITIAL_STATE node population, per-node metrics, real P50/P95/P99 percentiles, time range selector, WS auth, REST auth headers, error toasts, per-channel WS status, topology diffing, success rate chart Y-axis, latency panel after tab switch
