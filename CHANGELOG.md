@@ -4,7 +4,9 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.23.1] - Unreleased
+## [0.24.0] - Unreleased
+
+## [0.23.1] - 2026-03-24
 
 ### Added
 - **AppHttpServer: configurable request size limits** — `max_request_size` in TOML with `DataSize` parser (KB/MB/GB), 413 response when exceeded
