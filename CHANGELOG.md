@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.23.1] - Unreleased
 
+### Added
+- **AppHttpServer: configurable request size limits** — `max_request_size` in TOML with `DataSize` parser (KB/MB/GB), 413 response when exceeded
+- **AppHttpServer: multipart file upload** — `FileUpload`, `MultipartRequest` records, Netty `HttpPostRequestDecoder` integration, `RequestContext.multipartRequest()` accessor
+- **AppHttpServer: API token auth** — `SecurityMode` config (none/api-key/jwt), reuses management RBAC infrastructure, `SecurityContextHolder` ScopedValue propagation to slice handlers, health endpoint bypasses auth
+- **AppHttpServer: JWT auth with JWKS** — `JwtSecurityValidator`, `JwtTokenParser`, `JwtSignatureVerifier` (RS256/ES256), `JwksKeyStore` with TTL cache, clock skew tolerance — pure JDK crypto, no external JWT libraries
+- **AppHttpServer: HTTP/3 via Netty QUIC** — `Http3Server` with dual-stack H1+H3 support, `QuicSslContextFactory`, `Alt-Svc` header for protocol upgrade hints, `HttpProtocol` config enum
+- **Dashboard: new panels** — schema migration status, governor/community, deployment strategies (canary/blue-green/A/B), streams, cluster composition (core/worker counts)
+- **Operational audit events** — 7 event types in cluster event stream (AccessDenied, NodeLifecycleChanged, ConfigChanged, BackupCreated/Restored, BlueprintDeployed/Deleted)
+- **`@CodecFor` annotation** — compile-time + runtime codec validation for external types. Auto-generates codecs for enums/records, `REQUIRED_TYPES` validated at startup. Eliminates silent serialization failures permanently
+- **Codec processor compile-time field validation** — ERROR for `@Codec` records with unregistered field types
+
+### Fixed
+- **Dashboard: 24 audit issues** — alert data unwrapping, ALERT_RESOLVED broadcast, INITIAL_STATE node population, per-node metrics, real P50/P95/P99 percentiles, time range selector, WS auth, REST auth headers, error toasts, per-channel WS status, topology diffing, success rate chart Y-axis, latency panel after tab switch
+- **JBCT compliance: 40+ issues** — constant-time API key comparison, generic error messages to clients, unknown role defaults to VIEWER, Result.lift for exception boundaries, Option for null policy, AtomicReference for thread safety, @Contract for lifecycle methods
+- **`@Codec` on `AuthorizationRole`** — fixes serialization failure in HTTP forwarding
+- **Pre-existing codec issues** — TimeSpan, MethodName, ExecutionMode, KVCommand, Blueprint, NodeLifecycleState, SchemaStatus all now have proper codec registration via `@Codec` or `@CodecFor`
+
 ## [0.23.0] - 2026-03-23
 
 ### Added
