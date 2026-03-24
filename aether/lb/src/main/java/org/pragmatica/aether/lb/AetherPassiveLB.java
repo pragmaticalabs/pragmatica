@@ -134,7 +134,7 @@ public final class AetherPassiveLB {
                                            .withMaxContentLength(MAX_CONTENT_LENGTH);
         // Use own event loop groups — QUIC transport does not provide a TCP Server
         var serverPromise = Option.some(HttpServer.httpServer(serverConfig, this::handleRequest))
-                                           .or(HttpServer.httpServer(serverConfig, this::handleRequest));
+                                  .or(HttpServer.httpServer(serverConfig, this::handleRequest));
         return serverPromise.onSuccess(server -> httpServer = Option.some(server))
                             .mapToUnit();
     }
