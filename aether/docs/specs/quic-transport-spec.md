@@ -2,7 +2,7 @@
 
 ## Version: 1.0
 ## Status: Implementation-Ready
-## Target: Post V1.0.0
+## Target: Pre V1.0.0 (v0.24.0)
 ## Last Updated: 2026-03-24
 
 ---
