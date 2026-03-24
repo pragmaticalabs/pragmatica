@@ -15,7 +15,7 @@ import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse
 import org.pragmatica.aether.http.forward.HttpForwarder;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
-import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
+import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.http.security.AuditLog;
@@ -443,11 +443,11 @@ class AppHttpServerImpl implements AppHttpServer {
                                                              requestId));
     }
 
-    private RouteSecurityPolicy resolveSecurityPolicy() {
+    private SecurityPolicy resolveSecurityPolicy() {
         return switch (config.securityMode()) {
-            case API_KEY -> RouteSecurityPolicy.apiKeyRequired();
-            case JWT -> RouteSecurityPolicy.bearerTokenRequired();
-            case NONE -> RouteSecurityPolicy.publicRoute();
+            case API_KEY -> SecurityPolicy.apiKeyRequired();
+            case JWT -> SecurityPolicy.bearerTokenRequired();
+            case NONE -> SecurityPolicy.publicRoute();
         };
     }
 

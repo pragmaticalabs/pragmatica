@@ -28,7 +28,7 @@ import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.RoleEnforcer;
 import org.pragmatica.aether.http.handler.security.RoutePermission;
 import org.pragmatica.aether.http.handler.security.RoutePermissionRegistry;
-import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
+import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.aether.api.OperationalEvent;
@@ -593,7 +593,7 @@ class ManagementServerImpl implements ManagementServer {
                                                String path,
                                                HttpMethod method) {
         var httpContext = toManagementRequestContext(ctx, path);
-        var policy = RouteSecurityPolicy.apiKeyRequired();
+        var policy = SecurityPolicy.apiKeyRequired();
         var methodName = method.name();
         var permission = RoutePermissionRegistry.resolve(methodName, path);
         return securityValidator.validate(httpContext, policy)

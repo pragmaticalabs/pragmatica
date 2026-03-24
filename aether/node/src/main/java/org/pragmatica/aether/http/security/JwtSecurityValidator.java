@@ -4,7 +4,7 @@ import org.pragmatica.aether.config.JwtConfig;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.Role;
-import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
+import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -43,10 +43,10 @@ class JwtSecurityValidator implements SecurityValidator {
     }
 
     @Override
-    public Result<SecurityContext> validate(HttpRequestContext request, RouteSecurityPolicy policy) {
+    public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
         return switch (policy) {
-            case RouteSecurityPolicy.Public() -> success(SecurityContext.securityContext());
-            case RouteSecurityPolicy.BearerTokenRequired() -> validateBearerToken(request);
+            case SecurityPolicy.Public() -> success(SecurityContext.securityContext());
+            case SecurityPolicy.BearerTokenRequired() -> validateBearerToken(request);
             default -> success(SecurityContext.securityContext());
         };
     }

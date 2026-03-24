@@ -5,7 +5,7 @@ import org.pragmatica.aether.config.JwtConfig;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.Principal;
 import org.pragmatica.aether.http.handler.security.Role;
-import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
+import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.lang.Result;
 
@@ -22,7 +22,7 @@ public interface SecurityValidator {
     /// @param request the HTTP request context
     /// @param policy  the route's security policy
     /// @return Result containing SecurityContext on success, or failure with SecurityError
-    Result<SecurityContext> validate(HttpRequestContext request, RouteSecurityPolicy policy);
+    Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy);
 
     /// Create API key validator with given valid keys.
     ///

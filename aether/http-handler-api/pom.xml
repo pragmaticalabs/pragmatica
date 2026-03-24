@@ -28,6 +28,11 @@
         </dependency>
 
         <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>http-routing</artifactId>
+        </dependency>
+
+        <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>slice-api</artifactId>
             <version>${project.version}</version>

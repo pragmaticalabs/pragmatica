@@ -4,7 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.Role;
-import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
+import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 
 import java.util.List;
 import java.util.Map;
@@ -23,7 +23,7 @@ class ApiKeySecurityValidatorTest {
         var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of());
 
-        validator.validate(request, RouteSecurityPolicy.publicRoute())
+        validator.validate(request, SecurityPolicy.publicRoute())
                  .onFailureRun(() -> fail("Expected success"))
                  .onSuccess(context -> {
                      assertThat(context.isAuthenticated()).isFalse();
@@ -36,7 +36,7 @@ class ApiKeySecurityValidatorTest {
         var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
 
-        validator.validate(request, RouteSecurityPolicy.apiKeyRequired())
+        validator.validate(request, SecurityPolicy.apiKeyRequired())
                  .onFailureRun(() -> fail("Expected success"))
                  .onSuccess(context -> {
                      assertThat(context.isAuthenticated()).isTrue();
@@ -50,7 +50,7 @@ class ApiKeySecurityValidatorTest {
         var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of("X-API-Key", List.of(INVALID_KEY)));
 
-        validator.validate(request, RouteSecurityPolicy.apiKeyRequired())
+        validator.validate(request, SecurityPolicy.apiKeyRequired())
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> {
                      assertThat(cause).isInstanceOf(SecurityError.InvalidCredentials.class);
@@ -63,7 +63,7 @@ class ApiKeySecurityValidatorTest {
         var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of());
 
-        validator.validate(request, RouteSecurityPolicy.apiKeyRequired())
+        validator.validate(request, SecurityPolicy.apiKeyRequired())
                  .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> {
                      assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class);
@@ -76,7 +76,7 @@ class ApiKeySecurityValidatorTest {
         var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of("x-api-key", List.of(VALID_KEY)));
 
-        validator.validate(request, RouteSecurityPolicy.apiKeyRequired())
+        validator.validate(request, SecurityPolicy.apiKeyRequired())
                  .onFailureRun(() -> fail("Expected success"))
                  .onSuccess(context -> {
                      assertThat(context.isAuthenticated()).isTrue();
@@ -88,7 +88,7 @@ class ApiKeySecurityValidatorTest {
         var validator = SecurityValidator.noOpValidator();
         var request = createRequest(Map.of());
 
-        validator.validate(request, RouteSecurityPolicy.apiKeyRequired())
+        validator.validate(request, SecurityPolicy.apiKeyRequired())
                  .onFailureRun(() -> fail("Expected success"))
                  .onSuccess(context -> {
                      assertThat(context.isAuthenticated()).isTrue();
@@ -107,7 +107,7 @@ class ApiKeySecurityValidatorTest {
         var validator = SecurityValidator.apiKeyValidator(entries);
         var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
 
-        validator.validate(request, RouteSecurityPolicy.apiKeyRequired())
+        validator.validate(request, SecurityPolicy.apiKeyRequired())
                  .onFailureRun(() -> fail("Expected success"))
                  .onSuccess(context -> {
                      assertThat(context.isAuthenticated()).isTrue();
@@ -124,8 +124,8 @@ class ApiKeySecurityValidatorTest {
         var request1 = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
         var request2 = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
 
-        var result1 = validator.validate(request1, RouteSecurityPolicy.apiKeyRequired());
-        var result2 = validator.validate(request2, RouteSecurityPolicy.apiKeyRequired());
+        var result1 = validator.validate(request1, SecurityPolicy.apiKeyRequired());
+        var result2 = validator.validate(request2, SecurityPolicy.apiKeyRequired());
 
         result1.onFailureRun(() -> fail("Expected success for request1"))
                .onSuccess(ctx1 ->
@@ -149,8 +149,8 @@ class ApiKeySecurityValidatorTest {
         var request1 = createRequest(Map.of("X-API-Key", List.of(key1)));
         var request2 = createRequest(Map.of("X-API-Key", List.of(key2)));
 
-        var result1 = validator.validate(request1, RouteSecurityPolicy.apiKeyRequired());
-        var result2 = validator.validate(request2, RouteSecurityPolicy.apiKeyRequired());
+        var result1 = validator.validate(request1, SecurityPolicy.apiKeyRequired());
+        var result2 = validator.validate(request2, SecurityPolicy.apiKeyRequired());
 
         result1.onFailureRun(() -> fail("Expected success for key1"))
                .onSuccess(ctx1 ->

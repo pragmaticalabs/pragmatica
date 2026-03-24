@@ -7,7 +7,7 @@ import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.RoleEnforcer;
 import org.pragmatica.aether.http.handler.security.RoutePermissionRegistry;
-import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
+import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
@@ -36,7 +36,7 @@ class AuthorizationPipelineTest {
     );
 
     private final SecurityValidator validator = SecurityValidator.apiKeyValidator(KEY_ENTRIES);
-    private final RouteSecurityPolicy policy = RouteSecurityPolicy.apiKeyRequired();
+    private final SecurityPolicy policy = SecurityPolicy.apiKeyRequired();
 
     /// Simulates the ManagementServer security pipeline:
     /// authenticate → resolve permission → enforce role.

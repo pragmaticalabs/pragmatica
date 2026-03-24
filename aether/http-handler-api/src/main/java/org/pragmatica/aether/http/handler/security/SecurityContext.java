@@ -1,5 +1,6 @@
 package org.pragmatica.aether.http.handler.security;
 
+import org.pragmatica.http.routing.security.RequestSecurityContext;
 import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Codec;
 
@@ -23,7 +24,7 @@ import static org.pragmatica.lang.Result.success;
 public record SecurityContext(Principal principal,
                               Set<Role> roles,
                               Map<String, String> claims,
-                              AuthorizationRole authorizationRole) {
+                              AuthorizationRole authorizationRole) implements RequestSecurityContext {
     private static final SecurityContext ANONYMOUS_CONTEXT = securityContext(Principal.ANONYMOUS,
                                                                              Set.of(),
                                                                              Map.of(),

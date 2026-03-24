@@ -6,7 +6,7 @@ import org.pragmatica.aether.http.adapter.SliceRouterFactory;
 import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpRequestHandlerFactory;
 import org.pragmatica.aether.http.handler.HttpRouteDefinition;
-import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
+import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
@@ -107,7 +107,7 @@ public interface HttpRoutePublisher {
                           String pathPrefix,
                           String artifactCoord,
                           String sliceMethod,
-                          RouteSecurityPolicy security) {
+                          SecurityPolicy security) {
         public static LocalRouteInfo localRouteInfo(HttpRouteDefinition def) {
             return new LocalRouteInfo(def.httpMethod(),
                                       def.pathPrefix(),

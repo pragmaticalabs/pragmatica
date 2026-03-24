@@ -7,7 +7,7 @@ import org.pragmatica.aether.config.JwtConfig;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.Role;
-import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
+import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.lang.Option;
 
 import java.math.BigInteger;
@@ -71,7 +71,7 @@ class JwtSecurityValidatorTest {
                                           "exp", futureExp(),
                                           "role", "ADMIN"));
 
-            validator.validate(requestWithToken(token), RouteSecurityPolicy.bearerTokenRequired())
+            validator.validate(requestWithToken(token), SecurityPolicy.bearerTokenRequired())
                      .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(ctx -> {
                          assertThat(ctx.isAuthenticated()).isTrue();
@@ -86,7 +86,7 @@ class JwtSecurityValidatorTest {
                                           "exp", futureExp(),
                                           "custom", "value123"));
 
-            validator.validate(requestWithToken(token), RouteSecurityPolicy.bearerTokenRequired())
+            validator.validate(requestWithToken(token), SecurityPolicy.bearerTokenRequired())
                      .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(ctx -> {
                          assertThat(ctx.claim("sub")).isEqualTo(TEST_SUBJECT);
@@ -96,7 +96,7 @@ class JwtSecurityValidatorTest {
 
         @Test
         void validate_allowsAnonymous_forPublicRoute() {
-            validator.validate(requestWithoutToken(), RouteSecurityPolicy.publicRoute())
+            validator.validate(requestWithoutToken(), SecurityPolicy.publicRoute())
                      .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(ctx -> assertThat(ctx.isAuthenticated()).isFalse());
         }
@@ -109,7 +109,7 @@ class JwtSecurityValidatorTest {
             var token = buildToken(Map.of("sub", TEST_SUBJECT,
                                           "exp", pastExp()));
 
-            validator.validate(requestWithToken(token), RouteSecurityPolicy.bearerTokenRequired())
+            validator.validate(requestWithToken(token), SecurityPolicy.bearerTokenRequired())
                      .onSuccess(ctx -> fail("Expected failure"))
                      .onFailure(cause -> {
                          assertThat(cause).isInstanceOf(SecurityError.TokenExpired.class);
@@ -126,7 +126,7 @@ class JwtSecurityValidatorTest {
                                           "exp", futureExp(),
                                           "iss", "https://wrong-issuer.com"));
 
-            validatorWithIssuer.validate(requestWithToken(token), RouteSecurityPolicy.bearerTokenRequired())
+            validatorWithIssuer.validate(requestWithToken(token), SecurityPolicy.bearerTokenRequired())
                                .onSuccess(ctx -> fail("Expected failure"))
                                .onFailure(cause -> {
                                    assertThat(cause).isInstanceOf(SecurityError.IssuerMismatch.class);
@@ -140,7 +140,7 @@ class JwtSecurityValidatorTest {
                                           "exp", futureExp(),
                                           "iss", TEST_ISSUER));
 
-            validatorWithIssuer.validate(requestWithToken(token), RouteSecurityPolicy.bearerTokenRequired())
+            validatorWithIssuer.validate(requestWithToken(token), SecurityPolicy.bearerTokenRequired())
                                .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                                .onSuccess(ctx -> assertThat(ctx.isAuthenticated()).isTrue());
         }
@@ -154,7 +154,7 @@ class JwtSecurityValidatorTest {
                                           "exp", futureExp(),
                                           "aud", "wrong-audience"));
 
-            validatorWithAudience.validate(requestWithToken(token), RouteSecurityPolicy.bearerTokenRequired())
+            validatorWithAudience.validate(requestWithToken(token), SecurityPolicy.bearerTokenRequired())
                                  .onSuccess(ctx -> fail("Expected failure"))
                                  .onFailure(cause -> {
                                      assertThat(cause).isInstanceOf(SecurityError.AudienceMismatch.class);
@@ -168,7 +168,7 @@ class JwtSecurityValidatorTest {
                                           "exp", futureExp(),
                                           "aud", TEST_AUDIENCE));
 
-            validatorWithAudience.validate(requestWithToken(token), RouteSecurityPolicy.bearerTokenRequired())
+            validatorWithAudience.validate(requestWithToken(token), SecurityPolicy.bearerTokenRequired())
                                  .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                                  .onSuccess(ctx -> assertThat(ctx.isAuthenticated()).isTrue());
         }
@@ -178,7 +178,7 @@ class JwtSecurityValidatorTest {
     class MissingHeaderTests {
         @Test
         void validate_rejects_missingAuthorizationHeader() {
-            validator.validate(requestWithoutToken(), RouteSecurityPolicy.bearerTokenRequired())
+            validator.validate(requestWithoutToken(), SecurityPolicy.bearerTokenRequired())
                      .onSuccess(ctx -> fail("Expected failure"))
                      .onFailure(cause -> {
                          assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class);
@@ -193,7 +193,7 @@ class JwtSecurityValidatorTest {
         void validate_rejects_malformedToken_notThreeParts() {
             var request = requestWithToken("not.a.valid.jwt.token");
 
-            validator.validate(request, RouteSecurityPolicy.bearerTokenRequired())
+            validator.validate(request, SecurityPolicy.bearerTokenRequired())
                      .onSuccess(ctx -> fail("Expected failure"))
                      .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.InvalidCredentials.class));
         }
@@ -202,7 +202,7 @@ class JwtSecurityValidatorTest {
         void validate_rejects_malformedToken_twoParts() {
             var request = requestWithToken("header.payload");
 
-            validator.validate(request, RouteSecurityPolicy.bearerTokenRequired())
+            validator.validate(request, SecurityPolicy.bearerTokenRequired())
                      .onSuccess(ctx -> fail("Expected failure"))
                      .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.InvalidCredentials.class));
         }
@@ -231,7 +231,7 @@ class JwtSecurityValidatorTest {
 
             var token = signedContent + "." + signature;
 
-            validator.validate(requestWithToken(token), RouteSecurityPolicy.bearerTokenRequired())
+            validator.validate(requestWithToken(token), SecurityPolicy.bearerTokenRequired())
                      .onSuccess(ctx -> fail("Expected failure"))
                      .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.SignatureInvalid.class));
         }
@@ -245,7 +245,7 @@ class JwtSecurityValidatorTest {
                                           "exp", futureExp(),
                                           "role", "ADMIN"));
 
-            validator.validate(requestWithToken(token), RouteSecurityPolicy.bearerTokenRequired())
+            validator.validate(requestWithToken(token), SecurityPolicy.bearerTokenRequired())
                      .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(ctx -> assertThat(ctx.authorizationRole()).isEqualTo(AuthorizationRole.ADMIN));
         }
@@ -256,7 +256,7 @@ class JwtSecurityValidatorTest {
                                           "exp", futureExp(),
                                           "role", "OPERATOR"));
 
-            validator.validate(requestWithToken(token), RouteSecurityPolicy.bearerTokenRequired())
+            validator.validate(requestWithToken(token), SecurityPolicy.bearerTokenRequired())
                      .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(ctx -> assertThat(ctx.authorizationRole()).isEqualTo(AuthorizationRole.OPERATOR));
         }
@@ -266,7 +266,7 @@ class JwtSecurityValidatorTest {
             var token = buildToken(Map.of("sub", TEST_SUBJECT,
                                           "exp", futureExp()));
 
-            validator.validate(requestWithToken(token), RouteSecurityPolicy.bearerTokenRequired())
+            validator.validate(requestWithToken(token), SecurityPolicy.bearerTokenRequired())
                      .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(ctx -> assertThat(ctx.authorizationRole()).isEqualTo(AuthorizationRole.VIEWER));
         }
@@ -277,7 +277,7 @@ class JwtSecurityValidatorTest {
                                           "exp", futureExp(),
                                           "role", "SUPERUSER"));
 
-            validator.validate(requestWithToken(token), RouteSecurityPolicy.bearerTokenRequired())
+            validator.validate(requestWithToken(token), SecurityPolicy.bearerTokenRequired())
                      .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(ctx -> assertThat(ctx.authorizationRole()).isEqualTo(AuthorizationRole.VIEWER));
         }
@@ -288,7 +288,7 @@ class JwtSecurityValidatorTest {
                                           "exp", futureExp(),
                                           "role", "admin"));
 
-            validator.validate(requestWithToken(token), RouteSecurityPolicy.bearerTokenRequired())
+            validator.validate(requestWithToken(token), SecurityPolicy.bearerTokenRequired())
                      .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(ctx -> assertThat(ctx.hasRole(Role.ADMIN)).isTrue());
         }
@@ -301,11 +301,11 @@ class JwtSecurityValidatorTest {
             var token1 = buildToken(Map.of("sub", "user-1", "exp", futureExp()));
             var token2 = buildToken(Map.of("sub", "user-2", "exp", futureExp()));
 
-            validator.validate(requestWithToken(token1), RouteSecurityPolicy.bearerTokenRequired())
+            validator.validate(requestWithToken(token1), SecurityPolicy.bearerTokenRequired())
                      .onFailure(cause -> fail("First call failed: " + cause.message()));
 
             // Second call should use cached keys (no JWKS fetch)
-            validator.validate(requestWithToken(token2), RouteSecurityPolicy.bearerTokenRequired())
+            validator.validate(requestWithToken(token2), SecurityPolicy.bearerTokenRequired())
                      .onFailure(cause -> fail("Second call failed: " + cause.message()))
                      .onSuccess(ctx -> assertThat(ctx.principal().value()).isEqualTo("user:user-2"));
         }

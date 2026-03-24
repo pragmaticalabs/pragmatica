@@ -239,6 +239,7 @@ public class RouteSourceGenerator {
         out.println("import org.pragmatica.http.routing.QueryParameter;");
         out.println("import org.pragmatica.http.routing.Route;");
         out.println("import org.pragmatica.http.routing.RouteSource;");
+        out.println("import org.pragmatica.aether.http.handler.security.SecurityPolicy;");
         out.println("import org.pragmatica.lang.Cause;");
         out.println("import org.pragmatica.lang.Option;");
         out.println("import org.pragmatica.lang.type.TypeToken;");
@@ -306,7 +307,9 @@ public class RouteSourceGenerator {
                                                      routeConfig.prefix(),
                                                      routeDsl,
                                                      method,
-                                                     hasMore));
+                                                     hasMore,
+                                                     routeConfig,
+                                                     handlerName));
         }
         out.println("        );");
         out.println("    }");
@@ -321,7 +324,9 @@ public class RouteSourceGenerator {
                                String prefix,
                                RouteDsl routeDsl,
                                MethodModel method,
-                               boolean hasMore) {
+                               boolean hasMore,
+                               RouteConfig routeConfig,
+                               String handlerName) {
         var routePath = routeDsl.hasPathParams()
                        ? routeDsl.basePath()
                        : routeDsl.cleanPath();
@@ -338,26 +343,36 @@ public class RouteSourceGenerator {
         var comma = hasMore
                     ? ","
                     : "";
+        var security = securityExpression(routeConfig, handlerName);
         var hasPath = routeDsl.hasPathParams();
         var hasQuery = routeDsl.hasQueryParams();
         var hasBody = isBodyMethod(routeDsl.method());
         if (hasPath && hasQuery && hasBody) {
-            generatePathQueryBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, comma);
+            generatePathQueryBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, comma, security);
         } else if (hasPath && hasBody) {
-            generatePathBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, comma);
+            generatePathBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, comma, security);
         } else if (hasQuery && hasBody) {
-            generateQueryBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, comma);
+            generateQueryBodyRoute(out, fullPath, httpMethod, responseType, parameterType, routeDsl, method, comma, security);
         } else if (hasPath && hasQuery) {
-            generatePathQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, comma);
+            generatePathQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, comma, security);
         } else if (hasPath) {
-            generatePathRoute(out, fullPath, httpMethod, responseType, routeDsl, method, comma);
+            generatePathRoute(out, fullPath, httpMethod, responseType, routeDsl, method, comma, security);
         } else if (hasQuery) {
-            generateQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, comma);
+            generateQueryRoute(out, fullPath, httpMethod, responseType, routeDsl, method, comma, security);
         } else if (hasBody) {
-            generateBodyRoute(out, fullPath, httpMethod, responseType, parameterType, method, comma);
+            generateBodyRoute(out, fullPath, httpMethod, responseType, parameterType, method, comma, security);
         } else {
-            generateNoParamsRoute(out, fullPath, httpMethod, responseType, method, comma);
+            generateNoParamsRoute(out, fullPath, httpMethod, responseType, method, comma, security);
         }
+    }
+
+    private String securityExpression(RouteConfig routeConfig, String handlerName) {
+        var level = routeConfig.effectiveSecurity(handlerName);
+        return switch (level) {
+            case RouteSecurityLevel.Public _ -> "SecurityPolicy.publicRoute()";
+            case RouteSecurityLevel.Authenticated _ -> "SecurityPolicy.authenticated()";
+            case RouteSecurityLevel.Role(var name) -> "SecurityPolicy.roleRequired(\"" + escapeJavaString(name) + "\")";
+        };
     }
 
     private void generateNoParamsRoute(PrintWriter out,
@@ -365,11 +380,12 @@ public class RouteSourceGenerator {
                                        String httpMethod,
                                        String responseType,
                                        MethodModel method,
-                                       String comma) {
+                                       String comma,
+                                       String security) {
         out.println("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println("                 .withoutParameters()");
         out.println("                 .to(_ -> delegate." + method.name() + "(new " + method.parameterType() + "()))");
-        out.println("                 .named(\"" + method.name() + "\").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
 
     private void generatePathRoute(PrintWriter out,
@@ -378,7 +394,8 @@ public class RouteSourceGenerator {
                                    String responseType,
                                    RouteDsl routeDsl,
                                    MethodModel method,
-                                   String comma) {
+                                   String comma,
+                                   String security) {
         var pathParams = routeDsl.pathParams();
         var parameterType = method.parameterType()
                                   .toString();
@@ -394,7 +411,7 @@ public class RouteSourceGenerator {
                       : "(" + paramList + ") -> ";
         out.println("                 .to(" + handler + "delegate." + method.name() + "(new " + parameterType + "(" + paramList
                     + ")))");
-        out.println("                 .named(\"" + method.name() + "\").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
 
     private void generateQueryRoute(PrintWriter out,
@@ -403,7 +420,8 @@ public class RouteSourceGenerator {
                                     String responseType,
                                     RouteDsl routeDsl,
                                     MethodModel method,
-                                    String comma) {
+                                    String comma,
+                                    String security) {
         var queryParams = routeDsl.queryParams();
         var parameterType = method.parameterType()
                                   .toString();
@@ -424,7 +442,7 @@ public class RouteSourceGenerator {
             out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(new " + parameterType
                         + "(" + constructorArgs + ")))");
         }
-        out.println("                 .named(\"" + method.name() + "\").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
 
     private void generateBodyRoute(PrintWriter out,
@@ -433,11 +451,12 @@ public class RouteSourceGenerator {
                                    String responseType,
                                    String parameterType,
                                    MethodModel method,
-                                   String comma) {
+                                   String comma,
+                                   String security) {
         out.println("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println("                 .withBody(new TypeToken<" + parameterType + ">() {})");
         out.println("                 .to(request -> delegate." + method.name() + "(request))");
-        out.println("                 .named(\"" + method.name() + "\").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
 
     private void generatePathBodyRoute(PrintWriter out,
@@ -447,7 +466,8 @@ public class RouteSourceGenerator {
                                        String parameterType,
                                        RouteDsl routeDsl,
                                        MethodModel method,
-                                       String comma) {
+                                       String comma,
+                                       String security) {
         var pathParams = routeDsl.pathParams();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
@@ -460,7 +480,7 @@ public class RouteSourceGenerator {
         allParams.add("body");
         var handlerParams = String.join(", ", allParams);
         out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(body))");
-        out.println("                 .named(\"" + method.name() + "\").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
 
     private void generateQueryBodyRoute(PrintWriter out,
@@ -470,7 +490,8 @@ public class RouteSourceGenerator {
                                         String parameterType,
                                         RouteDsl routeDsl,
                                         MethodModel method,
-                                        String comma) {
+                                        String comma,
+                                        String security) {
         var queryParams = routeDsl.queryParams();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
@@ -483,7 +504,7 @@ public class RouteSourceGenerator {
         allParams.add("body");
         var handlerParams = String.join(", ", allParams);
         out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(body))");
-        out.println("                 .named(\"" + method.name() + "\").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
 
     private void generatePathQueryRoute(PrintWriter out,
@@ -492,7 +513,8 @@ public class RouteSourceGenerator {
                                         String responseType,
                                         RouteDsl routeDsl,
                                         MethodModel method,
-                                        String comma) {
+                                        String comma,
+                                        String security) {
         var pathParams = routeDsl.pathParams();
         var queryParams = routeDsl.queryParams();
         var parameterType = method.parameterType()
@@ -513,7 +535,7 @@ public class RouteSourceGenerator {
         var constructorArgs = String.join(", ", allParams);
         out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(new " + parameterType
                     + "(" + constructorArgs + ")))");
-        out.println("                 .named(\"" + method.name() + "\").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
 
     private void generatePathQueryBodyRoute(PrintWriter out,
@@ -523,7 +545,8 @@ public class RouteSourceGenerator {
                                             String parameterType,
                                             RouteDsl routeDsl,
                                             MethodModel method,
-                                            String comma) {
+                                            String comma,
+                                            String security) {
         var pathParams = routeDsl.pathParams();
         var queryParams = routeDsl.queryParams();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
@@ -542,7 +565,7 @@ public class RouteSourceGenerator {
         allParams.add("body");
         var handlerParams = String.join(", ", allParams);
         out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(body))");
-        out.println("                 .named(\"" + method.name() + "\").asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
 
     private String pathParamList(List<PathParam> pathParams) {

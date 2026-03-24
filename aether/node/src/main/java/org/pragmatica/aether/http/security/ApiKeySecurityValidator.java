@@ -4,7 +4,7 @@ import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.Role;
-import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
+import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -45,10 +45,10 @@ class ApiKeySecurityValidator implements SecurityValidator {
     }
 
     @Override
-    public Result<SecurityContext> validate(HttpRequestContext request, RouteSecurityPolicy policy) {
+    public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
         return switch (policy) {
-            case RouteSecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());
-            case RouteSecurityPolicy.ApiKeyRequired() -> validateApiKey(request);
+            case SecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());
+            case SecurityPolicy.ApiKeyRequired() -> validateApiKey(request);
             default -> Result.success(SecurityContext.securityContext());
         };
     }

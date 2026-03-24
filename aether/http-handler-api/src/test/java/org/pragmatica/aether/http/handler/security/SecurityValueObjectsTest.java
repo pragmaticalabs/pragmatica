@@ -3,6 +3,7 @@ package org.pragmatica.aether.http.handler.security;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.http.routing.security.Access;
 
 import java.util.Map;
 import java.util.Set;
@@ -162,37 +163,134 @@ class SecurityValueObjectsTest {
     }
 
     @Nested
-    class RouteSecurityPolicyTests {
+    class SecurityPolicyTests {
         @Test
         void publicRoute_factory() {
-            var policy = RouteSecurityPolicy.publicRoute();
-            assertThat(policy).isInstanceOf(RouteSecurityPolicy.Public.class);
+            var policy = SecurityPolicy.publicRoute();
+            assertThat(policy).isInstanceOf(SecurityPolicy.Public.class);
         }
 
         @Test
         void apiKeyRequired_factory() {
-            var policy = RouteSecurityPolicy.apiKeyRequired();
-            assertThat(policy).isInstanceOf(RouteSecurityPolicy.ApiKeyRequired.class);
+            var policy = SecurityPolicy.apiKeyRequired();
+            assertThat(policy).isInstanceOf(SecurityPolicy.ApiKeyRequired.class);
         }
 
         @Test
         void asString_serialization() {
-            assertThat(RouteSecurityPolicy.publicRoute().asString()).isEqualTo("PUBLIC");
-            assertThat(RouteSecurityPolicy.apiKeyRequired().asString()).isEqualTo("API_KEY");
+            assertThat(SecurityPolicy.publicRoute().asString()).isEqualTo("PUBLIC");
+            assertThat(SecurityPolicy.apiKeyRequired().asString()).isEqualTo("API_KEY");
         }
 
         @Test
         void fromString_deserialization() {
-            assertThat(RouteSecurityPolicy.fromString("PUBLIC"))
-                .isInstanceOf(RouteSecurityPolicy.Public.class);
-            assertThat(RouteSecurityPolicy.fromString("API_KEY"))
-                .isInstanceOf(RouteSecurityPolicy.ApiKeyRequired.class);
+            assertThat(SecurityPolicy.fromString("PUBLIC"))
+                .isInstanceOf(SecurityPolicy.Public.class);
+            assertThat(SecurityPolicy.fromString("API_KEY"))
+                .isInstanceOf(SecurityPolicy.ApiKeyRequired.class);
         }
 
         @Test
         void fromString_unknownDefaultsToPublic() {
-            assertThat(RouteSecurityPolicy.fromString("UNKNOWN"))
-                .isInstanceOf(RouteSecurityPolicy.Public.class);
+            assertThat(SecurityPolicy.fromString("UNKNOWN"))
+                .isInstanceOf(SecurityPolicy.Public.class);
+        }
+
+        @Test
+        void authenticated_factory() {
+            var policy = SecurityPolicy.authenticated();
+            assertThat(policy).isInstanceOf(SecurityPolicy.Authenticated.class);
+        }
+
+        @Test
+        void bearerTokenRequired_factory() {
+            var policy = SecurityPolicy.bearerTokenRequired();
+            assertThat(policy).isInstanceOf(SecurityPolicy.BearerTokenRequired.class);
+        }
+
+        @Test
+        void roleRequired_factory() {
+            var policy = SecurityPolicy.roleRequired("admin");
+            assertThat(policy).isInstanceOf(SecurityPolicy.RoleRequired.class);
+        }
+
+        @Test
+        void asString_authenticatedSerialization() {
+            assertThat(SecurityPolicy.authenticated().asString()).isEqualTo("AUTHENTICATED");
+            assertThat(SecurityPolicy.bearerTokenRequired().asString()).isEqualTo("BEARER_TOKEN");
+        }
+
+        @Test
+        void asString_roleRequired() {
+            assertThat(SecurityPolicy.roleRequired("admin").asString()).isEqualTo("ROLE:admin");
+        }
+
+        @Test
+        void fromString_roleDeserialization() {
+            var policy = SecurityPolicy.fromString("ROLE:admin");
+            assertThat(policy).isInstanceOf(SecurityPolicy.RoleRequired.class);
+            assertThat(policy.asString()).isEqualTo("ROLE:admin");
+        }
+
+        @Test
+        void fromString_authenticatedDeserialization() {
+            assertThat(SecurityPolicy.fromString("AUTHENTICATED"))
+                .isInstanceOf(SecurityPolicy.Authenticated.class);
+        }
+
+        @Test
+        void fromString_bearerTokenDeserialization() {
+            assertThat(SecurityPolicy.fromString("BEARER_TOKEN"))
+                .isInstanceOf(SecurityPolicy.BearerTokenRequired.class);
+        }
+
+        @Test
+        void canAccess_publicRoute_allowsAnonymous() {
+            var policy = SecurityPolicy.publicRoute();
+            var anonymous = SecurityContext.securityContext();
+            assertThat(policy.canAccess(anonymous)).isEqualTo(Access.ALLOW);
+        }
+
+        @Test
+        void canAccess_authenticated_deniesAnonymous() {
+            var policy = SecurityPolicy.authenticated();
+            var anonymous = SecurityContext.securityContext();
+            assertThat(policy.canAccess(anonymous)).isEqualTo(Access.DENY);
+        }
+
+        @Test
+        void canAccess_authenticated_allowsAuthenticatedUser() {
+            var policy = SecurityPolicy.authenticated();
+            var context = SecurityContext.securityContext("test-key").unwrap();
+            assertThat(policy.canAccess(context)).isEqualTo(Access.ALLOW);
+        }
+
+        @Test
+        void canAccess_apiKeyRequired_allowsApiKey() {
+            var policy = SecurityPolicy.apiKeyRequired();
+            var context = SecurityContext.securityContext("test-key").unwrap();
+            assertThat(policy.canAccess(context)).isEqualTo(Access.ALLOW);
+        }
+
+        @Test
+        void canAccess_apiKeyRequired_deniesAnonymous() {
+            var policy = SecurityPolicy.apiKeyRequired();
+            var anonymous = SecurityContext.securityContext();
+            assertThat(policy.canAccess(anonymous)).isEqualTo(Access.DENY);
+        }
+
+        @Test
+        void canAccess_roleRequired_allowsMatchingRole() {
+            var policy = SecurityPolicy.roleRequired("admin");
+            var context = SecurityContext.securityContext("key", Set.of(Role.ADMIN)).unwrap();
+            assertThat(policy.canAccess(context)).isEqualTo(Access.ALLOW);
+        }
+
+        @Test
+        void canAccess_roleRequired_deniesNonMatchingRole() {
+            var policy = SecurityPolicy.roleRequired("admin");
+            var context = SecurityContext.securityContext("key", Set.of(Role.USER)).unwrap();
+            assertThat(policy.canAccess(context)).isEqualTo(Access.DENY);
         }
     }
 
