@@ -125,7 +125,7 @@ public sealed interface QuicClusterServer {
 final class QuicClusterServerInstance implements QuicClusterServer {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterServerInstance.class);
     private static final long HELLO_TIMEOUT_MS = 15_000;
-    private static final long MAX_IDLE_TIMEOUT_MS = 600_000; // 10 minutes — peer-to-peer connections may be idle for extended periods between consensus rounds
+    private static final long MAX_IDLE_TIMEOUT_MS = 0; // Disabled per QUIC RFC 9000 §10.1 — cluster connections are persistent
     private static final long INITIAL_MAX_DATA = 16_000_000;
     private static final long INITIAL_MAX_STREAM_DATA = 4_000_000;
     private static final long INITIAL_MAX_STREAMS = 64;
