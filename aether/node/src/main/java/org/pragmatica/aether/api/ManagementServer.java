@@ -260,8 +260,8 @@ class ManagementServerImpl implements ManagementServer {
     private Promise<Unit> startH1Server() {
         var serverConfig = buildServerConfig();
         java.util.function.BiConsumer<RequestContext, ResponseWriter> handler = httpProtocol == HttpProtocol.BOTH
-                                                                               ? this::handleRequestWithAltSvc
-                                                                               : this::handleRequest;
+                                                                                ? this::handleRequestWithAltSvc
+                                                                                : this::handleRequest;
         var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
                                                                                                 handler,
                                                                                                 bg,
