@@ -155,12 +155,14 @@ bootstrap.bind(port).sync();
 
 **Note:** Uses `QuicServerCodecBuilder` (raw QUIC), NOT `Http3.newQuicServerCodecBuilder()` which adds HTTP/3 frame parsing. Cluster transport is raw QUIC with custom message framing.
 
-### 3.4 Serialization — Direct Calls
+### 3.4 Serialization — Direct Calls with Framing
 
 **Remove:** `Encoder` and `Decoder` Netty channel handlers (TCP-specific).
-**Remove:** `LengthFieldBasedFrameDecoder` and `LengthFieldPrepender` (QUIC handles framing).
+**Keep:** `LengthFieldBasedFrameDecoder` and `LengthFieldPrepender` on QUIC stream pipelines.
 
-**Instead:** Call serializer/deserializer directly:
+QUIC streams are byte-oriented (ordered byte delivery), NOT message-oriented. Multiple writes can coalesce into a single read, or a single write can split. Length-prefix framing is still required to delimit individual messages within a stream.
+
+**Serialization:** Call serializer/deserializer directly, with framing handled by the pipeline:
 ```java
 // Send
 var bytes = serializer.encode(message);
@@ -249,8 +251,8 @@ Docker compose, Hetzner integration, and cloud provider firewall configs must be
 | `ClusterNetwork` interface | None | New implementation, same contract |
 | `NettyClusterNetwork` | Removed | Replaced by `QuicClusterNetwork` |
 | `Encoder`/`Decoder` handlers | Removed | Direct serializer/deserializer calls |
-| `LengthFieldBasedFrameDecoder` | Removed | QUIC built-in framing |
-| `LengthFieldPrepender` | Removed | QUIC built-in framing |
+| `LengthFieldBasedFrameDecoder` | Kept | QUIC streams are byte-oriented — framing still needed |
+| `LengthFieldPrepender` | Kept | Length-prefix framing on QUIC stream pipeline |
 | All message types | None | Same protocol messages |
 | Hello handshake | Simplified | Same protocol, no duplicate detection needed (NodeId ordering) |
 | TLS | Always on | No toggle, auto-generate for dev |

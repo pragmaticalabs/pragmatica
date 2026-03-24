@@ -202,8 +202,17 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     private void openStreamAndHandshake(QuicChannel quicChannel,
                                         NodeId peerId,
                                         Promise<QuicPeerConnection> promise) {
-        quicChannel.createStream(QuicStreamType.BIDIRECTIONAL,
-                                 new ClientHelloHandler(peerId, quicChannel, promise))
+        // QUIC streams are byte-oriented — need framing to delimit messages
+        var streamInitializer = new ChannelInitializer<QuicStreamChannel>() {
+            @Override
+            protected void initChannel(QuicStreamChannel ch) {
+                ch.pipeline()
+                  .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(1_048_576, 0, 4, 0, 4))
+                  .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
+                  .addLast(new ClientHelloHandler(peerId, quicChannel, promise));
+            }
+        };
+        quicChannel.createStream(QuicStreamType.BIDIRECTIONAL, streamInitializer)
                    .addListener(future -> handleStreamCreated(peerId, promise, future));
     }
 

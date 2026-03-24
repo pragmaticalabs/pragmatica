@@ -245,7 +245,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (message instanceof Message.Wired wired) {
             router.route(wired);
         } else {
-            log.warn("Unknown message type from {}: {}", sender, option(message).map(Object::getClass).map(Class::getSimpleName));
+            log.trace("Non-routable message from {}: {}", sender, option(message).map(Object::getClass).map(Class::getSimpleName));
         }
     }
 

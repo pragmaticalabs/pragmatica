@@ -270,11 +270,16 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         }
     }
 
-    /// Per-stream initializer: installs the Hello handshake handler on each new stream.
+    /// Per-stream initializer: installs framing + Hello handshake handler on each new stream.
+    /// QUIC streams are byte-oriented (like TCP) — LengthFieldBasedFrameDecoder is needed
+    /// to delimit individual messages within the stream.
     private class ServerStreamInitializer extends ChannelInitializer<QuicStreamChannel> {
         @Override
         protected void initChannel(QuicStreamChannel ch) {
-            ch.pipeline().addLast(new ServerHelloHandler());
+            ch.pipeline()
+              .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(1_048_576, 0, 4, 0, 4))
+              .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
+              .addLast(new ServerHelloHandler());
         }
     }
 
