@@ -22,6 +22,24 @@ import org.pragmatica.lang.utils.Causes;
 /// Error types for QUIC transport operations.
 public sealed interface QuicTransportError extends Cause {
 
+    /// Fixed-message transport errors.
+    enum General implements QuicTransportError {
+        HELLO_TIMEOUT("Hello handshake timed out"),
+        UNEXPECTED_MESSAGE("Expected Hello message but received different type"),
+        SERVER_NOT_STARTED("QUIC server is not started");
+
+        private final String text;
+
+        General(String text) {
+            this.text = text;
+        }
+
+        @Override
+        public String message() {
+            return text;
+        }
+    }
+
     /// Failed to close a QUIC connection.
     record ConnectionCloseFailed(Throwable cause) implements QuicTransportError {
         @Override
@@ -35,6 +53,30 @@ public sealed interface QuicTransportError extends Cause {
         @Override
         public String message() {
             return "Failed to create QUIC TLS context: " + Causes.fromThrowable(cause);
+        }
+    }
+
+    /// Failed to bind the QUIC server to a UDP port.
+    record BindFailed(int port, Throwable cause) implements QuicTransportError {
+        @Override
+        public String message() {
+            return "Failed to bind QUIC server to port " + port + ": " + Causes.fromThrowable(cause);
+        }
+    }
+
+    /// Failed to connect to a remote QUIC peer.
+    record ConnectFailed(String address, Throwable cause) implements QuicTransportError {
+        @Override
+        public String message() {
+            return "Failed to connect to QUIC peer at " + address + ": " + Causes.fromThrowable(cause);
+        }
+    }
+
+    /// Failed to create a QUIC stream.
+    record StreamCreationFailed(Throwable cause) implements QuicTransportError {
+        @Override
+        public String message() {
+            return "Failed to create QUIC stream: " + Causes.fromThrowable(cause);
         }
     }
 }
