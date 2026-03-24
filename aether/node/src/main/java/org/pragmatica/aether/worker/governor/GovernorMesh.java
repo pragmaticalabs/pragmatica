@@ -38,7 +38,7 @@ public interface GovernorMesh {
         return new GovernorMeshInstance();
     }
 
-    /// Create a governor mesh with NCN delegate router for peer management.
+    /// Create a governor mesh with cluster network delegate router for peer management.
     static GovernorMesh governorMesh(DelegateRouter delegateRouter) {
         return new GovernorMeshInstance(delegateRouter);
     }

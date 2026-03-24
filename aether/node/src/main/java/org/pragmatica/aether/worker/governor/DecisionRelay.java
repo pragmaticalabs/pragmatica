@@ -17,10 +17,10 @@ import org.slf4j.LoggerFactory;
 ///
 /// When this node IS the governor:
 /// - Receives Decisions from core via PassiveNode
-/// - Fans them out to all group followers via NCN
+/// - Fans them out to all group followers via cluster network
 ///
 /// When this node IS a follower:
-/// - Receives relayed Decisions from the governor via NCN
+/// - Receives relayed Decisions from the governor via cluster network
 ///
 /// Maintains a bounded buffer for gap recovery (configurable size).
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})

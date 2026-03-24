@@ -42,7 +42,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param managementPort      Port for HTTP management API (0 to disable)
 /// @param artifactRepo        DHT configuration for artifact repository (replication factor, 0 = full)
 /// @param cache               DHT configuration for ephemeral cache (single replica by default)
-/// @param tls                 TLS configuration for secure connections (empty for plain TCP/HTTP)
+/// @param tls                 TLS configuration for QUIC cluster transport and HTTP (empty for auto-generated self-signed)
 /// @param ttm                 TTM (Tiny Time Mixers) predictive scaling configuration
 /// @param rollback            Automatic rollback configuration
 /// @param appHttp             Application HTTP server configuration for slice routes

@@ -20,8 +20,8 @@ services:
       PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
     ports:
-      - "8080:8080"   # Management API
-      - "8090:8090"   # Cluster port
+      - "8080:8080"       # Management API
+      - "8090:8090/udp"  # Cluster port (QUIC/UDP)
     networks:
       - aether-network
     healthcheck:
@@ -45,7 +45,7 @@ services:
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
     ports:
       - "8081:8080"
-      - "8091:8090"
+      - "8091:8090/udp"
     networks:
       - aether-network
     healthcheck:
@@ -72,7 +72,7 @@ services:
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
     ports:
       - "8082:8080"
-      - "8092:8090"
+      - "8092:8090/udp"
     networks:
       - aether-network
     healthcheck:

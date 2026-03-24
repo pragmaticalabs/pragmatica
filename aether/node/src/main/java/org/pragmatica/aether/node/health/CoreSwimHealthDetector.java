@@ -31,19 +31,16 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// Bridges SWIM failure detection to NCN channel management.
-/// SWIM is the sole failure detector — NCN's Ping/Pong keepalive has been removed.
+/// Bridges SWIM failure detection to cluster network connection management.
+/// SWIM is the sole failure detector — cluster network Ping/Pong keepalive has been removed.
 ///
-/// Cooperative model with NettyClusterNetwork (NCN):
-/// - **SWIM -> NCN:** On member FAULTY/LEFT, routes DisconnectNode to close zombie TCP channels
-/// - **NCN -> SWIM:** On TCP Hello handshake, onNodeConnected() resets FAULTY state
-/// - **NCN owns:** quorum tracking, topology notifications, TCP transport
+/// Cooperative model with QuicClusterNetwork (QCN):
+/// - **SWIM -> QCN:** On member FAULTY/LEFT, routes DisconnectNode to close zombie QUIC connections
+/// - **QCN -> SWIM:** On QUIC Hello handshake, onNodeConnected() resets FAULTY state
+/// - **QCN owns:** quorum tracking, topology notifications, QUIC transport
 /// - **SWIM owns:** failure detection via UDP probing (sole detector)
 ///
-/// Thread pool sharing: when started with a shared EventLoopGroup (from Server's workerGroup),
-/// SWIM's UDP channel runs on the same thread pool as NCN's TCP channels. This eliminates
-/// the separate NioEventLoopGroup(1) that SWIM previously created. SWIM still binds its own
-/// UDP port — future work will move the UDP binding into Server itself.
+/// SWIM binds its own UDP port (cluster port + 1) for health detection probing.
 public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private static final Logger log = LoggerFactory.getLogger(CoreSwimHealthDetector.class);
 

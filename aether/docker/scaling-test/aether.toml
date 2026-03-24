@@ -22,5 +22,11 @@ min_connections = 5
 max_connections = 20
 connection_timeout = "5s"
 
+[tls]
+# QUIC transport auto-generates self-signed certs when no explicit certs are provided.
+# cluster_secret seeds deterministic CA generation so all nodes share a common trust root.
+auto_generate = true
+cluster_secret = "scaling-test-secret"
+
 [messaging.click-events]
 topic_name = "click-events"

@@ -330,9 +330,9 @@ public interface AetherNode {
                                    serializer,
                                    deserializer,
                                    rabiaMetricsCollector,
-                                   List.of(networkMetricsHandler),
                                    true,
-                                   RabiaPersistence.inMemory())
+                                   RabiaPersistence.inMemory(),
+                                   config.tls())
                         .flatMap(clusterNode -> assembleNode(config,
                                                              delegateRouter,
                                                              kvStore,
@@ -965,7 +965,7 @@ public interface AetherNode {
                                                                                 config.timeouts()
                                                                                       .deployment()
                                                                                       .transitionRetryDelay());
-        // Extract shared event loop groups from the cluster network's TCP server
+        // Extract shared event loop groups from the cluster network server (if available)
         var serverBossGroup = clusterNode.network()
                                          .server()
                                          .map(org.pragmatica.net.tcp.Server::bossGroup);

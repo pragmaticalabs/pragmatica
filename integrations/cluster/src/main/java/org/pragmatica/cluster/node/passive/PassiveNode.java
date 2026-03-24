@@ -3,6 +3,7 @@ package org.pragmatica.cluster.node.passive;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
+import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoverNodes;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
@@ -16,7 +17,8 @@ import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectionFailed;
 import org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
-import org.pragmatica.consensus.net.netty.NettyClusterNetwork;
+import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
+import org.pragmatica.consensus.net.quic.QuicTlsProvider;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.topology.TcpTopologyManager;
 import org.pragmatica.consensus.topology.TopologyConfig;
@@ -24,6 +26,7 @@ import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.AddNode;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.RemoveNode;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.SetClusterSize;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -36,6 +39,8 @@ import org.pragmatica.serialization.Serializer;
 import java.util.ArrayList;
 import java.util.List;
 
+import io.netty.handler.codec.quic.QuicSslContext;
+
 import static org.pragmatica.messaging.MessageRouter.Entry.route;
 
 /// A passive cluster node that joins the network but never participates in consensus.
@@ -45,7 +50,7 @@ public interface PassiveNode<K extends StructuredKey, V> {
 
     DelegateRouter delegateRouter();
 
-    NettyClusterNetwork network();
+    ClusterNetwork network();
 
     KVStore<K, V> kvStore();
 
@@ -56,7 +61,8 @@ public interface PassiveNode<K extends StructuredKey, V> {
     Promise<Unit> stop();
 
     /// Create a passive node that joins the cluster network without consensus participation.
-    /// Returns Result because TcpTopologyManager creation can fail.
+    /// Auto-generates self-signed TLS for QUIC transport.
+    /// Returns Result because TcpTopologyManager and TLS context creation can fail.
     static <K extends StructuredKey, V> Result<PassiveNode<K, V>> passiveNode(
         TopologyConfig topologyConfig,
         Serializer serializer,
@@ -65,12 +71,17 @@ public interface PassiveNode<K extends StructuredKey, V> {
         var delegateRouter = DelegateRouter.delegate();
         var kvStore = new KVStore<K, V>(delegateRouter, serializer, deserializer);
 
-        return TcpTopologyManager.tcpTopologyManager(topologyConfig, delegateRouter)
-                                 .map(topologyManager -> assembleNode(delegateRouter,
+        return Result.all(
+            TcpTopologyManager.tcpTopologyManager(topologyConfig, delegateRouter),
+            QuicTlsProvider.serverContext(Option.empty()),
+            QuicTlsProvider.clientContext(Option.empty())
+        ).map((topologyManager, serverSsl, clientSsl) -> assembleNode(delegateRouter,
                                                                        topologyManager,
                                                                        kvStore,
                                                                        serializer,
-                                                                       deserializer));
+                                                                       deserializer,
+                                                                       serverSsl,
+                                                                       clientSsl));
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -79,9 +90,12 @@ public interface PassiveNode<K extends StructuredKey, V> {
         TcpTopologyManager topologyManager,
         KVStore<K, V> kvStore,
         Serializer serializer,
-        Deserializer deserializer) {
+        Deserializer deserializer,
+        QuicSslContext serverSsl,
+        QuicSslContext clientSsl) {
 
-        var network = new NettyClusterNetwork(topologyManager, serializer, deserializer, delegateRouter);
+        var network = new QuicClusterNetwork(topologyManager, serializer, deserializer,
+                                             delegateRouter, serverSsl, clientSsl);
 
         var topologyMgmtRoutes = SealedBuilder.from(TopologyManagementMessage.class)
                                               .route(route(AddNode.class, topologyManager::handleAddNodeMessage),
@@ -115,7 +129,7 @@ public interface PassiveNode<K extends StructuredKey, V> {
         record passiveNode<K extends StructuredKey, V>(
             DelegateRouter delegateRouter,
             TcpTopologyManager topologyManager,
-            NettyClusterNetwork network,
+            ClusterNetwork network,
             KVStore<K, V> kvStore,
             List<Entry<?>> routeEntries
         ) implements PassiveNode<K, V> {

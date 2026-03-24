@@ -23,7 +23,7 @@ import org.slf4j.LoggerFactory;
 /// 2. Apply the snapshot to the local KVStore
 /// 3. Start the Decision stream from the snapshot's sequence number
 ///
-/// The snapshot is requested via the NCN (NettyClusterNetwork) connection.
+/// The snapshot is requested via the cluster network (QuicClusterNetwork) connection.
 @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
 public interface WorkerBootstrap {
     Logger LOG = LoggerFactory.getLogger(WorkerBootstrap.class);
