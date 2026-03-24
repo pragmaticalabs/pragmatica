@@ -27,6 +27,10 @@ import java.util.Map;
 /// ```{@code
 /// prefix = "/api/v1"
 ///
+/// [security]
+/// default = "authenticated"
+/// override_policy = "strengthen_only"
+///
 /// [routes]
 /// getUser = "GET /{id:Long}"
 /// createUser = "POST /"
@@ -45,6 +49,7 @@ public final class RouteConfigLoader {
 
     private static final Cause FILE_NOT_FOUND = Causes.cause("Route configuration file not found");
     private static final Cause PARSE_ERROR = Causes.cause("Failed to parse route configuration");
+    private static final Cause MISSING_SECURITY = Causes.cause("Missing [security] section in routes.toml");
 
     private RouteConfigLoader() {}
 
@@ -65,9 +70,16 @@ public final class RouteConfigLoader {
     private static Result<RouteConfig> buildRouteConfig(TomlDocument toml) {
         var prefix = toml.getString("", "prefix")
                          .or("");
-        var routesResult = parseRoutes(toml.getSection("routes"));
         var errorsConfig = parseErrors(toml);
-        return routesResult.map(routes -> RouteConfig.routeConfig(prefix, routes, errorsConfig));
+
+        return parseSecurity(toml)
+            .flatMap(security -> parseRoutesWithSecurity(toml, security.securityDefault())
+                .map(routesPair -> RouteConfig.routeConfig(prefix,
+                                                           routesPair.routes(),
+                                                           errorsConfig,
+                                                           security.securityDefault(),
+                                                           security.overridePolicy(),
+                                                           routesPair.routeSecurity())));
     }
 
     /// Load and merge base configuration with slice-specific configuration.
@@ -94,25 +106,73 @@ public final class RouteConfigLoader {
         return Result.success(baseConfig.merge(sliceConfig));
     }
 
-    private static Result<Map<String, RouteDsl>> parseRoutes(Map<String, String> routesSection) {
-        var results = routesSection.entrySet()
-                                   .stream()
-                                   .map(RouteConfigLoader::parseRouteEntry)
-                                   .toList();
-        return Result.allOf(results)
-                     .map(RouteConfigLoader::toImmutableMap);
+    private static Result<SecuritySection> parseSecurity(TomlDocument toml) {
+        if (!toml.hasSection("security")) {
+            return MISSING_SECURITY.result();
+        }
+
+        var secDefault = toml.getString("security", "default")
+                             .map(RouteSecurityLevel::parse)
+                             .or(Result.success(RouteSecurityLevel.AUTHENTICATED));
+        var policy = toml.getString("security", "override_policy")
+                         .map(OverridePolicy::parse)
+                         .or(Result.success(OverridePolicy.STRENGTHEN_ONLY));
+
+        return Result.all(secDefault, policy)
+                     .map(SecuritySection::new);
     }
 
-    private static Result<Map.Entry<String, RouteDsl>> parseRouteEntry(Map.Entry<String, String> entry) {
-        return RouteDsl.parse(entry.getValue())
-                       .map(dsl -> Map.entry(entry.getKey(),
-                                             dsl));
+    private static Result<RoutesPair> parseRoutesWithSecurity(TomlDocument toml,
+                                                              RouteSecurityLevel defaultSecurity) {
+        var routeKeys = toml.keys("routes");
+        var routeResults = routeKeys.stream()
+                                    .map(key -> parseRouteWithSecurity(toml, key, defaultSecurity))
+                                    .toList();
+
+        return Result.allOf(routeResults)
+                     .map(RouteConfigLoader::buildRoutesPair);
     }
 
-    private static Map<String, RouteDsl> toImmutableMap(List<Map.Entry<String, RouteDsl>> entries) {
-        var map = new LinkedHashMap<String, RouteDsl>();
-        entries.forEach(e -> map.put(e.getKey(), e.getValue()));
-        return Collections.unmodifiableMap(map);
+    private static Result<ParsedRoute> parseRouteWithSecurity(TomlDocument toml,
+                                                              String key,
+                                                              RouteSecurityLevel defaultSecurity) {
+        return toml.getStringList("routes", key)
+                   .map(list -> parseArrayRoute(key, list))
+                   .or(() -> parseStringRoute(toml, key, defaultSecurity));
+    }
+
+    private static Result<ParsedRoute> parseArrayRoute(String key, List<String> parts) {
+        if (parts.size() < 2) {
+            return Causes.cause("Route array must have [dsl, security]: " + key).result();
+        }
+
+        var dslResult = RouteDsl.parse(parts.getFirst());
+        var secResult = RouteSecurityLevel.parse(parts.get(1));
+
+        return Result.all(dslResult, secResult)
+                     .map((dsl, sec) -> new ParsedRoute(key, dsl, Option.some(sec)));
+    }
+
+    private static Result<ParsedRoute> parseStringRoute(TomlDocument toml,
+                                                        String key,
+                                                        RouteSecurityLevel defaultSecurity) {
+        return toml.getString("routes", key)
+                   .map(RouteDsl::parse)
+                   .or(Causes.cause("Missing route value: " + key).result())
+                   .map(dsl -> new ParsedRoute(key, dsl, Option.none()));
+    }
+
+    private static RoutesPair buildRoutesPair(List<ParsedRoute> parsed) {
+        var routes = new LinkedHashMap<String, RouteDsl>();
+        var security = new LinkedHashMap<String, RouteSecurityLevel>();
+
+        for (var entry : parsed) {
+            routes.put(entry.name(), entry.dsl());
+            entry.security().onPresent(sec -> security.put(entry.name(), sec));
+        }
+
+        return new RoutesPair(Collections.unmodifiableMap(routes),
+                              Collections.unmodifiableMap(security));
     }
 
     private static ErrorPatternConfig parseErrors(TomlDocument toml) {
@@ -167,4 +227,17 @@ public final class RouteConfigLoader {
             return - 1;
         }
     }
+
+    /// Internal record for parsed security section values.
+    private record SecuritySection(RouteSecurityLevel securityDefault,
+                                   OverridePolicy overridePolicy) {}
+
+    /// Internal record for a parsed route entry with optional security override.
+    private record ParsedRoute(String name,
+                               RouteDsl dsl,
+                               Option<RouteSecurityLevel> security) {}
+
+    /// Internal record holding separated routes and route security maps.
+    private record RoutesPair(Map<String, RouteDsl> routes,
+                              Map<String, RouteSecurityLevel> routeSecurity) {}
 }
