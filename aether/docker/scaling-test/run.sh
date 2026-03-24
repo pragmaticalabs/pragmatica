@@ -3,10 +3,12 @@
 # Usage:
 #   ./run.sh all              # Run full test sequence
 #   ./run.sh cores            # Phase 1: Start 5 core nodes
+#   ./run.sh monitoring       # Phase 1b: Start Prometheus + Grafana
 #   ./run.sh deploy           # Phase 2: Deploy url-shortener blueprint
 #   ./run.sh steady           # Phase 3: Run steady-state k6 load test
 #   ./run.sh workers          # Phase 4: Add 7 worker nodes
 #   ./run.sh scaling          # Phase 5: Run scaling-verify k6 load test
+#   ./run.sh soak             # 4-hour soak test with chaos injection
 #   ./run.sh teardown         # Tear down everything
 set -euo pipefail
 
@@ -30,6 +32,8 @@ BLUEPRINT_GROUP_PATH="org/pragmatica/aether/example"
 
 COMPOSE_BASE="docker compose -f $SCRIPT_DIR/docker-compose.yml"
 COMPOSE_FULL="$COMPOSE_BASE -f $SCRIPT_DIR/docker-compose.workers.yml"
+COMPOSE_MONITORING="$COMPOSE_BASE -f $SCRIPT_DIR/docker-compose.monitoring.yml"
+COMPOSE_ALL="$COMPOSE_FULL -f $SCRIPT_DIR/docker-compose.monitoring.yml"
 
 # Management API base (node-1)
 MGMT_URL="http://localhost:8080"
@@ -48,7 +52,9 @@ upload_artifact() {
 
 teardown() {
     echo "=== Tearing down ==="
+    $COMPOSE_ALL down --remove-orphans 2>/dev/null || true
     $COMPOSE_FULL down --remove-orphans 2>/dev/null || true
+    $COMPOSE_MONITORING down --remove-orphans 2>/dev/null || true
     $COMPOSE_BASE down --remove-orphans 2>/dev/null || true
     echo "Teardown complete."
 }
@@ -114,6 +120,14 @@ phase_workers() {
     echo "Phase 4 complete: 12 nodes healthy (5 core + 7 worker)."
 }
 
+phase_monitoring() {
+    echo "=== Starting Monitoring ==="
+    $COMPOSE_MONITORING up -d
+    echo "Prometheus: http://localhost:9090"
+    echo "Grafana:    http://localhost:3000 (admin/admin)"
+    echo "Monitoring started."
+}
+
 phase_scaling() {
     echo "=== Phase 5: Scaling verification load test ==="
     if ! command -v k6 &> /dev/null; then
@@ -126,9 +140,50 @@ phase_scaling() {
     echo "Phase 5 complete: scaling verification passed."
 }
 
+phase_soak() {
+    echo "=== Soak Test: 4-hour sustained load with chaos injection ==="
+    if ! command -v k6 &> /dev/null; then
+        echo "WARNING: k6 not installed, skipping soak test."
+        echo "Install: brew install grafana/k6/k6"
+        return 0
+    fi
+
+    local REPORT_DIR="$SCRIPT_DIR/reports"
+    mkdir -p "$REPORT_DIR"
+    local TIMESTAMP
+    TIMESTAMP=$(date '+%Y%m%d-%H%M%S')
+
+    echo "Starting monitoring..."
+    phase_monitoring
+
+    echo "Starting chaos controller in background..."
+    "$K6_DIR/chaos-controller.sh" > "$REPORT_DIR/chaos-$TIMESTAMP.log" 2>&1 &
+    local CHAOS_PID=$!
+    echo "Chaos controller PID: $CHAOS_PID"
+
+    echo "Starting k6 soak test..."
+    k6 run --out csv="$REPORT_DIR/soak-$TIMESTAMP.csv" "$K6_DIR/soak-test.js" 2>&1 | tee "$REPORT_DIR/soak-$TIMESTAMP.log"
+    local K6_EXIT=$?
+
+    echo "Waiting for chaos controller to finish..."
+    wait $CHAOS_PID 2>/dev/null || true
+
+    echo ""
+    echo "=== Soak Test Complete ==="
+    echo "k6 exit code: $K6_EXIT"
+    echo "Reports:"
+    echo "  k6 output:  $REPORT_DIR/soak-$TIMESTAMP.log"
+    echo "  k6 CSV:     $REPORT_DIR/soak-$TIMESTAMP.csv"
+    echo "  Chaos log:  $REPORT_DIR/chaos-$TIMESTAMP.log"
+    echo "  Grafana:    http://localhost:3000 (dashboards for visual analysis)"
+
+    return $K6_EXIT
+}
+
 run_all() {
     trap teardown EXIT
     phase_cores
+    phase_monitoring
     phase_deploy
     phase_steady
     phase_workers
@@ -140,15 +195,17 @@ run_all() {
 }
 
 case "${1:-all}" in
-    all)      run_all ;;
-    cores)    phase_cores ;;
-    deploy)   phase_deploy ;;
-    steady)   phase_steady ;;
-    workers)  phase_workers ;;
-    scaling)  phase_scaling ;;
-    teardown) teardown ;;
+    all)        run_all ;;
+    cores)      phase_cores ;;
+    monitoring) phase_monitoring ;;
+    deploy)     phase_deploy ;;
+    steady)     phase_steady ;;
+    workers)    phase_workers ;;
+    scaling)    phase_scaling ;;
+    soak)       phase_soak ;;
+    teardown)   teardown ;;
     *)
-        echo "Usage: $0 {all|cores|deploy|steady|workers|scaling|teardown}"
+        echo "Usage: $0 {all|cores|monitoring|deploy|steady|workers|scaling|soak|teardown}"
         exit 1
         ;;
 esac

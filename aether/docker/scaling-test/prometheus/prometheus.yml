@@ -1,0 +1,26 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'aether-core'
+    metrics_path: '/api/metrics/prometheus'
+    static_configs:
+      - targets:
+          - 'aether-node-1:8080'
+          - 'aether-node-2:8080'
+          - 'aether-node-3:8080'
+          - 'aether-node-4:8080'
+          - 'aether-node-5:8080'
+
+  - job_name: 'aether-worker'
+    metrics_path: '/api/metrics/prometheus'
+    static_configs:
+      - targets:
+          - 'aether-worker-6:8080'
+          - 'aether-worker-7:8080'
+          - 'aether-worker-8:8080'
+          - 'aether-worker-9:8080'
+          - 'aether-worker-10:8080'
+          - 'aether-worker-11:8080'
+          - 'aether-worker-12:8080'
