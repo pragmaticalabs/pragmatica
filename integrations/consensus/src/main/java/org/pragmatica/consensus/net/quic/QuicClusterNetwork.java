@@ -269,10 +269,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
             ? buildUnknownNodeInfo(connection)
             : Option.empty();
 
-        if (option(peerLinks.putIfAbsent(peerId, connection)).isPresent()) {
-            log.debug("Duplicate connection from {}, closing new connection", peerId);
-            connection.close();
-            return;
+        var existing = peerLinks.putIfAbsent(peerId, connection);
+        if (existing != null) {
+            if (!existing.isActive()) {
+                // Old connection is stale — replace it with the new one
+                peerLinks.put(peerId, connection);
+                existing.close();
+                log.info("Replaced stale connection for peer {}", peerId);
+            } else {
+                log.debug("Duplicate connection from {}, closing new connection", peerId);
+                connection.close();
+                return;
+            }
         }
 
         connectionEstablishedAt.put(peerId, System.nanoTime());
@@ -313,12 +321,19 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
         if (!connection.isActive()) {
             if (peerLinks.remove(peerId, connection)) {
+                connectionEstablishedAt.remove(peerId);
                 processViewChange(REMOVE, peerId);
+                attemptReconnect(peerId);
             }
-            log.warn("Node {} connection is not active", peerId);
+            log.warn("Node {} connection is not active, removed stale link", peerId);
             return;
         }
         writeToStream(peerId, message, connection);
+    }
+
+    private void attemptReconnect(NodeId peerId) {
+        topologyManager.get(peerId)
+                       .onPresent(this::connectPeer);
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Stream selection and write

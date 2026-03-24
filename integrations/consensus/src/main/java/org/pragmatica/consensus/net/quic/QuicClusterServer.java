@@ -117,9 +117,9 @@ final class QuicClusterServerInstance implements QuicClusterServer {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterServerInstance.class);
     private static final long HELLO_TIMEOUT_MS = 15_000;
     private static final long MAX_IDLE_TIMEOUT_MS = 30_000;
-    private static final long INITIAL_MAX_DATA = 10_000_000;
-    private static final long INITIAL_MAX_STREAM_DATA = 1_000_000;
-    private static final long INITIAL_MAX_STREAMS = 16;
+    private static final long INITIAL_MAX_DATA = 16_000_000;
+    private static final long INITIAL_MAX_STREAM_DATA = 4_000_000;
+    private static final long INITIAL_MAX_STREAMS = 64;
 
     private final NodeId selfId;
     private final NodeRole selfRole;

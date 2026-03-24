@@ -139,9 +139,9 @@ Listens on UDP port, accepts incoming QUIC connections. Uses raw QUIC codec (NOT
 var quicCodec = QuicServerCodecBuilder.create()
     .sslContext(quicSslContext)
     .maxIdleTimeout(30, TimeUnit.SECONDS)
-    .initialMaxData(10_000_000)
-    .initialMaxStreamDataBidirectionalLocal(1_000_000)
-    .initialMaxStreamsBidirectional(16)
+    .initialMaxData(16_000_000)
+    .initialMaxStreamDataBidirectionalLocal(4_000_000)
+    .initialMaxStreamsBidirectional(64)
     .handler(connectionHandler)
     .streamHandler(streamHandler)
     .build();
