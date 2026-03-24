@@ -663,7 +663,8 @@ public final class EmberCluster {
                                           org.pragmatica.aether.config.TimeoutsConfig.timeoutsConfig(),
                                           Option.empty(),
                                           Option.empty(),
-                                          AetherNodeConfig.DeploymentDefaults.DEFAULT);
+                                          AetherNodeConfig.DeploymentDefaults.DEFAULT,
+                                          org.pragmatica.aether.config.HttpProtocol.H1);
         return AetherNode.aetherNode(config)
                          .unwrap();
     }

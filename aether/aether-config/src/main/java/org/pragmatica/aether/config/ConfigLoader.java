@@ -149,7 +149,10 @@ public final class ConfigLoader {
                           .or(PortsConfig.DEFAULT_MANAGEMENT_PORT);
         var clusterPort = doc.getInt("cluster.ports", "cluster")
                              .or(PortsConfig.DEFAULT_CLUSTER_PORT);
-        return PortsConfig.portsConfig(mgmtPort, clusterPort)
+        var mgmtProtocol = doc.getString("cluster.ports", "management_protocol")
+                              .flatMap(HttpProtocol::httpProtocol)
+                              .or(HttpProtocol.H1);
+        return PortsConfig.portsConfig(mgmtPort, clusterPort, mgmtProtocol)
                           .unwrap();
     }
 

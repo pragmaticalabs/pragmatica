@@ -1190,7 +1190,8 @@ public interface AetherNode {
                                                                                               mgmtSecurityValidator,
                                                                                               mgmtSecurityEnabled,
                                                                                               serverBossGroup,
-                                                                                              serverWorkerGroup);
+                                                                                              serverWorkerGroup,
+                                                                                              config.managementHttpProtocol());
                                      return new aetherNode(config,
                                                            delegateRouter,
                                                            kvStore,

@@ -82,27 +82,8 @@ public class CodecProcessor extends AbstractProcessor {
                                             .toString();
             packageToRequiredTypes.computeIfAbsent(packageName, _ -> new java.util.LinkedHashSet<>())
                                   .add(qualifiedName);
-
-            var kind = typeElement.getKind();
-
-            if (kind == ElementKind.RECORD) {
-                if (validateRecordFields(typeElement)) {
-                    var tag = extractTag(typeElement);
-
-                    if (generator.generateRecordCodec(typeElement, tag)) {
-                        registerCodec(typeElement, packageToCodecNames);
-                        note(element, "Generated codec via @CodecFor: " + typeElement.getSimpleName() + "Codec");
-                    }
-                }
-            } else if (kind == ElementKind.ENUM) {
-                var tag = extractTag(typeElement);
-
-                if (generator.generateEnumCodec(typeElement, tag)) {
-                    registerCodec(typeElement, packageToCodecNames);
-                    note(element, "Generated codec via @CodecFor: " + typeElement.getSimpleName() + "Codec");
-                }
-            }
-            // For classes/interfaces (e.g. InetSocketAddress, TimeSpan): no generation, just suppress errors
+            // No codec generation — @CodecFor types require manual codecs.
+            // Runtime validation (REQUIRED_TYPES) catches missing implementations at startup.
         }
     }
 

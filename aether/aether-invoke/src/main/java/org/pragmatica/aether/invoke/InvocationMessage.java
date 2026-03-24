@@ -5,6 +5,7 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.serialization.Codec;
+import org.pragmatica.serialization.CodecFor;
 
 /// Messages for inter-slice remote invocation.
 ///
@@ -28,6 +29,7 @@ import org.pragmatica.serialization.Codec;
 ///   - sampled: whether this request is sampled for detailed tracing
 ///
 @Codec
+@CodecFor(MethodName.class)
 public sealed interface InvocationMessage extends ProtocolMessage {
     /// Request to invoke a method on a remote slice.
     ///
