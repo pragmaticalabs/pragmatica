@@ -43,9 +43,9 @@ ENV JAVA_OPTS="-Xmx512m -XX:+UseZGC -XX:+ZGenerational -Djava.net.preferIPv4Stac
 
 # Expose ports
 # 8090/udp - Cluster communication (QUIC: consensus, inter-node messaging)
-# 8091/udp - SWIM health detection (cluster port + 1)
+# 8190/udp - SWIM health detection (cluster port + 100)
 # 8080     - Management API (REST, WebSocket dashboard)
-EXPOSE 8090/udp 8091/udp 8080
+EXPOSE 8090/udp 8190/udp 8080
 
 # Health check using /api/health endpoint
 HEALTHCHECK --interval=10s --timeout=5s --start-period=45s --retries=3 \

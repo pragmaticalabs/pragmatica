@@ -70,20 +70,22 @@ public sealed interface QuicClusterClient {
 
     /// Create a new QUIC cluster client.
     ///
-    /// @param selfId       this node's identity
-    /// @param selfRole     this node's role in the cluster
-    /// @param serializer   message serializer
-    /// @param deserializer message deserializer
-    /// @param sslContext   QUIC client SSL context (TLS 1.3)
-    /// @param eventLoop    optional shared event loop group
+    /// @param selfId          this node's identity
+    /// @param selfRole        this node's role in the cluster
+    /// @param serializer      message serializer
+    /// @param deserializer    message deserializer
+    /// @param sslContext      QUIC client SSL context (TLS 1.3)
+    /// @param eventLoop       optional shared event loop group
+    /// @param messageReceiver callback invoked for each message received after Hello
     static QuicClusterClient quicClusterClient(NodeId selfId,
                                                NodeRole selfRole,
                                                Serializer serializer,
                                                Deserializer deserializer,
                                                QuicSslContext sslContext,
-                                               Option<EventLoopGroup> eventLoop) {
+                                               Option<EventLoopGroup> eventLoop,
+                                               QuicClusterServer.MessageReceiver messageReceiver) {
         return new QuicClusterClientInstance(selfId, selfRole, serializer, deserializer,
-                                            sslContext, eventLoop);
+                                            sslContext, eventLoop, messageReceiver);
     }
 
     record Unused() implements QuicClusterClient {
@@ -114,6 +116,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     private final QuicSslContext sslContext;
     private final EventLoopGroup eventLoopGroup;
     private final boolean ownsEventLoop;
+    private final QuicClusterServer.MessageReceiver messageReceiver;
     private volatile Channel datagramChannel;
 
     QuicClusterClientInstance(NodeId selfId,
@@ -121,7 +124,8 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                               Serializer serializer,
                               Deserializer deserializer,
                               QuicSslContext sslContext,
-                              Option<EventLoopGroup> eventLoop) {
+                              Option<EventLoopGroup> eventLoop,
+                              QuicClusterServer.MessageReceiver messageReceiver) {
         this.selfId = selfId;
         this.selfRole = selfRole;
         this.serializer = serializer;
@@ -129,6 +133,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         this.sslContext = sslContext;
         this.ownsEventLoop = eventLoop.isEmpty();
         this.eventLoopGroup = eventLoop.or(QuicClusterClientInstance::createEventLoop);
+        this.messageReceiver = messageReceiver;
     }
 
     @Override
@@ -338,8 +343,35 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         private void completePeerConnection(ChannelHandlerContext ctx, NetworkMessage.Hello hello) {
             var peerConnection = quicPeerConnection(hello.sender(), quicChannel);
             peerConnection.registerStream(StreamType.CONSENSUS, (QuicStreamChannel) ctx.channel());
+
+            // Replace Hello handler with data handler for ongoing messages
+            ctx.pipeline().replace(this, "data-handler", new DataHandler(hello.sender()));
+
             log.info("QUIC Hello handshake complete with peer {} (role={})", hello.sender(), hello.role());
             promise.succeed(peerConnection);
+        }
+    }
+
+    /// Handles ongoing data messages after Hello handshake completes.
+    /// Deserializes incoming bytes and routes them via the message receiver callback.
+    private class DataHandler extends SimpleChannelInboundHandler<ByteBuf> {
+        private final NodeId peerId;
+
+        DataHandler(NodeId peerId) {
+            this.peerId = peerId;
+        }
+
+        @Override
+        protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
+            var bytes = new byte[buf.readableBytes()];
+            buf.readBytes(bytes);
+            var message = deserializer.decode(bytes);
+            messageReceiver.onMessage(peerId, message);
+        }
+
+        @Override
+        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+            log.error("Error processing message from peer {}", peerId, cause);
         }
     }
 }

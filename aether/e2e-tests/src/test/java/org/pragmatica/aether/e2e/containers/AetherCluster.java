@@ -25,7 +25,7 @@ import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 ///
 /// All containers run on a shared bridge network with standard internal ports.
 /// No port allocation needed — containers use identical ports (8080 management,
-/// 8090 cluster, 8091 SWIM) and communicate via DNS (container aliases).
+/// 8090 cluster, 8190 SWIM) and communicate via DNS (container aliases).
 /// Tests access management API via Testcontainers' random mapped ports.
 ///
 ///
@@ -348,13 +348,13 @@ public class AetherCluster implements AutoCloseable {
 
     /// Disconnects a node from cluster traffic using iptables, simulating a network partition.
     /// The container keeps running and management API remains accessible via port mapping.
-    /// Only cluster port (8090) and SWIM port (8091) traffic is blocked.
+    /// Only cluster port (8090) and SWIM port (8190) traffic is blocked.
     ///
     /// @param nodeId node to disconnect
     public void disconnectNode(String nodeId) {
         var container = node(nodeId);
         var clusterPort = String.valueOf(AetherNodeContainer.CLUSTER_PORT);
-        var swimPort = String.valueOf(AetherNodeContainer.CLUSTER_PORT + 1);
+        var swimPort = String.valueOf(AetherNodeContainer.CLUSTER_PORT + 100);
         // Block all cluster and SWIM traffic (both TCP and UDP) — run as root
         execAsRoot(container, "iptables", "-A", "INPUT", "-p", "tcp", "--dport", clusterPort, "-j", "DROP");
         execAsRoot(container, "iptables", "-A", "OUTPUT", "-p", "tcp", "--dport", clusterPort, "-j", "DROP");

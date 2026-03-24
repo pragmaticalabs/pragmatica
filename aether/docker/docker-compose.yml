@@ -3,7 +3,7 @@ version: "3.9"
 # Aether Cluster Local Development Environment
 #
 # Inter-node communication uses QUIC (UDP) on port 8090 for cluster transport
-# (consensus, KV-Store, HTTP forwarding, DHT) and UDP port 8091 for SWIM failure
+# (consensus, KV-Store, HTTP forwarding, DHT) and UDP port 8190 for SWIM failure
 # detection. Host-mapped cluster ports use /udp suffix for explicit protocol binding.
 #
 # Usage:

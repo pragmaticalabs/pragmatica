@@ -42,6 +42,7 @@ import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.messaging.Message;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
@@ -132,11 +133,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
         server = QuicClusterServer.quicClusterServer(
             self.id(), self.role(), serializer, deserializer,
-            serverSslContext, Option.empty(), this::onPeerConnected
+            serverSslContext, Option.empty(), this::onPeerConnected, this::onMessageReceived
         );
         client = QuicClusterClient.quicClusterClient(
             self.id(), self.role(), serializer, deserializer,
-            clientSslContext, Option.empty()
+            clientSslContext, Option.empty(), this::onMessageReceived
         );
         return server.start(port)
                      .onFailure(this::onStartFailed)
@@ -234,6 +235,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private void onStartFailed(Cause cause) {
         log.error("Failed to start QUIC server: {}", cause.message());
         isRunning.set(false);
+    }
+
+    /// Routes incoming messages received from peers after Hello handshake.
+    /// Protocol messages (consensus, KV) go through the message router.
+    /// Network messages (discovery) are handled as service messages.
+    @SuppressWarnings("JBCT-PAT-01") // Message routing dispatch
+    private void onMessageReceived(NodeId sender, Object message) {
+        if (message instanceof Message.Wired wired) {
+            router.route(wired);
+        } else {
+            log.warn("Unknown message type from {}: {}", sender, option(message).map(Object::getClass).map(Class::getSimpleName));
+        }
     }
 
     // --- Internal: peer connection lifecycle ---
@@ -339,11 +352,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @SuppressWarnings("JBCT-PAT-01") // Stream selection and write
     private void writeToStream(NodeId peerId, Object message, QuicPeerConnection connection) {
         var bytes = serializer.encode(message);
-        // Use consensus stream (0) for all messages on long-lived connections.
-        // Stream routing by message type will be added when short-lived streams are implemented.
-        connection.stream(StreamType.CONSENSUS)
-                  .onPresent(stream -> stream.writeAndFlush(Unpooled.wrappedBuffer(bytes)))
-                  .onEmpty(() -> log.warn("No consensus stream available for peer {}", peerId));
+        var streamType = StreamType.forMessage(message);
+
+        // Use the appropriate stream, falling back to CONSENSUS if not available
+        var stream = connection.stream(streamType)
+                               .fold(() -> connection.stream(StreamType.CONSENSUS), Option::some);
+
+        stream.onPresent(ch -> ch.writeAndFlush(Unpooled.wrappedBuffer(bytes)))
+              .onEmpty(() -> log.warn("No stream available for peer {}", peerId));
     }
 
     private <M extends ProtocolMessage> void broadcastToEligiblePeer(NodeId peerId, QuicPeerConnection conn, M message) {

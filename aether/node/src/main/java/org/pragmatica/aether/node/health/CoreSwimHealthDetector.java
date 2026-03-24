@@ -40,13 +40,19 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// - **QCN owns:** quorum tracking, topology notifications, QUIC transport
 /// - **SWIM owns:** failure detection via UDP probing (sole detector)
 ///
-/// SWIM binds its own UDP port (cluster port + 1) for health detection probing.
+/// SWIM binds its own UDP port (cluster port + 100) for health detection probing.
 public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private static final Logger log = LoggerFactory.getLogger(CoreSwimHealthDetector.class);
 
     /// Core SWIM config — uses DEFAULT which is tuned for containerized environments.
     /// period=1s, probeTimeout=800ms, suspectTimeout=15s.
     private static final SwimConfig CORE_SWIM_CONFIG = SwimConfig.DEFAULT;
+
+    /// Port offset from cluster port to SWIM port.
+    /// Uses +100 to avoid conflicts in Forge/Ember where cluster ports are sequential
+    /// (e.g., 6000-6004). With +1, node on port 6001 would conflict with SWIM port of
+    /// node on port 6000.
+    public static final int SWIM_PORT_OFFSET = 100;
 
     private final MessageRouter router;
     private final TopologyConfig topologyConfig;
@@ -76,7 +82,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     }
 
     /// Start the SWIM protocol for core node health detection.
-    /// SWIM port = cluster port + 1.
+    /// SWIM port = cluster port + SWIM_PORT_OFFSET (100).
     /// Idempotent: if SWIM is already running, this is a no-op.
     public Promise<Unit> start() {
         return start(none(), GossipEncryptor.none());
@@ -94,7 +100,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
             return Promise.success(Unit.unit());
         }
         var selfPort = findSelfPort();
-        var swimPort = selfPort + 1;
+        var swimPort = selfPort + SWIM_PORT_OFFSET;
         var selfHost = findSelfHost();
         var selfAddress = new InetSocketAddress(selfHost, swimPort);
         return createTransport(sharedEventLoopGroup).flatMap(transport -> createAndStartProtocol(transport,
@@ -225,7 +231,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         var host = node.address()
                        .host();
         var swimPort = node.address()
-                           .port() + 1;
+                           .port() + SWIM_PORT_OFFSET;
         // Store as UNRESOLVED — Netty's DnsNameResolver in NettySwimTransport resolves at send time.
         // This eliminates stale IPs and handles containers whose DNS entries appear after SWIM starts.
         var swimAddress = InetSocketAddress.createUnresolved(host, swimPort);

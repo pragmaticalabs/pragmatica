@@ -67,4 +67,11 @@ public enum StreamType {
                ? some(BY_INDEX[index])
                : none();
     }
+
+    /// Determine the appropriate stream type for a given message.
+    /// Currently maps all messages to CONSENSUS; will be extended
+    /// when KV store and HTTP forward streams are implemented.
+    public static StreamType forMessage(Object message) {
+        return CONSENSUS;
+    }
 }

@@ -88,7 +88,8 @@ class QuicClusterServerTest {
                     conn -> {
                         connections.add(conn);
                         latch.countDown();
-                    }
+                    },
+                    (_, _) -> {}
                 )
             );
 
@@ -101,7 +102,8 @@ class QuicClusterServerTest {
             client = clientSslResult.fold(
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterClient.quicClusterClient(
-                    CLIENT_NODE, NodeRole.ACTIVE, codec, codec, ssl, Option.empty()
+                    CLIENT_NODE, NodeRole.ACTIVE, codec, codec, ssl, Option.empty(),
+                    (_, _) -> {}
                 )
             );
 
@@ -134,7 +136,7 @@ class QuicClusterServerTest {
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterServer.quicClusterServer(
                     SERVER_NODE, NodeRole.ACTIVE, codec, codec, ssl, Option.empty(),
-                    _ -> {}
+                    _ -> {}, (_, _) -> {}
                 )
             );
 
@@ -154,7 +156,7 @@ class QuicClusterServerTest {
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterServer.quicClusterServer(
                     SERVER_NODE, NodeRole.ACTIVE, codec, codec, ssl, Option.empty(),
-                    _ -> {}
+                    _ -> {}, (_, _) -> {}
                 )
             );
 
