@@ -4,7 +4,9 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.24.0] - Unreleased
+## [0.24.1] - Unreleased
+
+## [0.24.0] - 2026-03-24
 
 ### Added
 - **QUIC cluster transport** — replaces TCP for all inter-node communication. Stream-per-message-type multiplexing (consensus stream 0, KV stream 1, HTTP forward stream 2, DHT stream 3), mandatory TLS 1.3 with auto-generated self-signed certs for dev, 0-RTT reconnection, connection migration, NodeId-ordered connection initiation. First Java distributed runtime on QUIC
