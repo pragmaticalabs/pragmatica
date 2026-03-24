@@ -221,6 +221,157 @@ class ConfigLoaderSecurityTest {
     }
 
     @Test
+    void loadFromString_parsesMaxRequestSize() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            max_request_size = "5MB"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().maxRequestSize()).isEqualTo(5 * 1024 * 1024);
+            });
+    }
+
+    @Test
+    void loadFromString_usesDefaultMaxRequestSize_whenNotSpecified() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().maxRequestSize()).isEqualTo(AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE);
+            });
+    }
+
+    @Test
+    void loadFromString_parsesMaxRequestSizeInKB() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            max_request_size = "512KB"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().maxRequestSize()).isEqualTo(512 * 1024);
+            });
+    }
+
+    @Test
+    void loadFromString_parsesMaxRequestSizeInGB() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            max_request_size = "1GB"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().maxRequestSize()).isEqualTo(1024 * 1024 * 1024);
+            });
+    }
+
+    @Test
+    void loadFromString_parsesSecurityModeApiKey() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            security_mode = "api-key"
+            api_keys = ["key1"]
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.API_KEY);
+                assertThat(config.appHttp().securityEnabled()).isTrue();
+            });
+    }
+
+    @Test
+    void loadFromString_parsesSecurityModeNone() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            security_mode = "none"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.NONE);
+                assertThat(config.appHttp().securityEnabled()).isFalse();
+            });
+    }
+
+    @Test
+    void loadFromString_defaultsSecurityModeToNoneWhenNotSpecified() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.NONE);
+            });
+    }
+
+    @Test
+    void loadFromString_autoUpgradesSecurityModeWhenApiKeysPresent() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            api_keys = ["key1"]
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                // No explicit security_mode, but apiKeys present -> auto-upgrade to API_KEY
+                assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.API_KEY);
+                assertThat(config.appHttp().securityEnabled()).isTrue();
+            });
+    }
+
+    @Test
+    void loadFromString_explicitNoneOverridesApiKeyAutoUpgrade() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            security_mode = "none"
+            api_keys = ["key1"]
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                // Explicit "none" is honored even with apiKeys present
+                // (keys are stored but not enforced)
+                assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.NONE);
+                assertThat(config.appHttp().securityEnabled()).isFalse();
+            });
+    }
+
+    @Test
     void loadFromString_richApiKeysDefaultNameAndRolesWhenOmitted() {
         var toml = MINIMAL_CLUSTER + """
 
@@ -239,6 +390,53 @@ class ConfigLoaderSecurityTest {
                 // Default name is hash-derived, default role is service
                 assertThat(entry.name()).isEqualTo("key-" + Integer.toHexString("my-secret-key-value".hashCode()));
                 assertThat(entry.roles()).containsExactly("service");
+            });
+    }
+
+    @Test
+    void loadFromString_parsesProtocolH3() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            protocol = "h3"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().httpProtocol()).isEqualTo(HttpProtocol.H3);
+            });
+    }
+
+    @Test
+    void loadFromString_parsesProtocolBoth() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            protocol = "both"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().httpProtocol()).isEqualTo(HttpProtocol.BOTH);
+            });
+    }
+
+    @Test
+    void loadFromString_defaultsProtocolToH1() {
+        var toml = MINIMAL_CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.appHttp().httpProtocol()).isEqualTo(HttpProtocol.H1);
             });
     }
 }

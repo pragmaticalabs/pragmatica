@@ -71,7 +71,8 @@ public final class ConfigRoutes implements RouteSource {
                   .filter(id -> !id.isEmpty())
                   .fold(() -> configManager.setConfig(req.key(),
                                                       req.value())
-                                           .onSuccess(_ -> auditAndEmitConfigSet(req.key(), "cluster"))
+                                           .onSuccess(_ -> auditAndEmitConfigSet(req.key(),
+                                                                                 "cluster"))
                                            .map(_ -> new ConfigSetResponse("config_set",
                                                                            req.key(),
                                                                            req.value())),
@@ -81,7 +82,7 @@ public final class ConfigRoutes implements RouteSource {
                                                                                           req.value(),
                                                                                           nodeId)
                                                                            .onSuccess(_ -> auditAndEmitConfigSet(req.key(),
-                                                                                                                     "node:" + nodeIdStr))
+                                                                                                                 "node:" + nodeIdStr))
                                                                            .map(_ -> new ConfigSetResponse("config_set",
                                                                                                            req.key(),
                                                                                                            req.value()))));

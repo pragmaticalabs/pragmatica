@@ -968,8 +968,7 @@ public final class KVStoreSerializer {
     }
 
     private static String serializeStreamMetadata(StreamMetadataValue v) {
-        return v.streamName() + PIPE + v.partitionCount() + PIPE + v.retention() + PIPE + v.retentionValue()
-               + PIPE + v.maxEventSize() + PIPE + v.backpressure() + PIPE + v.owningBlueprint() + PIPE + v.createdAt();
+        return v.streamName() + PIPE + v.partitionCount() + PIPE + v.retention() + PIPE + v.retentionValue() + PIPE + v.maxEventSize() + PIPE + v.backpressure() + PIPE + v.owningBlueprint() + PIPE + v.createdAt();
     }
 
     private static String serializeStreamPartitionAssignment(StreamPartitionAssignmentValue v) {
@@ -980,7 +979,8 @@ public final class KVStoreSerializer {
             }
             sb.append(a.partition())
               .append(':')
-              .append(a.consumerNode().id());
+              .append(a.consumerNode()
+                       .id());
         }
         return sb + PIPE + v.updatedAt();
     }
@@ -990,7 +990,8 @@ public final class KVStoreSerializer {
     }
 
     private static String serializeStreamRegistration(StreamRegistrationValue v) {
-        return v.nodeId().id() + PIPE + v.consumerGroup() + PIPE + v.batchMode() + PIPE + v.eventType();
+        return v.nodeId()
+                .id() + PIPE + v.consumerGroup() + PIPE + v.batchMode() + PIPE + v.eventType();
     }
 
     private static <T> Result<T> parseFailure(String detail) {

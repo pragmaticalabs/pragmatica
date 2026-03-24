@@ -3,6 +3,8 @@ package org.pragmatica.aether.http;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
+import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.update.DeploymentStrategy;
 import org.pragmatica.aether.update.DeploymentStrategyCoordinator;
 import org.pragmatica.aether.update.VersionRouting;
@@ -15,6 +17,7 @@ import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.aether.http.security.SecurityValidator;
@@ -43,8 +46,10 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -171,7 +176,6 @@ public interface AppHttpServer {
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
 class AppHttpServerImpl implements AppHttpServer {
     private static final Logger log = LoggerFactory.getLogger(AppHttpServerImpl.class);
-    private static final int MAX_CONTENT_LENGTH = 16 * 1024 * 1024;
 
     private final AppHttpConfig config;
     private final NodeId selfNodeId;
@@ -188,6 +192,7 @@ class AppHttpServerImpl implements AppHttpServer {
     private final Option<DeploymentStrategyCoordinator> strategyCoordinator;
     private final Option<HttpForwarder> httpForwarder;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
+    private final AtomicReference<HttpServer> h3ServerRef = new AtomicReference<>();
     private final AtomicReference<RouteTable> routeTableRef = new AtomicReference<>(RouteTable.empty());
     private final AtomicBoolean routeSyncReceived = new AtomicBoolean(false);
 
@@ -210,9 +215,7 @@ class AppHttpServerImpl implements AppHttpServer {
         this.clusterNetwork = clusterNetwork;
         this.serializer = serializer;
         this.deserializer = deserializer;
-        this.securityValidator = config.securityEnabled()
-                                 ? SecurityValidator.apiKeyValidator(config.apiKeyValues())
-                                 : SecurityValidator.noOpValidator();
+        this.securityValidator = buildSecurityValidator(config);
         this.tls = tls;
         this.metricsCollector = metricsCollector;
         this.bossGroup = bossGroup;
@@ -226,21 +229,28 @@ class AppHttpServerImpl implements AppHttpServer {
                                                 config);
     }
 
+    private static SecurityValidator buildSecurityValidator(AppHttpConfig config) {
+        return switch (config.securityMode()) {
+            case API_KEY -> SecurityValidator.apiKeyValidator(config.apiKeys());
+            case JWT -> config.jwtConfig()
+                              .map(SecurityValidator::jwtValidator)
+                              .or(SecurityValidator.noOpValidator());
+            case NONE -> SecurityValidator.noOpValidator();
+        };
+    }
+
     private static Option<HttpForwarder> buildHttpForwarder(NodeId selfNodeId,
                                                             HttpRouteRegistry routeRegistry,
                                                             Option<ClusterNetwork> clusterNetwork,
                                                             Option<Serializer> serializer,
                                                             Option<Deserializer> deserializer,
                                                             AppHttpConfig config) {
-        if (clusterNetwork.isEmpty() || serializer.isEmpty() || deserializer.isEmpty()) {
-            return Option.none();
-        }
-        return Option.some(HttpForwarder.httpForwarder(selfNodeId,
-                                                       routeRegistry,
-                                                       clusterNetwork.unwrap(),
-                                                       serializer.unwrap(),
-                                                       deserializer.unwrap(),
-                                                       config.forwardTimeout()));
+        return clusterNetwork.flatMap(net -> serializer.flatMap(ser -> deserializer.map(des -> HttpForwarder.httpForwarder(selfNodeId,
+                                                                                                                           routeRegistry,
+                                                                                                                           net,
+                                                                                                                           ser,
+                                                                                                                           des,
+                                                                                                                           config.forwardTimeout()))));
     }
 
     @Override
@@ -254,39 +264,93 @@ class AppHttpServerImpl implements AppHttpServer {
             log.info("App HTTP server is disabled");
             return Promise.success(unit());
         }
-        log.info("Starting App HTTP server on port {}", config.port());
+        log.info("Starting App HTTP server on port {} (protocol: {})", config.port(), config.httpProtocol());
         rebuildRouter();
+        var protocol = config.httpProtocol();
+        if (protocol.includesH1()) {
+            return startH1Server().flatMap(_ -> protocol.includesH3()
+                                                ? startH3Server()
+                                                : Promise.success(unit()));
+        }
+        return startH3Server();
+    }
+
+    private Promise<Unit> startH1Server() {
         var serverConfig = buildServerConfig();
+        java.util.function.BiConsumer<org.pragmatica.http.server.RequestContext, org.pragmatica.http.server.ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
+                                                                                                                                      ? this::handleRequestWithAltSvc
+                                                                                                                                      : this::handleRequest;
         var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
-                                                                                                this::handleRequest,
+                                                                                                handler,
                                                                                                 bg,
                                                                                                 wg)))
-                                     .or(HttpServer.httpServer(serverConfig, this::handleRequest));
-        return serverPromise.map(this::registerStartedServer)
+                                     .or(HttpServer.httpServer(serverConfig, handler));
+        return serverPromise.map(this::registerStartedH1Server)
                             .onFailure(cause -> log.error("Failed to start App HTTP server on port {}: {}",
                                                           config.port(),
                                                           cause.message()));
     }
 
+    private Promise<Unit> startH3Server() {
+        var quicTls = tls.map(QuicSslContextFactory::createServer)
+                         .or(QuicSslContextFactory.createSelfSignedServer());
+        return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context: {}",
+                                                    cause.message()))
+                      .map(this::startH3WithSslContext)
+                      .or(Promise.success(unit()));
+    }
+
+    private Promise<Unit> startH3WithSslContext(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
+        var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3",
+                                                             config.port())
+                                           .withMaxContentLength(config.maxRequestSize());
+        var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
+                                                                         quicSslContext,
+                                                                         this::handleRequest,
+                                                                         wg))
+                                       .or(HttpServer.http3Server(serverConfig, quicSslContext, this::handleRequest));
+        return serverPromise.map(this::registerStartedH3Server)
+                            .onFailure(cause -> log.error("Failed to start App HTTP/3 server on port {}: {}",
+                                                          config.port(),
+                                                          cause.message()));
+    }
+
+    private void handleRequestWithAltSvc(org.pragmatica.http.server.RequestContext request,
+                                         org.pragmatica.http.server.ResponseWriter response) {
+        response.header("Alt-Svc", "h3=\":" + config.port() + "\"; ma=3600");
+        handleRequest(request, response);
+    }
+
     private HttpServerConfig buildServerConfig() {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http",
                                                              config.port())
-                                           .withMaxContentLength(MAX_CONTENT_LENGTH);
+                                           .withMaxContentLength(config.maxRequestSize());
         return tls.fold(() -> serverConfig, serverConfig::withTls);
     }
 
-    private Unit registerStartedServer(HttpServer server) {
+    private Unit registerStartedH1Server(HttpServer server) {
         serverRef.set(server);
-        log.info("App HTTP server started on port {}", server.port());
+        log.info("App HTTP server started on port {} (HTTP/1.1)", server.port());
+        return unit();
+    }
+
+    private Unit registerStartedH3Server(HttpServer server) {
+        h3ServerRef.set(server);
+        log.info("App HTTP server started on port {} (HTTP/3 QUIC)", server.port());
         return unit();
     }
 
     @Override
     public Promise<Unit> stop() {
-        return Option.option(serverRef.get())
-                     .fold(() -> Promise.success(unit()),
-                           server -> server.stop()
-                                           .onSuccessRun(() -> log.info("App HTTP server stopped")));
+        var h1Stop = Option.option(serverRef.get())
+                           .map(server -> server.stop()
+                                                .onSuccessRun(() -> log.info("App HTTP/1.1 server stopped")))
+                           .or(Promise.success(unit()));
+        var h3Stop = Option.option(h3ServerRef.get())
+                           .map(server -> server.stop()
+                                                .onSuccessRun(() -> log.info("App HTTP/3 server stopped")))
+                           .or(Promise.success(unit()));
+        return h1Stop.flatMap(_ -> h3Stop);
     }
 
     @Override
@@ -380,9 +444,11 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     private RouteSecurityPolicy resolveSecurityPolicy() {
-        return config.securityEnabled()
-               ? RouteSecurityPolicy.apiKeyRequired()
-               : RouteSecurityPolicy.publicRoute();
+        return switch (config.securityMode()) {
+            case API_KEY -> RouteSecurityPolicy.apiKeyRequired();
+            case JWT -> RouteSecurityPolicy.bearerTokenRequired();
+            case NONE -> RouteSecurityPolicy.publicRoute();
+        };
     }
 
     @SuppressWarnings("JBCT-RET-01")
@@ -399,17 +465,19 @@ class AppHttpServerImpl implements AppHttpServer {
         if (config.securityEnabled()) {
             AuditLog.authSuccess(requestId, principal, method, path);
         }
-        InvocationContext.runWithContext(requestId,
-                                         principal,
-                                         selfNodeId.id(),
-                                         0,
-                                         true,
-                                         () -> dispatchToRoute(request,
-                                                               response,
-                                                               routeTable,
-                                                               method,
-                                                               normalizedPath,
-                                                               requestId));
+        ScopedValue.where(SecurityContextHolder.scopedValue(),
+                          securityContext)
+                   .run(() -> InvocationContext.runWithContext(requestId,
+                                                               principal,
+                                                               selfNodeId.id(),
+                                                               0,
+                                                               true,
+                                                               () -> dispatchToRoute(request,
+                                                                                     response,
+                                                                                     routeTable,
+                                                                                     method,
+                                                                                     normalizedPath,
+                                                                                     requestId)));
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Dispatcher method — decomposition would scatter routing logic
@@ -544,16 +612,39 @@ class AppHttpServerImpl implements AppHttpServer {
                                        String path,
                                        String requestId,
                                        String method) {
-        var status = switch (cause) {
-            case SecurityError.MissingCredentials _ -> HttpStatus.UNAUTHORIZED;
-            case SecurityError.InvalidCredentials _ -> HttpStatus.FORBIDDEN;
-            default -> HttpStatus.UNAUTHORIZED;
-        };
+        var statusAndMessage = mapSecurityError(cause);
         AuditLog.authFailure(requestId, cause.message(), method, path);
-        if (status == HttpStatus.UNAUTHORIZED) {
-            response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
+        if (statusAndMessage.status() == HttpStatus.UNAUTHORIZED) {
+            addAuthenticateHeader(response);
         }
-        sendProblem(response, status, cause.message(), path, requestId);
+        sendProblem(response, statusAndMessage.status(), statusAndMessage.clientMessage(), path, requestId);
+    }
+
+    private record SecurityStatusMessage(HttpStatus status, String clientMessage) {}
+
+    private static SecurityStatusMessage mapSecurityError(Cause cause) {
+        return switch (cause) {
+            case SecurityError.MissingCredentials _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
+                                                                                 "Authentication required");
+            case SecurityError.TokenExpired _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Token expired");
+            case SecurityError.SignatureInvalid _, SecurityError.IssuerMismatch _,
+            SecurityError.AudienceMismatch _, SecurityError.KeyNotFound _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
+                                                                                                       "Invalid token");
+            case SecurityError.InvalidCredentials _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
+                                                                                 "Invalid credentials");
+            case SecurityError.JwksFetchFailed _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
+                                                                              "Authentication temporarily unavailable");
+            default -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Authentication failed");
+        };
+    }
+
+    private void addAuthenticateHeader(ResponseWriter response) {
+        var authScheme = switch (config.securityMode()) {
+            case JWT -> "Bearer realm=\"Aether\"";
+            case API_KEY -> "ApiKey realm=\"Aether\"";
+            case NONE -> "ApiKey realm=\"Aether\"";
+        };
+        response.header("WWW-Authenticate", authScheme);
     }
 
     private Option<HttpNodeRouteKey> findMatchingLocalRoute(Set<HttpNodeRouteKey> localRoutes,
@@ -585,8 +676,8 @@ class AppHttpServerImpl implements AppHttpServer {
         normalizedPath.startsWith(normalizedPrefix));
     }
 
+    @SuppressWarnings("JBCT-NULL-01") // Adapter boundary: path may be null from external HTTP request parsing
     private String normalizePath(String path) {
-        // Boundary guard: path may be null from external HTTP request parsing
         if (path == null || path.isBlank()) {
             return "/";
         }
@@ -754,15 +845,25 @@ class AppHttpServerImpl implements AppHttpServer {
         var ser = serializer.unwrap();
         var network = clusterNetwork.unwrap();
         // Deserialize the request context
-        HttpRequestContext context;
-        try{
-            context = des.decode(request.requestData());
-        } catch (Exception e) {
-            log.error("Failed to deserialize forward request [{}]: {}", request.requestId(), e.getMessage());
-            sendForwardError(network, request, "Deserialization failed: " + e.getMessage());
-            return;
-        }
-        // Find local router for this request
+        Result.<HttpRequestContext, byte[]> lift1(des::decode,
+                                                  request.requestData())
+              .onFailure(cause -> logAndSendForwardError(network, request, "Deserialization failed", cause))
+              .onSuccess(context -> dispatchForwardedRequest(context, request, network, ser));
+    }
+
+    private void logAndSendForwardError(ClusterNetwork network,
+                                        HttpForwardRequest request,
+                                        String prefix,
+                                        Cause cause) {
+        log.error("{} [{}]: {}", prefix, request.requestId(), cause.message());
+        sendForwardError(network, request, prefix + ": " + cause.message());
+    }
+
+    @SuppressWarnings("JBCT-RET-01")
+    private void dispatchForwardedRequest(HttpRequestContext context,
+                                          HttpForwardRequest request,
+                                          ClusterNetwork network,
+                                          Serializer ser) {
         var method = context.method();
         var path = context.path();
         var normalizedPath = normalizePath(path);
@@ -772,10 +873,9 @@ class AppHttpServerImpl implements AppHttpServer {
             sendForwardError(network, request, "Route not found locally");
             return;
         }
-        // Handle the request locally with metrics
         var routeInfo = resolveRouteInfo(method, normalizedPath);
         var startTime = System.nanoTime();
-        routeInfo.onPresent(info -> recordMetricsStart(info));
+        routeInfo.onPresent(this::recordMetricsStart);
         routerOpt.unwrap()
                  .handle(context)
                  .onSuccess(responseData -> handleForwardSuccess(network,
@@ -823,19 +923,21 @@ class AppHttpServerImpl implements AppHttpServer {
                                     HttpForwardRequest request,
                                     Serializer ser,
                                     HttpResponseData responseData) {
-        try{
-            var payload = ser.encode(responseData);
-            var forwardResponse = new HttpForwardResponse(selfNodeId,
-                                                          request.correlationId(),
-                                                          request.requestId(),
-                                                          true,
-                                                          payload);
-            network.send(request.sender(), forwardResponse);
-            log.trace("Sent forward success response [{}]", request.requestId());
-        } catch (Exception e) {
-            log.error("Failed to serialize forward response [{}]: {}", request.requestId(), e.getMessage());
-            sendForwardError(network, request, "Response serialization failed");
-        }
+        Result.lift1(ser::encode, responseData)
+              .onSuccess(payload -> sendForwardPayload(network, request, payload))
+              .onFailure(cause -> logAndSendForwardError(network, request, "Response serialization failed", cause));
+    }
+
+    private void sendForwardPayload(ClusterNetwork network,
+                                    HttpForwardRequest request,
+                                    byte[] payload) {
+        var forwardResponse = new HttpForwardResponse(selfNodeId,
+                                                      request.correlationId(),
+                                                      request.requestId(),
+                                                      true,
+                                                      payload);
+        network.send(request.sender(), forwardResponse);
+        log.trace("Sent forward success response [{}]", request.requestId());
     }
 
     private void sendForwardError(ClusterNetwork network,

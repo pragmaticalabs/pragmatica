@@ -154,7 +154,10 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
     // ---- Internal ----
     private Result<SwimTransport> createTransport(Option<EventLoopGroup> sharedEventLoopGroup) {
-        return sharedEventLoopGroup.map(group -> NettySwimTransport.nettySwimTransport(serializer, deserializer, encryptor, group))
+        return sharedEventLoopGroup.map(group -> NettySwimTransport.nettySwimTransport(serializer,
+                                                                                       deserializer,
+                                                                                       encryptor,
+                                                                                       group))
                                    .or(NettySwimTransport.nettySwimTransport(serializer, deserializer, encryptor));
     }
 

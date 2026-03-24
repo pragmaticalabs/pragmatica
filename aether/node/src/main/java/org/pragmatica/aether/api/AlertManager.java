@@ -174,6 +174,14 @@ public class AlertManager {
     private void resolveAlert(String alertKey, String metric, NodeId nodeId, double value, ActiveAlert alert) {
         activeAlerts.remove(alertKey);
         addToHistory(metric, nodeId, value, alert.severity, "RESOLVED");
+        broadcastAlertResolved(metric, nodeId);
+    }
+
+    private void broadcastAlertResolved(String metric, NodeId nodeId) {
+        var message = "{\"type\":\"ALERT_RESOLVED\",\"timestamp\":" + System.currentTimeMillis()
+                      + ",\"data\":{\"metric\":\"" + escapeJson(metric) + "\",\"nodeId\":\"" + escapeJson(nodeId.id())
+                      + "\",\"resolvedAt\":" + System.currentTimeMillis() + "}}";
+        DashboardWebSocketHandler.broadcast(message);
     }
 
     private Option<String> handleAlertValue(String alertKey,
@@ -243,6 +251,7 @@ public class AlertManager {
     }
 
     /// Get all thresholds as JSON.
+    @SuppressWarnings("JBCT-PAT-01") // Manual JSON serialization — intentional to avoid Jackson dependency in alert path
     public String thresholdsAsJson() {
         var sb = new StringBuilder();
         sb.append("{");
@@ -265,6 +274,7 @@ public class AlertManager {
     }
 
     /// Get active alerts as JSON.
+    @SuppressWarnings("JBCT-PAT-01") // Manual JSON serialization — intentional to avoid Jackson dependency in alert path
     public String activeAlertsAsJson() {
         var sb = new StringBuilder();
         sb.append("[");
@@ -297,6 +307,7 @@ public class AlertManager {
     }
 
     /// Get alert history as JSON.
+    @SuppressWarnings("JBCT-PAT-01") // Manual JSON serialization — intentional to avoid Jackson dependency in alert path
     public String alertHistoryAsJson() {
         var sb = new StringBuilder();
         sb.append("[");
@@ -396,6 +407,7 @@ public class AlertManager {
     }
 
     /// Get slice failure alerts as JSON.
+    @SuppressWarnings("JBCT-PAT-01") // Manual JSON serialization — intentional to avoid Jackson dependency in alert path
     public String sliceFailureAlertsAsJson() {
         var sb = new StringBuilder();
         sb.append("[");
@@ -438,6 +450,7 @@ public class AlertManager {
     }
 
     /// Get slice failure history as JSON.
+    @SuppressWarnings("JBCT-PAT-01") // Manual JSON serialization — intentional to avoid Jackson dependency in alert path
     public String sliceFailureHistoryAsJson() {
         var sb = new StringBuilder();
         sb.append("[");
@@ -478,7 +491,12 @@ public class AlertManager {
     }
 
     private String escapeJson(String s) {
-        if (s == null) return "";
+        return Option.option(s)
+                     .map(AlertManager::doEscapeJson)
+                     .or("");
+    }
+
+    private static String doEscapeJson(String s) {
         return s.replace("\\", "\\\\")
                 .replace("\"", "\\\"")
                 .replace("\n", "\\n")

@@ -16,9 +16,10 @@ import java.util.List;
 /// 4. Handles errors based on ErrorStrategy (RETRY, SKIP, STALL)
 /// 5. Records failed events to a dead-letter handler
 public interface StreamConsumerRuntime extends AutoCloseable {
-
     /// Register a consumer for a stream partition.
-    Result<Unit> subscribe(String streamName, int partition, ConsumerConfig config,
+    Result<Unit> subscribe(String streamName,
+                           int partition,
+                           ConsumerConfig config,
                            ConsumerCallback callback);
 
     /// Unsubscribe a consumer group from a partition.
@@ -49,7 +50,7 @@ public interface StreamConsumerRuntime extends AutoCloseable {
 
     /// Create a new consumer runtime with a custom dead-letter handler.
     static StreamConsumerRuntime streamConsumerRuntime(StreamPartitionManager partitionManager,
-                                                      DeadLetterHandler deadLetterHandler) {
+                                                       DeadLetterHandler deadLetterHandler) {
         return new ConsumerRuntimeState(partitionManager, deadLetterHandler);
     }
 }

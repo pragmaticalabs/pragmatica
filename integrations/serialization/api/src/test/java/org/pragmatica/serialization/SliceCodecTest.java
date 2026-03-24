@@ -290,4 +290,53 @@ class SliceCodecTest {
             }
         }
     }
+
+    @Nested
+    class RequiredTypesValidationTests {
+
+        private static final int TEST_TAG = 200;
+
+        private static final TypeCodec<String> STRING_CODEC = new TypeCodec<>(
+            String.class, TEST_TAG,
+            (codec, buf, value) -> SliceCodec.writeString(buf, value),
+            (codec, buf) -> SliceCodec.readString(buf)
+        );
+
+        @Test
+        void validateRequiredTypes_registeredType_noError() {
+            var codec = sliceCodec(List.of(STRING_CODEC));
+
+            assertDoesNotThrow(() -> SliceCodec.validateRequiredTypes(codec, java.util.Set.of(String.class)));
+        }
+
+        @Test
+        void validateRequiredTypes_missingType_throwsException() {
+            var codec = sliceCodec(List.of(STRING_CODEC));
+
+            var ex = assertThrows(IllegalStateException.class,
+                () -> SliceCodec.validateRequiredTypes(codec, java.util.Set.of(Integer.class)));
+
+            assertTrue(ex.getMessage().contains("java.lang.Integer"));
+            assertTrue(ex.getMessage().contains("@CodecFor"));
+        }
+
+        @Test
+        void validateRequiredTypes_emptySet_noError() {
+            var codec = sliceCodec(List.of(STRING_CODEC));
+
+            assertDoesNotThrow(() -> SliceCodec.validateRequiredTypes(codec, java.util.Set.of()));
+        }
+
+        @Test
+        void sliceCodec_withRequiredTypes_validatesOnCreation() {
+            assertThrows(IllegalStateException.class,
+                () -> sliceCodec(null, List.of(STRING_CODEC), java.util.Set.of(Integer.class)));
+        }
+
+        @Test
+        void sliceCodec_withRequiredTypes_succeedsWhenAllRegistered() {
+            assertDoesNotThrow(
+                () -> sliceCodec(null, List.of(STRING_CODEC), java.util.Set.of(String.class)));
+        }
+    }
 }

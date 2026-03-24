@@ -17,6 +17,7 @@
 package org.pragmatica.http.server;
 
 import io.netty.channel.EventLoopGroup;
+import io.netty.handler.codec.quic.QuicSslContext;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -51,5 +52,33 @@ public interface HttpServer {
                                           EventLoopGroup bossGroup,
                                           EventLoopGroup workerGroup) {
         return NettyHttpServer.createShared(config, handler, bossGroup, workerGroup);
+    }
+
+    /// Create and start an HTTP/3 server over QUIC.
+    ///
+    /// @param config         server configuration
+    /// @param quicSslContext QUIC-specific SSL context (TLS 1.3 required for HTTP/3)
+    /// @param handler        request handler (shared with HTTP/1.1 pipeline)
+    /// @return promise of the running HTTP/3 server
+    static Promise<HttpServer> http3Server(HttpServerConfig config,
+                                           QuicSslContext quicSslContext,
+                                           BiConsumer<RequestContext, ResponseWriter> handler) {
+        return Http3Server.create(config, quicSslContext, handler)
+                          .map(Http3ServerAdapter::new);
+    }
+
+    /// Create and start an HTTP/3 server using an externally managed event loop group.
+    ///
+    /// @param config         server configuration
+    /// @param quicSslContext QUIC-specific SSL context (TLS 1.3 required for HTTP/3)
+    /// @param handler        request handler (shared with HTTP/1.1 pipeline)
+    /// @param workerGroup    external event loop group
+    /// @return promise of the running HTTP/3 server
+    static Promise<HttpServer> http3Server(HttpServerConfig config,
+                                           QuicSslContext quicSslContext,
+                                           BiConsumer<RequestContext, ResponseWriter> handler,
+                                           EventLoopGroup workerGroup) {
+        return Http3Server.createShared(config, quicSslContext, handler, workerGroup)
+                          .map(Http3ServerAdapter::new);
     }
 }

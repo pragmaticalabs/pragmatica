@@ -2,6 +2,7 @@ package org.pragmatica.aether.slice.blueprint;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
+import org.pragmatica.serialization.CodecFor;
 
 import java.util.List;
 import java.util.Map;
@@ -13,6 +14,7 @@ import java.util.Map;
 /// @param resourcesConfig optional raw TOML content from resources.toml
 /// @param schemaMigrations schema migration scripts keyed by datasource name
 @Codec
+@CodecFor(Blueprint.class)
 public record BlueprintArtifact(Blueprint blueprint,
                                 Option<String> resourcesConfig,
                                 Map<String, List<MigrationEntry>> schemaMigrations) {

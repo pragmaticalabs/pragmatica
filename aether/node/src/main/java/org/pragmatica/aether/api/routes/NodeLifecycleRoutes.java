@@ -171,8 +171,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
         AuditLog.nodeLifecycleTransition(result.nodeId(), result.state(), result.success(), result.message());
         nodeSupplier.get()
                     .route(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged(result.nodeId(),
-                                                                                       newState.name(),
-                                                                                       "api"));
+                                                                                      newState.name(),
+                                                                                      "api"));
     }
 
     private Promise<List<Long>> applyLifecycleCommand(NodeId nodeId,

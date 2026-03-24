@@ -1,5 +1,4 @@
 package org.pragmatica.aether.slice;
-
 /// Marker type for stream subscription annotations.
 ///
 /// Used with `@ResourceQualifier` on method annotations to declare stream consumers.

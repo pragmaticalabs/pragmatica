@@ -24,7 +24,9 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 public interface SliceCodec extends Serializer, Deserializer {
 
@@ -195,6 +197,39 @@ public interface SliceCodec extends Serializer, Deserializer {
         }
 
         return new CodecHolder(Map.copyOf(byClass), tagArray);
+    }
+
+    /// Build a codec registry and validate that all required types have registered codecs.
+    /// Required types come from @CodecFor declarations — the processor generates the set,
+    /// and this method verifies at startup that manual codecs were actually provided.
+    static SliceCodec sliceCodec(SliceCodec parent, List<TypeCodec<?>> codecs, Set<Class<?>> requiredTypes) {
+        var result = sliceCodec(parent, codecs);
+        validateRequiredTypes(result, requiredTypes);
+        return result;
+    }
+
+    /// Verify that all required types from @CodecFor declarations have registered codecs.
+    /// Call this at startup after building the full codec registry.
+    static void validateRequiredTypes(SliceCodec codec, Set<Class<?>> requiredTypes) {
+        var missing = requiredTypes.stream()
+                                   .filter(type -> !hasCodecFor(codec, type))
+                                   .toList();
+
+        if (!missing.isEmpty()) {
+            throw new IllegalStateException(
+                "Codecs declared via @CodecFor but not registered: "
+                    + missing.stream().map(Class::getName).collect(Collectors.joining(", "))
+                    + ". Register manual codecs for these types.");
+        }
+    }
+
+    private static boolean hasCodecFor(SliceCodec codec, Class<?> type) {
+        try {
+            codec.lookupByClass(type);
+            return true;
+        } catch (IllegalArgumentException _) {
+            return false;
+        }
     }
 
     private static void copyTagArray(TypeCodec<?>[] source, TypeCodec<?>[] target) {

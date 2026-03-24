@@ -7,6 +7,8 @@ document.addEventListener('alpine:init', function() {
             sparklines: {},
             charts: {},
             chartsInitialized: false,
+            lastNodeCount: 0,
+            lastPerNode: false,
             requestFilters: { artifact: '', method: '', status: '' },
             invocationSort: { field: 'count', dir: -1 },
             newThreshold: { metric: '', warning: 0.7, critical: 0.9 },
@@ -34,10 +36,15 @@ document.addEventListener('alpine:init', function() {
                     self.initSparklines();
                 });
 
-                // Lazy-init charts when metrics tab is first shown
+                // Initialize/reinitialize charts when metrics tab is shown.
+                // Bug 1 fix: Always destroy and recreate charts when entering
+                // the metrics tab. On page reload, old uPlot instances are
+                // orphaned and DOM containers are recreated, so we must build
+                // fresh chart instances every time the tab becomes visible.
                 this.$watch('currentPage', function(page) {
-                    if (page === 'metrics' && !self.chartsInitialized) {
+                    if (page === 'metrics') {
                         self.$nextTick(function() {
+                            self.destroyCharts();
                             self.initCharts();
                             self.chartsInitialized = true;
                             self.updateCharts();
@@ -45,10 +52,36 @@ document.addEventListener('alpine:init', function() {
                     }
                 });
 
-                // Resize handler for charts
-                window.addEventListener('resize', function() {
-                    self.resizeCharts();
+                // Reset invocation sort state when entering Requests page
+                this.$watch('currentPage', function(page) {
+                    if (page === 'requests') {
+                        InvocationTable.sortField = 'count';
+                        InvocationTable.sortDir = -1;
+                        InvocationTable.expandedRow = null;
+                        self.invocationSort.field = 'count';
+                        self.invocationSort.dir = -1;
+                    }
                 });
+
+                // Bug 2 fix: Watch per-node toggle and rebuild charts with
+                // the appropriate series configuration.
+                this.$watch('$store.metrics.perNode', function() {
+                    if (self.currentPage === 'metrics' && self.chartsInitialized) {
+                        self.$nextTick(function() {
+                            self.destroyCharts();
+                            self.initCharts();
+                            self.updateCharts();
+                        });
+                    }
+                });
+
+                // Resize handler for charts (guarded against accumulation)
+                if (!window._aetherResizeAttached) {
+                    window._aetherResizeAttached = true;
+                    window.addEventListener('resize', function() {
+                        self.resizeCharts();
+                    });
+                }
             },
 
             onWsMessage(name, data) {
@@ -64,16 +97,28 @@ document.addEventListener('alpine:init', function() {
                         Alpine.store('deployments').updateFromWsDashboard(data.data);
                         Alpine.store('topology').updateFromWsDashboard(data.data);
                         Alpine.store('alerts').updateFromInitialState(data.data);
+                        Alpine.store('schema').updateFromWsDashboard(data.data);
+                        Alpine.store('governors').updateFromWsDashboard(data.data);
+                        Alpine.store('strategies').updateFromWsDashboard(data.data);
+                        Alpine.store('streams').updateFromWsDashboard(data.data);
+                        // Issue 13: Seed initial history point so charts are not blank
+                        Alpine.store('metrics').seedFromInitialState(data.data);
                     } else if (data.type === 'METRICS_UPDATE' && data.data) {
                         Alpine.store('cluster').updateFromWsDashboard(data.data);
                         Alpine.store('metrics').updateFromWsDashboard(data.data);
                         Alpine.store('deployments').updateFromWsDashboard(data.data);
                         Alpine.store('topology').updateFromWsDashboard(data.data);
+                        Alpine.store('schema').updateFromWsDashboard(data.data);
+                        Alpine.store('governors').updateFromWsDashboard(data.data);
+                        Alpine.store('strategies').updateFromWsDashboard(data.data);
+                        Alpine.store('streams').updateFromWsDashboard(data.data);
                         Alpine.store('metrics').updateNodeHistory(Alpine.store('cluster').nodes);
                         this.updateSparklines();
                         this.updateCharts();
                     } else if (data.type === 'ALERT' || data.type === 'ALERT_RESOLVED') {
-                        Alpine.store('alerts').updateFromWs(data);
+                        Alpine.store('alerts').updateFromWs(data.data || data);
+                    } else if (data.type === 'HISTORY') {
+                        Alpine.store('alerts').updateFromWsHistory(data.data || data);
                     }
                 }
                 if (name === 'events') {
@@ -113,9 +158,19 @@ document.addEventListener('alpine:init', function() {
                 Alpine.store('alerts').refresh();
                 Alpine.store('alerts').refreshThresholds();
                 Alpine.store('topology').refresh();
+                Alpine.store('schema').refresh();
+                Alpine.store('governors').refresh();
+                Alpine.store('strategies').refresh();
+                Alpine.store('streams').refresh();
             },
 
             initSparklines() {
+                // Issue 10: Destroy existing sparkline instances before reinit
+                var self = this;
+                Object.keys(this.sparklines).forEach(function(key) {
+                    Sparkline.destroy(self.sparklines[key]);
+                });
+                this.sparklines = {};
                 var refs = this.$refs;
                 if (refs.sparkRps) this.sparklines.rps = Sparkline.create(refs.sparkRps, 'rgba(88,166,255,0.8)');
                 if (refs.sparkP50) this.sparklines.p50 = Sparkline.create(refs.sparkP50, 'rgba(63,185,80,0.8)');
@@ -134,18 +189,39 @@ document.addEventListener('alpine:init', function() {
                 if (this.sparklines.nodes) Sparkline.update(this.sparklines.nodes, c.nodes.length);
             },
 
+            destroyCharts() {
+                var self = this;
+                Object.keys(this.charts).forEach(function(key) {
+                    TimeSeries.destroy(self.charts[key]);
+                });
+                this.charts = {};
+                // Clear container DOM so uPlot can create fresh canvases
+                var refs = this.$refs;
+                ['chartRps', 'chartLatency', 'chartSuccess', 'chartCpu', 'chartHeap'].forEach(function(name) {
+                    if (refs[name]) refs[name].innerHTML = '';
+                });
+            },
+
             initCharts() {
                 var refs = this.$refs;
                 var nodes = Alpine.store('cluster').nodes;
                 var nodeNames = nodes.map(function(n) { return n.nodeId; });
+                var perNode = Alpine.store('metrics').perNode;
+                this.lastNodeCount = nodeNames.length;
+                this.lastPerNode = perNode;
+
                 if (refs.chartRps) {
-                    this.charts.rps = TimeSeries.create(refs.chartRps, { series: ['RPS'], height: 200, fill: true, yLabel: 'req/s' });
+                    // Bug 2 fix: In per-node mode, create one series per node for RPS
+                    var rpsSeries = perNode && nodeNames.length > 0 ? nodeNames : ['RPS'];
+                    this.charts.rps = TimeSeries.create(refs.chartRps, { series: rpsSeries, height: 200, fill: !perNode, yLabel: 'req/s' });
                 }
                 if (refs.chartLatency) {
-                    this.charts.latency = TimeSeries.create(refs.chartLatency, { series: ['P50', 'P95', 'P99'], height: 180, yLabel: 'ms' });
+                    var latSeries = perNode && nodeNames.length > 0 ? nodeNames : ['P50', 'P95', 'P99'];
+                    this.charts.latency = TimeSeries.create(refs.chartLatency, { series: latSeries, height: 180, yLabel: 'ms' });
                 }
                 if (refs.chartSuccess) {
-                    this.charts.success = TimeSeries.create(refs.chartSuccess, { series: ['Success Rate'], height: 180, fill: true, yLabel: '%' });
+                    var sucSeries = perNode && nodeNames.length > 0 ? nodeNames : ['Success Rate'];
+                    this.charts.success = TimeSeries.create(refs.chartSuccess, { series: sucSeries, height: 180, fill: !perNode, yLabel: '%', yRange: [0, 105] });
                 }
                 if (refs.chartCpu && nodeNames.length > 0) {
                     this.charts.cpu = TimeSeries.create(refs.chartCpu, { series: nodeNames, height: 180, yLabel: '%' });
@@ -156,28 +232,66 @@ document.addEventListener('alpine:init', function() {
             },
 
             updateCharts() {
-                var h = Alpine.store('metrics').history;
+                if (!this.chartsInitialized) return;
+
+                var m = Alpine.store('metrics');
+                var h = m.history;
                 if (h.timestamps.length < 2) return;
 
+                var nodes = Alpine.store('cluster').nodes;
+                var perNode = m.perNode;
+
+                // Bug 1 fix: If node count changed since charts were created,
+                // rebuild charts so CPU/heap (and per-node) series match.
+                if (this.currentPage === 'metrics' && (nodes.length !== this.lastNodeCount || perNode !== this.lastPerNode)) {
+                    var self = this;
+                    this.$nextTick(function() {
+                        self.destroyCharts();
+                        self.initCharts();
+                        self.updateChartsData(nodes, h, perNode);
+                    });
+                    return;
+                }
+
+                this.updateChartsData(nodes, h, perNode);
+            },
+
+            updateChartsData(nodes, h, perNode) {
                 if (this.charts.rps) {
-                    TimeSeries.updateData(this.charts.rps, h.timestamps, [h.rps]);
+                    if (perNode && nodes.length > 0) {
+                        // Bug 2 fix: Show per-node RPS series
+                        var rpsPerNode = nodes.map(function(n) { return h.nodeRps[n.nodeId] || []; });
+                        TimeSeries.updateData(this.charts.rps, h.timestamps, rpsPerNode);
+                    } else {
+                        TimeSeries.updateData(this.charts.rps, h.timestamps, [h.rps]);
+                    }
                 }
                 if (this.charts.latency) {
-                    TimeSeries.updateData(this.charts.latency, h.timestamps, [h.p50, h.p95, h.p99]);
+                    if (perNode && nodes.length > 0) {
+                        var latPerNode = nodes.map(function(n) { return h.nodeLatency[n.nodeId] || []; });
+                        TimeSeries.updateData(this.charts.latency, h.timestamps, latPerNode);
+                    } else {
+                        TimeSeries.updateData(this.charts.latency, h.timestamps, [h.p50, h.p95, h.p99]);
+                    }
                 }
                 if (this.charts.success) {
-                    TimeSeries.updateData(this.charts.success, h.timestamps, [h.successRate.map(function(r) { return r * 100; })]);
+                    if (perNode && nodes.length > 0) {
+                        var sucPerNode = nodes.map(function(n) {
+                            return (h.nodeSuccessRate[n.nodeId] || []).map(function(r) { return r * 100; });
+                        });
+                        TimeSeries.updateData(this.charts.success, h.timestamps, sucPerNode);
+                    } else {
+                        TimeSeries.updateData(this.charts.success, h.timestamps, [h.successRate.map(function(r) { return r * 100; })]);
+                    }
                 }
                 if (this.charts.cpu) {
-                    var nodes = Alpine.store('cluster').nodes;
                     var cpuSeries = nodes.map(function(n) {
                         return (h.cpu[n.nodeId] || []).map(function(v) { return Math.round(v * 100); });
                     });
                     if (cpuSeries.length > 0) TimeSeries.updateData(this.charts.cpu, h.timestamps, cpuSeries);
                 }
                 if (this.charts.heap) {
-                    var nodes2 = Alpine.store('cluster').nodes;
-                    var heapSeries = nodes2.map(function(n) { return h.heap[n.nodeId] || []; });
+                    var heapSeries = nodes.map(function(n) { return h.heap[n.nodeId] || []; });
                     if (heapSeries.length > 0) TimeSeries.updateData(this.charts.heap, h.timestamps, heapSeries);
                 }
             },
@@ -206,6 +320,7 @@ document.addEventListener('alpine:init', function() {
             formatLatency(ms) { return Formatters.latency(ms); },
             formatPercent(r) { return Formatters.percent(r); },
             formatTime(t) { return Formatters.time(t); },
+            formatBytes(b) { return Formatters.bytes(b); },
 
             avgCpu() {
                 var nodes = Alpine.store('cluster').nodes;

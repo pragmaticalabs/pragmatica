@@ -35,11 +35,12 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -184,32 +185,40 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private Promise<Unit> runMigration(String datasourceName, SchemaVersionValue value) {
         var startTime = System.currentTimeMillis();
         emitMigrationStarted(datasourceName, value);
-        return updateStatus(datasourceName, value, SchemaStatus.MIGRATING)
-                           .flatMap(_ -> resolveAndParseMigrations(datasourceName, value))
+        return updateStatus(datasourceName, value, SchemaStatus.MIGRATING).flatMap(_ -> resolveAndParseMigrations(datasourceName,
+                                                                                                                  value))
                            .flatMap(_ -> markCompleted(datasourceName, value, startTime))
                            .onFailure(cause -> handleMigrationFailure(datasourceName, value, cause));
     }
 
     private void emitMigrationStarted(String datasourceName, SchemaVersionValue value) {
-        var artifactCoords = Option.option(value.artifactCoords()).or("");
+        var artifactCoords = Option.option(value.artifactCoords())
+                                   .or("");
         AuditLog.schemaMigrationStarted(datasourceName, artifactCoords, self.id());
         router.onPresent(r -> r.route(MigrationStarted.migrationStarted(datasourceName, artifactCoords, self)));
     }
 
-    private void emitMigrationCompleted(String datasourceName, SchemaVersionValue value,
-                                        int appliedCount, int currentVersion, long durationMs) {
-        var artifactCoords = Option.option(value.artifactCoords()).or("");
+    private void emitMigrationCompleted(String datasourceName,
+                                        SchemaVersionValue value,
+                                        int appliedCount,
+                                        int currentVersion,
+                                        long durationMs) {
+        var artifactCoords = Option.option(value.artifactCoords())
+                                   .or("");
         AuditLog.schemaMigrationCompleted(datasourceName, artifactCoords, appliedCount, currentVersion, durationMs);
-        router.onPresent(r -> r.route(MigrationCompleted.migrationCompleted(datasourceName, artifactCoords,
-                                                                             appliedCount, currentVersion,
-                                                                             durationMs, self)));
+        router.onPresent(r -> r.route(MigrationCompleted.migrationCompleted(datasourceName,
+                                                                            artifactCoords,
+                                                                            appliedCount,
+                                                                            currentVersion,
+                                                                            durationMs,
+                                                                            self)));
     }
 
     private void handleMigrationFailure(String datasourceName, SchemaVersionValue value, Cause cause) {
         var classification = classifyFailure(cause);
         var attemptNumber = value.attemptCount() + 1;
-        var artifactCoords = Option.option(value.artifactCoords()).or("");
-
+        var artifactCoords = Option.option(value.artifactCoords())
+                                   .or("");
         if (classification == FailureClassification.TRANSIENT && attemptNumber < MAX_RETRIES) {
             scheduleRetry(datasourceName, value, cause, classification, attemptNumber, artifactCoords);
         } else {
@@ -217,39 +226,66 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         }
     }
 
-    private void scheduleRetry(String datasourceName, SchemaVersionValue value, Cause cause,
-                               FailureClassification classification, int attemptNumber, String artifactCoords) {
+    private void scheduleRetry(String datasourceName,
+                               SchemaVersionValue value,
+                               Cause cause,
+                               FailureClassification classification,
+                               int attemptNumber,
+                               String artifactCoords) {
         var nextRetryMs = calculateBackoff(attemptNumber);
-        var explanation = SchemaExplanationBuilder.buildFailedExplanation(datasourceName, artifactCoords,
-                                                                         classification, cause.message(),
-                                                                         List.of(), attemptNumber,
-                                                                         MAX_RETRIES, nextRetryMs);
+        var explanation = SchemaExplanationBuilder.buildFailedExplanation(datasourceName,
+                                                                          artifactCoords,
+                                                                          classification,
+                                                                          cause.message(),
+                                                                          List.of(),
+                                                                          attemptNumber,
+                                                                          MAX_RETRIES,
+                                                                          nextRetryMs);
         log.warn("Schema migration failed (transient) for '{}': {} — retrying in {}s (attempt {}/{})",
-                 datasourceName, cause.message(), nextRetryMs / 1000, attemptNumber, MAX_RETRIES);
-        var retryExplanation = SchemaExplanationBuilder.buildRetryingExplanation(datasourceName, artifactCoords,
-                                                                                 attemptNumber, nextRetryMs);
+                 datasourceName,
+                 cause.message(),
+                 nextRetryMs / 1000,
+                 attemptNumber,
+                 MAX_RETRIES);
+        var retryExplanation = SchemaExplanationBuilder.buildRetryingExplanation(datasourceName,
+                                                                                 artifactCoords,
+                                                                                 attemptNumber,
+                                                                                 nextRetryMs);
         AuditLog.schemaMigrationRetrying(datasourceName, artifactCoords, attemptNumber, nextRetryMs);
-        router.onPresent(r -> r.route(MigrationRetrying.migrationRetrying(datasourceName, artifactCoords,
-                                                                           attemptNumber, nextRetryMs,
-                                                                           retryExplanation)));
+        router.onPresent(r -> r.route(MigrationRetrying.migrationRetrying(datasourceName,
+                                                                          artifactCoords,
+                                                                          attemptNumber,
+                                                                          nextRetryMs,
+                                                                          retryExplanation)));
         updateStatusWithAttempt(datasourceName, value, SchemaStatus.PENDING, attemptNumber)
         .onFailure(c -> log.error("Failed to update retry status for '{}': {}", datasourceName, c.message()));
         SharedScheduler.schedule(() -> migrateIfNeeded(datasourceName), timeSpan(nextRetryMs).millis());
     }
 
-    private void emitPermanentFailure(String datasourceName, SchemaVersionValue value, Cause cause,
-                                      FailureClassification classification, int attemptNumber,
+    private void emitPermanentFailure(String datasourceName,
+                                      SchemaVersionValue value,
+                                      Cause cause,
+                                      FailureClassification classification,
+                                      int attemptNumber,
                                       String artifactCoords) {
-        var explanation = SchemaExplanationBuilder.buildFailedExplanation(datasourceName, artifactCoords,
-                                                                         classification, cause.message(),
-                                                                         List.of(), attemptNumber,
-                                                                         MAX_RETRIES, 0);
+        var explanation = SchemaExplanationBuilder.buildFailedExplanation(datasourceName,
+                                                                          artifactCoords,
+                                                                          classification,
+                                                                          cause.message(),
+                                                                          List.of(),
+                                                                          attemptNumber,
+                                                                          MAX_RETRIES,
+                                                                          0);
         log.error("Schema migration failed (permanent) for '{}': {}", datasourceName, explanation);
         AuditLog.schemaMigrationFailed(datasourceName, artifactCoords, classification.name(), cause.message());
-        router.onPresent(r -> r.route(MigrationFailed.migrationFailed(datasourceName, artifactCoords,
-                                                                       classification, cause.message(),
-                                                                       List.of(), attemptNumber,
-                                                                       MAX_RETRIES, explanation)));
+        router.onPresent(r -> r.route(MigrationFailed.migrationFailed(datasourceName,
+                                                                      artifactCoords,
+                                                                      classification,
+                                                                      cause.message(),
+                                                                      List.of(),
+                                                                      attemptNumber,
+                                                                      MAX_RETRIES,
+                                                                      explanation)));
         updateStatus(datasourceName, value, SchemaStatus.FAILED)
         .onFailure(c -> log.error("Failed to update status to FAILED for '{}': {}", datasourceName, c.message()));
     }
@@ -331,8 +367,10 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                       .mapToUnit();
     }
 
-    private Promise<Unit> updateStatusWithAttempt(String datasourceName, SchemaVersionValue current,
-                                                  SchemaStatus newStatus, int attemptCount) {
+    private Promise<Unit> updateStatusWithAttempt(String datasourceName,
+                                                  SchemaVersionValue current,
+                                                  SchemaStatus newStatus,
+                                                  int attemptCount) {
         var key = SchemaVersionKey.schemaVersionKey(datasourceName);
         var updated = SchemaVersionValue.schemaVersionValue(datasourceName,
                                                             current.currentVersion(),

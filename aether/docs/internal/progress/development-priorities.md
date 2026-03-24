@@ -263,7 +263,14 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
        - Dashboard visibility: show schema status per datasource, highlight FAILED with retry button
      - **Context:** RFC-0014 §3.3 defines the activation gate but not failure recovery. Current behavior: FAILED is terminal, slices stuck forever
 
-4. **Cloud Integration — Remaining Work (demand-driven)** — [SPI architecture spec](../../specs/cloud-integration-spi-spec.md)
+4. **QUIC-based Inter-Node Communication**
+     - Replace TCP-based cluster networking with QUIC for inter-node consensus, DHT, and HTTP forwarding
+     - Benefits: 0-RTT connection establishment, multiplexed streams, better cross-AZ performance, connection migration
+     - Infrastructure ready: Netty QUIC codec on classpath, Http3Server + NettyHttpOperations provide client/server HTTP/3
+     - Scope: replace `ClusterNetwork` TCP transport with QUIC transport, keep same message protocol
+     - Prerequisite: NettyHttpOperations (v0.23.1), Http3Server (v0.23.1)
+
+5. **Cloud Integration — Remaining Work (demand-driven)** — [SPI architecture spec](../../specs/cloud-integration-spi-spec.md)
    - **Core implementation complete** (v0.21.0): 4 providers (Hetzner, AWS, GCP, Azure) with compute, LB, discovery, secrets. See Completed section.
    - Spot pool support: core (on-demand) vs elastic (spot/preemptible) pools
    - LB provider overrides: health check config, weighted routing sync, TLS termination

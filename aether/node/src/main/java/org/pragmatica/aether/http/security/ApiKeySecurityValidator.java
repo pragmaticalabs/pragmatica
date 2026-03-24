@@ -8,8 +8,6 @@ import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -20,6 +18,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /// Validates API key authentication.
 ///
@@ -58,8 +59,14 @@ class ApiKeySecurityValidator implements SecurityValidator {
     }
 
     private Result<SecurityContext> checkApiKey(String apiKey) {
-        var hash = hashKey(apiKey);
-        return Option.option(keyEntries.get(hash))
+        var candidateHash = hashKey(apiKey).getBytes(StandardCharsets.UTF_8);
+        return Option.from(keyEntries.entrySet()
+                                     .stream()
+                                     .filter(e -> MessageDigest.isEqual(e.getKey()
+                                                                         .getBytes(StandardCharsets.UTF_8),
+                                                                        candidateHash))
+                                     .map(Map.Entry::getValue)
+                                     .findFirst())
                      .toResult(SecurityError.INVALID_API_KEY)
                      .flatMap(ApiKeySecurityValidator::toSecurityContext);
     }
@@ -80,8 +87,8 @@ class ApiKeySecurityValidator implements SecurityValidator {
             case "OPERATOR" -> AuthorizationRole.OPERATOR;
             case "VIEWER" -> AuthorizationRole.VIEWER;
             default -> {
-                log.warn("Unknown authorization role '{}', defaulting to ADMIN", value);
-                yield AuthorizationRole.ADMIN;
+                log.warn("Unknown authorization role '{}', defaulting to VIEWER", value);
+                yield AuthorizationRole.VIEWER;
             }
         };
     }

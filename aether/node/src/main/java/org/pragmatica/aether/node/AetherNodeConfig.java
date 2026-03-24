@@ -1,6 +1,7 @@
 package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.WorkerConfig;
@@ -54,8 +55,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param activationGated     If true, node waits for CDM activation instead of auto-activating
 /// @param timeouts            Centralized timeout configuration for all subsystems
 /// @param certificateProvider Certificate provider for mTLS and gossip encryption (empty to disable)
-/// @param workerConfig        Worker configuration for worker-role nodes (empty for core-only nodes)
-/// @param deploymentDefaults  Node-level deployment defaults (canary evaluation interval, default stages)
+/// @param workerConfig              Worker configuration for worker-role nodes (empty for core-only nodes)
+/// @param deploymentDefaults        Node-level deployment defaults (canary evaluation interval, default stages)
+/// @param managementHttpProtocol    HTTP protocol for management server (H1, H3, BOTH) — default H1
 public record AetherNodeConfig(TopologyConfig topology,
                                ProtocolConfig protocol,
                                SliceActionConfig sliceAction,
@@ -77,7 +79,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                TimeoutsConfig timeouts,
                                Option<CertificateProvider> certificateProvider,
                                Option<WorkerConfig> workerConfig,
-                               DeploymentDefaults deploymentDefaults) {
+                               DeploymentDefaults deploymentDefaults,
+                               HttpProtocol managementHttpProtocol) {
     /// Node-level deployment defaults applied when a blueprint does not specify its own configuration.
     ///
     /// @param canaryEvaluationIntervalMs interval between canary health evaluations in milliseconds
@@ -199,7 +202,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     TimeoutsConfig.timeoutsConfig(),
                                     Option.empty(),
                                     Option.empty(),
-                                    DeploymentDefaults.DEFAULT);
+                                    DeploymentDefaults.DEFAULT,
+                                    HttpProtocol.H1);
     }
 
     public static AetherNodeConfig testConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
@@ -230,7 +234,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     TimeoutsConfig.timeoutsConfig(),
                                     Option.empty(),
                                     Option.empty(),
-                                    DeploymentDefaults.DEFAULT);
+                                    DeploymentDefaults.DEFAULT,
+                                    HttpProtocol.H1);
     }
 
     /// Create a test configuration for Forge simulation environment.
@@ -263,7 +268,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     TimeoutsConfig.timeoutsConfig(),
                                     Option.empty(),
                                     Option.empty(),
-                                    DeploymentDefaults.DEFAULT);
+                                    DeploymentDefaults.DEFAULT,
+                                    HttpProtocol.H1);
     }
 
     /// Create a new configuration with TLS enabled for all components (HTTP and cluster).
@@ -301,7 +307,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     timeouts,
                                     certificateProvider,
                                     workerConfig,
-                                    deploymentDefaults);
+                                    deploymentDefaults,
+                                    managementHttpProtocol);
     }
 
     /// Create a new configuration with TTM enabled.
@@ -327,7 +334,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     timeouts,
                                     certificateProvider,
                                     workerConfig,
-                                    deploymentDefaults);
+                                    deploymentDefaults,
+                                    managementHttpProtocol);
     }
 
     /// Create a new configuration with rollback settings.
@@ -353,7 +361,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     timeouts,
                                     certificateProvider,
                                     workerConfig,
-                                    deploymentDefaults);
+                                    deploymentDefaults,
+                                    managementHttpProtocol);
     }
 
     /// Create a new configuration with different slice configuration.
@@ -379,7 +388,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     timeouts,
                                     certificateProvider,
                                     workerConfig,
-                                    deploymentDefaults);
+                                    deploymentDefaults,
+                                    managementHttpProtocol);
     }
 
     /// Create a new configuration with application HTTP server enabled.
@@ -405,7 +415,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     timeouts,
                                     certificateProvider,
                                     workerConfig,
-                                    deploymentDefaults);
+                                    deploymentDefaults,
+                                    managementHttpProtocol);
     }
 
     /// Create a new configuration with different controller configuration.
@@ -431,7 +442,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     timeouts,
                                     certificateProvider,
                                     workerConfig,
-                                    deploymentDefaults);
+                                    deploymentDefaults,
+                                    managementHttpProtocol);
     }
 
     /// Create a new configuration with a ConfigurationProvider for resource provisioning.
@@ -457,7 +469,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     timeouts,
                                     certificateProvider,
                                     workerConfig,
-                                    deploymentDefaults);
+                                    deploymentDefaults,
+                                    managementHttpProtocol);
     }
 
     /// Create a new configuration with an EnvironmentIntegration for compute/secrets.
@@ -483,7 +496,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     timeouts,
                                     certificateProvider,
                                     workerConfig,
-                                    deploymentDefaults);
+                                    deploymentDefaults,
+                                    managementHttpProtocol);
     }
 
     /// Create a new configuration with custom auto-heal settings.
@@ -509,7 +523,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     timeouts,
                                     certificateProvider,
                                     workerConfig,
-                                    deploymentDefaults);
+                                    deploymentDefaults,
+                                    managementHttpProtocol);
     }
 
     /// Create a new configuration with deployment atomicity mode.
@@ -535,7 +550,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     timeouts,
                                     certificateProvider,
                                     workerConfig,
-                                    deploymentDefaults);
+                                    deploymentDefaults,
+                                    managementHttpProtocol);
     }
 
     /// Create a new configuration with activation gating enabled or disabled.
@@ -561,7 +577,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     timeouts,
                                     certificateProvider,
                                     workerConfig,
-                                    deploymentDefaults);
+                                    deploymentDefaults,
+                                    managementHttpProtocol);
     }
 
     /// Create a new configuration with custom timeouts.
@@ -587,7 +604,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     newTimeouts,
                                     certificateProvider,
                                     workerConfig,
-                                    deploymentDefaults);
+                                    deploymentDefaults,
+                                    managementHttpProtocol);
     }
 
     /// Create a new configuration with a certificate provider for mTLS and gossip encryption.
@@ -613,7 +631,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     timeouts,
                                     Option.some(provider),
                                     workerConfig,
-                                    deploymentDefaults);
+                                    deploymentDefaults,
+                                    managementHttpProtocol);
     }
 
     /// Create a new configuration with worker configuration for worker-role nodes.
@@ -639,7 +658,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     timeouts,
                                     certificateProvider,
                                     Option.some(config),
-                                    deploymentDefaults);
+                                    deploymentDefaults,
+                                    managementHttpProtocol);
     }
 
     /// Create a new configuration with custom deployment defaults.
@@ -665,7 +685,35 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     timeouts,
                                     certificateProvider,
                                     workerConfig,
-                                    defaults);
+                                    defaults,
+                                    managementHttpProtocol);
+    }
+
+    /// Create a new configuration with management HTTP protocol.
+    public AetherNodeConfig withManagementHttpProtocol(HttpProtocol protocol) {
+        return new AetherNodeConfig(topology,
+                                    this.protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    timeouts,
+                                    certificateProvider,
+                                    workerConfig,
+                                    deploymentDefaults,
+                                    protocol);
     }
 
     public NodeId self() {

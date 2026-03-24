@@ -9,7 +9,9 @@ import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /// Generates per-type codec source files and module registries for @Codec-annotated types.
 public class CodecClassGenerator {
@@ -24,10 +26,92 @@ public class CodecClassGenerator {
 
     private record ClassifiedField(RecordComponentElement component, FieldKind kind, String codecRef) {}
 
+    /// Field whose type has no registered codec — detected at compile time to prevent runtime failures.
+    record UnregisteredField(String fieldName, String typeName) {}
+
+    /// Types with built-in codecs registered in FrameworkCodecs — safe for runtime dispatch.
+    private static final Set<String> BUILTIN_CODEC_TYPES = Set.of(
+        "java.util.List",
+        "java.util.Set",
+        "java.util.Map",
+        "org.pragmatica.lang.Option",
+        "org.pragmatica.lang.Option.Some",
+        "org.pragmatica.lang.Option.None",
+        "org.pragmatica.lang.Result",
+        "org.pragmatica.lang.Result.Success",
+        "org.pragmatica.lang.Result.Failure",
+        "org.pragmatica.lang.Unit",
+        "java.lang.Boolean",
+        "java.lang.Byte",
+        "java.lang.Short",
+        "java.lang.Character",
+        "java.lang.Integer",
+        "java.lang.Long",
+        "java.lang.Float",
+        "java.lang.Double",
+        "java.lang.String"
+    );
+
+    private final Set<String> knownCodecTypes = new HashSet<>();
+
     CodecClassGenerator(Filer filer, Elements elements, Types types) {
         this.filer = filer;
         this.elements = elements;
         this.types = types;
+    }
+
+    /// Register an external type declared via @CodecFor as having a known codec.
+    void addKnownCodecType(String qualifiedName) {
+        knownCodecTypes.add(qualifiedName);
+    }
+
+    /// Validates record fields and returns any fields with unregistered codec types.
+    /// Fields with type variables (generics) are excluded — they are resolved at runtime by the container codec.
+    List<UnregisteredField> validateRecordFields(TypeElement recordElement) {
+        var packageName = elements.getPackageOf(recordElement).getQualifiedName().toString();
+        var components = recordElement.getRecordComponents();
+        var classified = classifyComponents(components, packageName);
+
+        return classified.stream()
+                         .filter(f -> f.kind() == FieldKind.DISPATCHED)
+                         .filter(this::isUnsafeDispatch)
+                         .map(f -> new UnregisteredField(
+                             f.component().getSimpleName().toString(),
+                             f.component().asType().toString()))
+                         .toList();
+    }
+
+    private boolean isUnsafeDispatch(ClassifiedField field) {
+        var typeMirror = field.component().asType();
+
+        if (containsTypeVariable(typeMirror)) {
+            return false;
+        }
+
+        if (typeMirror instanceof DeclaredType declared) {
+            var element = (TypeElement) declared.asElement();
+            var qualifiedName = element.getQualifiedName().toString();
+
+            if (BUILTIN_CODEC_TYPES.contains(qualifiedName)) {
+                return false;
+            }
+            // Check if the raw type (or any supertype) has @Codec annotation
+            if (element.getAnnotation(org.pragmatica.serialization.Codec.class) != null) {
+                return false;
+            }
+            // Check if the type was declared via @CodecFor
+            if (knownCodecTypes.contains(qualifiedName)) {
+                return false;
+            }
+            return true;
+        }
+
+        // Array types: byte[] has built-in codec; other arrays are unsafe
+        if (typeMirror instanceof javax.lang.model.type.ArrayType arrayType) {
+            return arrayType.getComponentType().getKind() != TypeKind.BYTE;
+        }
+
+        return true;
     }
 
     boolean generateRecordCodec(TypeElement recordElement, int tag) {
@@ -95,7 +179,7 @@ public class CodecClassGenerator {
         }
     }
 
-    boolean generateRegistry(String packageName, String registryName, List<String> codecNames) {
+    boolean generateRegistry(String packageName, String registryName, List<String> codecNames, Set<String> requiredTypes) {
         var qualifiedName = packageName + "." + registryName;
 
         try {
@@ -104,27 +188,60 @@ public class CodecClassGenerator {
                 writer.println("package " + packageName + ";");
                 writer.println();
                 writer.println("import java.util.List;");
+                writer.println("import java.util.Set;");
                 writer.println("import org.pragmatica.serialization.SliceCodec.TypeCodec;");
                 writer.println();
                 writer.println("public interface " + registryName + " {");
-                writer.print("    List<TypeCodec<?>> CODECS = List.of(");
-
-                for (int i = 0; i < codecNames.size(); i++) {
-                    if (i > 0) {
-                        writer.print(",");
-                    }
-                    writer.println();
-                    writer.print("        " + codecNames.get(i) + ".CODEC");
-                }
-
+                writeCodecsList(writer, codecNames);
                 writer.println();
-                writer.println("    );");
+                writeRequiredTypes(writer, requiredTypes);
                 writer.println("}");
             }
             return true;
         } catch (IOException e) {
             return false;
         }
+    }
+
+    /// Overload for backward compatibility — no required types.
+    boolean generateRegistry(String packageName, String registryName, List<String> codecNames) {
+        return generateRegistry(packageName, registryName, codecNames, Set.of());
+    }
+
+    private static void writeCodecsList(PrintWriter writer, List<String> codecNames) {
+        writer.print("    List<TypeCodec<?>> CODECS = List.of(");
+
+        for (int i = 0; i < codecNames.size(); i++) {
+            if (i > 0) {
+                writer.print(",");
+            }
+            writer.println();
+            writer.print("        " + codecNames.get(i) + ".CODEC");
+        }
+
+        writer.println();
+        writer.println("    );");
+    }
+
+    private static void writeRequiredTypes(PrintWriter writer, Set<String> requiredTypes) {
+        if (requiredTypes.isEmpty()) {
+            writer.println("    Set<Class<?>> REQUIRED_TYPES = Set.of();");
+            return;
+        }
+
+        writer.print("    Set<Class<?>> REQUIRED_TYPES = Set.of(");
+        var typeList = requiredTypes.stream().sorted().toList();
+
+        for (int i = 0; i < typeList.size(); i++) {
+            if (i > 0) {
+                writer.print(",");
+            }
+            writer.println();
+            writer.print("        " + typeList.get(i) + ".class");
+        }
+
+        writer.println();
+        writer.println("    );");
     }
 
     // --- Field classification ---

@@ -15,7 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-@SupportedAnnotationTypes("org.pragmatica.serialization.Codec")
+@SupportedAnnotationTypes({"org.pragmatica.serialization.Codec", "org.pragmatica.serialization.CodecFor"})
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class CodecProcessor extends AbstractProcessor {
     private CodecClassGenerator generator;
@@ -29,15 +29,85 @@ public class CodecProcessor extends AbstractProcessor {
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
         Map<String, List<String>> packageToCodecNames = new LinkedHashMap<>();
+        Map<String, Set<String>> packageToRequiredTypes = new LinkedHashMap<>();
+
+        processCodecForAnnotations(roundEnv, packageToCodecNames, packageToRequiredTypes);
 
         for (var annotation : annotations) {
+            if ("org.pragmatica.serialization.CodecFor".equals(annotation.getQualifiedName().toString())) {
+                continue;
+            }
+
             for (var element : roundEnv.getElementsAnnotatedWith(annotation)) {
                 processAnnotatedElement(element, packageToCodecNames);
             }
         }
 
-        generateRegistries(packageToCodecNames);
+        generateRegistries(packageToCodecNames, packageToRequiredTypes);
         return true;
+    }
+
+    private void processCodecForAnnotations(RoundEnvironment roundEnv,
+                                             Map<String, List<String>> packageToCodecNames,
+                                             Map<String, Set<String>> packageToRequiredTypes) {
+        var codecForType = processingEnv.getElementUtils().getTypeElement("org.pragmatica.serialization.CodecFor");
+
+        if (codecForType == null) {
+            return;
+        }
+
+        for (var element : roundEnv.getElementsAnnotatedWith(codecForType)) {
+            processCodecForElement(element, packageToCodecNames, packageToRequiredTypes);
+        }
+    }
+
+    private void processCodecForElement(Element element,
+                                         Map<String, List<String>> packageToCodecNames,
+                                         Map<String, Set<String>> packageToRequiredTypes) {
+        var externalTypes = extractCodecForTypes(element);
+
+        for (var typeMirror : externalTypes) {
+            var typeElement = (TypeElement) processingEnv.getTypeUtils().asElement(typeMirror);
+
+            if (typeElement == null) {
+                continue;
+            }
+
+            var qualifiedName = typeElement.getQualifiedName().toString();
+            generator.addKnownCodecType(qualifiedName);
+
+            var packageName = processingEnv.getElementUtils()
+                                            .getPackageOf(element)
+                                            .getQualifiedName()
+                                            .toString();
+            packageToRequiredTypes.computeIfAbsent(packageName, _ -> new java.util.LinkedHashSet<>())
+                                  .add(qualifiedName);
+            // No codec generation — @CodecFor types require manual codecs.
+            // Runtime validation (REQUIRED_TYPES) catches missing implementations at startup.
+        }
+    }
+
+    private List<javax.lang.model.type.TypeMirror> extractCodecForTypes(Element element) {
+        var result = new ArrayList<javax.lang.model.type.TypeMirror>();
+
+        for (var mirror : element.getAnnotationMirrors()) {
+            if (!"org.pragmatica.serialization.CodecFor".equals(mirror.getAnnotationType().toString())) {
+                continue;
+            }
+
+            for (var entry : mirror.getElementValues().entrySet()) {
+                if ("value()".equals(entry.getKey().toString())) {
+                    @SuppressWarnings("unchecked")
+                    var values = (List<javax.lang.model.element.AnnotationValue>) entry.getValue().getValue();
+
+                    for (var value : values) {
+                        result.add((javax.lang.model.type.TypeMirror) value.getValue());
+                    }
+                }
+            }
+        }
+
+        return result;
     }
 
     private void processAnnotatedElement(Element element, Map<String, List<String>> packageToCodecNames) {
@@ -55,6 +125,10 @@ public class CodecProcessor extends AbstractProcessor {
     }
 
     private void processRecord(TypeElement element, Map<String, List<String>> packageToCodecNames) {
+        if (!validateRecordFields(element)) {
+            return;
+        }
+
         var tag = extractTag(element);
         var result = generator.generateRecordCodec(element, tag);
 
@@ -62,6 +136,19 @@ public class CodecProcessor extends AbstractProcessor {
             registerCodec(element, packageToCodecNames);
             note(element, "Generated codec: " + element.getSimpleName() + "Codec");
         }
+    }
+
+    private boolean validateRecordFields(TypeElement element) {
+        var unregistered = generator.validateRecordFields(element);
+        var recordName = element.getQualifiedName().toString();
+
+        for (var field : unregistered) {
+            error(element, "Field '" + field.fieldName() + "' of type '" + field.typeName()
+                + "' in @Codec record '" + recordName + "' has no codec. "
+                + "Add @Codec to " + field.typeName() + " or use a type with a registered codec.");
+        }
+
+        return unregistered.isEmpty();
     }
 
     private void processEnum(TypeElement element, Map<String, List<String>> packageToCodecNames) {
@@ -96,7 +183,7 @@ public class CodecProcessor extends AbstractProcessor {
             var tag = extractTag(subtypeElement);
 
             if (subtypeKind == ElementKind.RECORD) {
-                if (generator.generateRecordCodec(subtypeElement, tag)) {
+                if (validateRecordFields(subtypeElement) && generator.generateRecordCodec(subtypeElement, tag)) {
                     registerCodec(subtypeElement, packageToCodecNames);
                     note(subtypeElement, "Generated codec: " + subtypeElement.getSimpleName() + "Codec");
                 }
@@ -133,7 +220,7 @@ public class CodecProcessor extends AbstractProcessor {
             var tag = extractTag(nested);
 
             if (nestedKind == ElementKind.RECORD) {
-                if (generator.generateRecordCodec(nested, tag)) {
+                if (validateRecordFields(nested) && generator.generateRecordCodec(nested, tag)) {
                     registerCodec(nested, packageToCodecNames);
                     note(nested, "Generated codec for nested type: " + nested.getSimpleName() + "Codec");
                 }
@@ -168,17 +255,21 @@ public class CodecProcessor extends AbstractProcessor {
         return afterPackage.substring(0, lastDot).replace('.', '_') + "_";
     }
 
-    private void generateRegistries(Map<String, List<String>> packageToCodecNames) {
+    private void generateRegistries(Map<String, List<String>> packageToCodecNames,
+                                     Map<String, Set<String>> packageToRequiredTypes) {
         for (var entry : packageToCodecNames.entrySet()) {
             var packageName = entry.getKey();
             var codecNames = entry.getValue();
             var registryName = deriveRegistryName(packageName);
+            var requiredTypes = packageToRequiredTypes.getOrDefault(packageName, Set.of());
 
-            if (generator.generateRegistry(packageName, registryName, codecNames)) {
+            if (generator.generateRegistry(packageName, registryName, codecNames, requiredTypes)) {
                 processingEnv.getMessager()
                              .printMessage(Diagnostic.Kind.NOTE, "Generated registry: " + registryName);
             }
         }
+        // @CodecFor-only packages (no @Codec types) don't get generated registries —
+        // the annotated class is expected to be hand-written and manage its own codec list.
     }
 
     private int extractTag(TypeElement element) {

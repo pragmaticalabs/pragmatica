@@ -12,6 +12,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
+import org.pragmatica.serialization.CodecFor;
 
 import java.util.List;
 import java.util.Set;
@@ -20,6 +21,7 @@ import static org.pragmatica.lang.Option.none;
 
 /// Value type stored in the consensus KVStore
 @Codec
+@CodecFor(ExecutionMode.class)
 @SuppressWarnings("JBCT-NAM-01")
 public sealed interface AetherValue {
     /// Slice target stores runtime scaling configuration for a slice.
@@ -772,6 +774,7 @@ public sealed interface AetherValue {
     ///                    ←────────────┘
     ///           any KV state ──────────→ SHUTTING_DOWN
     /// ```
+    @Codec
     enum NodeLifecycleState {
         JOINING,
         ON_DUTY,
@@ -984,6 +987,7 @@ public sealed interface AetherValue {
     }
 
     /// Schema migration status.
+    @Codec
     enum SchemaStatus {
         PENDING,
         MIGRATING,
@@ -1082,8 +1086,13 @@ public sealed interface AetherValue {
                                                               String maxEventSize,
                                                               String backpressure,
                                                               String owningBlueprint) {
-            return new StreamMetadataValue(streamName, partitionCount, retention, retentionValue,
-                                           maxEventSize, backpressure, owningBlueprint,
+            return new StreamMetadataValue(streamName,
+                                           partitionCount,
+                                           retention,
+                                           retentionValue,
+                                           maxEventSize,
+                                           backpressure,
+                                           owningBlueprint,
                                            System.currentTimeMillis());
         }
     }
@@ -1102,10 +1111,8 @@ public sealed interface AetherValue {
             }
         }
 
-        public static StreamPartitionAssignmentValue streamPartitionAssignmentValue(
-                List<PartitionAssignment> assignments) {
-            return new StreamPartitionAssignmentValue(List.copyOf(assignments),
-                                                      System.currentTimeMillis());
+        public static StreamPartitionAssignmentValue streamPartitionAssignmentValue(List<PartitionAssignment> assignments) {
+            return new StreamPartitionAssignmentValue(List.copyOf(assignments), System.currentTimeMillis());
         }
     }
 

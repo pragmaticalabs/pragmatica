@@ -18,6 +18,7 @@ package org.pragmatica.swim;
 
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.Codec;
+import org.pragmatica.serialization.CodecFor;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -31,6 +32,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param revivalGrace    grace period after markAlive — don't probe recently-revived members
 /// @param startupDelay    cooldown after quorum before first probe — allows all TCP connections to establish
 @Codec
+@CodecFor({TimeSpan.class, java.net.InetSocketAddress.class})
 public record SwimConfig(TimeSpan period,
                          TimeSpan probeTimeout,
                          int indirectProbes,

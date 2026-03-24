@@ -1149,6 +1149,62 @@ aether stream publish user-events "order_created:12345"
 | 2 | Invalid arguments |
 | 3 | Connection failed |
 
+## App HTTP Security Configuration
+
+The app HTTP server supports three security modes configured in `aether.toml`:
+
+### Security Modes
+
+| Mode | Value | Description |
+|------|-------|-------------|
+| None | `security_mode = "none"` | No authentication (default) |
+| API Key | `security_mode = "api-key"` | Reuses management API keys via `X-API-Key` header |
+| JWT | `security_mode = "jwt"` | Bearer token auth with JWKS validation (RS256/ES256) |
+
+### Example Configurations
+
+**No security (default):**
+```toml
+[app-http]
+enabled = true
+port = 8070
+```
+
+**API key security:**
+```toml
+[app-http]
+enabled = true
+security_mode = "api-key"
+
+[app-http.api-keys.my-key]
+name = "my-service"
+roles = ["service"]
+authorization_role = "OPERATOR"
+```
+
+**JWT security:**
+```toml
+[app-http]
+enabled = true
+security_mode = "jwt"
+jwks_url = "https://auth.example.com/.well-known/jwks.json"
+issuer = "https://auth.example.com/"
+audience = "my-api"
+```
+
+### Request Size and Multipart
+
+```toml
+[app-http]
+max_request_size = "5MB"    # Default: 10MB. Accepts KB, MB, GB.
+```
+
+Multipart file uploads are supported and subject to the same size limit.
+
+See [Management API - App HTTP Security](management-api.md#app-http-security) for full details.
+
+---
+
 ## See Also
 
 - [Getting Started](../slice-developers/getting-started.md) - First steps with Aether

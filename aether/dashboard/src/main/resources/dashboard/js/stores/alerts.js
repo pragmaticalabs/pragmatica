@@ -17,6 +17,13 @@ document.addEventListener('alpine:init', function() {
             }
         },
 
+        updateFromWsHistory(data) {
+            if (data.alerts && Array.isArray(data.alerts)) {
+                this.active = data.alerts.filter(function(a) { return !a.resolved; });
+                this.history = data.alerts.filter(function(a) { return a.resolved; });
+            }
+        },
+
         async refresh() {
             var active = await RestClient.get('/api/alerts/active');
             if (active && active.alerts) this.active = active.alerts;

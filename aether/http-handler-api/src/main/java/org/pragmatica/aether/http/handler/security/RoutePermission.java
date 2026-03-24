@@ -1,5 +1,4 @@
 package org.pragmatica.aether.http.handler.security;
-
 /// Declares the minimum role required to access a route.
 ///
 /// Used alongside {@link RouteSecurityPolicy} to add authorization

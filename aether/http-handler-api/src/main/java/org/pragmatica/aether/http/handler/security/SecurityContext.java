@@ -24,8 +24,10 @@ public record SecurityContext(Principal principal,
                               Set<Role> roles,
                               Map<String, String> claims,
                               AuthorizationRole authorizationRole) {
-    private static final SecurityContext ANONYMOUS_CONTEXT =
-        securityContext(Principal.ANONYMOUS, Set.of(), Map.of(), AuthorizationRole.VIEWER);
+    private static final SecurityContext ANONYMOUS_CONTEXT = securityContext(Principal.ANONYMOUS,
+                                                                             Set.of(),
+                                                                             Map.of(),
+                                                                             AuthorizationRole.VIEWER);
 
     /// Canonical constructor with validation.
     public SecurityContext {
@@ -75,7 +77,10 @@ public record SecurityContext(Principal principal,
                                                           Set<Role> roles,
                                                           AuthorizationRole authorizationRole) {
         return Principal.principal(keyName, PrincipalType.API_KEY)
-                        .map(p -> securityContext(p, roles, Map.of(), authorizationRole));
+                        .map(p -> securityContext(p,
+                                                  roles,
+                                                  Map.of(),
+                                                  authorizationRole));
     }
 
     /// Create context for bearer token (JWT) authentication.

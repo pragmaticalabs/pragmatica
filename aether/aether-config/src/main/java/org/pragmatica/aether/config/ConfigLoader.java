@@ -7,6 +7,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.parse.DataSize;
 import org.pragmatica.lang.parse.Number;
 
 import java.nio.file.Path;
@@ -123,6 +124,14 @@ public final class ConfigLoader {
                   .or(defaultValue);
     }
 
+    private static int parseDataSize(TomlDocument doc, String section, String key, int defaultValue) {
+        return doc.getString(section, key)
+                  .flatMap(v -> DataSize.dataSize(v)
+                                        .option())
+                  .map(DataSize::bytesAsInt)
+                  .or(defaultValue);
+    }
+
     // --- Section populators ---
     private static void populateClusterConfig(TomlDocument doc, AetherConfig.Builder builder) {
         doc.getInt("cluster", "nodes")
@@ -140,7 +149,10 @@ public final class ConfigLoader {
                           .or(PortsConfig.DEFAULT_MANAGEMENT_PORT);
         var clusterPort = doc.getInt("cluster.ports", "cluster")
                              .or(PortsConfig.DEFAULT_CLUSTER_PORT);
-        return PortsConfig.portsConfig(mgmtPort, clusterPort)
+        var mgmtProtocol = doc.getString("cluster.ports", "management_protocol")
+                              .flatMap(HttpProtocol::httpProtocol)
+                              .or(HttpProtocol.H1);
+        return PortsConfig.portsConfig(mgmtPort, clusterPort, mgmtProtocol)
                           .unwrap();
     }
 
@@ -263,11 +275,45 @@ public final class ConfigLoader {
                                                "forward_timeout",
                                                "forward_timeout_ms",
                                                AppHttpConfig.DEFAULT_FORWARD_TIMEOUT);
+        var maxRequestSize = parseDataSize(doc, "app-http", "max_request_size", AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE);
+        var explicitMode = doc.getString("app-http", "security_mode")
+                              .flatMap(SecurityMode::securityMode);
         var apiKeys = resolveApiKeys(doc);
+        // Auto-upgrade: if no explicit security_mode but apiKeys are present, infer API_KEY (backward compat)
+        var securityMode = explicitMode.or(apiKeys.isEmpty()
+                                           ? SecurityMode.NONE
+                                           : SecurityMode.API_KEY);
+        var jwtConfig = parseJwtConfig(doc);
+        var httpProtocol = doc.getString("app-http", "protocol")
+                              .flatMap(HttpProtocol::httpProtocol)
+                              .or(HttpProtocol.H1);
         if (enabled || !apiKeys.isEmpty()) {
-            builder.appHttp(AppHttpConfig.appHttpConfig(enabled, port, apiKeys, forwardTimeout)
+            builder.appHttp(AppHttpConfig.appHttpConfig(enabled,
+                                                        port,
+                                                        apiKeys,
+                                                        forwardTimeout,
+                                                        maxRequestSize,
+                                                        securityMode,
+                                                        jwtConfig,
+                                                        httpProtocol)
                                          .unwrap());
         }
+    }
+
+    private static Option<JwtConfig> parseJwtConfig(TomlDocument doc) {
+        return doc.getString("app-http", "jwks_url")
+                  .map(jwksUrl -> buildJwtConfig(doc, jwksUrl));
+    }
+
+    private static JwtConfig buildJwtConfig(TomlDocument doc, String jwksUrl) {
+        var issuer = doc.getString("app-http", "issuer");
+        var audience = doc.getString("app-http", "audience");
+        var roleClaim = doc.getString("app-http", "role_claim")
+                           .or(JwtConfig.DEFAULT_ROLE_CLAIM);
+        var cacheTtl = parseLong(doc, "app-http", "jwks_cache_ttl_seconds", JwtConfig.DEFAULT_CACHE_TTL_SECONDS);
+        var clockSkew = parseLong(doc, "app-http", "clock_skew_seconds", JwtConfig.DEFAULT_CLOCK_SKEW_SECONDS);
+        return JwtConfig.jwtConfig(jwksUrl, issuer, audience, roleClaim, cacheTtl, clockSkew)
+                        .unwrap();
     }
 
     private static void populateBackupConfig(TomlDocument doc, AetherConfig.Builder builder) {

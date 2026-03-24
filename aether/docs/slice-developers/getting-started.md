@@ -935,6 +935,30 @@ This starts the Aether Forge development server. The dashboard is available at `
 If Forge is running with `repositories=["local"]`, it automatically picks up the slice.
 Your slice is now live and can be called through the Forge API.
 
+## Securing Your Endpoints
+
+By default, the app HTTP server runs without authentication. For production deployments,
+configure a security mode in `aether.toml`:
+
+- **`none`** -- no authentication (default, suitable for development)
+- **`api-key`** -- authenticate via `X-API-Key` header, reuses management API keys
+- **`jwt`** -- authenticate via `Authorization: Bearer` header with JWKS validation (RS256/ES256)
+
+Example with API key security:
+
+```toml
+[app-http]
+enabled = true
+security_mode = "api-key"
+api_keys = ["my-dev-key"]
+```
+
+You can also configure `max_request_size` (default `10MB`, accepts `KB`/`MB`/`GB` units)
+to limit request body sizes. Multipart file uploads are supported.
+
+See the [Management API reference](../reference/management-api.md#app-http-security)
+for full security configuration details.
+
 ## Step 10: What's Next?
 
 You've built, tested, modified, deployed, and connected an Aether slice to infrastructure.

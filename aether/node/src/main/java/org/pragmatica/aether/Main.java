@@ -74,7 +74,8 @@ public record Main(String[] args) {
                                                        coreMax);
         var withConfig = wireConfigProvider(config);
         var withAppHttp = wireAppHttpIfConfigured(withConfig, aetherConfig);
-        var withTls = wireTlsIfEnabled(withAppHttp, aetherConfig);
+        var withMgmtProtocol = wireManagementHttpProtocol(withAppHttp, aetherConfig);
+        var withTls = wireTlsIfEnabled(withMgmtProtocol, aetherConfig);
         var finalConfig = wireCloudIfConfigured(withTls, aetherConfig);
         var node = AetherNode.aetherNode(finalConfig)
                              .unwrap();
@@ -113,6 +114,15 @@ public record Main(String[] args) {
         return aetherConfig.map(AetherConfig::appHttp)
                            .filter(AppHttpConfig::enabled)
                            .map(config::withAppHttp)
+                           .or(config);
+    }
+
+    private static AetherNodeConfig wireManagementHttpProtocol(AetherNodeConfig config,
+                                                               Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(cfg -> cfg.cluster()
+                                          .ports()
+                                          .managementHttpProtocol())
+                           .map(config::withManagementHttpProtocol)
                            .or(config);
     }
 

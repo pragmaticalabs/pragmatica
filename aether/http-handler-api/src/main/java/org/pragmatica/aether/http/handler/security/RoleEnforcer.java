@@ -11,10 +11,8 @@ import static org.pragmatica.lang.Result.success;
 /// and route handling. Takes an authenticated SecurityContext and verifies
 /// the principal has sufficient authorization for the requested route.
 public sealed interface RoleEnforcer {
-
     /// Authorization denial errors.
     sealed interface AuthorizationError extends Cause {
-
         /// Principal's role is insufficient for the route's minimum requirement.
         record AccessDenied(String message) implements AuthorizationError {}
 
@@ -39,9 +37,9 @@ public sealed interface RoleEnforcer {
     }
 
     private static AuthorizationError.AccessDenied accessDeniedCause(AuthorizationRole actual,
-                                                                      AuthorizationRole required) {
-        return new AuthorizationError.AccessDenied(
-            "Access denied: role " + actual + " cannot access " + required + " endpoint");
+                                                                     AuthorizationRole required) {
+        return new AuthorizationError.AccessDenied("Access denied: role " + actual + " cannot access " + required
+                                                   + " endpoint");
     }
 
     record unused() implements RoleEnforcer {}

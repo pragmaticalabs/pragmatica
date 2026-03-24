@@ -28,6 +28,33 @@ public interface RequestContext {
     Map<String, String> requestHeaders();
     HttpHeaders responseHeaders();
 
+    /// Parse multipart form data from this request.
+    ///
+    /// Returns a parsed {@link MultipartRequest} if the Content-Type is multipart/form-data,
+    /// or an error otherwise.
+    default Result<MultipartRequest> multipartRequest() {
+        return MultipartParser.parse(bodyAsBytes(), resolveContentType(), requestPath());
+    }
+
+    /// Check if this request is a multipart/form-data request.
+    default boolean isMultipart() {
+        return MultipartParser.isMultipart(resolveContentType());
+    }
+
+    /// Extract body as byte array (works for all ByteBuf types).
+    private byte[] bodyAsBytes() {
+        var buf = body();
+        var bytes = new byte[buf.readableBytes()];
+        buf.getBytes(buf.readerIndex(), bytes);
+        return bytes;
+    }
+
+    /// Resolve Content-Type from request headers (case-insensitive lookup).
+    private String resolveContentType() {
+        var contentType = requestHeaders().get("content-type");
+        return contentType != null ? contentType : requestHeaders().get("Content-Type");
+    }
+
     default Result<String> pathParam(int index) {
         return pathParams().size() > index
                ? Result.success(pathParams().get(index))

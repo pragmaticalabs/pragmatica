@@ -1,5 +1,6 @@
 package org.pragmatica.aether.api;
 
+import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.api.routes.AlertRoutes;
 import org.pragmatica.aether.api.routes.BackupRoutes;
 import org.pragmatica.aether.api.routes.ClusterTopologyRoutes;
@@ -49,6 +50,7 @@ import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.server.RequestContext;
 import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
@@ -105,7 +107,8 @@ public interface ManagementServer {
                                              SecurityValidator securityValidator,
                                              boolean securityEnabled,
                                              Option<EventLoopGroup> bossGroup,
-                                             Option<EventLoopGroup> workerGroup) {
+                                             Option<EventLoopGroup> workerGroup,
+                                             HttpProtocol httpProtocol) {
         return new ManagementServerImpl(port,
                                         nodeSupplier,
                                         alertManager,
@@ -121,7 +124,8 @@ public interface ManagementServer {
                                         securityValidator,
                                         securityEnabled,
                                         bossGroup,
-                                        workerGroup);
+                                        workerGroup,
+                                        httpProtocol);
     }
 }
 
@@ -148,7 +152,9 @@ class ManagementServerImpl implements ManagementServer {
     private final Option<EventLoopGroup> bossGroup;
     private final Option<EventLoopGroup> workerGroup;
     private final WebSocketAuthenticator wsAuthenticator;
+    private final HttpProtocol httpProtocol;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
+    private final AtomicReference<HttpServer> h3ServerRef = new AtomicReference<>();
 
     private final StaticFileHandler staticFileHandler;
 
@@ -177,7 +183,8 @@ class ManagementServerImpl implements ManagementServer {
                          SecurityValidator securityValidator,
                          boolean securityEnabled,
                          Option<EventLoopGroup> bossGroup,
-                         Option<EventLoopGroup> workerGroup) {
+                         Option<EventLoopGroup> workerGroup,
+                         HttpProtocol httpProtocol) {
         this.port = port;
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
@@ -188,6 +195,7 @@ class ManagementServerImpl implements ManagementServer {
         this.securityEnabled = securityEnabled;
         this.bossGroup = bossGroup;
         this.workerGroup = workerGroup;
+        this.httpProtocol = httpProtocol;
         this.wsAuthenticator = WebSocketAuthenticator.webSocketAuthenticator(securityValidator, securityEnabled);
         this.metricsPublisher = DashboardMetricsPublisher.dashboardMetricsPublisher(nodeSupplier, alertManager);
         this.statusWsHandler = new StatusWebSocketHandler(wsAuthenticator);
@@ -240,6 +248,55 @@ class ManagementServerImpl implements ManagementServer {
 
     @Override
     public Promise<Unit> start() {
+        log.info("Starting management server on port {} (protocol: {})", port, httpProtocol);
+        if (httpProtocol.includesH1()) {
+            return startH1Server().flatMap(_ -> httpProtocol.includesH3()
+                                                ? startH3Server()
+                                                : Promise.success(unit()));
+        }
+        return startH3Server();
+    }
+
+    private Promise<Unit> startH1Server() {
+        var serverConfig = buildServerConfig();
+        java.util.function.BiConsumer<RequestContext, ResponseWriter> handler = httpProtocol == HttpProtocol.BOTH
+                                                                                ? this::handleRequestWithAltSvc
+                                                                                : this::handleRequest;
+        var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
+                                                                                                handler,
+                                                                                                bg,
+                                                                                                wg)))
+                                     .or(HttpServer.httpServer(serverConfig, handler));
+        return serverPromise.map(this::registerStartedH1Server)
+                            .onFailure(cause -> log.error("Failed to start management server on port {}: {}",
+                                                          port,
+                                                          cause.message()));
+    }
+
+    private Promise<Unit> startH3Server() {
+        var quicTls = tls.map(QuicSslContextFactory::createServer)
+                         .or(QuicSslContextFactory.createSelfSignedServer());
+        return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context for management server: {}",
+                                                    cause.message()))
+                      .map(this::startH3WithSslContext)
+                      .or(Promise.success(unit()));
+    }
+
+    private Promise<Unit> startH3WithSslContext(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
+        var serverConfig = HttpServerConfig.httpServerConfig("management-h3", port)
+                                           .withMaxContentLength(MAX_CONTENT_LENGTH);
+        var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
+                                                                         quicSslContext,
+                                                                         this::handleRequest,
+                                                                         wg))
+                                       .or(HttpServer.http3Server(serverConfig, quicSslContext, this::handleRequest));
+        return serverPromise.map(this::registerStartedH3Server)
+                            .onFailure(cause -> log.error("Failed to start management HTTP/3 server on port {}: {}",
+                                                          port,
+                                                          cause.message()));
+    }
+
+    private HttpServerConfig buildServerConfig() {
         var wsHandler = new DashboardWebSocketHandler(metricsPublisher, wsAuthenticator);
         var wsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/dashboard", wsHandler);
         var statusWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/status", statusWsHandler);
@@ -249,19 +306,25 @@ class ManagementServerImpl implements ManagementServer {
                                      .withWebSocket(wsEndpoint)
                                      .withWebSocket(statusWsEndpoint)
                                      .withWebSocket(eventWsEndpoint);
-        // Add TLS if configured
-        var finalConfig = tls.map(config::withTls)
-                             .or(config);
-        var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(finalConfig,
-                                                                                                this::handleRequest,
-                                                                                                bg,
-                                                                                                wg)))
-                                     .or(HttpServer.httpServer(finalConfig, this::handleRequest));
-        return serverPromise.withSuccess(this::onServerStarted)
-                            .mapToUnit()
-                            .onFailure(cause -> log.error("Failed to start management server on port {}: {}",
-                                                          port,
-                                                          cause.message()));
+        return tls.map(config::withTls)
+                  .or(config);
+    }
+
+    private Unit registerStartedH1Server(HttpServer server) {
+        serverRef.set(server);
+        onServerStarted(server);
+        return unit();
+    }
+
+    private Unit registerStartedH3Server(HttpServer server) {
+        h3ServerRef.set(server);
+        log.info("Management HTTP/3 QUIC server started on port {}", server.port());
+        return unit();
+    }
+
+    private void handleRequestWithAltSvc(RequestContext request, ResponseWriter response) {
+        response.header("Alt-Svc", "h3=\":" + port + "\"; ma=3600");
+        handleRequest(request, response);
     }
 
     @Override
@@ -269,24 +332,25 @@ class ManagementServerImpl implements ManagementServer {
         metricsPublisher.stop();
         statusWsPublisher.stop();
         eventWsPublisher.stop();
-        var server = serverRef.get();
-        if (server != null) {
-            return server.stop()
-                         .onSuccess(_ -> log.info("Management server stopped"));
-        }
-        log.info("Management server stopped");
-        return Promise.success(unit());
+        var h1Stop = Option.option(serverRef.get())
+                           .map(server -> server.stop()
+                                                .onSuccessRun(() -> log.info("Management HTTP/1.1 server stopped")))
+                           .or(Promise.success(unit()));
+        var h3Stop = Option.option(h3ServerRef.get())
+                           .map(server -> server.stop()
+                                                .onSuccessRun(() -> log.info("Management HTTP/3 server stopped")))
+                           .or(Promise.success(unit()));
+        return h1Stop.flatMap(_ -> h3Stop);
     }
 
     private void onServerStarted(HttpServer server) {
-        serverRef.set(server);
         metricsPublisher.start();
         statusWsPublisher.start();
         eventWsPublisher.start();
-        var protocol = tls.isPresent()
-                       ? "HTTPS"
-                       : "HTTP";
-        log.info("{} management server started on port {} (dashboard at /)", protocol, port);
+        var transport = tls.isPresent()
+                        ? "HTTPS"
+                        : "HTTP";
+        log.info("{} management server started on port {} (protocol: {}, dashboard at /)", transport, port, httpProtocol);
     }
 
     private static String escapeJson(String value) {
@@ -539,24 +603,26 @@ class ManagementServerImpl implements ManagementServer {
                                 .isSuccess();
     }
 
-    private Result<org.pragmatica.aether.http.handler.security.SecurityContext> enforceAndAuditDenial(
-            org.pragmatica.aether.http.handler.security.SecurityContext sc,
-            RoutePermission permission,
-            String method,
-            String path) {
+    private Result<org.pragmatica.aether.http.handler.security.SecurityContext> enforceAndAuditDenial(org.pragmatica.aether.http.handler.security.SecurityContext sc,
+                                                                                                      RoutePermission permission,
+                                                                                                      String method,
+                                                                                                      String path) {
         return RoleEnforcer.enforce(sc, permission)
                            .onFailure(_ -> auditAccessDenied(sc, method, path, permission));
     }
 
     private void auditAccessDenied(org.pragmatica.aether.http.handler.security.SecurityContext sc,
-                                    String method,
-                                    String path,
-                                    RoutePermission permission) {
+                                   String method,
+                                   String path,
+                                   RoutePermission permission) {
         var principal = sc.isAuthenticated()
-                        ? sc.principal().value()
+                        ? sc.principal()
+                            .value()
                         : "anonymous";
-        var actualRole = sc.authorizationRole().name();
-        var requiredRole = permission.minimumRole().name();
+        var actualRole = sc.authorizationRole()
+                           .name();
+        var requiredRole = permission.minimumRole()
+                                     .name();
         AuditLog.accessDenied(principal, method, path, actualRole, requiredRole);
         nodeSupplier.get()
                     .route(OperationalEvent.AccessDenied.accessDenied(principal, method, path, actualRole, requiredRole));

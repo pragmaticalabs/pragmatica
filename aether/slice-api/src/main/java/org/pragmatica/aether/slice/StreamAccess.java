@@ -1,10 +1,10 @@
 package org.pragmatica.aether.slice;
 
-import java.util.List;
-
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+
+import java.util.List;
 
 /// Advanced stream access for manual cursor management, replay, and seek.
 ///
@@ -22,7 +22,6 @@ import org.pragmatica.lang.Unit;
 /// static AuditService auditService(@OrderStreamAccess StreamAccess<OrderEvent> stream) { ... }
 /// }```
 public interface StreamAccess<T> {
-
     /// Publish an event to the stream. Returns the assigned offset.
     Promise<Long> publish(T event);
 
@@ -47,11 +46,9 @@ public interface StreamAccess<T> {
     record StreamEvent<T>(long offset, long timestamp, int partition, T payload) {}
 
     /// Stream metadata.
-    record StreamMetadata(
-        String streamName,
-        int partitionCount,
-        List<PartitionInfo> partitions
-    ) {}
+    record StreamMetadata(String streamName,
+                          int partitionCount,
+                          List<PartitionInfo> partitions) {}
 
     /// Per-partition metadata.
     record PartitionInfo(int partition, long headOffset, long tailOffset, long eventCount) {}

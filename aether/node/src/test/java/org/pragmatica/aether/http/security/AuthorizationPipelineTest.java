@@ -337,18 +337,18 @@ class AuthorizationPipelineTest {
         }
 
         @Test
-        void pipeline_defaultsToAdmin_whenAuthorizationRoleInvalid() {
+        void pipeline_defaultsToViewer_whenAuthorizationRoleInvalid() {
             var keyWithBadRole = "bad-role-key-value1";
             var entries = Map.of(
                 keyWithBadRole, ApiKeyEntry.apiKeyEntry("bad-role-svc", Set.of("service"), "SUPERUSER")
             );
             var validatorBadRole = SecurityValidator.apiKeyValidator(entries);
-            var request = createRequest(keyWithBadRole, "POST", "/api/blueprint");
-            var permission = RoutePermissionRegistry.resolve("POST", "/api/blueprint");
+            var request = createRequest(keyWithBadRole, "GET", "/api/status");
+            var permission = RoutePermissionRegistry.resolve("GET", "/api/status");
             validatorBadRole.validate(request, policy)
                             .flatMap(sc -> RoleEnforcer.enforce(sc, permission))
-                            .onFailureRun(() -> fail("Expected success — invalid role defaults to ADMIN"))
-                            .onSuccess(sc -> assertThat(sc.authorizationRole()).isEqualTo(AuthorizationRole.ADMIN));
+                            .onFailureRun(() -> fail("Expected success — invalid role defaults to VIEWER"))
+                            .onSuccess(sc -> assertThat(sc.authorizationRole()).isEqualTo(AuthorizationRole.VIEWER));
         }
     }
 
