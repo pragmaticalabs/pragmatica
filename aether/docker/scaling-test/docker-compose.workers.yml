@@ -1,4 +1,8 @@
-# Aether Scaling Test — 7 Worker Nodes (overlay)
+# Aether Scaling Test -- 7 Worker Nodes (overlay)
+#
+# Workers connect to core nodes via QUIC (UDP port 8090) for cluster transport.
+# Within the Docker bridge network, all ports are accessible between containers.
+#
 # Usage: docker compose -f docker-compose.yml -f docker-compose.workers.yml up --build
 
 services:

@@ -17,7 +17,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /// Default implementation of the governor mesh registry.
-/// Optionally registers peer addresses in NCN for TCP connectivity.
+/// Optionally registers peer addresses in cluster network for QUIC connectivity.
 @SuppressWarnings("JBCT-RET-01")
 final class GovernorMeshInstance implements GovernorMesh {
     private static final Logger LOG = LoggerFactory.getLogger(GovernorMeshInstance.class);

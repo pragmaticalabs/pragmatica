@@ -14,6 +14,12 @@ modify it to make it your own, and deploy it to a local Forge.
 | Maven    | 3.8+     | `mvn --version`  |
 | JBCT CLI | 0.20.0+  | `jbct --version` |
 
+> **Network requirements:** Aether uses QUIC (UDP) for inter-node cluster communication.
+> When running a multi-node cluster, ensure UDP ports 8090 (cluster transport) and 8091
+> (SWIM failure detection) are open between nodes. For local development with Forge,
+> no special configuration is needed. See
+> [Networking Requirements](../operators/networking.md) for details.
+
 > **Don't have the JBCT CLI?** Install it with `mvn dependency:copy` or download from Maven Central.
 
 All JBCT and Aether artifacts (including the annotation processor and Maven plugin) are

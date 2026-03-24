@@ -1,4 +1,10 @@
-# Aether Scaling Test — 5 Core Nodes
+# Aether Scaling Test -- 5 Core Nodes
+#
+# Inter-node communication uses QUIC (UDP) on port 8090 for cluster transport
+# (consensus, KV-Store, HTTP forwarding, DHT) and UDP port 8091 for SWIM failure
+# detection. Within the Docker bridge network, all ports are accessible between
+# containers without explicit mapping.
+#
 # Usage:
 #   docker compose up --build                          # Start 5-node core cluster
 #   docker compose -f docker-compose.yml -f docker-compose.workers.yml up --build  # + 7 workers

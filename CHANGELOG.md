@@ -4,7 +4,24 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.23.1] - Unreleased
+## [0.24.0] - Unreleased
+
+### Added
+- **QUIC cluster transport** — replaces TCP for all inter-node communication. Stream-per-message-type multiplexing (consensus stream 0, KV stream 1, HTTP forward stream 2, DHT stream 3), mandatory TLS 1.3 with auto-generated self-signed certs for dev, 0-RTT reconnection, connection migration, NodeId-ordered connection initiation. First Java distributed runtime on QUIC
+- **Soak test infrastructure** — 4-hour k6 sustained load scenario with chaos injection phases (worker kill, rolling restart), Prometheus + Grafana monitoring with 14-panel auto-provisioned dashboard, automated pass/fail verdict (6 criteria: heap growth, GC pause, P99 drift, error rate, SWIM stability, node count), markdown report generation
+
+### Changed
+- **SWIM port offset** — changed from cluster_port+1 to cluster_port+100 to avoid port collisions in multi-node Forge
+- **Passive LB** — uses own event loop groups instead of TCP server groups (QUIC has no TCP server)
+
+### Fixed
+- **QUIC message delivery** — DataHandler replaces Hello handler after handshake; messages were silently dropped post-Hello
+- **QUIC message framing** — added LengthFieldBasedFrameDecoder to QUIC stream pipelines; QUIC streams are byte-oriented like TCP, not message-framed
+- **QUIC message routing** — incoming messages now routed to MessageRouter via onMessageReceived callback
+- **QUIC idle timeout** — disabled per RFC 9000 §10.1; peer-to-peer connections died after 30s of no traffic between consensus rounds (only leader→peer had regular MetricsPing traffic)
+- **Passive LB event loop** — uses own groups instead of TCP server groups (QUIC has no TCP server)
+
+## [0.23.1] - 2026-03-24
 
 ### Added
 - **AppHttpServer: configurable request size limits** — `max_request_size` in TOML with `DataSize` parser (KB/MB/GB), 413 response when exceeded

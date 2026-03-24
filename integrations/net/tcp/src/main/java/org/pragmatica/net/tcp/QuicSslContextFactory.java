@@ -126,6 +126,50 @@ public final class QuicSslContextFactory {
         }
     }
 
+    // ===== Client Context =====
+
+    /// Create a QUIC client SSL context from TLS configuration.
+    ///
+    /// @param config TLS configuration (must be Client or Mutual mode)
+    /// @return QUIC SSL context or error
+    @SuppressWarnings("JBCT-PAT-01") // Switch over sealed TLS config variants
+    public static Result<QuicSslContext> createClient(TlsConfig config) {
+        return switch (config) {
+            case TlsConfig.Client(var trust, _) -> buildClientContext(trust);
+            case TlsConfig.Mutual(_, var trust) -> buildClientContext(trust);
+            case TlsConfig.Server _ ->
+                TlsError.wrongMode("Cannot create QUIC client context from Server config")
+                        .result();
+        };
+    }
+
+    /// Create an insecure QUIC client SSL context for development (trusts all certificates).
+    ///
+    /// @return QUIC SSL context or error
+    @SuppressWarnings("JBCT-UTIL-01")
+    public static Result<QuicSslContext> createInsecureClient() {
+        try {
+            log.warn("Creating insecure QUIC client context - FOR DEVELOPMENT ONLY!");
+            var context = QuicSslContextBuilder.forClient()
+                                               .trustManager(InsecureTrustManagerFactory.INSTANCE)
+                                               .build();
+            return Result.success(context);
+        } catch (Exception e) {
+            return new TlsError.ContextBuildFailed(e).result();
+        }
+    }
+
+    @SuppressWarnings("JBCT-UTIL-01")
+    private static Result<QuicSslContext> buildClientContext(TlsConfig.Trust trust) {
+        try {
+            var builder = QuicSslContextBuilder.forClient();
+            configureTrust(builder, trust);
+            return Result.success(builder.build());
+        } catch (Exception e) {
+            return new TlsError.ContextBuildFailed(e).result();
+        }
+    }
+
     // ===== Key Material =====
     private sealed interface KeyMaterial {
         record FromFile(java.io.File certFile, java.io.File keyFile, Option<String> password) implements KeyMaterial {}

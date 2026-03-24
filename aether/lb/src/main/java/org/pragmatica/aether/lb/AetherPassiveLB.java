@@ -132,17 +132,9 @@ public final class AetherPassiveLB {
         var serverConfig = HttpServerConfig.httpServerConfig("passive-lb",
                                                              config.httpPort())
                                            .withMaxContentLength(MAX_CONTENT_LENGTH);
-        var serverBossGroup = passiveNode.network()
-                                         .server()
-                                         .map(org.pragmatica.net.tcp.Server::bossGroup);
-        var serverWorkerGroup = passiveNode.network()
-                                           .server()
-                                           .map(org.pragmatica.net.tcp.Server::workerGroup);
-        var serverPromise = serverBossGroup.flatMap(bg -> serverWorkerGroup.map(wg -> HttpServer.httpServer(serverConfig,
-                                                                                                            this::handleRequest,
-                                                                                                            bg,
-                                                                                                            wg)))
-                                           .or(HttpServer.httpServer(serverConfig, this::handleRequest));
+        // Use own event loop groups — QUIC transport does not provide a TCP Server
+        var serverPromise = Option.some(HttpServer.httpServer(serverConfig, this::handleRequest))
+                                  .or(HttpServer.httpServer(serverConfig, this::handleRequest));
         return serverPromise.onSuccess(server -> httpServer = Option.some(server))
                             .mapToUnit();
     }
