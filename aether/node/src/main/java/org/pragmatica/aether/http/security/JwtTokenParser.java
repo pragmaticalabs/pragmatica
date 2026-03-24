@@ -18,7 +18,9 @@ import static org.pragmatica.lang.Result.success;
 @SuppressWarnings("JBCT-RET-03")
 final class JwtTokenParser {
     private static final JsonMapper JSON = JsonMapper.defaultJsonMapper();
+
     private static final TypeToken<Map<String, Object>> MAP_TYPE = new TypeToken<>() {};
+
     private static final Base64.Decoder BASE64URL = Base64.getUrlDecoder();
 
     private JwtTokenParser() {}
@@ -33,8 +35,7 @@ final class JwtTokenParser {
 
     /// Parse a raw JWT string into its three components.
     static Result<ParsedJwt> parseToken(String token) {
-        return splitToken(token)
-            .flatMap(JwtTokenParser::decodeComponents);
+        return splitToken(token).flatMap(JwtTokenParser::decodeComponents);
     }
 
     private static Result<String[]> splitToken(String token) {
@@ -46,14 +47,13 @@ final class JwtTokenParser {
 
     private static Result<ParsedJwt> decodeComponents(String[] parts) {
         return decodeHeader(parts[0])
-            .flatMap(header -> decodePayload(parts[1])
-                .flatMap(payload -> decodeSignature(parts[2])
-                    .map(sig -> new ParsedJwt(header, payload, sig, parts[0] + "." + parts[1]))));
+        .flatMap(header -> decodePayload(parts[1])
+        .flatMap(payload -> decodeSignature(parts[2])
+        .map(sig -> new ParsedJwt(header, payload, sig, parts[0] + "." + parts[1]))));
     }
 
     private static Result<JwtHeader> decodeHeader(String headerB64) {
-        return decodeBase64Json(headerB64)
-            .flatMap(JwtTokenParser::extractHeader);
+        return decodeBase64Json(headerB64).flatMap(JwtTokenParser::extractHeader);
     }
 
     private static Result<JwtHeader> extractHeader(Map<String, Object> headerMap) {
@@ -75,9 +75,8 @@ final class JwtTokenParser {
     }
 
     private static Result<Map<String, Object>> decodeBase64Json(String base64) {
-        return decodeBase64Bytes(base64)
-            .map(bytes -> new String(bytes, StandardCharsets.UTF_8))
-            .flatMap(json -> JSON.readString(json, MAP_TYPE));
+        return decodeBase64Bytes(base64).map(bytes -> new String(bytes, StandardCharsets.UTF_8))
+                                .flatMap(json -> JSON.readString(json, MAP_TYPE));
     }
 
     @SuppressWarnings("JBCT-EX-01")

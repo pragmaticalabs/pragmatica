@@ -189,7 +189,7 @@ public final class SchemaRoutes implements RouteSource {
 
     private Promise<SchemaMigrateResponse> retryMigration(String datasource) {
         return lookupSchemaVersion(datasource).flatMap(current -> writeRetryStatus(current, datasource))
-                                              .onSuccess(_ -> AuditLog.schemaManualRetry(datasource));
+                                  .onSuccess(_ -> AuditLog.schemaManualRetry(datasource));
     }
 
     private Promise<SchemaMigrateResponse> writeRetryStatus(SchemaVersionValue current, String datasource) {

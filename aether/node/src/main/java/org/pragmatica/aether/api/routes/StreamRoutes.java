@@ -35,7 +35,6 @@ public final class StreamRoutes implements RouteSource {
     }
 
     // --- Response records ---
-
     record StreamListResponse(List<StreamSummary> streams) {}
 
     record StreamSummary(String name, int partitions, long totalEvents, long totalBytes) {
@@ -45,10 +44,10 @@ public final class StreamRoutes implements RouteSource {
     }
 
     record StreamInfoResponse(String name,
-                               int partitions,
-                               long totalEvents,
-                               long totalBytes,
-                               List<PartitionDetail> partitionDetails) {}
+                              int partitions,
+                              long totalEvents,
+                              long totalBytes,
+                              List<PartitionDetail> partitionDetails) {}
 
     record PartitionDetail(int partition, long headOffset, long tailOffset, long eventCount) {
         static PartitionDetail fromPartitionInfo(PartitionInfo info) {
@@ -63,7 +62,8 @@ public final class StreamRoutes implements RouteSource {
     record EventRecord(long offset, String data, long timestamp) {
         static EventRecord fromRawEvent(OffHeapRingBuffer.RawEvent event) {
             return new EventRecord(event.offset(),
-                                   Base64.getEncoder().encodeToString(event.data()),
+                                   Base64.getEncoder()
+                                         .encodeToString(event.data()),
                                    event.timestamp());
         }
     }
@@ -71,88 +71,94 @@ public final class StreamRoutes implements RouteSource {
     record ReadEventsResponse(List<EventRecord> events) {}
 
     // --- Route definitions ---
-
     @Override
     public Stream<Route<?>> routes() {
-        return Stream.of(
-            Route.<StreamListResponse>get("/api/streams")
-                 .toJson(this::listStreams),
-            Route.<StreamInfoResponse>get("/api/streams")
-                 .withPath(PathParameter.aString())
-                 .toResult(this::streamInfo)
-                 .asJson(),
-            Route.<PartitionDetail>get("/api/streams")
-                 .withPath(PathParameter.aString(), PathParameter.aInteger())
-                 .toResult(this::partitionDetails)
-                 .asJson(),
-            Route.<PublishResponse>post("/api/streams")
-                 .withPath(PathParameter.aString(), PathParameter.spacer("publish"))
-                 .withBody(PublishRequest.class)
-                 .toResult(this::publishEvent)
-                 .asJson(),
-            Route.<ReadEventsResponse>get("/api/streams")
-                 .withPath(PathParameter.aString(), PathParameter.aInteger(), PathParameter.spacer("read"))
-                 .withQuery(QueryParameter.aLong("from"), QueryParameter.aInteger("max"))
-                 .toValue(this::readEvents)
-                 .asJson()
-        );
+        return Stream.of(Route.<StreamListResponse> get("/api/streams")
+                              .toJson(this::listStreams),
+                         Route.<StreamInfoResponse> get("/api/streams")
+                              .withPath(PathParameter.aString())
+                              .toResult(this::streamInfo)
+                              .asJson(),
+                         Route.<PartitionDetail> get("/api/streams")
+                              .withPath(PathParameter.aString(),
+                                        PathParameter.aInteger())
+                              .toResult(this::partitionDetails)
+                              .asJson(),
+                         Route.<PublishResponse> post("/api/streams")
+                              .withPath(PathParameter.aString(),
+                                        PathParameter.spacer("publish"))
+                              .withBody(PublishRequest.class)
+                              .toResult(this::publishEvent)
+                              .asJson(),
+                         Route.<ReadEventsResponse> get("/api/streams")
+                              .withPath(PathParameter.aString(),
+                                        PathParameter.aInteger(),
+                                        PathParameter.spacer("read"))
+                              .withQuery(QueryParameter.aLong("from"),
+                                         QueryParameter.aInteger("max"))
+                              .toValue(this::readEvents)
+                              .asJson());
     }
 
     // --- Handlers ---
-
     private StreamListResponse listStreams() {
         var streams = streamManager().listStreams()
-                                     .stream()
-                                     .map(StreamSummary::fromStreamInfo)
-                                     .toList();
+                                   .stream()
+                                   .map(StreamSummary::fromStreamInfo)
+                                   .toList();
         return new StreamListResponse(streams);
     }
 
     private Result<StreamInfoResponse> streamInfo(String name) {
         return streamManager().streamInfo(name)
-                              .toResult(STREAM_NOT_FOUND)
-                              .flatMap(info -> buildStreamInfoResponse(name, info));
+                            .toResult(STREAM_NOT_FOUND)
+                            .flatMap(info -> buildStreamInfoResponse(name, info));
     }
 
     private Result<StreamInfoResponse> buildStreamInfoResponse(String name, StreamInfo info) {
         return streamManager().allPartitionInfo(name)
-                              .map(partitions -> partitions.stream()
-                                                           .map(PartitionDetail::fromPartitionInfo)
-                                                           .toList())
-                              .map(details -> new StreamInfoResponse(info.name(),
-                                                                      info.partitions(),
-                                                                      info.totalEvents(),
-                                                                      info.totalBytes(),
-                                                                      details));
+                            .map(partitions -> partitions.stream()
+                                                         .map(PartitionDetail::fromPartitionInfo)
+                                                         .toList())
+                            .map(details -> new StreamInfoResponse(info.name(),
+                                                                   info.partitions(),
+                                                                   info.totalEvents(),
+                                                                   info.totalBytes(),
+                                                                   details));
     }
 
     private Result<PartitionDetail> partitionDetails(String name, Integer partition) {
         return streamManager().partitionInfo(name, partition)
-                              .map(PartitionDetail::fromPartitionInfo);
+                            .map(PartitionDetail::fromPartitionInfo);
     }
 
     private Result<PublishResponse> publishEvent(String name, String spacer, PublishRequest request) {
-        var payload = Base64.getDecoder().decode(request.data());
-        return streamManager().publishLocal(name, 0, payload, System.currentTimeMillis())
-                              .map(PublishResponse::new);
+        var payload = Base64.getDecoder()
+                            .decode(request.data());
+        return streamManager().publishLocal(name,
+                                            0,
+                                            payload,
+                                            System.currentTimeMillis())
+                            .map(PublishResponse::new);
     }
 
     private ReadEventsResponse readEvents(String name,
-                                           Integer partition,
-                                           String spacer,
-                                           Option<Long> fromOpt,
-                                           Option<Integer> maxOpt) {
+                                          Integer partition,
+                                          String spacer,
+                                          Option<Long> fromOpt,
+                                          Option<Integer> maxOpt) {
         var fromOffset = fromOpt.or(0L);
         var maxEvents = maxOpt.or(DEFAULT_MAX_EVENTS);
         var events = streamManager().readLocal(name, partition, fromOffset, maxEvents)
-                                    .map(list -> list.stream()
-                                                     .map(EventRecord::fromRawEvent)
-                                                     .toList())
-                                    .or(List.of());
+                                  .map(list -> list.stream()
+                                                   .map(EventRecord::fromRawEvent)
+                                                   .toList())
+                                  .or(List.of());
         return new ReadEventsResponse(events);
     }
 
     private StreamPartitionManager streamManager() {
-        return nodeSupplier.get().streamPartitionManager();
+        return nodeSupplier.get()
+                           .streamPartitionManager();
     }
 }

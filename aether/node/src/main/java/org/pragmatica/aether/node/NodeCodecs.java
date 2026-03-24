@@ -1,11 +1,13 @@
 package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.serialization.CodecFor;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.serialization.SliceCodec.TypeCodec;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.Set;
 
 import static org.pragmatica.serialization.SliceCodec.deterministicTag;
 import static org.pragmatica.serialization.SliceCodec.readCompact;
@@ -16,6 +18,7 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
 /// Registry of all node-level types for serialization.
 /// Collects generated codec registries from all modules and adds manual entries
 /// for types that can't use the annotation processor (e.g. shared-package conflicts).
+@CodecFor({InetSocketAddress.class, MethodName.class})
 public sealed interface NodeCodecs {
     record unused() implements NodeCodecs {}
 
@@ -42,7 +45,16 @@ public sealed interface NodeCodecs {
         // Manual entries for types in shared packages (can't use processor without registry name conflict)
         all.add(methodNameCodec());
         all.add(inetSocketAddressCodec());
-        return SliceCodec.sliceCodec(parent, all);
+        var requiredTypes = collectRequiredTypes();
+        return SliceCodec.sliceCodec(parent, all, requiredTypes);
+    }
+
+    private static Set<Class<?>> collectRequiredTypes() {
+        var types = new java.util.HashSet<Class<?>>();
+        types.addAll(org.pragmatica.swim.SwimCodecs.REQUIRED_TYPES);
+        types.add(InetSocketAddress.class);
+        types.add(MethodName.class);
+        return types;
     }
 
     /// InetSocketAddress codec — uses createUnresolved to avoid blocking DNS on deserialization.

@@ -179,8 +179,7 @@ public class AlertManager {
 
     private void broadcastAlertResolved(String metric, NodeId nodeId) {
         var message = "{\"type\":\"ALERT_RESOLVED\",\"timestamp\":" + System.currentTimeMillis()
-                      + ",\"data\":{\"metric\":\"" + escapeJson(metric)
-                      + "\",\"nodeId\":\"" + escapeJson(nodeId.id())
+                      + ",\"data\":{\"metric\":\"" + escapeJson(metric) + "\",\"nodeId\":\"" + escapeJson(nodeId.id())
                       + "\",\"resolvedAt\":" + System.currentTimeMillis() + "}}";
         DashboardWebSocketHandler.broadcast(message);
     }

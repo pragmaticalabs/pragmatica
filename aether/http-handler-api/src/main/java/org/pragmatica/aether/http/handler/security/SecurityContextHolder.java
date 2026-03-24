@@ -29,7 +29,8 @@ public final class SecurityContextHolder {
 
     /// Check if a security context is available in the current scope.
     public static boolean isAuthenticated() {
-        return SECURITY_CONTEXT.isBound() && SECURITY_CONTEXT.get().isAuthenticated();
+        return SECURITY_CONTEXT.isBound() && SECURITY_CONTEXT.get()
+                                                             .isAuthenticated();
     }
 
     /// Get the underlying ScopedValue for use in ScopedValue.where() chains.

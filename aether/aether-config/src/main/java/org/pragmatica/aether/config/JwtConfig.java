@@ -56,11 +56,21 @@ public record JwtConfig(String jwksUrl,
 
     /// Convenience factory with defaults.
     public static Result<JwtConfig> jwtConfig(String jwksUrl) {
-        return jwtConfig(jwksUrl, Option.empty(), Option.empty(), DEFAULT_ROLE_CLAIM, DEFAULT_CACHE_TTL_SECONDS, DEFAULT_CLOCK_SKEW_SECONDS);
+        return jwtConfig(jwksUrl,
+                         Option.empty(),
+                         Option.empty(),
+                         DEFAULT_ROLE_CLAIM,
+                         DEFAULT_CACHE_TTL_SECONDS,
+                         DEFAULT_CLOCK_SKEW_SECONDS);
     }
 
     /// Convenience factory with issuer and audience.
     public static Result<JwtConfig> jwtConfig(String jwksUrl, String issuer, String audience) {
-        return jwtConfig(jwksUrl, option(issuer), option(audience), DEFAULT_ROLE_CLAIM, DEFAULT_CACHE_TTL_SECONDS, DEFAULT_CLOCK_SKEW_SECONDS);
+        return jwtConfig(jwksUrl,
+                         option(issuer),
+                         option(audience),
+                         DEFAULT_ROLE_CLAIM,
+                         DEFAULT_CACHE_TTL_SECONDS,
+                         DEFAULT_CLOCK_SKEW_SECONDS);
     }
 }

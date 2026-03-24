@@ -64,7 +64,12 @@ public record DeploymentConfig(Strategy strategy,
                                                     long maxLatencyMs,
                                                     long drainTimeoutMs,
                                                     boolean schemaRequired) {
-        return new DeploymentConfig(strategy, List.copyOf(canaryStages), maxErrorRate, maxLatencyMs, drainTimeoutMs, schemaRequired);
+        return new DeploymentConfig(strategy,
+                                    List.copyOf(canaryStages),
+                                    maxErrorRate,
+                                    maxLatencyMs,
+                                    drainTimeoutMs,
+                                    schemaRequired);
     }
 
     /// Backward-compatible factory method (schemaRequired defaults to true).

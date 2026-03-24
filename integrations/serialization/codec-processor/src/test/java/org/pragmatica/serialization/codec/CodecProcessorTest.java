@@ -317,6 +317,166 @@ class CodecProcessorTest {
         }
     }
 
+    @Nested
+    class CodecForTests {
+        @Test
+        void codecFor_suppressesError_forExternalClassType() {
+            var externalType = JavaFileObjects.forSourceString("com.example.ExternalType",
+                """
+                package com.example;
+
+                public class ExternalType {
+                    private final String value;
+                    public ExternalType(String value) { this.value = value; }
+                    public String value() { return value; }
+                }
+                """);
+            var source = JavaFileObjects.forSourceString("com.example.MyRecord",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+                import org.pragmatica.serialization.CodecFor;
+
+                @Codec
+                @CodecFor(ExternalType.class)
+                public record MyRecord(String name, ExternalType ext) {}
+                """);
+
+            var compilation = compileWith(externalType, source);
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.MyRecordCodec");
+        }
+
+        @Test
+        void codecFor_generatesEnumCodec_forExternalEnum() {
+            var externalEnum = JavaFileObjects.forSourceString("com.example.ExternalEnum",
+                """
+                package com.example;
+
+                public enum ExternalEnum { A, B, C }
+                """);
+            var source = JavaFileObjects.forSourceString("com.example.Wrapper",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+                import org.pragmatica.serialization.CodecFor;
+
+                @Codec
+                @CodecFor(ExternalEnum.class)
+                public record Wrapper(String name, ExternalEnum kind) {}
+                """);
+
+            var compilation = compileWith(externalEnum, source);
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.ExternalEnumCodec")
+                                   .contentsAsUtf8String()
+                                   .contains("TypeCodec<ExternalEnum> CODEC");
+        }
+
+        @Test
+        void codecFor_generatesRecordCodec_forExternalRecord() {
+            var externalRecord = JavaFileObjects.forSourceString("com.example.ExternalRecord",
+                """
+                package com.example;
+
+                public record ExternalRecord(int x, int y) {}
+                """);
+            var source = JavaFileObjects.forSourceString("com.example.Container",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+                import org.pragmatica.serialization.CodecFor;
+
+                @Codec
+                @CodecFor(ExternalRecord.class)
+                public record Container(String label, ExternalRecord point) {}
+                """);
+
+            var compilation = compileWith(externalRecord, source);
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.ExternalRecordCodec")
+                                   .contentsAsUtf8String()
+                                   .contains("TypeCodec<ExternalRecord> CODEC");
+            assertThat(compilation).generatedSourceFile("com.example.ContainerCodec");
+        }
+
+        @Test
+        void codecFor_generatesRequiredTypes_inRegistry() {
+            var externalType = JavaFileObjects.forSourceString("com.example.ExternalType",
+                """
+                package com.example;
+
+                public class ExternalType {}
+                """);
+            var source = JavaFileObjects.forSourceString("com.example.MyRecord",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+                import org.pragmatica.serialization.CodecFor;
+
+                @Codec
+                @CodecFor(ExternalType.class)
+                public record MyRecord(String name) {}
+                """);
+
+            var compilation = compileWith(externalType, source);
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.ExampleCodecs")
+                                   .contentsAsUtf8String()
+                                   .contains("Set<Class<?>> REQUIRED_TYPES = Set.of(");
+            assertThat(compilation).generatedSourceFile("com.example.ExampleCodecs")
+                                   .contentsAsUtf8String()
+                                   .contains("com.example.ExternalType.class");
+        }
+
+        @Test
+        void codecFor_emptyRequiredTypes_whenNoCodecFor() {
+            var source = JavaFileObjects.forSourceString("com.example.Simple",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+
+                @Codec
+                public record Simple(String value) {}
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.ExampleCodecs")
+                                   .contentsAsUtf8String()
+                                   .contains("Set<Class<?>> REQUIRED_TYPES = Set.of();");
+        }
+
+        @Test
+        void codecFor_stillFailsCompilation_forUnlistedExternalType() {
+            var source = JavaFileObjects.forSourceString("com.example.BadRecord",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+                import java.net.InetSocketAddress;
+
+                @Codec
+                public record BadRecord(String name, InetSocketAddress address) {}
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("has no codec");
+        }
+    }
+
     private static Compilation compileWith(javax.tools.JavaFileObject... sources) {
         return javac().withProcessors(new CodecProcessor())
                       .compile(sources);

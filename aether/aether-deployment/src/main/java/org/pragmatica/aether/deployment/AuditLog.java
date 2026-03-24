@@ -19,35 +19,56 @@ public final class AuditLog {
     }
 
     /// Log schema migration completed.
-    public static void schemaMigrationCompleted(String datasource, String artifactCoords,
-                                                 int appliedCount, int currentVersion, long durationMs) {
+    public static void schemaMigrationCompleted(String datasource,
+                                                String artifactCoords,
+                                                int appliedCount,
+                                                int currentVersion,
+                                                long durationMs) {
         AUDIT.info("SCHEMA_MIGRATION_COMPLETED datasource={} artifact={} appliedCount={} currentVersion={} durationMs={}",
-                   datasource, artifactCoords, appliedCount, currentVersion, durationMs);
+                   datasource,
+                   artifactCoords,
+                   appliedCount,
+                   currentVersion,
+                   durationMs);
     }
 
     /// Log schema migration failed.
-    public static void schemaMigrationFailed(String datasource, String artifactCoords,
-                                              String classification, String cause) {
+    public static void schemaMigrationFailed(String datasource,
+                                             String artifactCoords,
+                                             String classification,
+                                             String cause) {
         AUDIT.warn("SCHEMA_MIGRATION_FAILED datasource={} artifact={} classification={} cause={}",
-                   datasource, artifactCoords, classification, cause);
+                   datasource,
+                   artifactCoords,
+                   classification,
+                   cause);
     }
 
     /// Log schema migration retry scheduled.
-    public static void schemaMigrationRetrying(String datasource, String artifactCoords,
-                                                int attemptNumber, long nextRetryMs) {
+    public static void schemaMigrationRetrying(String datasource,
+                                               String artifactCoords,
+                                               int attemptNumber,
+                                               long nextRetryMs) {
         AUDIT.info("SCHEMA_MIGRATION_RETRYING datasource={} artifact={} attempt={} nextRetryMs={}",
-                   datasource, artifactCoords, attemptNumber, nextRetryMs);
+                   datasource,
+                   artifactCoords,
+                   attemptNumber,
+                   nextRetryMs);
     }
 
     /// Log CDM reconciliation scale-up decision.
     public static void reconciliationScaleUp(String artifact, int currentInstances, int desiredInstances) {
         AUDIT.info("RECONCILIATION_SCALE_UP artifact={} currentInstances={} desiredInstances={}",
-                   artifact, currentInstances, desiredInstances);
+                   artifact,
+                   currentInstances,
+                   desiredInstances);
     }
 
     /// Log CDM reconciliation scale-down decision.
     public static void reconciliationScaleDown(String artifact, int currentInstances, int desiredInstances) {
         AUDIT.info("RECONCILIATION_SCALE_DOWN artifact={} currentInstances={} desiredInstances={}",
-                   artifact, currentInstances, desiredInstances);
+                   artifact,
+                   currentInstances,
+                   desiredInstances);
     }
 }

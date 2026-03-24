@@ -2174,12 +2174,20 @@ public interface ClusterDeploymentManager {
     /// @param minInstances minimum instance count (hard floor for scale-down)
     /// @param owner the owning app blueprint ID, if this artifact was deployed via an app blueprint
     /// @param schemaRequired whether schema migrations must complete before activation (default true)
-    record Blueprint(Artifact artifact, int instances, int minInstances, Option<BlueprintId> owner, boolean schemaRequired) {
+    record Blueprint(Artifact artifact,
+                     int instances,
+                     int minInstances,
+                     Option<BlueprintId> owner,
+                     boolean schemaRequired) {
         static Blueprint blueprint(Artifact artifact, int instances, int minInstances, Option<BlueprintId> owner) {
             return new Blueprint(artifact, instances, minInstances, owner, true);
         }
 
-        static Blueprint blueprint(Artifact artifact, int instances, int minInstances, Option<BlueprintId> owner, boolean schemaRequired) {
+        static Blueprint blueprint(Artifact artifact,
+                                   int instances,
+                                   int minInstances,
+                                   Option<BlueprintId> owner,
+                                   boolean schemaRequired) {
             return new Blueprint(artifact, instances, minInstances, owner, schemaRequired);
         }
 

@@ -16,7 +16,6 @@ import static org.pragmatica.aether.http.handler.security.RoutePermission.OPERAT
 ///   - GET requests → ALL_AUTHENTICATED (any authenticated role)
 ///   - POST/PUT/DELETE requests → ADMIN_ONLY (unless explicitly overridden)
 public sealed interface RoutePermissionRegistry {
-
     /// Resolve the route permission for a given HTTP method and path.
     ///
     /// @param method HTTP method (GET, POST, PUT, DELETE, etc.)
@@ -38,34 +37,30 @@ public sealed interface RoutePermissionRegistry {
         private Prefixes() {}
 
         /// Admin-only mutation paths — destructive or configuration-changing operations.
-        static final List<String> ADMIN = List.of(
-            "/api/blueprint",
-            "/api/node/shutdown",
-            "/api/backup/restore",
-            "/api/logging/levels",
-            "/api/observability/depth"
-        );
+        static final List<String> ADMIN = List.of("/api/blueprint",
+                                                  "/api/node/shutdown",
+                                                  "/api/backup/restore",
+                                                  "/api/logging/levels",
+                                                  "/api/observability/depth");
 
         /// Operator-and-above mutation paths — operational but non-destructive.
-        static final List<String> OPERATOR = List.of(
-            "/api/node/drain",
-            "/api/node/activate",
-            "/api/schema",
-            "/api/canary",
-            "/api/blue-green",
-            "/api/rolling-update",
-            "/api/ab-test",
-            "/api/backup",
-            "/api/scale",
-            "/api/scheduled-tasks",
-            "/api/controller",
-            "/api/thresholds",
-            "/api/alerts/clear",
-            "/api/config",
-            "/api/invocation-metrics/strategy",
-            "/api/streams",
-            "/repository/"
-        );
+        static final List<String> OPERATOR = List.of("/api/node/drain",
+                                                     "/api/node/activate",
+                                                     "/api/schema",
+                                                     "/api/canary",
+                                                     "/api/blue-green",
+                                                     "/api/rolling-update",
+                                                     "/api/ab-test",
+                                                     "/api/backup",
+                                                     "/api/scale",
+                                                     "/api/scheduled-tasks",
+                                                     "/api/controller",
+                                                     "/api/thresholds",
+                                                     "/api/alerts/clear",
+                                                     "/api/config",
+                                                     "/api/invocation-metrics/strategy",
+                                                     "/api/streams",
+                                                     "/repository/");
 
         static RoutePermission resolveMutationPermission(String path) {
             if (matchesAny(path, ADMIN)) {

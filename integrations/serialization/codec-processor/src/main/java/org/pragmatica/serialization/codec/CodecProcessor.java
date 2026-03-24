@@ -15,7 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-@SupportedAnnotationTypes("org.pragmatica.serialization.Codec")
+@SupportedAnnotationTypes({"org.pragmatica.serialization.Codec", "org.pragmatica.serialization.CodecFor"})
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class CodecProcessor extends AbstractProcessor {
     private CodecClassGenerator generator;
@@ -29,15 +29,104 @@ public class CodecProcessor extends AbstractProcessor {
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
         Map<String, List<String>> packageToCodecNames = new LinkedHashMap<>();
+        Map<String, Set<String>> packageToRequiredTypes = new LinkedHashMap<>();
+
+        processCodecForAnnotations(roundEnv, packageToCodecNames, packageToRequiredTypes);
 
         for (var annotation : annotations) {
+            if ("org.pragmatica.serialization.CodecFor".equals(annotation.getQualifiedName().toString())) {
+                continue;
+            }
+
             for (var element : roundEnv.getElementsAnnotatedWith(annotation)) {
                 processAnnotatedElement(element, packageToCodecNames);
             }
         }
 
-        generateRegistries(packageToCodecNames);
+        generateRegistries(packageToCodecNames, packageToRequiredTypes);
         return true;
+    }
+
+    private void processCodecForAnnotations(RoundEnvironment roundEnv,
+                                             Map<String, List<String>> packageToCodecNames,
+                                             Map<String, Set<String>> packageToRequiredTypes) {
+        var codecForType = processingEnv.getElementUtils().getTypeElement("org.pragmatica.serialization.CodecFor");
+
+        if (codecForType == null) {
+            return;
+        }
+
+        for (var element : roundEnv.getElementsAnnotatedWith(codecForType)) {
+            processCodecForElement(element, packageToCodecNames, packageToRequiredTypes);
+        }
+    }
+
+    private void processCodecForElement(Element element,
+                                         Map<String, List<String>> packageToCodecNames,
+                                         Map<String, Set<String>> packageToRequiredTypes) {
+        var externalTypes = extractCodecForTypes(element);
+
+        for (var typeMirror : externalTypes) {
+            var typeElement = (TypeElement) processingEnv.getTypeUtils().asElement(typeMirror);
+
+            if (typeElement == null) {
+                continue;
+            }
+
+            var qualifiedName = typeElement.getQualifiedName().toString();
+            generator.addKnownCodecType(qualifiedName);
+
+            var packageName = processingEnv.getElementUtils()
+                                            .getPackageOf(element)
+                                            .getQualifiedName()
+                                            .toString();
+            packageToRequiredTypes.computeIfAbsent(packageName, _ -> new java.util.LinkedHashSet<>())
+                                  .add(qualifiedName);
+
+            var kind = typeElement.getKind();
+
+            if (kind == ElementKind.RECORD) {
+                if (validateRecordFields(typeElement)) {
+                    var tag = extractTag(typeElement);
+
+                    if (generator.generateRecordCodec(typeElement, tag)) {
+                        registerCodec(typeElement, packageToCodecNames);
+                        note(element, "Generated codec via @CodecFor: " + typeElement.getSimpleName() + "Codec");
+                    }
+                }
+            } else if (kind == ElementKind.ENUM) {
+                var tag = extractTag(typeElement);
+
+                if (generator.generateEnumCodec(typeElement, tag)) {
+                    registerCodec(typeElement, packageToCodecNames);
+                    note(element, "Generated codec via @CodecFor: " + typeElement.getSimpleName() + "Codec");
+                }
+            }
+            // For classes/interfaces (e.g. InetSocketAddress, TimeSpan): no generation, just suppress errors
+        }
+    }
+
+    private List<javax.lang.model.type.TypeMirror> extractCodecForTypes(Element element) {
+        var result = new ArrayList<javax.lang.model.type.TypeMirror>();
+
+        for (var mirror : element.getAnnotationMirrors()) {
+            if (!"org.pragmatica.serialization.CodecFor".equals(mirror.getAnnotationType().toString())) {
+                continue;
+            }
+
+            for (var entry : mirror.getElementValues().entrySet()) {
+                if ("value()".equals(entry.getKey().toString())) {
+                    @SuppressWarnings("unchecked")
+                    var values = (List<javax.lang.model.element.AnnotationValue>) entry.getValue().getValue();
+
+                    for (var value : values) {
+                        result.add((javax.lang.model.type.TypeMirror) value.getValue());
+                    }
+                }
+            }
+        }
+
+        return result;
     }
 
     private void processAnnotatedElement(Element element, Map<String, List<String>> packageToCodecNames) {
@@ -185,17 +274,21 @@ public class CodecProcessor extends AbstractProcessor {
         return afterPackage.substring(0, lastDot).replace('.', '_') + "_";
     }
 
-    private void generateRegistries(Map<String, List<String>> packageToCodecNames) {
+    private void generateRegistries(Map<String, List<String>> packageToCodecNames,
+                                     Map<String, Set<String>> packageToRequiredTypes) {
         for (var entry : packageToCodecNames.entrySet()) {
             var packageName = entry.getKey();
             var codecNames = entry.getValue();
             var registryName = deriveRegistryName(packageName);
+            var requiredTypes = packageToRequiredTypes.getOrDefault(packageName, Set.of());
 
-            if (generator.generateRegistry(packageName, registryName, codecNames)) {
+            if (generator.generateRegistry(packageName, registryName, codecNames, requiredTypes)) {
                 processingEnv.getMessager()
                              .printMessage(Diagnostic.Kind.NOTE, "Generated registry: " + registryName);
             }
         }
+        // @CodecFor-only packages (no @Codec types) don't get generated registries —
+        // the annotated class is expected to be hand-written and manage its own codec list.
     }
 
     private int extractTag(TypeElement element) {

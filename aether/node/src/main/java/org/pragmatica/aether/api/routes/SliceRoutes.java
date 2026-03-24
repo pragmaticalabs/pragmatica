@@ -198,7 +198,8 @@ public final class SliceRoutes implements RouteSource {
                                                                           .asString(),
                                                                   expanded.loadOrder()
                                                                           .size()))
-                           .onSuccess(r -> auditAndEmitBlueprintDeployed(r.blueprint(), r.slices()))
+                           .onSuccess(r -> auditAndEmitBlueprintDeployed(r.blueprint(),
+                                                                         r.slices()))
                            .onFailure(cause -> log.warn("Blueprint publish failed: {}",
                                                         cause.message()));
     }
@@ -217,7 +218,8 @@ public final class SliceRoutes implements RouteSource {
                                                                     .asString(),
                                                             expanded.loadOrder()
                                                                     .size()))
-                     .onSuccess(r -> auditAndEmitBlueprintDeployed(r.blueprint(), r.slices()))
+                     .onSuccess(r -> auditAndEmitBlueprintDeployed(r.blueprint(),
+                                                                   r.slices()))
                      .onFailure(cause -> log.warn("Blueprint artifact deploy failed: {}",
                                                   cause.message()));
     }

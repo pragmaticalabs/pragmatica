@@ -12,7 +12,6 @@ public enum SecurityMode {
     NONE,
     API_KEY,
     JWT;
-
     /// Parse security mode from TOML string value.
     ///
     /// @param value the string value (e.g. "none", "api-key", "jwt")
@@ -23,7 +22,6 @@ public enum SecurityMode {
                      .map(String::toLowerCase)
                      .flatMap(SecurityMode::fromNormalized);
     }
-
     private static Option<SecurityMode> fromNormalized(String normalized) {
         return switch (normalized) {
             case "none" -> Option.some(NONE);

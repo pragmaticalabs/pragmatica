@@ -8,13 +8,14 @@ import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Result.success;
 
@@ -51,9 +52,8 @@ class JwtSecurityValidator implements SecurityValidator {
     }
 
     private Result<SecurityContext> validateBearerToken(HttpRequestContext request) {
-        return extractBearerToken(request.headers())
-            .toResult(SecurityError.MISSING_BEARER_TOKEN)
-            .flatMap(this::validateToken);
+        return extractBearerToken(request.headers()).toResult(SecurityError.MISSING_BEARER_TOKEN)
+                                 .flatMap(this::validateToken);
     }
 
     private Result<SecurityContext> validateToken(String token) {
@@ -62,20 +62,21 @@ class JwtSecurityValidator implements SecurityValidator {
     }
 
     private Result<SecurityContext> verifyAndBuildContext(JwtTokenParser.ParsedJwt jwt) {
-        return verifySignature(jwt)
-            .flatMap(verified -> validateClaims(verified.payload()))
-            .flatMap(payload -> buildSecurityContext(payload));
+        return verifySignature(jwt).flatMap(verified -> validateClaims(verified.payload()))
+                              .flatMap(payload -> buildSecurityContext(payload));
     }
 
     private Result<JwtTokenParser.ParsedJwt> verifySignature(JwtTokenParser.ParsedJwt jwt) {
-        return keyStore.findKey(jwt.header().kid(), jwt.header().alg())
+        return keyStore.findKey(jwt.header()
+                                   .kid(),
+                                jwt.header()
+                                   .alg())
                        .flatMap(key -> JwtSignatureVerifier.verify(jwt, key));
     }
 
     private Result<Map<String, Object>> validateClaims(Map<String, Object> payload) {
-        return validateExpiration(payload)
-            .flatMap(this::validateIssuer)
-            .flatMap(this::validateAudience);
+        return validateExpiration(payload).flatMap(this::validateIssuer)
+                                 .flatMap(this::validateAudience);
     }
 
     private Result<Map<String, Object>> validateExpiration(Map<String, Object> payload) {
@@ -106,9 +107,9 @@ class JwtSecurityValidator implements SecurityValidator {
     }
 
     private static Result<Map<String, Object>> matchClaim(Map<String, Object> payload,
-                                                           String claimName,
-                                                           String expected,
-                                                           String label) {
+                                                          String claimName,
+                                                          String expected,
+                                                          String label) {
         var actual = Option.option(payload.get(claimName))
                            .map(Object::toString)
                            .or("");
@@ -119,22 +120,23 @@ class JwtSecurityValidator implements SecurityValidator {
 
     @SuppressWarnings("unchecked")
     private static Result<Map<String, Object>> matchAudienceClaim(Map<String, Object> payload,
-                                                                   String expected) {
+                                                                  String expected) {
         return Option.option(payload.get("aud"))
                      .toResult(new SecurityError.AudienceMismatch("Missing aud claim"))
                      .flatMap(audValue -> checkAudienceValue(audValue, expected, payload));
     }
 
     private static Result<Map<String, Object>> checkAudienceValue(Object audValue,
-                                                                   String expected,
-                                                                   Map<String, Object> payload) {
+                                                                  String expected,
+                                                                  Map<String, Object> payload) {
         if (audValue instanceof String s) {
             return expected.equals(s)
                    ? success(payload)
                    : new SecurityError.AudienceMismatch("Audience mismatch").result();
         }
         if (audValue instanceof List<?> list) {
-            var match = list.stream().anyMatch(v -> expected.equals(String.valueOf(v)));
+            var match = list.stream()
+                            .anyMatch(v -> expected.equals(String.valueOf(v)));
             return match
                    ? success(payload)
                    : new SecurityError.AudienceMismatch("Audience mismatch").result();
@@ -151,7 +153,10 @@ class JwtSecurityValidator implements SecurityValidator {
         var roles = extractRoles(payload, roleClaim);
         var claims = extractStringClaims(payload);
         return SecurityContext.securityContext(subject, roles, claims)
-                              .map(ctx -> SecurityContext.securityContext(ctx.principal(), ctx.roles(), ctx.claims(), authRole));
+                              .map(ctx -> SecurityContext.securityContext(ctx.principal(),
+                                                                          ctx.roles(),
+                                                                          ctx.claims(),
+                                                                          authRole));
     }
 
     private static AuthorizationRole extractAuthorizationRole(Map<String, Object> payload, String roleClaim) {
@@ -179,7 +184,8 @@ class JwtSecurityValidator implements SecurityValidator {
     }
 
     private static Set<Role> toRoleSet(String roleValue) {
-        return Set.of(roleValue.split(",")).stream()
+        return Set.of(roleValue.split(","))
+                  .stream()
                   .map(String::trim)
                   .filter(s -> !s.isEmpty())
                   .map(Role::role)
@@ -190,13 +196,14 @@ class JwtSecurityValidator implements SecurityValidator {
     private static Map<String, String> extractStringClaims(Map<String, Object> payload) {
         return payload.entrySet()
                       .stream()
-                      .filter(e -> Option.option(e.getValue()).isPresent())
-                      .collect(Collectors.toMap(Map.Entry::getKey, e -> String.valueOf(e.getValue())));
+                      .filter(e -> Option.option(e.getValue())
+                                         .isPresent())
+                      .collect(Collectors.toMap(Map.Entry::getKey,
+                                                e -> String.valueOf(e.getValue())));
     }
 
     private static Option<String> extractBearerToken(Map<String, List<String>> headers) {
-        return extractAuthHeaderCaseSensitive(headers)
-            .orElse(() -> extractAuthHeaderCaseInsensitive(headers));
+        return extractAuthHeaderCaseSensitive(headers).orElse(() -> extractAuthHeaderCaseInsensitive(headers));
     }
 
     private static Option<String> extractAuthHeaderCaseSensitive(Map<String, List<String>> headers) {
@@ -204,7 +211,8 @@ class JwtSecurityValidator implements SecurityValidator {
                      .filter(values -> !values.isEmpty())
                      .map(List::getFirst)
                      .filter(v -> v.startsWith(BEARER_PREFIX))
-                     .map(v -> v.substring(BEARER_PREFIX.length()).trim());
+                     .map(v -> v.substring(BEARER_PREFIX.length())
+                                .trim());
     }
 
     private static Option<String> extractAuthHeaderCaseInsensitive(Map<String, List<String>> headers) {
@@ -212,10 +220,17 @@ class JwtSecurityValidator implements SecurityValidator {
                            .stream()
                            .filter(e -> "authorization".equalsIgnoreCase(e.getKey()))
                            .map(Map.Entry::getValue)
-                           .flatMap(values -> Option.option(values).filter(v -> !v.isEmpty()).stream())
+                           .flatMap(values -> Option.option(values)
+                                                    .filter(v -> !v.isEmpty())
+                                                    .stream())
                            .map(List::getFirst)
-                           .filter(v -> v.regionMatches(true, 0, BEARER_PREFIX, 0, BEARER_PREFIX.length()))
-                           .map(v -> v.substring(BEARER_PREFIX.length()).trim())
+                           .filter(v -> v.regionMatches(true,
+                                                        0,
+                                                        BEARER_PREFIX,
+                                                        0,
+                                                        BEARER_PREFIX.length()))
+                           .map(v -> v.substring(BEARER_PREFIX.length())
+                                      .trim())
                            .findFirst();
         return Option.from(value);
     }

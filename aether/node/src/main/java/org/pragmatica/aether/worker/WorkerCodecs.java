@@ -11,12 +11,14 @@ import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.rabia.RabiaCodecs;
 import org.pragmatica.net.tcp.TcpCodecs;
+import org.pragmatica.serialization.CodecFor;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.serialization.SliceCodec.TypeCodec;
 import org.pragmatica.swim.SwimCodecs;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.Set;
 
 import static org.pragmatica.serialization.SliceCodec.deterministicTag;
 import static org.pragmatica.serialization.SliceCodec.readCompact;
@@ -26,6 +28,7 @@ import static org.pragmatica.serialization.SliceCodec.writeString;
 
 /// Registry of all worker-level types for serialization.
 /// Collects generated codec registries from dependencies and worker-specific types.
+@CodecFor(InetSocketAddress.class)
 @SuppressWarnings("JBCT-STY-03") // KvstoreCodecs exists in two packages — FQCN unavoidable
 public sealed interface WorkerCodecs {
     record unused() implements WorkerCodecs {}
@@ -57,7 +60,15 @@ public sealed interface WorkerCodecs {
         all.addAll(SwimCodecs.CODECS);
         // Manual entry — JDK type without @Codec, uses createUnresolved to avoid DNS blocking
         all.add(inetSocketAddressCodec());
-        return SliceCodec.sliceCodec(parent, all);
+        var requiredTypes = collectRequiredTypes();
+        return SliceCodec.sliceCodec(parent, all, requiredTypes);
+    }
+
+    private static Set<Class<?>> collectRequiredTypes() {
+        var types = new java.util.HashSet<Class<?>>();
+        types.addAll(SwimCodecs.REQUIRED_TYPES);
+        types.add(InetSocketAddress.class);
+        return types;
     }
 
     /// InetSocketAddress codec — uses createUnresolved to avoid blocking DNS on deserialization.

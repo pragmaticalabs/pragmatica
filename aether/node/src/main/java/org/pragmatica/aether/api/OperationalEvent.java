@@ -9,23 +9,34 @@ import org.pragmatica.messaging.Message;
 /// These events flow through the MessageRouter to ClusterEventAggregator,
 /// which converts them to ClusterEvent records for dashboard and API consumption.
 public sealed interface OperationalEvent extends Message.Local {
-
-    record AccessDenied(String principal, String method, String path,
-                        String actualRole, String requiredRole, long timestamp) implements OperationalEvent {
-        public static AccessDenied accessDenied(String principal, String method, String path,
-                                                String actualRole, String requiredRole) {
+    record AccessDenied(String principal,
+                        String method,
+                        String path,
+                        String actualRole,
+                        String requiredRole,
+                        long timestamp) implements OperationalEvent {
+        public static AccessDenied accessDenied(String principal,
+                                                String method,
+                                                String path,
+                                                String actualRole,
+                                                String requiredRole) {
             return new AccessDenied(principal, method, path, actualRole, requiredRole, System.currentTimeMillis());
         }
     }
 
-    record NodeLifecycleChanged(String nodeId, String transition, String requestedBy,
+    record NodeLifecycleChanged(String nodeId,
+                                String transition,
+                                String requestedBy,
                                 long timestamp) implements OperationalEvent {
         public static NodeLifecycleChanged nodeLifecycleChanged(String nodeId, String transition, String requestedBy) {
             return new NodeLifecycleChanged(nodeId, transition, requestedBy, System.currentTimeMillis());
         }
     }
 
-    record ConfigChanged(String key, String scope, String action, String requestedBy,
+    record ConfigChanged(String key,
+                         String scope,
+                         String action,
+                         String requestedBy,
                          long timestamp) implements OperationalEvent {
         public static ConfigChanged configChanged(String key, String scope, String action, String requestedBy) {
             return new ConfigChanged(key, scope, action, requestedBy, System.currentTimeMillis());

@@ -13,6 +13,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
+import org.pragmatica.serialization.CodecFor;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -20,6 +21,7 @@ import static org.pragmatica.lang.Result.success;
 
 /// Aether KV-Store structured keys for cluster state management
 @Codec
+@CodecFor(MethodName.class)
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02", "JBCT-NAM-01"})
 public sealed interface AetherKey extends StructuredKey {
     /// String representation of the key
@@ -1390,8 +1392,7 @@ public sealed interface AetherKey extends StructuredKey {
 
         @Override
         public String asString() {
-            return PREFIX + streamName + "/" + configSection + "/"
-                   + artifact.asString() + "/" + methodName.name();
+            return PREFIX + streamName + "/" + configSection + "/" + artifact.asString() + "/" + methodName.name();
         }
 
         @Override
@@ -1401,9 +1402,9 @@ public sealed interface AetherKey extends StructuredKey {
 
         @SuppressWarnings("JBCT-VO-02")
         public static StreamRegistrationKey streamRegistrationKey(String streamName,
-                                                                   String configSection,
-                                                                   Artifact artifact,
-                                                                   MethodName methodName) {
+                                                                  String configSection,
+                                                                  Artifact artifact,
+                                                                  MethodName methodName) {
             return new StreamRegistrationKey(streamName, configSection, artifact, methodName);
         }
 
@@ -1440,7 +1441,10 @@ public sealed interface AetherKey extends StructuredKey {
             }
             return Result.all(Artifact.artifact(artifactPart),
                               MethodName.methodName(methodPart))
-                         .map((artifact, method) -> new StreamRegistrationKey(streamName, configSection, artifact, method));
+                         .map((artifact, method) -> new StreamRegistrationKey(streamName,
+                                                                              configSection,
+                                                                              artifact,
+                                                                              method));
         }
     }
 }

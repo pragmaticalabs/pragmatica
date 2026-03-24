@@ -6,11 +6,14 @@ import java.util.List;
 /// Explanations are suitable for both human operators and LLM agents.
 @SuppressWarnings("JBCT-UTIL-02")
 public interface SchemaExplanationBuilder {
-
-    static String buildFailedExplanation(String datasource, String artifactCoords,
-                                         FailureClassification classification, String causeMessage,
-                                         List<String> blockedSlices, int attemptNumber,
-                                         int maxRetries, long nextRetryMs) {
+    static String buildFailedExplanation(String datasource,
+                                         String artifactCoords,
+                                         FailureClassification classification,
+                                         String causeMessage,
+                                         List<String> blockedSlices,
+                                         int attemptNumber,
+                                         int maxRetries,
+                                         long nextRetryMs) {
         var sb = new StringBuilder();
         sb.append("Schema migration FAILED for datasource '")
           .append(datasource)
@@ -24,14 +27,18 @@ public interface SchemaExplanationBuilder {
         return sb.toString();
     }
 
-    static String buildRetryingExplanation(String datasource, String artifactCoords,
-                                           int attemptNumber, long nextRetryMs) {
+    static String buildRetryingExplanation(String datasource,
+                                           String artifactCoords,
+                                           int attemptNumber,
+                                           long nextRetryMs) {
         return "Schema migration for datasource '" + datasource + "' (artifact '" + artifactCoords
                + "') — scheduling retry attempt " + (attemptNumber + 1) + " in " + (nextRetryMs / 1000) + "s.";
     }
 
-    private static void appendCauseLine(StringBuilder sb, String causeMessage,
-                                        int attemptNumber, int maxRetries) {
+    private static void appendCauseLine(StringBuilder sb,
+                                        String causeMessage,
+                                        int attemptNumber,
+                                        int maxRetries) {
         sb.append("Cause: ")
           .append(causeMessage)
           .append(" (attempt ")
@@ -41,12 +48,15 @@ public interface SchemaExplanationBuilder {
           .append(").\n");
     }
 
-    private static void appendClassificationLine(StringBuilder sb, FailureClassification classification,
-                                                  long nextRetryMs) {
+    private static void appendClassificationLine(StringBuilder sb,
+                                                 FailureClassification classification,
+                                                 long nextRetryMs) {
         sb.append("Classification: ")
           .append(classification.name());
         if (classification == FailureClassification.TRANSIENT && nextRetryMs > 0) {
-            sb.append(" — automatic retry scheduled in ").append(nextRetryMs / 1000).append("s");
+            sb.append(" — automatic retry scheduled in ")
+              .append(nextRetryMs / 1000)
+              .append("s");
         } else if (classification == FailureClassification.PERMANENT) {
             sb.append(" — automatic retry will not help");
         }
@@ -62,13 +72,18 @@ public interface SchemaExplanationBuilder {
             return;
         }
         sb.append(":\n");
-        blockedSlices.forEach(slice -> sb.append("  - ").append(slice).append("\n"));
+        blockedSlices.forEach(slice -> sb.append("  - ")
+                                         .append(slice)
+                                         .append("\n"));
         sb.append("\n");
     }
 
-    private static void appendOptionsSection(StringBuilder sb, FailureClassification classification,
-                                              String datasource, int attemptNumber,
-                                              int maxRetries, long nextRetryMs) {
+    private static void appendOptionsSection(StringBuilder sb,
+                                             FailureClassification classification,
+                                             String datasource,
+                                             int attemptNumber,
+                                             int maxRetries,
+                                             long nextRetryMs) {
         sb.append("Options:\n");
         var optionIndex = 1;
         if (classification == FailureClassification.TRANSIENT && attemptNumber < maxRetries) {

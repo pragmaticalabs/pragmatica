@@ -268,19 +268,22 @@ class AppHttpServerImpl implements AppHttpServer {
         rebuildRouter();
         var protocol = config.httpProtocol();
         if (protocol.includesH1()) {
-            return startH1Server()
-                .flatMap(_ -> protocol.includesH3() ? startH3Server() : Promise.success(unit()));
+            return startH1Server().flatMap(_ -> protocol.includesH3()
+                                                ? startH3Server()
+                                                : Promise.success(unit()));
         }
         return startH3Server();
     }
 
     private Promise<Unit> startH1Server() {
         var serverConfig = buildServerConfig();
-        java.util.function.BiConsumer<org.pragmatica.http.server.RequestContext,
-            org.pragmatica.http.server.ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
-                      ? this::handleRequestWithAltSvc
-                      : this::handleRequest;
-        var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig, handler, bg, wg)))
+        java.util.function.BiConsumer<org.pragmatica.http.server.RequestContext, org.pragmatica.http.server.ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
+                                                                                                                                      ? this::handleRequestWithAltSvc
+                                                                                                                                      : this::handleRequest;
+        var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
+                                                                                                handler,
+                                                                                                bg,
+                                                                                                wg)))
                                      .or(HttpServer.httpServer(serverConfig, handler));
         return serverPromise.map(this::registerStartedH1Server)
                             .onFailure(cause -> log.error("Failed to start App HTTP server on port {}: {}",
@@ -291,15 +294,20 @@ class AppHttpServerImpl implements AppHttpServer {
     private Promise<Unit> startH3Server() {
         var quicTls = tls.map(QuicSslContextFactory::createServer)
                          .or(QuicSslContextFactory.createSelfSignedServer());
-        return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context: {}", cause.message()))
+        return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context: {}",
+                                                    cause.message()))
                       .map(this::startH3WithSslContext)
                       .or(Promise.success(unit()));
     }
 
     private Promise<Unit> startH3WithSslContext(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
-        var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3", config.port())
+        var serverConfig = HttpServerConfig.httpServerConfig("app-http-h3",
+                                                             config.port())
                                            .withMaxContentLength(config.maxRequestSize());
-        var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig, quicSslContext, this::handleRequest, wg))
+        var serverPromise = workerGroup.map(wg -> HttpServer.http3Server(serverConfig,
+                                                                         quicSslContext,
+                                                                         this::handleRequest,
+                                                                         wg))
                                        .or(HttpServer.http3Server(serverConfig, quicSslContext, this::handleRequest));
         return serverPromise.map(this::registerStartedH3Server)
                             .onFailure(cause -> log.error("Failed to start App HTTP/3 server on port {}: {}",
@@ -335,10 +343,12 @@ class AppHttpServerImpl implements AppHttpServer {
     @Override
     public Promise<Unit> stop() {
         var h1Stop = Option.option(serverRef.get())
-                           .map(server -> server.stop().onSuccessRun(() -> log.info("App HTTP/1.1 server stopped")))
+                           .map(server -> server.stop()
+                                                .onSuccessRun(() -> log.info("App HTTP/1.1 server stopped")))
                            .or(Promise.success(unit()));
         var h3Stop = Option.option(h3ServerRef.get())
-                           .map(server -> server.stop().onSuccessRun(() -> log.info("App HTTP/3 server stopped")))
+                           .map(server -> server.stop()
+                                                .onSuccessRun(() -> log.info("App HTTP/3 server stopped")))
                            .or(Promise.success(unit()));
         return h1Stop.flatMap(_ -> h3Stop);
     }
@@ -455,18 +465,19 @@ class AppHttpServerImpl implements AppHttpServer {
         if (config.securityEnabled()) {
             AuditLog.authSuccess(requestId, principal, method, path);
         }
-        ScopedValue.where(SecurityContextHolder.scopedValue(), securityContext)
+        ScopedValue.where(SecurityContextHolder.scopedValue(),
+                          securityContext)
                    .run(() -> InvocationContext.runWithContext(requestId,
-                                                              principal,
-                                                              selfNodeId.id(),
-                                                              0,
-                                                              true,
-                                                              () -> dispatchToRoute(request,
-                                                                                    response,
-                                                                                    routeTable,
-                                                                                    method,
-                                                                                    normalizedPath,
-                                                                                    requestId)));
+                                                               principal,
+                                                               selfNodeId.id(),
+                                                               0,
+                                                               true,
+                                                               () -> dispatchToRoute(request,
+                                                                                     response,
+                                                                                     routeTable,
+                                                                                     method,
+                                                                                     normalizedPath,
+                                                                                     requestId)));
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Dispatcher method — decomposition would scatter routing logic
@@ -613,12 +624,16 @@ class AppHttpServerImpl implements AppHttpServer {
 
     private static SecurityStatusMessage mapSecurityError(Cause cause) {
         return switch (cause) {
-            case SecurityError.MissingCredentials _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Authentication required");
+            case SecurityError.MissingCredentials _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
+                                                                                 "Authentication required");
             case SecurityError.TokenExpired _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Token expired");
             case SecurityError.SignatureInvalid _, SecurityError.IssuerMismatch _,
-                 SecurityError.AudienceMismatch _, SecurityError.KeyNotFound _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN, "Invalid token");
-            case SecurityError.InvalidCredentials _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN, "Invalid credentials");
-            case SecurityError.JwksFetchFailed _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Authentication temporarily unavailable");
+            SecurityError.AudienceMismatch _, SecurityError.KeyNotFound _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
+                                                                                                       "Invalid token");
+            case SecurityError.InvalidCredentials _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
+                                                                                 "Invalid credentials");
+            case SecurityError.JwksFetchFailed _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
+                                                                              "Authentication temporarily unavailable");
             default -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Authentication failed");
         };
     }
@@ -830,15 +845,16 @@ class AppHttpServerImpl implements AppHttpServer {
         var ser = serializer.unwrap();
         var network = clusterNetwork.unwrap();
         // Deserialize the request context
-        Result.<HttpRequestContext, byte[]>lift1(des::decode, request.requestData())
+        Result.<HttpRequestContext, byte[]> lift1(des::decode,
+                                                  request.requestData())
               .onFailure(cause -> logAndSendForwardError(network, request, "Deserialization failed", cause))
               .onSuccess(context -> dispatchForwardedRequest(context, request, network, ser));
     }
 
     private void logAndSendForwardError(ClusterNetwork network,
-                                          HttpForwardRequest request,
-                                          String prefix,
-                                          Cause cause) {
+                                        HttpForwardRequest request,
+                                        String prefix,
+                                        Cause cause) {
         log.error("{} [{}]: {}", prefix, request.requestId(), cause.message());
         sendForwardError(network, request, prefix + ": " + cause.message());
     }
@@ -862,7 +878,13 @@ class AppHttpServerImpl implements AppHttpServer {
         routeInfo.onPresent(this::recordMetricsStart);
         routerOpt.unwrap()
                  .handle(context)
-                 .onSuccess(responseData -> handleForwardSuccess(network, request, ser, responseData, routeInfo, startTime, context))
+                 .onSuccess(responseData -> handleForwardSuccess(network,
+                                                                 request,
+                                                                 ser,
+                                                                 responseData,
+                                                                 routeInfo,
+                                                                 startTime,
+                                                                 context))
                  .onFailure(cause -> handleForwardFailure(network, request, cause, routeInfo, startTime, context));
     }
 

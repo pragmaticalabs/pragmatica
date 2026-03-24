@@ -539,24 +539,26 @@ class ManagementServerImpl implements ManagementServer {
                                 .isSuccess();
     }
 
-    private Result<org.pragmatica.aether.http.handler.security.SecurityContext> enforceAndAuditDenial(
-            org.pragmatica.aether.http.handler.security.SecurityContext sc,
-            RoutePermission permission,
-            String method,
-            String path) {
+    private Result<org.pragmatica.aether.http.handler.security.SecurityContext> enforceAndAuditDenial(org.pragmatica.aether.http.handler.security.SecurityContext sc,
+                                                                                                      RoutePermission permission,
+                                                                                                      String method,
+                                                                                                      String path) {
         return RoleEnforcer.enforce(sc, permission)
                            .onFailure(_ -> auditAccessDenied(sc, method, path, permission));
     }
 
     private void auditAccessDenied(org.pragmatica.aether.http.handler.security.SecurityContext sc,
-                                    String method,
-                                    String path,
-                                    RoutePermission permission) {
+                                   String method,
+                                   String path,
+                                   RoutePermission permission) {
         var principal = sc.isAuthenticated()
-                        ? sc.principal().value()
+                        ? sc.principal()
+                            .value()
                         : "anonymous";
-        var actualRole = sc.authorizationRole().name();
-        var requiredRole = permission.minimumRole().name();
+        var actualRole = sc.authorizationRole()
+                           .name();
+        var requiredRole = permission.minimumRole()
+                                     .name();
         AuditLog.accessDenied(principal, method, path, actualRole, requiredRole);
         nodeSupplier.get()
                     .route(OperationalEvent.AccessDenied.accessDenied(principal, method, path, actualRole, requiredRole));

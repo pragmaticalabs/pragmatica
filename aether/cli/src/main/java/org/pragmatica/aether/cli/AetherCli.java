@@ -3176,7 +3176,8 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var encoded = Base64.getEncoder().encodeToString(message.getBytes());
+                var encoded = Base64.getEncoder()
+                                    .encodeToString(message.getBytes());
                 var body = "{\"data\":\"" + encoded + "\"}";
                 var response = streamParent.parent.postToNode("/api/streams/" + name + "/publish", body);
                 System.out.println(formatJson(response));

@@ -105,7 +105,12 @@ public interface BlueprintParser {
         var stages = parseCanaryStages(doc);
         var schemaRequired = doc.getBoolean("deployment", "schema_required")
                                 .or(true);
-        return some(DeploymentConfig.deploymentConfig(strategy, stages, maxErrorRate, maxLatencyMs, drainTimeoutMs, schemaRequired));
+        return some(DeploymentConfig.deploymentConfig(strategy,
+                                                      stages,
+                                                      maxErrorRate,
+                                                      maxLatencyMs,
+                                                      drainTimeoutMs,
+                                                      schemaRequired));
     }
 
     private static Strategy parseStrategy(String raw) {

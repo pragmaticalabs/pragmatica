@@ -91,7 +91,11 @@ public final class AuditLog {
 
     /// Log node lifecycle transition.
     public static void nodeLifecycleTransition(String nodeId, String targetState, boolean success, String message) {
-        AUDIT.info("NODE_LIFECYCLE_TRANSITION nodeId={} targetState={} success={} message={}", nodeId, targetState, success, message);
+        AUDIT.info("NODE_LIFECYCLE_TRANSITION nodeId={} targetState={} success={} message={}",
+                   nodeId,
+                   targetState,
+                   success,
+                   message);
     }
 
     /// Log blueprint deployed.
@@ -111,11 +115,15 @@ public final class AuditLog {
 
     /// Log authorization denial — principal lacked required role for the requested endpoint.
     public static void accessDenied(String principal,
-                                     String method,
-                                     String path,
-                                     String actualRole,
-                                     String requiredRole) {
+                                    String method,
+                                    String path,
+                                    String actualRole,
+                                    String requiredRole) {
         AUDIT.warn("ACCESS_DENIED principal={} method={} path={} role={} required={}",
-                   principal, method, path, actualRole, requiredRole);
+                   principal,
+                   method,
+                   path,
+                   actualRole,
+                   requiredRole);
     }
 }
