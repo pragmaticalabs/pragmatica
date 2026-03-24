@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.24.0] - Unreleased
 
+### Added
+- **Soak test infrastructure** — 4-hour k6 sustained load scenario with chaos injection phases (worker kill, rolling restart), Prometheus + Grafana monitoring with 14-panel auto-provisioned dashboard, automated pass/fail verdict (6 criteria: heap growth, GC pause, P99 drift, error rate, SWIM stability, node count), markdown report generation
+- **QUIC transport specification** — implementation-ready spec for stream-per-message-type QUIC transport, targeted pre-V1.0.0
+
 ## [0.23.1] - 2026-03-24
 
 ### Added
