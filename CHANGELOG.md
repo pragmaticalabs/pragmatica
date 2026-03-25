@@ -4,7 +4,9 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.24.1] - Unreleased
+## [0.25.0] - Unreleased
+
+## [0.24.1] - 2026-03-25
 
 ### Added
 - **ClusterTopologyManager** — new node lifecycle manager with reconciliation state machine (FORMING → CONVERGED ↔ RECONCILING). Handles auto-heal, scale-up/down, quorum safety. Replaces fragile boolean flags in CDM with clean state transitions. Single action path for all node count changes

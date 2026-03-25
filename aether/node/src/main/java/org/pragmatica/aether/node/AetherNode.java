@@ -159,7 +159,7 @@ import org.slf4j.LoggerFactory;
 /// Assembles all components: consensus, KV-store, slice management, deployment managers.
 @SuppressWarnings("JBCT-RET-01")
 public interface AetherNode {
-    String VERSION = "0.24.1";
+    String VERSION = "0.25.0";
     NodeId self();
 
     Promise<Unit> start();
