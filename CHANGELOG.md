@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [0.24.1] - Unreleased
 
 ### Added
+- **ClusterTopologyManager** — new node lifecycle manager with reconciliation state machine (FORMING → CONVERGED ↔ RECONCILING). Handles auto-heal, scale-up/down, quorum safety. Replaces fragile boolean flags in CDM with clean state transitions. Single action path for all node count changes
+- **Consensus-driven topology discovery** — Hello handshake carries node address; ON_DUTY lifecycle notifications trigger topology additions. Dynamically provisioned nodes become visible to all cluster members via consensus, not just the provisioning leader
 - **Per-route security** — routes.toml `[security]` section with per-route policies (public/authenticated/role:name), type-safe `RouteSecurityPolicy` interface with `canAccess()`, `SecurityPolicy` sealed variants in Aether, route-level enforcement in AppHttpServer (per-route wins over global SecurityMode)
 - **Principal/SecurityContext injection** — slice handler methods can declare `Principal` or `SecurityContext` parameters; code generator injects from `SecurityContextHolder` automatically
 - **Blueprint security overrides** — operators can override route security at deploy time via `[security.overrides]` in blueprint.toml with `strengthen_only`/`full`/`none` policies
@@ -17,14 +19,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Streaming lifecycle operations spec** — §16 added to in-memory streams spec: replica count change, repartitioning, stream deletion, migration patterns
 
 ### Changed
+- **Topology management refactored** — `TcpTopologyManager` renamed to `TopologyObserver` (pure observation); new `ClusterTopologyManager` wraps observer and manages cluster size. CDM no longer owns node provisioning
+- **`NodeLifecycleValue` carries address** — host/port included in ON_DUTY registration for consensus-driven node discovery (backward compatible with old format)
 - **`RouteSecurityPolicy` renamed to `SecurityPolicy`** — moved from transport-level to intent-based (Public, Authenticated, ApiKeyRequired, BearerTokenRequired, RoleRequired); extends generic `RouteSecurityPolicy` from http-routing layer
 - **`[security]` section optional** — routes.toml without `[security]` defaults to PUBLIC with STRENGTHEN_ONLY policy (backward compatible)
 - **Security validators handle all policy variants** — ApiKeySecurityValidator and JwtSecurityValidator now handle Authenticated and RoleRequired in addition to their primary types
 - **Route security in KV-Store** — `NodeRoutesValue.RouteEntry` carries security field; serialization is backward compatible with old format
 
 ### Fixed
-- **Node departure healing** — SWIM FAULTY now routes `RemoveNode` to topology manager; QUIC disconnect routes `RemoveNode` for passive LB (no SWIM); CDM rebuilds state from KV-Store before cleanup; cleanup and reconciliation run sequentially to avoid consensus batch collisions
-- **Reconnection storm after node kill** — `ConnectionFailed` routed to topology manager for exponential backoff; `attemptReconnect()` removed from write failure path; reconciliation loop is sole reconnection driver
+- **Node auto-heal** — killed nodes automatically replaced via ComputeProvider; batch provisioning proportional to deficit; quorum safety (never below 3); ON_DUTY health check before considering provision complete; leader failover detects ready nodes via consensus
+- **Node departure healing** — SWIM FAULTY routes `RemoveNode` to topology manager; QUIC disconnect routes `RemoveNode` for passive LB; CDM rebuilds state before cleanup; sequential reconciliation prevents consensus batch collisions
+- **Reconnection storm eliminated** — `ConnectionFailed` routed to topology manager for exponential backoff; reconciliation loop is sole reconnection driver; new nodes bypass ConnectionDirection for initial join
 - **QUIC write failures detected** — `writeAndFlush()` listener detects failures, removes stale links, triggers reconnection
 - **QUIC DataHandler error containment** — `exceptionCaught()` closes channel; deserialization wrapped in try-catch to prevent single malformed message from killing connection
 - **QUIC write backpressure** — writability check before write; `WriteTimeoutHandler(10s)` in stream pipelines
