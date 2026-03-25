@@ -23,6 +23,7 @@ import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationContext;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.metrics.observability.HttpRequestObserver;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
@@ -129,6 +130,10 @@ public interface AppHttpServer {
     /// Get the HttpForwarder used by this server, if configured.
     Option<HttpForwarder> httpForwarder();
 
+    /// Get the HTTP route publisher, if configured.
+    /// Used to update security overrides when blueprints are published.
+    Option<HttpRoutePublisher> httpRoutePublisher();
+
     /// Create a MapSubscription adapter for DHT events.
     default MapSubscription<HttpNodeRouteKey, HttpNodeRouteValue> asHttpRouteSubscription() {
         return new MapSubscription<>() {
@@ -158,6 +163,34 @@ public interface AppHttpServer {
                                        Option<EventLoopGroup> bossGroup,
                                        Option<EventLoopGroup> workerGroup,
                                        Option<DeploymentStrategyCoordinator> strategyCoordinator) {
+        return appHttpServer(config,
+                             selfNodeId,
+                             routeRegistry,
+                             httpRoutePublisher,
+                             clusterNetwork,
+                             serializer,
+                             deserializer,
+                             tls,
+                             metricsCollector,
+                             bossGroup,
+                             workerGroup,
+                             strategyCoordinator,
+                             Option.empty());
+    }
+
+    static AppHttpServer appHttpServer(AppHttpConfig config,
+                                       NodeId selfNodeId,
+                                       HttpRouteRegistry routeRegistry,
+                                       Option<HttpRoutePublisher> httpRoutePublisher,
+                                       Option<ClusterNetwork> clusterNetwork,
+                                       Option<Serializer> serializer,
+                                       Option<Deserializer> deserializer,
+                                       Option<TlsConfig> tls,
+                                       Option<InvocationMetricsCollector> metricsCollector,
+                                       Option<EventLoopGroup> bossGroup,
+                                       Option<EventLoopGroup> workerGroup,
+                                       Option<DeploymentStrategyCoordinator> strategyCoordinator,
+                                       Option<HttpRequestObserver> requestObserver) {
         return new AppHttpServerImpl(config,
                                      selfNodeId,
                                      routeRegistry,
@@ -169,7 +202,8 @@ public interface AppHttpServer {
                                      metricsCollector,
                                      bossGroup,
                                      workerGroup,
-                                     strategyCoordinator);
+                                     strategyCoordinator,
+                                     requestObserver);
     }
 }
 
@@ -190,6 +224,7 @@ class AppHttpServerImpl implements AppHttpServer {
     private final Option<EventLoopGroup> bossGroup;
     private final Option<EventLoopGroup> workerGroup;
     private final Option<DeploymentStrategyCoordinator> strategyCoordinator;
+    private final Option<HttpRequestObserver> requestObserver;
     private final Option<HttpForwarder> httpForwarder;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
     private final AtomicReference<HttpServer> h3ServerRef = new AtomicReference<>();
@@ -207,7 +242,8 @@ class AppHttpServerImpl implements AppHttpServer {
                       Option<InvocationMetricsCollector> metricsCollector,
                       Option<EventLoopGroup> bossGroup,
                       Option<EventLoopGroup> workerGroup,
-                      Option<DeploymentStrategyCoordinator> strategyCoordinator) {
+                      Option<DeploymentStrategyCoordinator> strategyCoordinator,
+                      Option<HttpRequestObserver> requestObserver) {
         this.config = config;
         this.selfNodeId = selfNodeId;
         this.routeRegistry = routeRegistry;
@@ -221,6 +257,7 @@ class AppHttpServerImpl implements AppHttpServer {
         this.bossGroup = bossGroup;
         this.workerGroup = workerGroup;
         this.strategyCoordinator = strategyCoordinator;
+        this.requestObserver = requestObserver;
         this.httpForwarder = buildHttpForwarder(selfNodeId,
                                                 routeRegistry,
                                                 clusterNetwork,
@@ -256,6 +293,11 @@ class AppHttpServerImpl implements AppHttpServer {
     @Override
     public Option<HttpForwarder> httpForwarder() {
         return httpForwarder;
+    }
+
+    @Override
+    public Option<HttpRoutePublisher> httpRoutePublisher() {
+        return httpRoutePublisher;
     }
 
     @Override
@@ -428,10 +470,16 @@ class AppHttpServerImpl implements AppHttpServer {
             sendHealthResponse(response, requestId);
             return;
         }
-        // Security validation — health endpoint already bypassed above
+        // Route lookup FIRST — then security based on per-route policy
+        var effectivePolicy = resolveEffectivePolicy(method, normalizedPath, routeTable);
+        // If policy requires auth but no validator is configured (SecurityMode=NONE), reject immediately
+        if (requiresAuthentication(effectivePolicy) && config.securityMode() == SecurityMode.NONE) {
+            handleSecurityFailure(response, SecurityError.NO_VALIDATOR_CONFIGURED, path, requestId, method);
+            return;
+        }
         var httpContext = toHttpRequestContext(request, requestId);
-        var policy = resolveSecurityPolicy();
-        securityValidator.validate(httpContext, policy)
+        securityValidator.validate(httpContext, effectivePolicy)
+                         .flatMap(ctx -> enforceRoleIfRequired(ctx, effectivePolicy))
                          .apply(cause -> handleSecurityFailure(response, cause, path, requestId, method),
                                 ctx -> dispatchAuthenticated(request,
                                                              response,
@@ -443,12 +491,54 @@ class AppHttpServerImpl implements AppHttpServer {
                                                              requestId));
     }
 
-    private SecurityPolicy resolveSecurityPolicy() {
+    /// Resolves the effective security policy for a request.
+    /// Per-route policy ALWAYS wins over global SecurityMode.
+    /// SecurityMode is the fallback for routes without explicit security (defaulting to PUBLIC).
+    private SecurityPolicy resolveEffectivePolicy(String method, String normalizedPath, RouteTable routeTable) {
+        var routePolicy = findRouteSecurityPolicy(method, normalizedPath, routeTable);
+        return routePolicy.or(globalSecurityPolicy());
+    }
+
+    private Option<SecurityPolicy> findRouteSecurityPolicy(String method,
+                                                           String normalizedPath,
+                                                           RouteTable routeTable) {
+        // Try local route first
+        var localPolicy = httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath))
+                                            .map(LocalRouteInfo::security)
+                                            .filter(AppHttpServerImpl::isExplicitPolicy);
+        if (localPolicy.isPresent()) {
+            return localPolicy;
+        }
+        // Try remote route — security is carried in RouteInfo
+        return findMatchingRemoteRoute(routeTable.remoteRoutes(),
+                                       method,
+                                       normalizedPath).map(route -> SecurityPolicy.fromString(route.security()))
+                                      .filter(AppHttpServerImpl::isExplicitPolicy);
+    }
+
+    private static boolean isExplicitPolicy(SecurityPolicy policy) {
+        return ! (policy instanceof SecurityPolicy.Public());
+    }
+
+    private SecurityPolicy globalSecurityPolicy() {
         return switch (config.securityMode()) {
             case API_KEY -> SecurityPolicy.apiKeyRequired();
             case JWT -> SecurityPolicy.bearerTokenRequired();
             case NONE -> SecurityPolicy.publicRoute();
         };
+    }
+
+    private static boolean requiresAuthentication(SecurityPolicy policy) {
+        return ! (policy instanceof SecurityPolicy.Public());
+    }
+
+    private static Result<SecurityContext> enforceRoleIfRequired(SecurityContext context, SecurityPolicy policy) {
+        if (policy instanceof SecurityPolicy.RoleRequired(var roleName)) {
+            return context.hasRole(roleName)
+                   ? Result.success(context)
+                   : new SecurityError.InsufficientRole("Access denied: role '" + roleName + "' required").result();
+        }
+        return Result.success(context);
     }
 
     @SuppressWarnings("JBCT-RET-01")
@@ -614,24 +704,36 @@ class AppHttpServerImpl implements AppHttpServer {
                                        String method) {
         var statusAndMessage = mapSecurityError(cause);
         AuditLog.authFailure(requestId, cause.message(), method, path);
+        requestObserver.onPresent(obs -> obs.recordSecurityDenial(classifyDenialType(cause), method, path));
         if (statusAndMessage.status() == HttpStatus.UNAUTHORIZED) {
             addAuthenticateHeader(response);
         }
         sendProblem(response, statusAndMessage.status(), statusAndMessage.clientMessage(), path, requestId);
     }
 
+    private static String classifyDenialType(Cause cause) {
+        if (cause == SecurityError.NO_VALIDATOR_CONFIGURED) {
+            return "no_validator";
+        }
+        return switch (cause) {
+            case SecurityError.InsufficientRole _ -> "insufficient_role";
+            case SecurityError.AccessDenied _ -> "insufficient_role";
+            default -> "auth_failure";
+        };
+    }
+
     private record SecurityStatusMessage(HttpStatus status, String clientMessage) {}
 
     private static SecurityStatusMessage mapSecurityError(Cause cause) {
         return switch (cause) {
-            case SecurityError.MissingCredentials _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
-                                                                                 "Authentication required");
+            case SecurityError.MissingCredentials mc -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, mc.message());
             case SecurityError.TokenExpired _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Token expired");
             case SecurityError.SignatureInvalid _, SecurityError.IssuerMismatch _,
             SecurityError.AudienceMismatch _, SecurityError.KeyNotFound _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
                                                                                                        "Invalid token");
             case SecurityError.InvalidCredentials _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
                                                                                  "Invalid credentials");
+            case SecurityError.InsufficientRole _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN, cause.message());
             case SecurityError.JwksFetchFailed _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
                                                                               "Authentication temporarily unavailable");
             default -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Authentication failed");
@@ -639,12 +741,11 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     private void addAuthenticateHeader(ResponseWriter response) {
-        var authScheme = switch (config.securityMode()) {
-            case JWT -> "Bearer realm=\"Aether\"";
-            case API_KEY -> "ApiKey realm=\"Aether\"";
-            case NONE -> "ApiKey realm=\"Aether\"";
-        };
-        response.header("WWW-Authenticate", authScheme);
+        switch (config.securityMode()) {
+            case JWT -> response.header("WWW-Authenticate", "Bearer realm=\"Aether\"");
+            case API_KEY -> response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
+            case NONE -> {}
+        }
     }
 
     private Option<HttpNodeRouteKey> findMatchingLocalRoute(Set<HttpNodeRouteKey> localRoutes,

@@ -334,7 +334,8 @@ public final class KVStoreSerializer {
     }
 
     private static String serializeRouteEntry(NodeRoutesValue.RouteEntry r) {
-        return r.httpMethod() + "," + r.pathPrefix() + "," + r.sliceMethod() + "," + r.state() + "," + r.weight() + "," + r.registeredAt();
+        return r.httpMethod() + "," + r.pathPrefix() + "," + r.sliceMethod() + "," + r.state() + "," + r.weight() + "," + r.registeredAt()
+               + "," + r.security();
     }
 
     private static String serializeGovernorAnnouncement(GovernorAnnouncementValue v) {
@@ -807,12 +808,16 @@ public final class KVStoreSerializer {
 
     private static NodeRoutesValue.RouteEntry parseRouteEntry(String entry) {
         var parts = entry.split(",", - 1);
+        var security = parts.length > 6
+                       ? parts[6]
+                       : "PUBLIC";
         return new NodeRoutesValue.RouteEntry(parts[0],
                                               parts[1],
                                               parts[2],
                                               parts[3],
                                               Integer.parseInt(parts[4]),
-                                              Long.parseLong(parts[5]));
+                                              Long.parseLong(parts[5]),
+                                              security);
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseGossipKeyRotationEntry(String identity, String raw) {

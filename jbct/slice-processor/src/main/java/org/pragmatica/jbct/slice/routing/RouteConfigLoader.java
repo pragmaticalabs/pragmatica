@@ -49,7 +49,8 @@ public final class RouteConfigLoader {
 
     private static final Cause FILE_NOT_FOUND = Causes.cause("Route configuration file not found");
     private static final Cause PARSE_ERROR = Causes.cause("Failed to parse route configuration");
-    private static final Cause MISSING_SECURITY = Causes.cause("Missing [security] section in routes.toml");
+    private static final SecuritySection DEFAULT_SECURITY =
+        new SecuritySection(RouteSecurityLevel.PUBLIC, OverridePolicy.STRENGTHEN_ONLY);
 
     private RouteConfigLoader() {}
 
@@ -100,15 +101,18 @@ public final class RouteConfigLoader {
         var baseConfig = Files.exists(basePath)
                          ? load(basePath).or(RouteConfig.EMPTY)
                          : RouteConfig.EMPTY;
-        var sliceConfig = Files.exists(slicePath)
-                          ? load(slicePath).option()
-                          : Option.<RouteConfig>none();
-        return Result.success(baseConfig.merge(sliceConfig));
+
+        if (!Files.exists(slicePath)) {
+            return Result.success(baseConfig);
+        }
+
+        return load(slicePath)
+            .map(sliceConfig -> baseConfig.merge(Option.some(sliceConfig)));
     }
 
     private static Result<SecuritySection> parseSecurity(TomlDocument toml) {
         if (!toml.hasSection("security")) {
-            return MISSING_SECURITY.result();
+            return Result.success(DEFAULT_SECURITY);
         }
 
         var secDefault = toml.getString("security", "default")

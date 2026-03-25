@@ -281,6 +281,7 @@ public class ManifestGenerator {
                                                   ? entry.getValue().pathTemplate()
                                                   : config.prefix() + entry.getValue().pathTemplate());
             props.setProperty(rtPrefix + "handler", entry.getKey());
+            props.setProperty(rtPrefix + "security", config.effectiveSecurity(entry.getKey()).toConfigString());
         }
     }
 

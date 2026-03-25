@@ -362,6 +362,44 @@ class AuthorizationPipelineTest {
         }
     }
 
+    @Nested
+    class PerRouteSecurityPrecedence {
+        @Test
+        void perRoutePolicy_publicRoute_allowsAnonymous() {
+            var request = createRequest(null, "GET", "/test");
+            validator.validate(request, SecurityPolicy.publicRoute())
+                     .onFailureRun(() -> fail("Expected success — public route should allow anonymous"))
+                     .onSuccess(ctx -> assertThat(ctx.isAuthenticated()).isFalse());
+        }
+
+        @Test
+        void perRoutePolicy_authenticatedRoute_requiresCredentials() {
+            var request = createRequest(null, "GET", "/test");
+            validator.validate(request, SecurityPolicy.authenticated())
+                     .onSuccessRun(() -> fail("Expected failure — authenticated route requires credentials"))
+                     .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class));
+        }
+
+        @Test
+        void perRoutePolicy_authenticatedRoute_acceptsValidKey() {
+            var request = createRequest(ADMIN_KEY, "GET", "/test");
+            validator.validate(request, SecurityPolicy.authenticated())
+                     .onFailureRun(() -> fail("Expected success"))
+                     .onSuccess(ctx -> assertThat(ctx.isAuthenticated()).isTrue());
+        }
+
+        @Test
+        void perRoutePolicy_roleRequired_acceptsValidKeyThenRoleCheckNeeded() {
+            var request = createRequest(ADMIN_KEY, "GET", "/test");
+            validator.validate(request, SecurityPolicy.roleRequired("admin"))
+                     .onFailureRun(() -> fail("Expected success — credential validation should pass"))
+                     .onSuccess(ctx -> {
+                         assertThat(ctx.isAuthenticated()).isTrue();
+                         assertThat(ctx.hasRole("admin")).isTrue();
+                     });
+        }
+    }
+
     private static void assertAccessDenied(Cause cause) {
         assertThat(cause).isInstanceOf(RoleEnforcer.AuthorizationError.AccessDenied.class);
         assertThat(cause.message()).contains("Access denied");

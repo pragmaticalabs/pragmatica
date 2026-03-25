@@ -148,7 +148,7 @@ class RouteConfigLoaderTest {
     class MissingSecuritySection {
 
         @Test
-        void load_fails_whenSecuritySectionMissing() throws IOException {
+        void load_succeeds_withPublicDefaults_whenSecuritySectionMissing() throws IOException {
             var config = writeConfig("routes.toml", """
                 prefix = "/api/v1"
 
@@ -158,8 +158,14 @@ class RouteConfigLoaderTest {
 
             var result = RouteConfigLoader.load(config);
 
-            assertThat(result.isFailure()).isTrue();
-            result.onFailure(cause -> assertThat(cause.message()).contains("Missing [security] section"));
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(rc -> {
+                assertThat(rc.prefix()).isEqualTo("/api/v1");
+                assertThat(rc.securityDefault()).isEqualTo(RouteSecurityLevel.PUBLIC);
+                assertThat(rc.overridePolicy()).isEqualTo(OverridePolicy.STRENGTHEN_ONLY);
+                assertThat(rc.routes()).hasSize(1);
+                assertThat(rc.routeSecurity()).isEmpty();
+            });
         }
     }
 

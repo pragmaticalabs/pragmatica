@@ -108,6 +108,32 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
         };
     }
 
+    /// Strength level for override policy comparison.
+    /// Higher values represent stricter security.
+    default int strength() {
+        return switch (this) {
+            case Public() -> 0;
+            case Authenticated() -> 10;
+            case ApiKeyRequired() -> 20;
+            case BearerTokenRequired() -> 20;
+            case RoleRequired(_) -> 30;
+            default -> 0;
+        };
+    }
+
+    /// Parse policy from blueprint-friendly string representation.
+    /// Accepts: "public", "authenticated", "api_key", "bearer_token", "role:admin".
+    static SecurityPolicy fromBlueprintString(String value) {
+        return switch (value.toLowerCase()
+                            .strip()) {
+            case "public" -> publicRoute();
+            case "authenticated" -> authenticated();
+            case "api_key" -> apiKeyRequired();
+            case "bearer_token" -> bearerTokenRequired();
+            default -> parseBlueprintRoleOrDefault(value);
+        };
+    }
+
     // --- Private helper methods ---
     private static <T extends RequestSecurityContext> Access checkAuthenticated(T context) {
         if (context instanceof SecurityContext sc) {
@@ -150,6 +176,16 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     private static SecurityPolicy parseRoleOrDefault(String value) {
         if (value.startsWith("ROLE:")) {
             return roleRequired(value.substring(5));
+        }
+        return publicRoute();
+    }
+
+    private static SecurityPolicy parseBlueprintRoleOrDefault(String value) {
+        var stripped = value.strip()
+                            .toLowerCase();
+        if (stripped.startsWith("role:")) {
+            return roleRequired(value.strip()
+                                     .substring(5));
         }
         return publicRoute();
     }

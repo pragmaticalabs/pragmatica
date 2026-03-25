@@ -866,15 +866,31 @@ public sealed interface AetherValue {
         /// @param state route state: ACTIVE, DRAINING, or CANARY
         /// @param weight relative load factor (100 = normal, 0 = don't route)
         /// @param registeredAt epoch millis when this route was registered
+        /// @param security security policy string (PUBLIC, AUTHENTICATED, API_KEY, BEARER_TOKEN, ROLE:name)
         public record RouteEntry(String httpMethod,
                                  String pathPrefix,
                                  String sliceMethod,
                                  String state,
                                  int weight,
-                                 long registeredAt) {
-            /// Creates an active route entry with default weight.
+                                 long registeredAt,
+                                 String security) {
+            /// Creates an active route entry with default weight and explicit security.
+            public static RouteEntry activeRoute(String httpMethod,
+                                                 String pathPrefix,
+                                                 String sliceMethod,
+                                                 String security) {
+                return new RouteEntry(httpMethod,
+                                      pathPrefix,
+                                      sliceMethod,
+                                      "ACTIVE",
+                                      100,
+                                      System.currentTimeMillis(),
+                                      security);
+            }
+
+            /// Creates an active route entry with default weight and PUBLIC security (backward compat).
             public static RouteEntry activeRoute(String httpMethod, String pathPrefix, String sliceMethod) {
-                return new RouteEntry(httpMethod, pathPrefix, sliceMethod, "ACTIVE", 100, System.currentTimeMillis());
+                return activeRoute(httpMethod, pathPrefix, sliceMethod, "PUBLIC");
             }
 
             /// Returns true if this route is active and routable.

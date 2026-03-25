@@ -162,6 +162,62 @@ class ApiKeySecurityValidatorTest {
                           }));
     }
 
+    @Test
+    void validate_succeeds_forAuthenticatedPolicy_withValidApiKey() {
+        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
+
+        validator.validate(request, SecurityPolicy.authenticated())
+                 .onFailureRun(() -> fail("Expected success"))
+                 .onSuccess(context -> {
+                     assertThat(context.isAuthenticated()).isTrue();
+                     assertThat(context.principal().isApiKey()).isTrue();
+                 });
+    }
+
+    @Test
+    void validate_fails_forAuthenticatedPolicy_withMissingApiKey() {
+        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var request = createRequest(Map.of());
+
+        validator.validate(request, SecurityPolicy.authenticated())
+                 .onSuccessRun(() -> fail("Expected failure"))
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class));
+    }
+
+    @Test
+    void validate_succeeds_forRoleRequiredPolicy_withValidApiKey() {
+        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
+
+        validator.validate(request, SecurityPolicy.roleRequired("admin"))
+                 .onFailureRun(() -> fail("Expected success"))
+                 .onSuccess(context -> {
+                     assertThat(context.isAuthenticated()).isTrue();
+                     assertThat(context.principal().isApiKey()).isTrue();
+                 });
+    }
+
+    @Test
+    void validate_fails_forRoleRequiredPolicy_withMissingApiKey() {
+        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var request = createRequest(Map.of());
+
+        validator.validate(request, SecurityPolicy.roleRequired("admin"))
+                 .onSuccessRun(() -> fail("Expected failure"))
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class));
+    }
+
+    @Test
+    void validate_passesThrough_forBearerTokenPolicy() {
+        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var request = createRequest(Map.of());
+
+        validator.validate(request, SecurityPolicy.bearerTokenRequired())
+                 .onFailureRun(() -> fail("Expected success — wrong validator type passes through"))
+                 .onSuccess(context -> assertThat(context.isAuthenticated()).isFalse());
+    }
+
     private HttpRequestContext createRequest(Map<String, List<String>> headers) {
         return HttpRequestContext.httpRequestContext("/test",
                                                      "GET",

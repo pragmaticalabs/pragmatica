@@ -384,4 +384,81 @@ class SecurityValueObjectsTest {
                            .onSuccess(context -> assertThat(context.claim("tenant")).isEqualTo("acme"));
         }
     }
+
+    @Nested
+    class StrengthTests {
+        @Test
+        void strength_publicIsLowest() {
+            assertThat(SecurityPolicy.publicRoute().strength()).isEqualTo(0);
+        }
+
+        @Test
+        void strength_authenticatedIsMiddle() {
+            assertThat(SecurityPolicy.authenticated().strength()).isEqualTo(10);
+        }
+
+        @Test
+        void strength_apiKeyAndBearerAreEqual() {
+            assertThat(SecurityPolicy.apiKeyRequired().strength())
+                .isEqualTo(SecurityPolicy.bearerTokenRequired().strength());
+        }
+
+        @Test
+        void strength_roleRequiredIsHighest() {
+            assertThat(SecurityPolicy.roleRequired("admin").strength()).isGreaterThan(
+                SecurityPolicy.bearerTokenRequired().strength());
+        }
+
+        @Test
+        void strength_ordering_publicLessThanAuthenticated() {
+            assertThat(SecurityPolicy.publicRoute().strength())
+                .isLessThan(SecurityPolicy.authenticated().strength());
+        }
+    }
+
+    @Nested
+    class BlueprintStringTests {
+        @Test
+        void fromBlueprintString_parsesPublic() {
+            assertThat(SecurityPolicy.fromBlueprintString("public"))
+                .isInstanceOf(SecurityPolicy.Public.class);
+        }
+
+        @Test
+        void fromBlueprintString_parsesAuthenticated() {
+            assertThat(SecurityPolicy.fromBlueprintString("authenticated"))
+                .isInstanceOf(SecurityPolicy.Authenticated.class);
+        }
+
+        @Test
+        void fromBlueprintString_parsesApiKey() {
+            assertThat(SecurityPolicy.fromBlueprintString("api_key"))
+                .isInstanceOf(SecurityPolicy.ApiKeyRequired.class);
+        }
+
+        @Test
+        void fromBlueprintString_parsesBearerToken() {
+            assertThat(SecurityPolicy.fromBlueprintString("bearer_token"))
+                .isInstanceOf(SecurityPolicy.BearerTokenRequired.class);
+        }
+
+        @Test
+        void fromBlueprintString_parsesRole() {
+            var policy = SecurityPolicy.fromBlueprintString("role:admin");
+            assertThat(policy).isInstanceOf(SecurityPolicy.RoleRequired.class);
+            assertThat(policy.asString()).isEqualTo("ROLE:admin");
+        }
+
+        @Test
+        void fromBlueprintString_caseInsensitive() {
+            assertThat(SecurityPolicy.fromBlueprintString("AUTHENTICATED"))
+                .isInstanceOf(SecurityPolicy.Authenticated.class);
+        }
+
+        @Test
+        void fromBlueprintString_unknownDefaultsToPublic() {
+            assertThat(SecurityPolicy.fromBlueprintString("unknown_value"))
+                .isInstanceOf(SecurityPolicy.Public.class);
+        }
+    }
 }

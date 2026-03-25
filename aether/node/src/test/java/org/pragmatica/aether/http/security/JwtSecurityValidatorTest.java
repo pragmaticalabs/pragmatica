@@ -295,6 +295,55 @@ class JwtSecurityValidatorTest {
     }
 
     @Nested
+    class PolicyVariantTests {
+        @Test
+        void validate_succeeds_forAuthenticatedPolicy_withValidToken() {
+            var token = buildToken(Map.of("sub", TEST_SUBJECT,
+                                          "exp", futureExp(),
+                                          "role", "ADMIN"));
+
+            validator.validate(requestWithToken(token), SecurityPolicy.authenticated())
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                     .onSuccess(ctx -> {
+                         assertThat(ctx.isAuthenticated()).isTrue();
+                         assertThat(ctx.principal().isUser()).isTrue();
+                     });
+        }
+
+        @Test
+        void validate_fails_forAuthenticatedPolicy_withMissingToken() {
+            validator.validate(requestWithoutToken(), SecurityPolicy.authenticated())
+                     .onSuccess(ctx -> fail("Expected failure"))
+                     .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class));
+        }
+
+        @Test
+        void validate_succeeds_forRoleRequiredPolicy_withValidToken() {
+            var token = buildToken(Map.of("sub", TEST_SUBJECT,
+                                          "exp", futureExp(),
+                                          "role", "ADMIN"));
+
+            validator.validate(requestWithToken(token), SecurityPolicy.roleRequired("admin"))
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                     .onSuccess(ctx -> assertThat(ctx.isAuthenticated()).isTrue());
+        }
+
+        @Test
+        void validate_fails_forRoleRequiredPolicy_withMissingToken() {
+            validator.validate(requestWithoutToken(), SecurityPolicy.roleRequired("admin"))
+                     .onSuccess(ctx -> fail("Expected failure"))
+                     .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class));
+        }
+
+        @Test
+        void validate_passesThrough_forApiKeyRequiredPolicy() {
+            validator.validate(requestWithoutToken(), SecurityPolicy.apiKeyRequired())
+                     .onFailure(cause -> fail("Expected success — wrong validator type passes through"))
+                     .onSuccess(ctx -> assertThat(ctx.isAuthenticated()).isFalse());
+        }
+    }
+
+    @Nested
     class CacheTests {
         @Test
         void validate_usesCache_forSecondCall() {

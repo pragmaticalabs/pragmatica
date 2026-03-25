@@ -73,11 +73,18 @@ public interface HttpRouteRegistry {
     /// @param httpMethod HTTP method
     /// @param pathPrefix path prefix that matched
     /// @param nodes set of node IDs that have this route available
+    /// @param security security policy string from route definition (PUBLIC, AUTHENTICATED, etc.)
     record RouteInfo(String httpMethod,
                      String pathPrefix,
-                     Set<NodeId> nodes) {
+                     Set<NodeId> nodes,
+                     String security) {
+        public static RouteInfo routeInfo(String httpMethod, String pathPrefix, Set<NodeId> nodes, String security) {
+            return new RouteInfo(httpMethod, pathPrefix, nodes, security);
+        }
+
+        /// Backward-compatible factory defaulting to PUBLIC security.
         public static RouteInfo routeInfo(String httpMethod, String pathPrefix, Set<NodeId> nodes) {
-            return new RouteInfo(httpMethod, pathPrefix, nodes);
+            return new RouteInfo(httpMethod, pathPrefix, nodes, "PUBLIC");
         }
 
         /// Returns a route-level identity string (method + prefix) for grouping and lookup.
@@ -105,8 +112,9 @@ public interface HttpRouteRegistry {
                     }
                     var method = route.httpMethod();
                     var prefix = route.pathPrefix();
+                    var security = route.security();
                     var ref = routesByMethod.computeIfAbsent(method, _ -> new AtomicReference<>(new TreeMap<>()));
-                    ref.updateAndGet(current -> addNodeToRoute(current, method, prefix, nodeId));
+                    ref.updateAndGet(current -> addNodeToRoute(current, method, prefix, nodeId, security));
                     log.debug("HttpRouteRegistry: Registered compound route {} {} node={}", method, prefix, nodeId);
                 }
             }
@@ -136,7 +144,10 @@ public interface HttpRouteRegistry {
                     remaining.remove(nodeId);
                     if (!remaining.isEmpty()) {
                         updated.put(entry.getKey(),
-                                    RouteInfo.routeInfo(route.httpMethod(), route.pathPrefix(), Set.copyOf(remaining)));
+                                    RouteInfo.routeInfo(route.httpMethod(),
+                                                        route.pathPrefix(),
+                                                        Set.copyOf(remaining),
+                                                        route.security()));
                     }
                 }
                 return updated;
@@ -145,15 +156,19 @@ public interface HttpRouteRegistry {
             private TreeMap<String, RouteInfo> addNodeToRoute(TreeMap<String, RouteInfo> current,
                                                               String method,
                                                               String prefix,
-                                                              NodeId nodeId) {
+                                                              NodeId nodeId,
+                                                              String security) {
                 var updated = new TreeMap<>(current);
                 var existing = updated.get(prefix);
                 var nodes = (existing != null)
                             ? new HashSet<>(existing.nodes())
                             : new HashSet<NodeId>();
+                var effectiveSecurity = (existing != null)
+                                        ? existing.security()
+                                        : security;
                 nodes.add(nodeId);
                 updated.put(prefix,
-                            RouteInfo.routeInfo(method, prefix, Set.copyOf(nodes)));
+                            RouteInfo.routeInfo(method, prefix, Set.copyOf(nodes), effectiveSecurity));
                 return updated;
             }
 
@@ -216,7 +231,10 @@ public interface HttpRouteRegistry {
                     remaining.remove(nodeId);
                     if (!remaining.isEmpty()) {
                         updated.put(entry.getKey(),
-                                    RouteInfo.routeInfo(route.httpMethod(), route.pathPrefix(), Set.copyOf(remaining)));
+                                    RouteInfo.routeInfo(route.httpMethod(),
+                                                        route.pathPrefix(),
+                                                        Set.copyOf(remaining),
+                                                        route.security()));
                     }
                 }
                 return updated;
