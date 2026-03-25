@@ -104,7 +104,7 @@ public final class WebSocketAuthenticator {
         if (pendingSessions.remove(session.id()) != null) {
             log.warn("WebSocket auth timeout for session {}", session.id());
             AuditLog.wsAuthFailure(session.id(), "timeout");
-            session.send("{\"type\":\"AUTH_FAILED\",\"reason\":\"timeout\"}");
+            session.send("{\"type\":\"AUTH_TIMEOUT\",\"message\":\"Authentication timeout - connection closed\"}");
             session.close();
         }
     }
