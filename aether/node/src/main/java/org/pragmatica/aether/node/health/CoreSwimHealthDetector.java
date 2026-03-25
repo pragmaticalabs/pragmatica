@@ -4,6 +4,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -144,8 +145,9 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onMemberFaulty(SwimMember member) {
-        log.error("SWIM member faulty: {}, routing DisconnectNode", member.nodeId());
+        log.error("SWIM member faulty: {}, routing DisconnectNode and RemoveNode", member.nodeId());
         router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(member.nodeId()));
+        router.routeAsync(() -> new TopologyManagementMessage.RemoveNode(member.nodeId()));
     }
 
     @Override

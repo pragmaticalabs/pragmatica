@@ -612,14 +612,12 @@ public interface ClusterDeploymentManager {
                     }
                     case NodeRemoved(NodeId removedNode, List<NodeId> topology) -> {
                         updateTopology(topology);
-                        handleNodeRemoval(removedNode);
-                        reconcile();
+                        handleNodeRemoval(removedNode).onSuccess(_ -> reconcile());
                     }
                     case NodeDown(NodeId downNode, List<NodeId> topology) -> {
                         log.warn("Node {} is down, triggering immediate reconciliation", downNode);
                         updateTopology(topology);
-                        handleNodeRemoval(downNode);
-                        reconcile();
+                        handleNodeRemoval(downNode).onSuccess(_ -> reconcile());
                     }
                     default -> {}
                 }
@@ -1375,7 +1373,10 @@ public interface ClusterDeploymentManager {
                 SharedScheduler.schedule(this::reconcile, timeSpan(5).seconds());
             }
 
-            private void handleNodeRemoval(NodeId removedNode) {
+            private Promise<Unit> handleNodeRemoval(NodeId removedNode) {
+                // Rebuild in-memory state from KV-Store to ensure consistency
+                // (guards against races where slices were committed but not yet in the in-memory map)
+                rebuildSliceStateFromKVStoreEntries();
                 // Remove slice state entries for the removed node
                 var sliceKeysToRemove = sliceStates.keySet()
                                                    .stream()
@@ -1399,13 +1400,6 @@ public interface ClusterDeploymentManager {
                 consensusCommands.addAll(nodeRouteCommands);
                 // Remove lifecycle key for departed node
                 consensusCommands.add(new KVCommand.Remove<>(NodeLifecycleKey.nodeLifecycleKey(removedNode)));
-                // Remove from KVStore to prevent stale state after leader changes
-                if (!consensusCommands.isEmpty()) {
-                    cluster.apply(consensusCommands)
-                           .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
-                                                         removedNode,
-                                                         cause.message()));
-                }
                 // Remove from worker set if this was a worker
                 workerNodes.remove(removedNode);
                 log.info("Removed {} slice states, {} node-artifact entries, and {} node-routes updates for departed node {}",
@@ -1413,6 +1407,15 @@ public interface ClusterDeploymentManager {
                          artifactKeysToRemove.size(),
                          nodeRouteCommands.size(),
                          removedNode);
+                // Submit cleanup through consensus and return promise for sequencing
+                if (!consensusCommands.isEmpty()) {
+                    return cluster.apply(consensusCommands)
+                                  .mapToUnit()
+                                  .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
+                                                                removedNode,
+                                                                cause.message()));
+                }
+                return Promise.unitPromise();
             }
 
             private List<NodeArtifactKey> findNodeArtifactKeysForNode(NodeId nodeId) {

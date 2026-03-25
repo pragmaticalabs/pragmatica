@@ -101,6 +101,8 @@ import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.topology.TcpTopologyManager;
+import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
@@ -250,6 +252,10 @@ public interface AetherNode {
     /// Get the number of currently connected peer nodes in the cluster.
     /// This is a network-level count, not based on metrics exchange.
     int connectedNodeCount();
+
+    /// Get transport-level metrics (QUIC connection stats, handshakes, message throughput).
+    /// Returns an empty map if the transport does not support metrics.
+    Map<String, Number> transportMetrics();
 
     /// Get the IDs of currently connected peer nodes.
     /// This is a live view — reflects actual TCP connections, not static config.
@@ -679,6 +685,12 @@ public interface AetherNode {
             }
 
             @Override
+            public Map<String, Number> transportMetrics() {
+                return clusterNode.network()
+                                  .transportMetrics();
+            }
+
+            @Override
             public Set<NodeId> connectedPeerIds() {
                 return clusterNode.network()
                                   .connectedPeers();
@@ -1019,7 +1031,8 @@ public interface AetherNode {
                                                 eventAggregator,
                                                 clusterNode.leaderManager(),
                                                 appHttpServer,
-                                                loadBalancerManager);
+                                                loadBalancerManager,
+                                                (TcpTopologyManager) clusterNode.topologyManager());
         // DHT message routes for distributed operations
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
                                                     request -> dhtNode.handleGetRequest(request,
@@ -1434,7 +1447,8 @@ public interface AetherNode {
                                                                     ClusterEventAggregator eventAggregator,
                                                                     LeaderManager leaderManager,
                                                                     AppHttpServer appHttpServer,
-                                                                    Option<LoadBalancerManager> loadBalancerManager) {
+                                                                    Option<LoadBalancerManager> loadBalancerManager,
+                                                                    TcpTopologyManager topologyManager) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         // KV-Store notification sub-router — type-safe key-based dispatch.
         // Replaces per-handler filterPut/filterRemove with key-type dispatch via KVNotificationRouter.
@@ -1661,6 +1675,10 @@ public interface AetherNode {
                                               eventAggregator::onConnectionEstablished));
         entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionFailed.class,
                                               eventAggregator::onConnectionFailed));
+        entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionFailed.class,
+                                              topologyManager::handleConnectionFailed));
+        entries.add(MessageRouter.Entry.route(TopologyManagementMessage.RemoveNode.class,
+                                              topologyManager::handleRemoveNodeMessage));
         // Operational audit events — routed to event aggregator for dashboard/API consumption
         entries.add(MessageRouter.Entry.route(OperationalEvent.AccessDenied.class, eventAggregator::onAccessDenied));
         entries.add(MessageRouter.Entry.route(OperationalEvent.NodeLifecycleChanged.class,
