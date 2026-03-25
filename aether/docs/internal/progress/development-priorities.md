@@ -400,6 +400,8 @@ Part of Cloud Integration (#3). Per-provider status:
 
 ### FUTURE
 
+- **PostgreSQL LISTEN/NOTIFY as Provisioned Resource** — Expose PG LISTEN/NOTIFY as a first-class Aether resource via `@ResourceQualifier`. The async driver already supports `subscribe(channel, callback)` → `Promise<Listening>` on `AsyncSqlConnector`. Needs: `NotificationListener` resource type in slice-api, `NotificationListenerFactory` SPI, blueprint `[notifications.xxx]` config section, annotation processor detection. Enables CDC-style patterns and database-driven event sourcing without external message brokers. Low priority — manual `AsyncSqlConnector.subscribe()` works today.
+
 - **Official Installation Binaries** — Pre-built distribution archives (`aether-node`, `aether-cli`, `aether-forge`). Formats: `.tar.gz`, `.zip`, `.deb`, `.rpm`, Homebrew. Self-contained via jlink/jpackage. Java audience already has JDK — low priority.
 
 - **Cluster Expense Tracking** — Real-time cost visibility for cluster operations. Cloud billing API integration (AWS Cost Explorer, GCP Billing, Azure Cost Management). Cost per node/slice/request. Spot savings tracking. Budget alerts. **Prerequisite:** Cloud Integration (#1)
