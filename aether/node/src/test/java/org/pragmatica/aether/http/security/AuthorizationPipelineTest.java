@@ -7,7 +7,7 @@ import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.RoleEnforcer;
 import org.pragmatica.aether.http.handler.security.RoutePermissionRegistry;
-import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
+import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
@@ -36,7 +36,7 @@ class AuthorizationPipelineTest {
     );
 
     private final SecurityValidator validator = SecurityValidator.apiKeyValidator(KEY_ENTRIES);
-    private final RouteSecurityPolicy policy = RouteSecurityPolicy.apiKeyRequired();
+    private final SecurityPolicy policy = SecurityPolicy.apiKeyRequired();
 
     /// Simulates the ManagementServer security pipeline:
     /// authenticate → resolve permission → enforce role.
@@ -359,6 +359,44 @@ class AuthorizationPipelineTest {
             var ctx = SecurityContext.securityContext();
             assertThat(ctx.authorizationRole()).isEqualTo(AuthorizationRole.VIEWER);
             assertThat(ctx.isAuthenticated()).isFalse();
+        }
+    }
+
+    @Nested
+    class PerRouteSecurityPrecedence {
+        @Test
+        void perRoutePolicy_publicRoute_allowsAnonymous() {
+            var request = createRequest(null, "GET", "/test");
+            validator.validate(request, SecurityPolicy.publicRoute())
+                     .onFailureRun(() -> fail("Expected success — public route should allow anonymous"))
+                     .onSuccess(ctx -> assertThat(ctx.isAuthenticated()).isFalse());
+        }
+
+        @Test
+        void perRoutePolicy_authenticatedRoute_requiresCredentials() {
+            var request = createRequest(null, "GET", "/test");
+            validator.validate(request, SecurityPolicy.authenticated())
+                     .onSuccessRun(() -> fail("Expected failure — authenticated route requires credentials"))
+                     .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class));
+        }
+
+        @Test
+        void perRoutePolicy_authenticatedRoute_acceptsValidKey() {
+            var request = createRequest(ADMIN_KEY, "GET", "/test");
+            validator.validate(request, SecurityPolicy.authenticated())
+                     .onFailureRun(() -> fail("Expected success"))
+                     .onSuccess(ctx -> assertThat(ctx.isAuthenticated()).isTrue());
+        }
+
+        @Test
+        void perRoutePolicy_roleRequired_acceptsValidKeyThenRoleCheckNeeded() {
+            var request = createRequest(ADMIN_KEY, "GET", "/test");
+            validator.validate(request, SecurityPolicy.roleRequired("admin"))
+                     .onFailureRun(() -> fail("Expected success — credential validation should pass"))
+                     .onSuccess(ctx -> {
+                         assertThat(ctx.isAuthenticated()).isTrue();
+                         assertThat(ctx.hasRole("admin")).isTrue();
+                     });
         }
     }
 

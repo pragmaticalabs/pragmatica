@@ -1,7 +1,7 @@
 package org.pragmatica.aether.api;
 
 import org.pragmatica.aether.http.handler.HttpRequestContext;
-import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
+import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.http.websocket.WebSocketSession;
@@ -104,7 +104,7 @@ public final class WebSocketAuthenticator {
         if (pendingSessions.remove(session.id()) != null) {
             log.warn("WebSocket auth timeout for session {}", session.id());
             AuditLog.wsAuthFailure(session.id(), "timeout");
-            session.send("{\"type\":\"AUTH_FAILED\",\"reason\":\"timeout\"}");
+            session.send("{\"type\":\"AUTH_TIMEOUT\",\"message\":\"Authentication timeout - connection closed\"}");
             session.close();
         }
     }
@@ -132,7 +132,7 @@ public final class WebSocketAuthenticator {
     private boolean validateApiKeyAndRespond(WebSocketSession session, String apiKey) {
         var headers = Map.of("x-api-key", List.of(apiKey));
         var context = HttpRequestContext.httpRequestContext("/ws", "GET", Map.of(), headers, "ws-auth");
-        var result = securityValidator.validate(context, RouteSecurityPolicy.apiKeyRequired());
+        var result = securityValidator.validate(context, SecurityPolicy.apiKeyRequired());
         if (result.isSuccess()) {
             acceptSession(session,
                           result.unwrap()

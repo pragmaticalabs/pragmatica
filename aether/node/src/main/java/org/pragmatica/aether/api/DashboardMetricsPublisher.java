@@ -137,8 +137,12 @@ public class DashboardMetricsPublisher {
         // Nodes (first node in sorted list is typically the leader in Rabia)
         var allMetrics = node.metricsCollector()
                              .allMetrics();
+        // Filter against current topology to exclude stale entries for dead nodes
+        var currentTopology = new HashSet<>(node.topologyManager()
+                                                .topology());
         var sortedNodes = allMetrics.keySet()
                                     .stream()
+                                    .filter(currentTopology::contains)
                                     .sorted((a, b) -> a.id()
                                                        .compareTo(b.id()))
                                     .collect(Collectors.toList());
@@ -201,6 +205,9 @@ public class DashboardMetricsPublisher {
         sb.append(",");
         // Streams
         appendStreams(sb, node);
+        sb.append(",");
+        // Routes (with security)
+        appendRoutes(sb, node);
         sb.append(",");
         // Current metrics snapshot
         sb.append("\"metrics\":")
@@ -836,6 +843,34 @@ public class DashboardMetricsPublisher {
               .append(",\"totalBytes\":")
               .append(stream.totalBytes())
               .append("}");
+            first = false;
+        }
+        sb.append("]");
+    }
+
+    private void appendRoutes(StringBuilder sb, AetherNode node) {
+        sb.append("\"routes\":[");
+        var routes = node.httpRouteRegistry()
+                         .allRoutes();
+        boolean first = true;
+        for (var route : routes) {
+            if (!first) sb.append(",");
+            sb.append("{\"method\":\"")
+              .append(escapeJson(route.httpMethod()))
+              .append("\",\"path\":\"")
+              .append(escapeJson(route.pathPrefix()))
+              .append("\",\"security\":\"")
+              .append(escapeJson(route.security()))
+              .append("\",\"nodes\":[");
+            boolean firstNode = true;
+            for (var nodeId : route.nodes()) {
+                if (!firstNode) sb.append(",");
+                sb.append("\"")
+                  .append(escapeJson(nodeId.id()))
+                  .append("\"");
+                firstNode = false;
+            }
+            sb.append("]}");
             first = false;
         }
         sb.append("]");

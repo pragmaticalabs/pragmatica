@@ -1,5 +1,6 @@
 package org.pragmatica.http.routing;
 
+import org.pragmatica.http.routing.security.RouteSecurityPolicy;
 import org.pragmatica.lang.Functions.*;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -74,6 +75,12 @@ public interface Route<T> extends RouteSource {
         return "";
     }
 
+    /// Returns the security policy for this route.
+    /// Default is public (allow all).
+    default RouteSecurityPolicy security() {
+        return new RouteSecurityPolicy() {};
+    }
+
     @Override
     default Stream<Route<?>> routes() {
         return Stream.of(this);
@@ -83,7 +90,7 @@ public interface Route<T> extends RouteSource {
     RouteSource withPrefix(String prefix);
 
     static <T> Route<T> route(HttpMethod method, String path, Handler<T> handler, ContentType contentType) {
-        return route(method, path, handler, contentType, List.of(), "");
+        return route(method, path, handler, contentType, List.of(), "", new RouteSecurityPolicy() {});
     }
 
     static <T> Route<T> route(HttpMethod method,
@@ -91,7 +98,7 @@ public interface Route<T> extends RouteSource {
                               Handler<T> handler,
                               ContentType contentType,
                               List<String> spacers) {
-        return route(method, path, handler, contentType, spacers, "");
+        return route(method, path, handler, contentType, spacers, "", new RouteSecurityPolicy() {});
     }
 
     static <T> Route<T> route(HttpMethod method,
@@ -100,15 +107,26 @@ public interface Route<T> extends RouteSource {
                               ContentType contentType,
                               List<String> spacers,
                               String name) {
+        return route(method, path, handler, contentType, spacers, name, new RouteSecurityPolicy() {});
+    }
+
+    static <T> Route<T> route(HttpMethod method,
+                              String path,
+                              Handler<T> handler,
+                              ContentType contentType,
+                              List<String> spacers,
+                              String name,
+                              RouteSecurityPolicy security) {
         record route<T>(HttpMethod method,
                         String path,
                         Handler<T> handler,
                         ContentType contentType,
                         List<String> spacers,
-                        String name) implements Route<T> {
+                        String name,
+                        RouteSecurityPolicy security) implements Route<T> {
             @Override
             public RouteSource withPrefix(String prefix) {
-                return new route<>(method, PathUtils.normalize(prefix + path), handler, contentType, spacers, name);
+                return new route<>(method, PathUtils.normalize(prefix + path), handler, contentType, spacers, name, security);
             }
 
             @Override
@@ -122,7 +140,7 @@ public interface Route<T> extends RouteSource {
                 return "Route: " + method + " " + path + spacerStr + nameStr + ", " + contentType;
             }
         }
-        return new route<>(method, PathUtils.normalize(path), handler, contentType, spacers, name);
+        return new route<>(method, PathUtils.normalize(path), handler, contentType, spacers, name, security);
     }
 
     static Subroutes in(String path) {
@@ -795,6 +813,12 @@ public interface Route<T> extends RouteSource {
         /// @return a new builder with the name set
         ContentTypeBuilder<T> named(String name);
 
+        /// Sets the security policy for this route.
+        ///
+        /// @param security the security policy
+        /// @return a new builder with the security policy set
+        ContentTypeBuilder<T> withSecurity(RouteSecurityPolicy security);
+
         default Route<T> asText() {
             return as(CommonContentTypes.TEXT_PLAIN);
         }
@@ -811,15 +835,21 @@ public interface Route<T> extends RouteSource {
                                      String path,
                                      Handler<T> handler,
                                      List<String> spacers,
-                                     String name) implements ContentTypeBuilder<T> {
+                                     String name,
+                                     RouteSecurityPolicy security) implements ContentTypeBuilder<T> {
         @Override
         public Route<T> as(ContentType contentType) {
-            return route(method, path, handler, contentType, spacers, name);
+            return route(method, path, handler, contentType, spacers, name, security);
         }
 
         @Override
         public ContentTypeBuilder<T> named(String name) {
-            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, name);
+            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, name, security);
+        }
+
+        @Override
+        public ContentTypeBuilder<T> withSecurity(RouteSecurityPolicy security) {
+            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, name, security);
         }
     }
 
@@ -830,7 +860,7 @@ public interface Route<T> extends RouteSource {
 
         @Override
         public ContentTypeBuilder<R> to(Handler<R> handler) {
-            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, "");
+            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, "", new RouteSecurityPolicy() {});
         }
 
         // Path parameters - collect spacers from path parameter definitions

@@ -1484,7 +1484,12 @@ public class AetherCli implements Runnable {
                     }
                 }
                 var response = metricsParent.parent.postToNode("/api/invocation-metrics/strategy", body);
-                System.out.println(formatJson(response));
+                if (response.contains("\"error\"") || response.contains("Strategy change")) {
+                    System.err.println("Error: Strategy changes at runtime are not yet supported.");
+                    System.err.println("The strategy is configured at node startup. Use the GET command to view the current strategy.");
+                } else {
+                    System.out.println(formatJson(response));
+                }
             }
 
             private String buildFixedStrategyBody() {

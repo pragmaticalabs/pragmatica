@@ -19,6 +19,8 @@ import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.http.routing.ContentCategory;
 import org.pragmatica.http.routing.ContentType;
+import org.pragmatica.http.routing.HttpError;
+import org.pragmatica.http.routing.HttpStatus;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
@@ -75,12 +77,21 @@ public final class MetricsRoutes implements RouteSource {
                          Route.<StrategyResponse> get("/api/invocation-metrics/strategy")
                               .toJson(this::buildStrategyResponse),
                          Route.<ErrorResponse> post("/api/invocation-metrics/strategy")
-                              .to(_ -> MetricsError.StrategyChangeNotSupported.INSTANCE.<ErrorResponse>promise())
+                              .to(_ -> HttpError.httpError(HttpStatus.NOT_IMPLEMENTED,
+                                                           MetricsError.StrategyChangeNotSupported.INSTANCE)
+                                                .<ErrorResponse> promise())
                               .asJson(),
                          Route.<Object> get("/api/metrics/history")
                               .withQuery(aString("range"))
                               .toValue(this::buildHistoryResponse)
-                              .asJson());
+                              .asJson(),
+                         Route.<Map<String, Number>> get("/api/metrics/transport")
+                              .toJson(this::buildTransportMetricsResponse));
+    }
+
+    private Map<String, Number> buildTransportMetricsResponse() {
+        return nodeSupplier.get()
+                           .transportMetrics();
     }
 
     private MetricsFullResponse buildMetricsResponse() {

@@ -27,8 +27,9 @@
 13. [Relationship to Existing Resources](#13-relationship-to-existing-resources)
 14. [Design Decisions](#14-design-decisions)
 15. [Prior Art Comparison](#15-prior-art-comparison)
-16. [Open Questions](#16-open-questions)
-17. [Persistence Path](#17-persistence-path)
+16. [Stream Lifecycle Operations](#16-stream-lifecycle-operations)
+17. [Open Questions](#17-open-questions)
+18. [Persistence Path](#18-persistence-path)
 
 ---
 
@@ -840,7 +841,151 @@ Northguard and Aether streams are not competing designs — they target differen
 
 ---
 
-## 16. Open Questions
+## 16. Stream Lifecycle Operations
+
+### 16.1 Motivation
+
+Phase 1 treats partition count as immutable and replication factor as a static blueprint property. In production, operators need to change these without recreating streams or losing data. This section specifies the tooling and runtime behavior for stream topology changes.
+
+### 16.2 Replica Count Change
+
+**Trigger:** Operator updates `replication` in blueprint and redeploys, or uses management API.
+
+**Management API:**
+```
+PUT /api/streams/{name}/replication
+{ "replicationFactor": 3 }
+```
+
+**CLI:**
+```
+aether stream set-replication order-events --factor 3
+```
+
+**Runtime behavior:**
+
+| Direction | Mechanism | Data Impact |
+|-----------|-----------|-------------|
+| **Scale up** (1→2) | Governor selects new replica workers via consistent hashing, bulk-syncs current ring buffer contents, then starts live replication | None — existing data preserved, new replicas catch up |
+| **Scale down** (3→2) | Governor stops replicating to excess workers, workers discard local replica buffers | None — data still on governor and remaining replicas |
+
+**Sequence (scale up):**
+1. CDM writes new replication factor to consensus KV-Store
+2. Governor detects config change via KV-Store watch
+3. Governor selects additional replica workers (consistent hashing, prefer workers not already holding replicas)
+4. Governor sends `ReplicaBulkSync` — full ring buffer snapshot to new replica
+5. Once caught up (replica offset = governor head offset), governor adds replica to live replication set
+6. Governor updates `StreamPartitionMetrics` to reflect new replica count
+
+**Sequence (scale down):**
+1. CDM writes new replication factor
+2. Governor removes excess replicas (last added = first removed)
+3. Governor sends `ReplicaRelease` to decommissioned workers
+4. Workers deallocate replica ring buffers
+
+**Constraints:**
+- Replication factor cannot exceed governor group size (number of workers + 1)
+- Scale-up during governor failover is delayed until new governor stabilizes
+- If target replica count > available workers, governor replicates to what's available and logs a warning
+
+### 16.3 Partition Count Change (Repartitioning)
+
+**Trigger:** Operator updates `partitions` in blueprint.
+
+**Management API:**
+```
+PUT /api/streams/{name}/partitions
+{ "partitionCount": 12 }
+```
+
+**CLI:**
+```
+aether stream repartition order-events --partitions 12
+```
+
+**Constraint:** Only scale up (increase partition count). Reducing partitions requires stream recreation.
+
+**Runtime behavior:**
+
+**Phase 1 (simple — recommended for Phase 1 implementation):**
+New partitions are added empty. Existing partitions are NOT rebalanced. This means:
+- Key-based routing changes: `hash(key) % 12` produces different partition assignments than `hash(key) % 6`
+- New events route to new partitions; existing events stay in old partitions
+- Consumers of new partitions start from offset 0
+- Consumers of existing partitions continue uninterrupted
+
+This is the Kafka model — simple, no data movement, but ordering per-key is broken during the transition window.
+
+**Phase 2 (full — requires data migration):**
+Coordinated repartitioning with data migration:
+1. CDM announces repartition intent → all producers pause
+2. Governor reads all events from old partitions
+3. Governor re-hashes each event's key against new partition count
+4. Governor writes events to new partitions (preserving relative order per key)
+5. Consumer cursors are remapped to new offsets
+6. Producers resume with new partition count
+7. Old partitions are tombstoned after all cursors advance past them
+
+**Downtime:** Phase 1 = zero (additive only). Phase 2 = brief producer pause during migration.
+
+### 16.4 Stream Deletion
+
+**Management API:**
+```
+DELETE /api/streams/{name}
+```
+
+**CLI:**
+```
+aether stream delete order-events
+```
+
+**Sequence:**
+1. CDM marks stream as `DRAINING` in consensus
+2. All producers receive `STREAM_CLOSING` error on next publish
+3. Consumers continue reading until they reach head offset or timeout
+4. After drain timeout (configurable, default 30s), CDM marks stream `DELETED`
+5. Governors release ring buffers, replicas are released
+6. Consumer group cursors are tombstoned in KV-Store
+7. Stream metadata removed from consensus
+
+**Safety:** Deletion requires ADMIN role. CLI prompts for confirmation unless `--force` is passed.
+
+### 16.5 Stream Recreation with Migration
+
+For cases requiring partition count reduction or schema changes, the recommended pattern is:
+
+```bash
+# 1. Create new stream with desired config
+aether stream create order-events-v2 --partitions 12 --replication 3
+
+# 2. Deploy bridge slice that reads from old, writes to new
+aether blueprint deploy bridge-blueprint.toml
+
+# 3. Wait for bridge to catch up (consumer lag = 0)
+aether stream lag order-events --group bridge
+
+# 4. Switch producers to new stream (blueprint update)
+aether blueprint deploy updated-blueprint.toml
+
+# 5. Delete old stream after verification
+aether stream delete order-events
+```
+
+This is a manual process for Phase 1. Phase 2 could automate it as `aether stream migrate order-events order-events-v2`.
+
+### 16.6 Observability for Lifecycle Operations
+
+All lifecycle operations emit cluster events:
+- `STREAM_REPLICA_SCALE_UP` / `STREAM_REPLICA_SCALE_DOWN`
+- `STREAM_REPARTITION_STARTED` / `STREAM_REPARTITION_COMPLETED`
+- `STREAM_DRAINING` / `STREAM_DELETED`
+
+Dashboard shows stream topology changes in the events timeline. `/api/streams/{name}` includes current replication factor and partition count alongside target values during transitions.
+
+---
+
+## 17. Open Questions (renumbered from §16)
 
 | # | Question | Impact | Notes |
 |---|----------|--------|-------|
@@ -855,7 +1000,7 @@ Northguard and Aether streams are not competing designs — they target differen
 
 ---
 
-## 17. Persistence Path
+## 18. Persistence Path
 
 ### 17.1 Transparent Storage Upgrade
 

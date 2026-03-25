@@ -1,8 +1,8 @@
 # Development Priorities
 
-## Current Status (v0.21.0)
+## Current Status (v0.24.1)
 
-Release 0.18.0 delivered six major themes: unified invocation observability (RFC-0010), production-grade DHT (anti-entropy repair, re-replication, per-use-case config), pub-sub messaging infrastructure (RFC-0011), blueprint-only deployment model, node lifecycle with disruption budget and graceful drain, and pricing-engine multi-slice example with cross-slice invocations.
+v0.24.0-0.24.1 delivered: QUIC cluster transport (replacing TCP), per-route security (routes.toml → runtime enforcement → dashboard), Principal/SecurityContext injection, blueprint security overrides, node departure auto-healing, QUIC transport metrics/backpressure/stream routing, and 25 bug fixes from systematic codebase audit.
 
 ## Completed ✅
 
@@ -228,18 +228,11 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
 
 ### HIGH PRIORITY - Core & Operations
 
-1. **Streaming** — [implementation spec](../../specs/streaming-spec.md), [exploratory design](../../specs/in-memory-streams-spec.md)
-    - Ordered, replayable, consumer-paced streaming as a first-class Aether resource
-    - Typed streams with compile-time codec generation; off-heap ring buffers (`MemorySegment`)
-    - API follows pub/sub pattern: `StreamPublisher<T>` (parameter annotation), `StreamSubscriber` (method annotation), `StreamAccess<T>` (advanced)
-    - Governor-local sequencing (standard) or Rabia path (strong consistency)
-    - Consumer groups with partition assignment, configurable processing (ordered/parallel), error handling (retry/skip/stall + dead-letter)
-    - Governor-local cursor tracking with periodic consensus checkpoint
-    - CDM auto-scaling on consumer lag
-    - CDC adapter: KV-Store change notifications → typed stream
-    - **Phase 1:** Core streaming (produce, consume, ring buffer, consumer groups) — 6-8 weeks
-    - **Phase 2:** Replication, governor failover recovery — 3-4 weeks
-    - **Phase 3:** PostgreSQL persistent backend, transactional cursors, compaction — 4-6 weeks
+1. **Streaming** (partial) — [implementation spec](../../specs/streaming-spec.md), [exploratory design](../../specs/in-memory-streams-spec.md), [lifecycle operations](../../specs/in-memory-streams-spec.md#16-stream-lifecycle-operations)
+    - **Done (v0.23.0):** Slice API (StreamPublisher, StreamAccess, StreamSubscriber), OffHeapRingBuffer, StreamPartitionManager, StreamConsumerRuntime, DeadLetterHandler, annotation processor, REST API, CLI, KV-Store types
+    - **Phase 1 remaining (#67):** StreamPublisherFactory + StreamAccessFactory, blueprint `[streams.xxx]` parsing, @StreamSubscriber wiring to ConsumerRuntime, cross-node partition routing
+    - **Phase 2 (#69):** Ring buffer persistence, retention enforcement, replication, governor failover recovery
+    - **Phase 3:** PostgreSQL persistent backend, transactional cursors, compaction
 
 2. **Canary, Blue-Green & A/B Testing Deployment Strategies** — ✅ **Implemented in v0.21.0**
      - Canary: multi-stage progressive traffic shift, auto-evaluation, auto-rollback, KV persistence
@@ -263,12 +256,11 @@ Release 0.18.0 delivered six major themes: unified invocation observability (RFC
        - Dashboard visibility: show schema status per datasource, highlight FAILED with retry button
      - **Context:** RFC-0014 §3.3 defines the activation gate but not failure recovery. Current behavior: FAILED is terminal, slices stuck forever
 
-4. **QUIC-based Inter-Node Communication**
-     - Replace TCP-based cluster networking with QUIC for inter-node consensus, DHT, and HTTP forwarding
-     - Benefits: 0-RTT connection establishment, multiplexed streams, better cross-AZ performance, connection migration
-     - Infrastructure ready: Netty QUIC codec on classpath, Http3Server + NettyHttpOperations provide client/server HTTP/3
-     - Scope: replace `ClusterNetwork` TCP transport with QUIC transport, keep same message protocol
-     - Prerequisite: NettyHttpOperations (v0.23.1), Http3Server (v0.23.1)
+4. ~~**QUIC-based Inter-Node Communication**~~ — ✅ **Implemented in v0.24.0-0.24.1**
+     - QUIC cluster transport replaces TCP for all inter-node communication (consensus, DHT, HTTP forwarding)
+     - Stream-per-message-type routing, mandatory TLS 1.3, write backpressure, transport metrics
+     - Node departure healing: SWIM→RemoveNode, CDM sequential reconciliation, auto-heal
+     - **Remaining:** Certificate rotation (#68), consensus backpressure feedback (#68)
 
 5. **Cloud Integration — Remaining Work (demand-driven)** — [SPI architecture spec](../../specs/cloud-integration-spi-spec.md)
    - **Core implementation complete** (v0.21.0): 4 providers (Hetzner, AWS, GCP, Azure) with compute, LB, discovery, secrets. See Completed section.
@@ -307,11 +299,13 @@ Part of Cloud Integration (#3). Per-provider status:
 
 ### MEDIUM PRIORITY - Developer Tooling & Deployment
 
-4. **RBAC Tier 2 — Per-Endpoint Role Authorization**
-     - Per-endpoint role-based authorization rules (admin, operator, viewer)
-     - Route-level security policy from KV-Store
-     - Auth failure rate limiting
-     - Currently all authenticated keys have equivalent access; Tier 2 differentiates by role
+4. ~~**RBAC Tier 2 — Per-Route Security**~~ — ✅ **Implemented in v0.24.1**
+     - Per-route security in routes.toml (public/authenticated/role:name)
+     - Type-safe RouteSecurityPolicy/SecurityPolicy with canAccess()
+     - Principal/SecurityContext injection in handlers
+     - Blueprint operator overrides with strengthen_only policy
+     - Per-route observability metrics, dashboard security badges
+     - **Remaining:** Security override TOML docs (#70)
 
 5. **Forge Modular Rework**
     - ~80% done: modules separated (`forge-simulator`, `forge-load`, `forge-cluster`), Ember works
@@ -333,19 +327,26 @@ Part of Cloud Integration (#3). Per-provider status:
      - Cluster-aware: distributed counters via consensus or per-node local limits
      - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
 
-7. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
+7. **Advanced Topology Management**
+    - Proactive node replacement: track node age/health, replace before failure (rolling replacement for zero-downtime patching)
+    - Placement constraints: min N nodes per availability zone, zone-aware provisioning on failure
+    - Cost-aware scaling: prefer spot for scale-up, prefer spot termination for scale-down
+    - Node quality scoring: replace consistently underperforming nodes proactively
+    - Spot termination notice handling: preemptive on-demand replacement on 2-min AWS spot warning
+
+8. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
     - Phases 1, 2a, 2b, 2b.5 complete in v0.19.3. Remaining work driven by real demand:
       - Phase 2c: Spot pool, spot-node exclusion from DHT ring
       - Phase 3: Multi-region, cross-region governors
     - **Architecture:** Small consensus core (5-7-9 active nodes) + self-organizing worker pools with elected governors. SWIM gossip for O(1) membership. Zone-aware grouping. Event-based community scaling.
     - **Research:** [10-system comparative analysis](../../internal/passive-worker-pool-research.md)
 
-8. **Observability Dashboard UI**
+9. **Observability Dashboard UI**
    - Wire `ObservabilityDepthRegistry` data to dashboard with UI for configuring per-method depth thresholds
    - Backend REST API (`/api/observability/depth`) and KV-store sync already implemented
    - Current state is functional; production value but no customers yet
 
-9. **Invocation Observability Dashboard Tab**
+10. **Invocation Observability Dashboard Tab**
    - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
    - Click-to-expand tree view showing invocation depth with input/output at each level
    - Waterfall view for multi-hop request visualization
@@ -354,7 +355,7 @@ Part of Cloud Integration (#3). Per-provider status:
    - See [RFC-0010](../../../../docs/rfc/RFC-0010-unified-invocation-observability.md) for data model and API
    - Backend complete (RFC-0010): REST API and trace store ready
 
-10. **Slice Development IDE Plugins**
+11. **Slice Development IDE Plugins**
     - IDE plugins for Aether slice development, providing deep integration with the JBCT toolchain
     - **Recommended approach:** build a shared **Language Server (LSP)** backend first, then thin IDE-specific clients. IntelliJ IDEA gets a native plugin for features that LSP cannot express (refactoring, inspections, run configs). VS Code, Eclipse, and NetBeans consume the LSP directly.
 
@@ -399,6 +400,8 @@ Part of Cloud Integration (#3). Per-provider status:
     **Prerequisite:** Stable JBCT CLI and annotation processor APIs
 
 ### FUTURE
+
+- **PostgreSQL LISTEN/NOTIFY as Provisioned Resource** — Expose PG LISTEN/NOTIFY as a first-class Aether resource via `@ResourceQualifier`. The async driver already supports `subscribe(channel, callback)` → `Promise<Listening>` on `AsyncSqlConnector`. Needs: `NotificationListener` resource type in slice-api, `NotificationListenerFactory` SPI, blueprint `[notifications.xxx]` config section, annotation processor detection. Enables CDC-style patterns and database-driven event sourcing without external message brokers. Low priority — manual `AsyncSqlConnector.subscribe()` works today.
 
 - **Official Installation Binaries** — Pre-built distribution archives (`aether-node`, `aether-cli`, `aether-forge`). Formats: `.tar.gz`, `.zip`, `.deb`, `.rpm`, Homebrew. Self-contained via jlink/jpackage. Java audience already has JDK — low priority.
 

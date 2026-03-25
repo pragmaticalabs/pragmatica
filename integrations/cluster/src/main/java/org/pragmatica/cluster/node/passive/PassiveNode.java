@@ -20,7 +20,7 @@ import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
 import org.pragmatica.consensus.net.quic.QuicTlsProvider;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
-import org.pragmatica.consensus.topology.TcpTopologyManager;
+import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.AddNode;
@@ -62,7 +62,7 @@ public interface PassiveNode<K extends StructuredKey, V> {
 
     /// Create a passive node that joins the cluster network without consensus participation.
     /// Auto-generates self-signed TLS for QUIC transport.
-    /// Returns Result because TcpTopologyManager and TLS context creation can fail.
+    /// Returns Result because topology observer and TLS context creation can fail.
     static <K extends StructuredKey, V> Result<PassiveNode<K, V>> passiveNode(
         TopologyConfig topologyConfig,
         Serializer serializer,
@@ -72,7 +72,7 @@ public interface PassiveNode<K extends StructuredKey, V> {
         var kvStore = new KVStore<K, V>(delegateRouter, serializer, deserializer);
 
         return Result.all(
-            TcpTopologyManager.tcpTopologyManager(topologyConfig, delegateRouter),
+            TopologyObserver.topologyObserver(topologyConfig, delegateRouter),
             QuicTlsProvider.serverContext(Option.empty()),
             QuicTlsProvider.clientContext(Option.empty())
         ).map((topologyManager, serverSsl, clientSsl) -> assembleNode(delegateRouter,
@@ -87,7 +87,7 @@ public interface PassiveNode<K extends StructuredKey, V> {
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static <K extends StructuredKey, V> PassiveNode<K, V> assembleNode(
         DelegateRouter delegateRouter,
-        TcpTopologyManager topologyManager,
+        TopologyObserver topologyManager,
         KVStore<K, V> kvStore,
         Serializer serializer,
         Deserializer deserializer,
@@ -128,7 +128,7 @@ public interface PassiveNode<K extends StructuredKey, V> {
 
         record passiveNode<K extends StructuredKey, V>(
             DelegateRouter delegateRouter,
-            TcpTopologyManager topologyManager,
+            TopologyObserver topologyManager,
             ClusterNetwork network,
             KVStore<K, V> kvStore,
             List<Entry<?>> routeEntries

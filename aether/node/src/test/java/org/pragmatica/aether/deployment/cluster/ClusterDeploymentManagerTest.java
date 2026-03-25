@@ -4,12 +4,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
-import org.pragmatica.aether.environment.AutoHealConfig;
-import org.pragmatica.aether.environment.ComputeProvider;
-import org.pragmatica.aether.environment.InstanceId;
-import org.pragmatica.aether.environment.InstanceInfo;
-import org.pragmatica.aether.environment.InstanceStatus;
-import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -90,7 +84,7 @@ class ClusterDeploymentManagerTest {
         kvStore = new TestKVStore();
         router = MessageRouter.mutable();
         manager = ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3),
-                                                                      clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
+                                                                      clusterNode.topologyManager(), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
     }
 
     // === Leader State Tests ===
@@ -191,7 +185,7 @@ class ClusterDeploymentManagerTest {
         // Create manager with empty initial topology
         var emptyTopologyManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, kvStore, router, List.of(),
-            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
+            clusterNode.topologyManager(), ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
         emptyTopologyManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
         clusterNode.appliedCommands.clear();
 
@@ -346,104 +340,6 @@ class ClusterDeploymentManagerTest {
 
         // Slice target still wants 2, but now only 1 tracked
         // Next reconciliation would add 1 more
-    }
-
-    // === Auto-Heal Tests ===
-
-    @Test
-    void leader_failover_triggers_immediate_auto_heal_when_cluster_below_target() {
-        var provisionCount = new AtomicInteger(0);
-        var testTopologyManager = new TestTopologyManager(3);
-        var testComputeProvider = new TestComputeProvider(provisionCount);
-        var prePopulatedKvStore = new TestKVStore();
-
-        // Pre-populate KVStore with a blueprint to simulate leader failover (not initial startup)
-        var artifact = createTestArtifact();
-        var targetKey = SliceTargetKey.sliceTargetKey(artifact.base());
-        var targetValue = SliceTargetValue.sliceTargetValue(artifact.version(), 2);
-        prePopulatedKvStore.put(targetKey, targetValue);
-
-        // Create manager with ComputeProvider and TopologyManager that expects 3 nodes
-        var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
-            self, clusterNode, prePopulatedKvStore, router, List.of(self, node2),
-            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
-
-        clusterNode.appliedCommands.clear();
-
-        // Become leader with only 2 of 3 expected nodes — failover triggers immediate auto-heal
-        healingManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
-
-        // ComputeProvider.provision() should have been called once (deficit = 1)
-        assertThat(provisionCount.get()).isEqualTo(1);
-    }
-
-    @Test
-    void initial_startup_defers_auto_heal_during_cooldown() {
-        var provisionCount = new AtomicInteger(0);
-        var testTopologyManager = new TestTopologyManager(3);
-        var testComputeProvider = new TestComputeProvider(provisionCount);
-
-        // Create manager with ComputeProvider, no pre-populated blueprints (initial startup)
-        var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
-            self, clusterNode, kvStore, router, List.of(self, node2),
-            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
-
-        clusterNode.appliedCommands.clear();
-
-        // Become leader with only 2 of 3 expected nodes — initial startup uses cooldown
-        healingManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
-
-        // No immediate provisioning during cooldown
-        assertThat(provisionCount.get()).isZero();
-    }
-
-    @Test
-    void leader_activation_skips_auto_heal_when_cluster_at_target() {
-        var provisionCount = new AtomicInteger(0);
-        var testTopologyManager = new TestTopologyManager(3);
-        var testComputeProvider = new TestComputeProvider(provisionCount);
-
-        // Create manager with 3 nodes already present (matches target)
-        var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
-            self, clusterNode, kvStore, router, List.of(self, node2, node3),
-            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
-
-        clusterNode.appliedCommands.clear();
-
-        // Become leader with full topology — no auto-heal needed
-        healingManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
-
-        assertThat(provisionCount.get()).isZero();
-    }
-
-    @Test
-    void topology_change_triggers_auto_heal_from_outer_cdm() {
-        var provisionCount = new AtomicInteger(0);
-        var testTopologyManager = new TestTopologyManager(3);
-        var testComputeProvider = new TestComputeProvider(provisionCount);
-        var prePopulatedKvStore = new TestKVStore();
-
-        // Pre-populate to simulate failover (immediate auto-heal, no cooldown)
-        var artifact = createTestArtifact();
-        var targetKey = SliceTargetKey.sliceTargetKey(artifact.base());
-        var targetValue = SliceTargetValue.sliceTargetValue(artifact.version(), 2);
-        prePopulatedKvStore.put(targetKey, targetValue);
-
-        var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
-            self, clusterNode, prePopulatedKvStore, router, List.of(self, node2, node3),
-            testTopologyManager, Option.option(testComputeProvider), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
-
-        // Become leader with full topology (no deficit)
-        healingManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
-        assertThat(provisionCount.get()).isZero();
-
-        clusterNode.appliedCommands.clear();
-
-        // Node removed — topology change triggers auto-heal from outer CDM
-        healingManager.onTopologyChange(TopologyChangeNotification.nodeRemoved(node3, List.of(self, node2)));
-
-        // Should provision 1 node (deficit = 1)
-        assertThat(provisionCount.get()).isEqualTo(1);
     }
 
     // === Blueprint Atomicity Tests ===
@@ -748,7 +644,7 @@ class ClusterDeploymentManagerTest {
         // Create a new CDM that will rebuild from KVStore on leader activation
         var restoredManager = ClusterDeploymentManager.clusterDeploymentManager(
             self, clusterNode, kvStore, router, List.of(self, node2, node3),
-            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT,
+            clusterNode.topologyManager(),
             ClusterDeploymentManager.DeploymentAtomicity.BEST_EFFORT, 0, NO_OP_SCHEMA);
 
         // Become leader triggers rebuildStateFromKVStore
@@ -916,7 +812,7 @@ class ClusterDeploymentManagerTest {
 
     private ClusterDeploymentManager createAllOrNothingManager() {
         return ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3),
-            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT, ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING, 0, NO_OP_SCHEMA);
+            clusterNode.topologyManager(), ClusterDeploymentManager.DeploymentAtomicity.ALL_OR_NOTHING, 0, NO_OP_SCHEMA);
     }
 
     private void sendAppBlueprintPut(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint) {
@@ -1036,7 +932,7 @@ class ClusterDeploymentManagerTest {
 
         @Override
         public TopologyManager topologyManager() {
-            return null;
+            return new TestTopologyManager(3);
         }
 
         @Override
@@ -1147,43 +1043,4 @@ class ClusterDeploymentManagerTest {
         }
     }
 
-    static class TestComputeProvider implements ComputeProvider {
-        private final AtomicInteger provisionCount;
-
-        TestComputeProvider(AtomicInteger provisionCount) {
-            this.provisionCount = provisionCount;
-        }
-
-        @Override
-        public Promise<InstanceInfo> provision(InstanceType instanceType) {
-            var id = new InstanceId("test-" + provisionCount.incrementAndGet());
-            var info = new InstanceInfo(
-                id,
-                InstanceStatus.RUNNING,
-                List.of("localhost:9999"),
-                instanceType,
-                Map.of());
-            return Promise.success(info);
-        }
-
-        @Override
-        public Promise<Unit> terminate(InstanceId instanceId) {
-            return Promise.success(Unit.unit());
-        }
-
-        @Override
-        public Promise<List<InstanceInfo>> listInstances() {
-            return Promise.success(List.of());
-        }
-
-        @Override
-        public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
-            return Promise.success(new InstanceInfo(
-                instanceId,
-                InstanceStatus.RUNNING,
-                List.of("localhost:9999"),
-                InstanceType.ON_DEMAND,
-                Map.of()));
-        }
-    }
 }

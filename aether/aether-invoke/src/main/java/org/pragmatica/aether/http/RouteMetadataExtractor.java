@@ -1,7 +1,7 @@
 package org.pragmatica.aether.http;
 
 import org.pragmatica.aether.http.handler.HttpRouteDefinition;
-import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
+import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 
@@ -19,7 +19,7 @@ import static org.pragmatica.aether.http.handler.HttpRouteDefinition.httpRouteDe
 ///   - pathPrefix - from `route.path()`
 ///   - artifactCoord - passed as parameter
 ///   - sliceMethod - derived from route path (used as method identifier)
-///   - security - defaults to {@link RouteSecurityPolicy#publicRoute()}
+///   - security - from route's security policy or defaults to {@link SecurityPolicy#publicRoute()}
 ///
 public interface RouteMetadataExtractor {
     /// Extract route definitions from a route source.
@@ -44,12 +44,19 @@ class RouteMetadataExtractorImpl implements RouteMetadataExtractor {
     }
 
     private HttpRouteDefinition toDefinition(Route<?> route, String artifactCoord) {
+        var security = resolveSecurityPolicy(route);
         return httpRouteDefinition(route.method()
                                         .name(),
                                    extractPathPrefix(route.path()),
                                    artifactCoord,
                                    deriveSliceMethod(route),
-                                   RouteSecurityPolicy.publicRoute());
+                                   security);
+    }
+
+    private static SecurityPolicy resolveSecurityPolicy(Route<?> route) {
+        return route.security() instanceof SecurityPolicy sp
+               ? sp
+               : SecurityPolicy.publicRoute();
     }
 
     /// Extract path prefix before first path parameter placeholder.

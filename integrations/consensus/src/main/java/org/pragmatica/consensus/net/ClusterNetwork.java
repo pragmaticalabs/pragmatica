@@ -24,6 +24,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.net.tcp.Server;
 
+import java.util.Map;
 import java.util.Set;
 
 import static org.pragmatica.consensus.net.NetworkServiceMessage.*;
@@ -81,4 +82,10 @@ public interface ClusterNetwork {
     /// Get the underlying server instance for metrics collection.
     /// Returns empty if the network has not been started yet.
     Option<Server> server();
+
+    /// Get transport-level metrics as a name-to-value map.
+    /// Returns an empty map by default; QUIC transport overrides with connection/handshake/message stats.
+    default Map<String, Number> transportMetrics() {
+        return Map.of();
+    }
 }

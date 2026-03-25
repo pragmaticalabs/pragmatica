@@ -41,6 +41,7 @@ import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.slf4j.Logger;
@@ -72,7 +73,7 @@ public sealed interface QuicClusterServer {
     /// Callback for new peer connections after Hello handshake completes.
     @FunctionalInterface
     interface PeerConnectionHandler {
-        void onPeerConnected(QuicPeerConnection connection);
+        void onPeerConnected(QuicPeerConnection connection, NodeRole peerRole, NodeAddress peerAddress);
     }
 
     /// Callback for incoming messages after Hello handshake completes.
@@ -93,13 +94,14 @@ public sealed interface QuicClusterServer {
     /// @param messageReceiver   callback invoked for each message received after Hello
     static QuicClusterServer quicClusterServer(NodeId selfId,
                                                NodeRole selfRole,
+                                               NodeAddress selfAddress,
                                                Serializer serializer,
                                                Deserializer deserializer,
                                                QuicSslContext sslContext,
                                                Option<EventLoopGroup> sharedEventLoop,
                                                PeerConnectionHandler connectionHandler,
                                                MessageReceiver messageReceiver) {
-        return new QuicClusterServerInstance(selfId, selfRole, serializer, deserializer,
+        return new QuicClusterServerInstance(selfId, selfRole, selfAddress, serializer, deserializer,
                                             sslContext, sharedEventLoop, connectionHandler,
                                             messageReceiver);
     }
@@ -125,6 +127,7 @@ public sealed interface QuicClusterServer {
 final class QuicClusterServerInstance implements QuicClusterServer {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterServerInstance.class);
     private static final long HELLO_TIMEOUT_MS = 15_000;
+    private static final int WRITE_TIMEOUT_SECONDS = 10;
     private static final long MAX_IDLE_TIMEOUT_MS = 0; // Disabled per QUIC RFC 9000 §10.1 — cluster connections are persistent
     private static final long INITIAL_MAX_DATA = 16_000_000;
     private static final long INITIAL_MAX_STREAM_DATA = 4_000_000;
@@ -132,6 +135,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
     private final NodeId selfId;
     private final NodeRole selfRole;
+    private final NodeAddress selfAddress;
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final QuicSslContext sslContext;
@@ -145,6 +149,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
     QuicClusterServerInstance(NodeId selfId,
                               NodeRole selfRole,
+                              NodeAddress selfAddress,
                               Serializer serializer,
                               Deserializer deserializer,
                               QuicSslContext sslContext,
@@ -153,6 +158,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                               MessageReceiver messageReceiver) {
         this.selfId = selfId;
         this.selfRole = selfRole;
+        this.selfAddress = selfAddress;
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.sslContext = sslContext;
@@ -277,6 +283,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         @Override
         protected void initChannel(QuicStreamChannel ch) {
             ch.pipeline()
+              .addLast(new io.netty.handler.timeout.WriteTimeoutHandler(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS))
               .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(1_048_576, 0, 4, 0, 4))
               .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
               .addLast(new ServerHelloHandler());
@@ -326,8 +333,16 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             }
         }
 
+        @SuppressWarnings("JBCT-PAT-01") // Adapter boundary: catch deserialization errors from external input
         private void processHello(ChannelHandlerContext ctx, ByteBuf buf) {
-            var message = decodeMessage(buf);
+            Object message;
+            try {
+                message = decodeMessage(buf);
+            } catch (Exception e) {
+                log.error("Failed to deserialize Hello message from {}", ctx.channel().remoteAddress(), e);
+                ctx.close();
+                return;
+            }
             if (message instanceof NetworkMessage.Hello hello) {
                 sendHelloResponse(ctx);
                 registerPeerConnection(ctx, hello);
@@ -344,7 +359,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         }
 
         private void sendHelloResponse(ChannelHandlerContext ctx) {
-            var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfRole));
+            var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfRole, selfAddress));
             ctx.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
         }
 
@@ -356,8 +371,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             // Replace Hello handler with data handler for ongoing messages
             ctx.pipeline().replace(this, "data-handler", new DataHandler(hello.sender()));
 
-            log.info("QUIC Hello handshake complete with peer {} (role={})", hello.sender(), hello.role());
-            connectionHandler.onPeerConnected(peerConnection);
+            log.info("QUIC Hello handshake complete with peer {} (role={}, address={})", hello.sender(), hello.role(), hello.address());
+            connectionHandler.onPeerConnected(peerConnection, hello.role(), hello.address());
         }
     }
 
@@ -371,16 +386,23 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         }
 
         @Override
+        @SuppressWarnings("JBCT-PAT-01") // Adapter boundary: catch deserialization errors from external input
         protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
             var bytes = new byte[buf.readableBytes()];
             buf.readBytes(bytes);
-            var message = deserializer.decode(bytes);
-            messageReceiver.onMessage(peerId, message);
+
+            try {
+                var message = deserializer.decode(bytes);
+                messageReceiver.onMessage(peerId, message);
+            } catch (Exception e) {
+                log.error("Failed to deserialize message from peer {}", peerId, e);
+            }
         }
 
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
             log.error("Error processing message from peer {}", peerId, cause);
+            ctx.close();
         }
     }
 }

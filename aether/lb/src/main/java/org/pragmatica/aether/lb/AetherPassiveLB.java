@@ -78,7 +78,7 @@ public final class AetherPassiveLB {
         var nodeCodec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
         Serializer serializer = nodeCodec;
         Deserializer deserializer = nodeCodec;
-        // Include self in coreNodes — TcpTopologyManager requires self to be present
+        // Include self in coreNodes — TopologyObserver requires self to be present
         var allNodes = new ArrayList<>(config.clusterNodes());
         allNodes.add(config.selfInfo());
         var topologyConfig = new TopologyConfig(config.selfInfo()

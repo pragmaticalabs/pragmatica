@@ -31,7 +31,7 @@ import org.pragmatica.consensus.net.netty.NettyClusterNetwork;
 import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
-import org.pragmatica.consensus.topology.TcpTopologyManager;
+import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.lang.Option;
@@ -229,7 +229,7 @@ class RabiaNetworkPerformanceTest {
         private final MutableRouter router;
         private RabiaEngine<TestCommand> engine;
         private NettyClusterNetwork network;
-        private TcpTopologyManager topologyManager;
+        private TopologyObserver topologyManager;
 
         NetworkNode(NodeId nodeId, List<NodeInfo> allNodes, Runnable onDecision) {
             this.nodeId = nodeId;
@@ -267,7 +267,7 @@ class RabiaNetworkPerformanceTest {
             );
 
             // Create topology manager and wire up routes
-            topologyManager = TcpTopologyManager.tcpTopologyManager(config, router)
+            topologyManager = TopologyObserver.topologyObserver(config, router)
                                                 .expect("valid topology config");
 
             // Wire up topology manager message routes
@@ -330,7 +330,7 @@ class RabiaNetworkPerformanceTest {
 
         void stop() {
             Option.option(engine).onPresent(e -> e.stop().await());
-            Option.option(topologyManager).onPresent(TcpTopologyManager::stop);
+            Option.option(topologyManager).onPresent(TopologyObserver::stop);
             Option.option(network).onPresent(n -> n.stop().await());
         }
 

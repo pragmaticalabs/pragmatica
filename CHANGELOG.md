@@ -4,7 +4,43 @@ All notable changes to Pragmatica will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [0.24.0] - Unreleased
+## [0.24.1] - Unreleased
+
+### Added
+- **ClusterTopologyManager** — new node lifecycle manager with reconciliation state machine (FORMING → CONVERGED ↔ RECONCILING). Handles auto-heal, scale-up/down, quorum safety. Replaces fragile boolean flags in CDM with clean state transitions. Single action path for all node count changes
+- **Consensus-driven topology discovery** — Hello handshake carries node address; ON_DUTY lifecycle notifications trigger topology additions. Dynamically provisioned nodes become visible to all cluster members via consensus, not just the provisioning leader
+- **Per-route security** — routes.toml `[security]` section with per-route policies (public/authenticated/role:name), type-safe `RouteSecurityPolicy` interface with `canAccess()`, `SecurityPolicy` sealed variants in Aether, route-level enforcement in AppHttpServer (per-route wins over global SecurityMode)
+- **Principal/SecurityContext injection** — slice handler methods can declare `Principal` or `SecurityContext` parameters; code generator injects from `SecurityContextHolder` automatically
+- **Blueprint security overrides** — operators can override route security at deploy time via `[security.overrides]` in blueprint.toml with `strengthen_only`/`full`/`none` policies
+- **QUIC transport metrics** — `QuicTransportMetrics` with active connections, handshakes, messages sent/received, write failures, backpressure drops; exposed via `/api/metrics/transport`
+- **Per-route request metrics** — Micrometer counters and timers per route pattern; security denial counters with denial type classification
+- **Dashboard route security badges** — Routes panel on Deployments page shows security policy per route
+- **Config validation warnings** — blueprint parser warns on unrecognized TOML sections
+- **Streaming lifecycle operations spec** — §16 added to in-memory streams spec: replica count change, repartitioning, stream deletion, migration patterns
+
+### Changed
+- **Topology management refactored** — `TcpTopologyManager` renamed to `TopologyObserver` (pure observation); new `ClusterTopologyManager` wraps observer and manages cluster size. CDM no longer owns node provisioning
+- **`NodeLifecycleValue` carries address** — host/port included in ON_DUTY registration for consensus-driven node discovery (backward compatible with old format)
+- **`RouteSecurityPolicy` renamed to `SecurityPolicy`** — moved from transport-level to intent-based (Public, Authenticated, ApiKeyRequired, BearerTokenRequired, RoleRequired); extends generic `RouteSecurityPolicy` from http-routing layer
+- **`[security]` section optional** — routes.toml without `[security]` defaults to PUBLIC with STRENGTHEN_ONLY policy (backward compatible)
+- **Security validators handle all policy variants** — ApiKeySecurityValidator and JwtSecurityValidator now handle Authenticated and RoleRequired in addition to their primary types
+- **Route security in KV-Store** — `NodeRoutesValue.RouteEntry` carries security field; serialization is backward compatible with old format
+
+### Fixed
+- **Node auto-heal** — killed nodes automatically replaced via ComputeProvider; batch provisioning proportional to deficit; quorum safety (never below 3); ON_DUTY health check before considering provision complete; leader failover detects ready nodes via consensus
+- **Node departure healing** — SWIM FAULTY routes `RemoveNode` to topology manager; QUIC disconnect routes `RemoveNode` for passive LB; CDM rebuilds state before cleanup; sequential reconciliation prevents consensus batch collisions
+- **Reconnection storm eliminated** — `ConnectionFailed` routed to topology manager for exponential backoff; reconciliation loop is sole reconnection driver; new nodes bypass ConnectionDirection for initial join
+- **QUIC write failures detected** — `writeAndFlush()` listener detects failures, removes stale links, triggers reconnection
+- **QUIC DataHandler error containment** — `exceptionCaught()` closes channel; deserialization wrapped in try-catch to prevent single malformed message from killing connection
+- **QUIC write backpressure** — writability check before write; `WriteTimeoutHandler(10s)` in stream pipelines
+- **QUIC Hello deserialization safety** — try-catch in both server and client Hello handlers
+- **SecurityMode=NONE + authenticated route** — returns clear 401 "Route requires authentication but no security mode is configured" instead of vague error
+- **WWW-Authenticate header** — no longer sent when SecurityMode=NONE (was misleadingly advertising ApiKey)
+- **WebSocket auth timeout** — sends AUTH_TIMEOUT message before closing instead of silent disconnect
+- **Overlapping route detection** — compile WARNING when two routes have same method+path pattern
+- **Invocation metrics strategy** — returns 501 Not Implemented with clear message; CLI explains limitation
+
+## [0.24.0] - 2026-03-24
 
 ### Added
 - **QUIC cluster transport** — replaces TCP for all inter-node communication. Stream-per-message-type multiplexing (consensus stream 0, KV stream 1, HTTP forward stream 2, DHT stream 3), mandatory TLS 1.3 with auto-generated self-signed certs for dev, 0-RTT reconnection, connection migration, NodeId-ordered connection initiation. First Java distributed runtime on QUIC

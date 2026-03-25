@@ -462,9 +462,13 @@ public final class EmberCluster {
     /// Add a new node to the cluster.
     /// Returns the new node's ID.
     public Promise<NodeId> addNode() {
-        var slot = Option.option(availableSlots.poll())
-                         .onEmpty(() -> log.warn("Slot pool exhausted, this shouldn't happen"))
-                         .or(0);
+        var slotOpt = Option.option(availableSlots.poll());
+        if (slotOpt.isEmpty()) {
+            log.warn("Slot pool exhausted — no available ports for new node");
+            return EnvironmentError.operationNotSupported("No available port slots for new node")
+                                   .promise();
+        }
+        var slot = slotOpt.unwrap();
         var nodeNum = nodeCounter.incrementAndGet();
         var nodeId = nodeId(nodeIdPrefix + "-" + nodeNum).unwrap();
         var port = basePort + slot;
@@ -473,11 +477,13 @@ public final class EmberCluster {
         var info = NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
         log.info("Adding new node {} on port {}", nodeId.id(), port);
         slotsByNodeId.put(nodeId.id(), slot);
-        // Register the new node in coreNodes BEFORE creating it — TcpTopologyManager requires self in coreNodes.
+        // Register the new node in coreNodes BEFORE creating it — TopologyObserver requires self in coreNodes.
         // Activation gating prevents auto-activation; the node waits for CDM authorization instead.
         nodeInfos.put(nodeId.id(), info);
         var allNodes = new ArrayList<>(nodeInfos.values());
-        var node = createNode(nodeId, port, mgmtPort, appHttpPort, allNodes, true);
+        // Auto-heal provisioned nodes join an established cluster — no activation gating needed.
+        // Gating is only for initial cluster formation where CDM coordinates node roles.
+        var node = createNode(nodeId, port, mgmtPort, appHttpPort, allNodes, false);
         nodes.put(nodeId.id(), node);
         return node.start()
                    .map(_ -> nodeId)

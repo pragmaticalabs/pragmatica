@@ -44,4 +44,10 @@ public sealed interface SecurityError extends Cause {
 
     /// Failed to fetch or parse JWKS from remote endpoint.
     record JwksFetchFailed(String message) implements SecurityError {}
+
+    /// Route requires authentication but no security mode is configured.
+    SecurityError NO_VALIDATOR_CONFIGURED = new MissingCredentials("Route requires authentication but no security mode is configured");
+
+    /// Authenticated principal lacks the required role.
+    record InsufficientRole(String message) implements SecurityError {}
 }

@@ -20,6 +20,9 @@ import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
+import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
@@ -101,6 +104,9 @@ import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.net.tcp.NodeAddress;
+import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
@@ -153,7 +159,7 @@ import org.slf4j.LoggerFactory;
 /// Assembles all components: consensus, KV-store, slice management, deployment managers.
 @SuppressWarnings("JBCT-RET-01")
 public interface AetherNode {
-    String VERSION = "0.21.0";
+    String VERSION = "0.24.1";
     NodeId self();
 
     Promise<Unit> start();
@@ -180,6 +186,9 @@ public interface AetherNode {
 
     /// Get the artifact store for artifact storage operations.
     ArtifactStore artifactStore();
+
+    /// Get the topology manager for cluster membership visibility.
+    TopologyManager topologyManager();
 
     /// Get the invocation metrics collector for method-level metrics.
     InvocationMetricsCollector invocationMetrics();
@@ -250,6 +259,10 @@ public interface AetherNode {
     /// Get the number of currently connected peer nodes in the cluster.
     /// This is a network-level count, not based on metrics exchange.
     int connectedNodeCount();
+
+    /// Get transport-level metrics (QUIC connection stats, handshakes, message throughput).
+    /// Returns an empty map if the transport does not support metrics.
+    Map<String, Number> transportMetrics();
 
     /// Get the IDs of currently connected peer nodes.
     /// This is a live view — reflects actual TCP connections, not static config.
@@ -452,6 +465,11 @@ public interface AetherNode {
             @Override
             public NodeId self() {
                 return config.self();
+            }
+
+            @Override
+            public TopologyManager topologyManager() {
+                return clusterNode.topologyManager();
             }
 
             @Override
@@ -679,6 +697,12 @@ public interface AetherNode {
             }
 
             @Override
+            public Map<String, Number> transportMetrics() {
+                return clusterNode.network()
+                                  .transportMetrics();
+            }
+
+            @Override
             public Set<NodeId> connectedPeerIds() {
                 return clusterNode.network()
                                   .connectedPeers();
@@ -783,15 +807,20 @@ public interface AetherNode {
                                                                                      connectionProvider,
                                                                                      config.self(),
                                                                                      delegateRouter);
+        // Create NodeLifecycleManager for cloud operations (shared by CTM and CDM drain completion)
+        var computeProvider = config.environment()
+                                    .flatMap(EnvironmentIntegration::compute);
+        var lifecycleManager = NodeLifecycleManager.nodeLifecycleManager(computeProvider);
+        // Create ClusterTopologyManager wrapping the observer — manages cluster size via reconciliation state machine
+        var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((org.pragmatica.consensus.topology.TopologyObserver) clusterNode.topologyManager(),
+                                                                                   lifecycleManager,
+                                                                                   config.autoHeal());
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
                                                                                          delegateRouter,
                                                                                          initialTopology,
                                                                                          clusterNode.topologyManager(),
-                                                                                         config.environment()
-                                                                                               .flatMap(EnvironmentIntegration::compute),
-                                                                                         config.autoHeal(),
                                                                                          config.atomicity(),
                                                                                          config.topology()
                                                                                                .coreMax(),
@@ -949,7 +978,9 @@ public interface AetherNode {
                                                                          sliceInvoker,
                                                                          cacheDhtClient));
         // Create node deployment manager (now created after sliceInvoker for HTTP route publishing)
+        var selfAddress = findSelfAddress(config);
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManager(config.self(),
+                                                                                selfAddress,
                                                                                 delegateRouter,
                                                                                 sliceStore,
                                                                                 clusterNode,
@@ -1019,7 +1050,9 @@ public interface AetherNode {
                                                 eventAggregator,
                                                 clusterNode.leaderManager(),
                                                 appHttpServer,
-                                                loadBalancerManager);
+                                                loadBalancerManager,
+                                                (TopologyObserver) clusterNode.topologyManager(),
+                                                clusterTopologyManager);
         // DHT message routes for distributed operations
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
                                                     request -> dhtNode.handleGetRequest(request,
@@ -1244,6 +1277,54 @@ public interface AetherNode {
                              });
     }
 
+    @SuppressWarnings({"JBCT-RET-01", "unchecked"})
+    private static void notifyCtmOnDuty(ValuePut<AetherKey.NodeLifecycleKey, AetherValue> put,
+                                        ClusterTopologyManager ctm) {
+        if (put.cause()
+               .value() instanceof AetherValue.NodeLifecycleValue lifecycleValue && lifecycleValue.state() == AetherValue.NodeLifecycleState.ON_DUTY) {
+            var nodeId = put.cause()
+                            .key()
+                            .nodeId();
+            markReadyWithAddress(ctm, nodeId, lifecycleValue);
+            ctm.onNodeReady(nodeId);
+        }
+    }
+
+    private static void markReadyWithAddress(ClusterTopologyManager ctm,
+                                             NodeId nodeId,
+                                             AetherValue.NodeLifecycleValue lifecycleValue) {
+        if (lifecycleValue.hasAddress()) {
+            ctm.observer()
+               .markReady(nodeId,
+                          new NodeAddress(lifecycleValue.host(),
+                                          lifecycleValue.port()));
+        } else {
+            ctm.observer()
+               .markReady(nodeId);
+        }
+    }
+
+    private static NodeAddress findSelfAddress(AetherNodeConfig config) {
+        return config.topology()
+                     .coreNodes()
+                     .stream()
+                     .filter(info -> info.id()
+                                         .equals(config.self()))
+                     .map(NodeInfo::address)
+                     .findFirst()
+                     .orElse(new NodeAddress("", 0));
+    }
+
+    @SuppressWarnings("JBCT-RET-01")
+    private static void handleCtmLeaderChange(LeaderNotification.LeaderChange change,
+                                              ClusterTopologyManager ctm) {
+        if (change.localNodeIsLeader()) {
+            ctm.activate();
+        } else {
+            ctm.deactivate();
+        }
+    }
+
     private static void startSwimOnQuorum(QuorumStateNotification notification,
                                           CoreSwimHealthDetector swimHealthDetector,
                                           ClusterNetwork network,
@@ -1434,7 +1515,9 @@ public interface AetherNode {
                                                                     ClusterEventAggregator eventAggregator,
                                                                     LeaderManager leaderManager,
                                                                     AppHttpServer appHttpServer,
-                                                                    Option<LoadBalancerManager> loadBalancerManager) {
+                                                                    Option<LoadBalancerManager> loadBalancerManager,
+                                                                    TopologyObserver topologyManager,
+                                                                    ClusterTopologyManager clusterTopologyManager) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         // KV-Store notification sub-router — type-safe key-based dispatch.
         // Replaces per-handler filterPut/filterRemove with key-type dispatch via KVNotificationRouter.
@@ -1488,6 +1571,13 @@ public interface AetherNode {
                                                             nodeDeploymentManager::onNodeLifecycleRemove)
                                                   .onPut(AetherKey.NodeLifecycleKey.class,
                                                          clusterDeploymentManager::onNodeLifecyclePut)
+                                                  .onPut(AetherKey.NodeLifecycleKey.class,
+                                                         put -> notifyCtmOnDuty(put, clusterTopologyManager))
+                                                  .onRemove(AetherKey.NodeLifecycleKey.class,
+                                                            remove -> clusterTopologyManager.observer()
+                                                                                            .markDeparted(remove.cause()
+                                                                                                                .key()
+                                                                                                                .nodeId()))
                                                   .onPut(AetherKey.ActivationDirectiveKey.class,
                                                          clusterDeploymentManager::onActivationDirectivePut)
                                                   .onRemove(AetherKey.ActivationDirectiveKey.class,
@@ -1554,6 +1644,9 @@ public interface AetherNode {
         // consensus engine is already active by the time LeaderChange is emitted (see RabiaNode handler order).
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               clusterDeploymentManager::onLeaderChange));
+        // ClusterTopologyManager leader change — activate/deactivate reconciliation state machine
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              change -> handleCtmLeaderChange(change, clusterTopologyManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, metricsScheduler::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, controlLoop::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
@@ -1581,6 +1674,13 @@ public interface AetherNode {
                                               clusterDeploymentManager::onTopologyChange));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
                                               clusterDeploymentManager::onTopologyChange));
+        // ClusterTopologyManager topology change — triggers node reconciliation state machine
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
+                                              clusterTopologyManager::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+                                              clusterTopologyManager::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
+                                              clusterTopologyManager::onTopologyChange));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
                                               metricsScheduler::onTopologyChange));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
@@ -1661,6 +1761,10 @@ public interface AetherNode {
                                               eventAggregator::onConnectionEstablished));
         entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionFailed.class,
                                               eventAggregator::onConnectionFailed));
+        entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionFailed.class,
+                                              topologyManager::handleConnectionFailed));
+        entries.add(MessageRouter.Entry.route(TopologyManagementMessage.RemoveNode.class,
+                                              topologyManager::handleRemoveNodeMessage));
         // Operational audit events — routed to event aggregator for dashboard/API consumption
         entries.add(MessageRouter.Entry.route(OperationalEvent.AccessDenied.class, eventAggregator::onAccessDenied));
         entries.add(MessageRouter.Entry.route(OperationalEvent.NodeLifecycleChanged.class,

@@ -789,20 +789,39 @@ public sealed interface AetherValue {
     ///
     /// @param state the current lifecycle state
     /// @param updatedAt timestamp of last state transition
-    record NodeLifecycleValue(NodeLifecycleState state, long updatedAt) implements AetherValue {
-        /// Creates a new lifecycle value with current timestamp.
+    /// @param host the node's cluster address host (empty string for backward compatibility)
+    /// @param port the node's cluster address port (0 for backward compatibility)
+    record NodeLifecycleValue(NodeLifecycleState state, long updatedAt, String host, int port) implements AetherValue {
+        /// Compact constructor: normalize null host for backward compatibility with old serialization.
+        public NodeLifecycleValue {
+            if (host == null) {
+                host = "";
+            }
+        }
+
+        /// Creates a new lifecycle value with current timestamp (no address).
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state) {
-            return new NodeLifecycleValue(state, System.currentTimeMillis());
+            return new NodeLifecycleValue(state, System.currentTimeMillis(), "", 0);
         }
 
-        /// Creates a new lifecycle value with explicit timestamp.
+        /// Creates a new lifecycle value with explicit timestamp (no address).
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, long updatedAt) {
-            return new NodeLifecycleValue(state, updatedAt);
+            return new NodeLifecycleValue(state, updatedAt, "", 0);
         }
 
-        /// Returns a new value with updated state and current timestamp.
+        /// Creates a new lifecycle value with current timestamp and address.
+        public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, String host, int port) {
+            return new NodeLifecycleValue(state, System.currentTimeMillis(), host, port);
+        }
+
+        /// Returns true if this value carries a valid cluster address.
+        public boolean hasAddress() {
+            return ! host.isEmpty() && port > 0;
+        }
+
+        /// Returns a new value with updated state and current timestamp, preserving address.
         public NodeLifecycleValue withState(NodeLifecycleState newState) {
-            return new NodeLifecycleValue(newState, System.currentTimeMillis());
+            return new NodeLifecycleValue(newState, System.currentTimeMillis(), host, port);
         }
     }
 
@@ -866,15 +885,31 @@ public sealed interface AetherValue {
         /// @param state route state: ACTIVE, DRAINING, or CANARY
         /// @param weight relative load factor (100 = normal, 0 = don't route)
         /// @param registeredAt epoch millis when this route was registered
+        /// @param security security policy string (PUBLIC, AUTHENTICATED, API_KEY, BEARER_TOKEN, ROLE:name)
         public record RouteEntry(String httpMethod,
                                  String pathPrefix,
                                  String sliceMethod,
                                  String state,
                                  int weight,
-                                 long registeredAt) {
-            /// Creates an active route entry with default weight.
+                                 long registeredAt,
+                                 String security) {
+            /// Creates an active route entry with default weight and explicit security.
+            public static RouteEntry activeRoute(String httpMethod,
+                                                 String pathPrefix,
+                                                 String sliceMethod,
+                                                 String security) {
+                return new RouteEntry(httpMethod,
+                                      pathPrefix,
+                                      sliceMethod,
+                                      "ACTIVE",
+                                      100,
+                                      System.currentTimeMillis(),
+                                      security);
+            }
+
+            /// Creates an active route entry with default weight and PUBLIC security (backward compat).
             public static RouteEntry activeRoute(String httpMethod, String pathPrefix, String sliceMethod) {
-                return new RouteEntry(httpMethod, pathPrefix, sliceMethod, "ACTIVE", 100, System.currentTimeMillis());
+                return activeRoute(httpMethod, pathPrefix, sliceMethod, "PUBLIC");
             }
 
             /// Returns true if this route is active and routable.

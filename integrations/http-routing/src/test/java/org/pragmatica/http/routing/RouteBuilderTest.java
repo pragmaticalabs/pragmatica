@@ -2,6 +2,8 @@ package org.pragmatica.http.routing;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.http.routing.security.Access;
+import org.pragmatica.http.routing.security.RouteSecurityPolicy;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -1384,6 +1386,53 @@ class RouteBuilderTest {
             assertThat(str).contains("GET");
             assertThat(str).contains("/users/");
             assertThat(str).contains("APPLICATION_JSON");
+        }
+    }
+
+    // ===================================================================================
+    // Security
+    // ===================================================================================
+    @Nested
+    class SecurityTests {
+        @Test
+        void route_defaultSecurity_allowsAll() {
+            Route<TestResponse> route = Route.<TestResponse>get("/public")
+                .to(_ -> Promise.success(new TestResponse("OK")))
+                .asJson();
+
+            assertThat(route.security().canAccess(null)).isEqualTo(Access.ALLOW);
+        }
+
+        @Test
+        void route_withSecurity_carriesPolicy() {
+            RouteSecurityPolicy customPolicy = new RouteSecurityPolicy() {
+                @Override
+                public <T extends org.pragmatica.http.routing.security.RequestSecurityContext> Access canAccess(T context) {
+                    return Access.DENY;
+                }
+            };
+
+            Route<TestResponse> route = Route.<TestResponse>get("/secured")
+                .to(_ -> Promise.success(new TestResponse("OK")))
+                .withSecurity(customPolicy)
+                .asJson();
+
+            assertThat(route.security()).isSameAs(customPolicy);
+            assertThat(route.security().canAccess(null)).isEqualTo(Access.DENY);
+        }
+
+        @Test
+        void route_withSecurity_preservedThroughNamed() {
+            RouteSecurityPolicy customPolicy = new RouteSecurityPolicy() {};
+
+            Route<TestResponse> route = Route.<TestResponse>get("/named-secured")
+                .to(_ -> Promise.success(new TestResponse("OK")))
+                .named("test")
+                .withSecurity(customPolicy)
+                .asJson();
+
+            assertThat(route.security()).isSameAs(customPolicy);
+            assertThat(route.name()).isEqualTo("test");
         }
     }
 }

@@ -23,6 +23,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
 
 import java.net.SocketAddress;
@@ -86,12 +87,38 @@ public interface TopologyManager {
     /// Returns the list of all node IDs in the topology.
     List<NodeId> topology();
 
+    /// Check if a node has the PASSIVE role (load balancer, observer).
+    default boolean isPassive(NodeId nodeId) {
+        return get(nodeId).filter(info -> info.role() == NodeRole.PASSIVE)
+                          .isPresent();
+    }
+
     /// Returns the count of active (non-passive) nodes in the topology.
     /// Passive nodes (load balancers, observers) are excluded from the count.
     default int activeNodeCount() {
         return (int) topology().stream()
-                               .filter(id -> get(id).filter(info -> info.role() == NodeRole.PASSIVE)
-                                                    .isEmpty())
+                               .filter(id -> !isPassive(id))
                                .count();
+    }
+
+    /// Mark a node as ready (ON_DUTY). Called when a node registers its lifecycle state.
+    /// The observer tracks ready nodes independently of QUIC connections.
+    default void markReady(NodeId nodeId) {}
+
+    /// Mark a node as ready (ON_DUTY) with its cluster address.
+    /// When the node is not yet in the local topology, it will be added automatically.
+    /// This enables dynamically provisioned nodes to become visible after leader failover.
+    default void markReady(NodeId nodeId, NodeAddress address) {
+        markReady(nodeId);
+    }
+
+    /// Mark a node as departed (lifecycle removed or node dead).
+    default void markDeparted(NodeId nodeId) {}
+
+    /// Returns the count of nodes that have reached ON_DUTY state.
+    /// More authoritative than activeNodeCount() for detecting dynamically provisioned nodes
+    /// that may not be in the local QUIC topology yet (e.g., after leader failover).
+    default int readyNodeCount() {
+        return activeNodeCount();
     }
 }

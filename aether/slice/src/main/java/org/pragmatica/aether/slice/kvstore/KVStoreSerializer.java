@@ -316,7 +316,7 @@ public final class KVStoreSerializer {
 
     private static String serializeNodeLifecycle(NodeLifecycleValue v) {
         return v.state()
-                .name() + PIPE + v.updatedAt();
+                .name() + PIPE + v.updatedAt() + PIPE + v.host() + PIPE + v.port();
     }
 
     private static String serializeNodeArtifact(NodeArtifactValue v) {
@@ -334,7 +334,8 @@ public final class KVStoreSerializer {
     }
 
     private static String serializeRouteEntry(NodeRoutesValue.RouteEntry r) {
-        return r.httpMethod() + "," + r.pathPrefix() + "," + r.sliceMethod() + "," + r.state() + "," + r.weight() + "," + r.registeredAt();
+        return r.httpMethod() + "," + r.pathPrefix() + "," + r.sliceMethod() + "," + r.state() + "," + r.weight() + "," + r.registeredAt()
+               + "," + r.security();
     }
 
     private static String serializeGovernorAnnouncement(GovernorAnnouncementValue v) {
@@ -681,12 +682,20 @@ public final class KVStoreSerializer {
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseNodeLifecycleEntry(String identity, String raw) {
         var parts = raw.split("\\|", - 1);
-        if (parts.length != 2) {
-            return parseFailure("node-lifecycle value requires 2 fields, got " + parts.length);
+        if (parts.length != 2 && parts.length != 4) {
+            return parseFailure("node-lifecycle value requires 2 or 4 fields, got " + parts.length);
         }
+        var host = parts.length >= 4
+                   ? parts[2]
+                   : "";
+        var port = parts.length >= 4
+                   ? Integer.parseInt(parts[3])
+                   : 0;
         return NodeLifecycleKey.nodeLifecycleKey("node-lifecycle/" + identity)
                                .flatMap(key -> parseNodeLifecycleState(parts[0]).map(state -> new NodeLifecycleValue(state,
-                                                                                                                     Long.parseLong(parts[1])))
+                                                                                                                     Long.parseLong(parts[1]),
+                                                                                                                     host,
+                                                                                                                     port))
                                                                       .map(val -> entry(key, val)));
     }
 
@@ -807,12 +816,16 @@ public final class KVStoreSerializer {
 
     private static NodeRoutesValue.RouteEntry parseRouteEntry(String entry) {
         var parts = entry.split(",", - 1);
+        var security = parts.length > 6
+                       ? parts[6]
+                       : "PUBLIC";
         return new NodeRoutesValue.RouteEntry(parts[0],
                                               parts[1],
                                               parts[2],
                                               parts[3],
                                               Integer.parseInt(parts[4]),
-                                              Long.parseLong(parts[5]));
+                                              Long.parseLong(parts[5]),
+                                              security);
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseGossipKeyRotationEntry(String identity, String raw) {

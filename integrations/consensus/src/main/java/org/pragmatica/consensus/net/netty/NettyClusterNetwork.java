@@ -138,7 +138,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
 
     private void peerConnected(Channel channel) {
         pendingChannels.add(channel);
-        channel.writeAndFlush(new Hello(self.id(), self.role()));
+        channel.writeAndFlush(new Hello(self.id(), self.role(), self.address()));
         scheduleHelloTimeout(channel);
         log.debug("Channel active, sent Hello and waiting for response: {}", channel.remoteAddress());
     }
@@ -417,6 +417,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
                 if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
                     router.route(QuorumStateNotification.disappeared());
                 }
+                router.route(new TopologyManagementMessage.RemoveNode(peerId));
                 yield TopologyChangeNotification.nodeRemoved(peerId, currentView());
             }
             case SHUTDOWN -> {

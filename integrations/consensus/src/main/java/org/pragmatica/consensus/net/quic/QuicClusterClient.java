@@ -41,6 +41,7 @@ import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.slf4j.Logger;
@@ -79,12 +80,13 @@ public sealed interface QuicClusterClient {
     /// @param messageReceiver callback invoked for each message received after Hello
     static QuicClusterClient quicClusterClient(NodeId selfId,
                                                NodeRole selfRole,
+                                               NodeAddress selfAddress,
                                                Serializer serializer,
                                                Deserializer deserializer,
                                                QuicSslContext sslContext,
                                                Option<EventLoopGroup> eventLoop,
                                                QuicClusterServer.MessageReceiver messageReceiver) {
-        return new QuicClusterClientInstance(selfId, selfRole, serializer, deserializer,
+        return new QuicClusterClientInstance(selfId, selfRole, selfAddress, serializer, deserializer,
                                             sslContext, eventLoop, messageReceiver);
     }
 
@@ -104,6 +106,7 @@ public sealed interface QuicClusterClient {
 final class QuicClusterClientInstance implements QuicClusterClient {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterClientInstance.class);
     private static final long HELLO_TIMEOUT_MS = 15_000;
+    private static final int WRITE_TIMEOUT_SECONDS = 10;
     private static final long MAX_IDLE_TIMEOUT_MS = 0; // Disabled per QUIC RFC 9000 §10.1 — cluster connections are persistent
     private static final long INITIAL_MAX_DATA = 16_000_000;
     private static final long INITIAL_MAX_STREAM_DATA = 4_000_000;
@@ -111,6 +114,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
 
     private final NodeId selfId;
     private final NodeRole selfRole;
+    private final NodeAddress selfAddress;
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final QuicSslContext sslContext;
@@ -121,6 +125,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
 
     QuicClusterClientInstance(NodeId selfId,
                               NodeRole selfRole,
+                              NodeAddress selfAddress,
                               Serializer serializer,
                               Deserializer deserializer,
                               QuicSslContext sslContext,
@@ -128,6 +133,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                               QuicClusterServer.MessageReceiver messageReceiver) {
         this.selfId = selfId;
         this.selfRole = selfRole;
+        this.selfAddress = selfAddress;
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.sslContext = sslContext;
@@ -207,6 +213,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             @Override
             protected void initChannel(QuicStreamChannel ch) {
                 ch.pipeline()
+                  .addLast(new io.netty.handler.timeout.WriteTimeoutHandler(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS))
                   .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(1_048_576, 0, 4, 0, 4))
                   .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
                   .addLast(new ClientHelloHandler(peerId, quicChannel, promise));
@@ -229,7 +236,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     }
 
     private void sendHello(QuicStreamChannel streamChannel, NodeId peerId) {
-        var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfRole));
+        var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfRole, selfAddress));
         streamChannel.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
         log.debug("Sent Hello to peer {} on stream", peerId);
     }
@@ -331,8 +338,17 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             }
         }
 
+        @SuppressWarnings("JBCT-PAT-01") // Adapter boundary: catch deserialization errors from external input
         private void processHelloResponse(ChannelHandlerContext ctx, ByteBuf buf) {
-            var message = decodeMessage(buf);
+            Object message;
+            try {
+                message = decodeMessage(buf);
+            } catch (Exception e) {
+                log.error("Failed to deserialize Hello response from peer {}", peerId, e);
+                promise.fail(new QuicTransportError.ConnectFailed(peerId.id(), e));
+                ctx.close();
+                return;
+            }
             if (message instanceof NetworkMessage.Hello hello) {
                 completePeerConnection(ctx, hello);
             } else {
@@ -371,16 +387,23 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         }
 
         @Override
+        @SuppressWarnings("JBCT-PAT-01") // Adapter boundary: catch deserialization errors from external input
         protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
             var bytes = new byte[buf.readableBytes()];
             buf.readBytes(bytes);
-            var message = deserializer.decode(bytes);
-            messageReceiver.onMessage(peerId, message);
+
+            try {
+                var message = deserializer.decode(bytes);
+                messageReceiver.onMessage(peerId, message);
+            } catch (Exception e) {
+                log.error("Failed to deserialize message from peer {}", peerId, e);
+            }
         }
 
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
             log.error("Error processing message from peer {}", peerId, cause);
+            ctx.close();
         }
     }
 }

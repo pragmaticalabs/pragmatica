@@ -398,6 +398,25 @@
                          x-effect="TopologyGraph.render($refs.topologyContainer, $store.topology.nodes, $store.topology.edges, $store.topology.searchQuery)">
                     </div>
                 </div>
+                <div class="panel" x-show="$store.deployments.routes.length > 0">
+                    <h2 class="panel-header">
+                        ROUTES
+                        <span class="panel-count" x-text="$store.deployments.routes.length + ' ROUTES'"></span>
+                    </h2>
+                    <table class="streams-table">
+                        <thead><tr><th>Method</th><th>Path</th><th>Security</th><th>Nodes</th></tr></thead>
+                        <tbody>
+                            <template x-for="r in $store.deployments.routes" :key="r.method + r.path">
+                                <tr>
+                                    <td><span class="mono-text" x-text="r.method"></span></td>
+                                    <td><span class="mono-text" x-text="r.path"></span></td>
+                                    <td><span class="status-badge" :class="(r.security || 'PUBLIC').toLowerCase()" x-text="r.securityLabel"></span></td>
+                                    <td x-text="(r.nodes || []).length"></td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
                 <div class="panel" x-show="$store.deployments.rollingUpdates.length > 0">
                     <h2>ROLLING UPDATES</h2>
                     <template x-for="update in $store.deployments.rollingUpdates" :key="update.sliceId">
