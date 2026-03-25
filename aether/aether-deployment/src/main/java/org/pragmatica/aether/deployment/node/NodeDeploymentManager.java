@@ -48,6 +48,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.net.tcp.NodeAddress;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -1075,6 +1076,7 @@ public interface NodeDeploymentManager {
                                                        KVStore<AetherKey, AetherValue> kvStore,
                                                        InvocationHandler invocationHandler) {
         return nodeDeploymentManager(self,
+                                     new NodeAddress("", 0),
                                      router,
                                      sliceStore,
                                      cluster,
@@ -1089,6 +1091,7 @@ public interface NodeDeploymentManager {
     }
 
     static NodeDeploymentManager nodeDeploymentManager(NodeId self,
+                                                       NodeAddress selfAddress,
                                                        MessageRouter router,
                                                        SliceStore sliceStore,
                                                        ClusterNode<KVCommand<AetherKey>> cluster,
@@ -1099,6 +1102,7 @@ public interface NodeDeploymentManager {
                                                        Option<HttpRoutePublisher> httpRoutePublisher,
                                                        Option<SliceInvokerFacade> sliceInvokerFacade) {
         return nodeDeploymentManager(self,
+                                     selfAddress,
                                      router,
                                      sliceStore,
                                      cluster,
@@ -1113,6 +1117,7 @@ public interface NodeDeploymentManager {
     }
 
     static NodeDeploymentManager nodeDeploymentManager(NodeId self,
+                                                       NodeAddress selfAddress,
                                                        MessageRouter router,
                                                        SliceStore sliceStore,
                                                        ClusterNode<KVCommand<AetherKey>> cluster,
@@ -1125,6 +1130,7 @@ public interface NodeDeploymentManager {
                                                        TimeSpan activationChainTimeout,
                                                        TimeSpan transitionRetryDelay) {
         record deploymentManager(NodeId self,
+                                 NodeAddress selfAddress,
                                  SliceStore sliceStore,
                                  ClusterNode<KVCommand<AetherKey>> cluster,
                                  KVStore<AetherKey, AetherValue> kvStore,
@@ -1245,7 +1251,9 @@ public interface NodeDeploymentManager {
             }
 
             private void writeLifecycleOnDuty(AetherKey.NodeLifecycleKey lifecycleKey, int attempt) {
-                var value = AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY);
+                var value = AetherValue.NodeLifecycleValue.nodeLifecycleValue(AetherValue.NodeLifecycleState.ON_DUTY,
+                                                                              selfAddress().host(),
+                                                                              selfAddress().port());
                 cluster().apply(List.of(new KVCommand.Put<>(lifecycleKey, value)))
                        .onSuccess(_ -> log.info("Node {} registered lifecycle state: ON_DUTY",
                                                 self().id()))
@@ -1309,6 +1317,7 @@ public interface NodeDeploymentManager {
             }
         }
         return new deploymentManager(self,
+                                     selfAddress,
                                      sliceStore,
                                      cluster,
                                      kvStore,

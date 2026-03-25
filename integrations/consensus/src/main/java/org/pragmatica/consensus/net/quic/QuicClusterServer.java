@@ -41,6 +41,7 @@ import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.slf4j.Logger;
@@ -72,7 +73,7 @@ public sealed interface QuicClusterServer {
     /// Callback for new peer connections after Hello handshake completes.
     @FunctionalInterface
     interface PeerConnectionHandler {
-        void onPeerConnected(QuicPeerConnection connection);
+        void onPeerConnected(QuicPeerConnection connection, NodeRole peerRole, NodeAddress peerAddress);
     }
 
     /// Callback for incoming messages after Hello handshake completes.
@@ -93,13 +94,14 @@ public sealed interface QuicClusterServer {
     /// @param messageReceiver   callback invoked for each message received after Hello
     static QuicClusterServer quicClusterServer(NodeId selfId,
                                                NodeRole selfRole,
+                                               NodeAddress selfAddress,
                                                Serializer serializer,
                                                Deserializer deserializer,
                                                QuicSslContext sslContext,
                                                Option<EventLoopGroup> sharedEventLoop,
                                                PeerConnectionHandler connectionHandler,
                                                MessageReceiver messageReceiver) {
-        return new QuicClusterServerInstance(selfId, selfRole, serializer, deserializer,
+        return new QuicClusterServerInstance(selfId, selfRole, selfAddress, serializer, deserializer,
                                             sslContext, sharedEventLoop, connectionHandler,
                                             messageReceiver);
     }
@@ -133,6 +135,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
     private final NodeId selfId;
     private final NodeRole selfRole;
+    private final NodeAddress selfAddress;
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final QuicSslContext sslContext;
@@ -146,6 +149,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
     QuicClusterServerInstance(NodeId selfId,
                               NodeRole selfRole,
+                              NodeAddress selfAddress,
                               Serializer serializer,
                               Deserializer deserializer,
                               QuicSslContext sslContext,
@@ -154,6 +158,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
                               MessageReceiver messageReceiver) {
         this.selfId = selfId;
         this.selfRole = selfRole;
+        this.selfAddress = selfAddress;
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.sslContext = sslContext;
@@ -354,7 +359,7 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         }
 
         private void sendHelloResponse(ChannelHandlerContext ctx) {
-            var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfRole));
+            var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfRole, selfAddress));
             ctx.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
         }
 
@@ -366,8 +371,8 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             // Replace Hello handler with data handler for ongoing messages
             ctx.pipeline().replace(this, "data-handler", new DataHandler(hello.sender()));
 
-            log.info("QUIC Hello handshake complete with peer {} (role={})", hello.sender(), hello.role());
-            connectionHandler.onPeerConnected(peerConnection);
+            log.info("QUIC Hello handshake complete with peer {} (role={}, address={})", hello.sender(), hello.role(), hello.address());
+            connectionHandler.onPeerConnected(peerConnection, hello.role(), hello.address());
         }
     }
 

@@ -41,6 +41,7 @@ import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.slf4j.Logger;
@@ -79,12 +80,13 @@ public sealed interface QuicClusterClient {
     /// @param messageReceiver callback invoked for each message received after Hello
     static QuicClusterClient quicClusterClient(NodeId selfId,
                                                NodeRole selfRole,
+                                               NodeAddress selfAddress,
                                                Serializer serializer,
                                                Deserializer deserializer,
                                                QuicSslContext sslContext,
                                                Option<EventLoopGroup> eventLoop,
                                                QuicClusterServer.MessageReceiver messageReceiver) {
-        return new QuicClusterClientInstance(selfId, selfRole, serializer, deserializer,
+        return new QuicClusterClientInstance(selfId, selfRole, selfAddress, serializer, deserializer,
                                             sslContext, eventLoop, messageReceiver);
     }
 
@@ -112,6 +114,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
 
     private final NodeId selfId;
     private final NodeRole selfRole;
+    private final NodeAddress selfAddress;
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final QuicSslContext sslContext;
@@ -122,6 +125,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
 
     QuicClusterClientInstance(NodeId selfId,
                               NodeRole selfRole,
+                              NodeAddress selfAddress,
                               Serializer serializer,
                               Deserializer deserializer,
                               QuicSslContext sslContext,
@@ -129,6 +133,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                               QuicClusterServer.MessageReceiver messageReceiver) {
         this.selfId = selfId;
         this.selfRole = selfRole;
+        this.selfAddress = selfAddress;
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.sslContext = sslContext;
@@ -231,7 +236,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     }
 
     private void sendHello(QuicStreamChannel streamChannel, NodeId peerId) {
-        var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfRole));
+        var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfRole, selfAddress));
         streamChannel.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
         log.debug("Sent Hello to peer {} on stream", peerId);
     }

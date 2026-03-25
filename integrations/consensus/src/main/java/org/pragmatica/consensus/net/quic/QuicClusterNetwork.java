@@ -48,6 +48,7 @@ import org.pragmatica.messaging.Message;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.Server;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -135,11 +136,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
             return Promise.unitPromise();
         }
         server = QuicClusterServer.quicClusterServer(
-            self.id(), self.role(), serializer, deserializer,
+            self.id(), self.role(), self.address(), serializer, deserializer,
             serverSslContext, Option.empty(), this::onPeerConnected, this::onMessageReceived
         );
         client = QuicClusterClient.quicClusterClient(
-            self.id(), self.role(), serializer, deserializer,
+            self.id(), self.role(), self.address(), serializer, deserializer,
             clientSslContext, Option.empty(), this::onMessageReceived
         );
         return server.start(port)
@@ -272,13 +273,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (peerLinks.containsKey(peerId)) {
             return;
         }
-        if (!ConnectionDirection.shouldInitiate(self.id(), peerId)) {
+        // Bypass ConnectionDirection when this node has NO connections — it's joining an existing cluster
+        // and must initiate contact regardless of ID ordering. Once connected, normal rules apply.
+        if (!peerLinks.isEmpty() && !ConnectionDirection.shouldInitiate(self.id(), peerId)) {
             log.debug("Skipping connection to {}: higher NodeId does not initiate", peerId);
             return;
         }
         var address = new InetSocketAddress(peer.address().host(), peer.address().port());
         client.connect(peerId, address)
-              .onSuccess(this::onPeerConnected)
+              .onSuccess(conn -> onPeerConnected(conn, peer.role(), peer.address()))
               .onFailure(cause -> onConnectFailed(peer, cause));
     }
 
@@ -290,12 +293,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Multi-step peer registration
-    private void onPeerConnected(QuicPeerConnection connection) {
+    private void onPeerConnected(QuicPeerConnection connection, NodeRole peerRole, NodeAddress peerAddress) {
         var peerId = connection.peerId();
 
-        // Check for unknown node
+        // Track passive role directly from Hello handshake
+        if (peerRole == NodeRole.PASSIVE) {
+            passivePeers.add(peerId);
+        }
+
+        // Check for unknown node — build NodeInfo from Hello data (NodeId, role, address)
         Option<NodeInfo> unknownNodeInfo = topologyManager.get(peerId).isEmpty()
-            ? buildUnknownNodeInfo(connection)
+            ? buildUnknownNodeInfo(peerId, peerRole, peerAddress)
             : Option.empty();
 
         var existing = peerLinks.putIfAbsent(peerId, connection);
@@ -314,7 +322,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         connectionEstablishedAt.put(peerId, System.nanoTime());
         quicMetrics.onConnectionEstablished();
-        trackPassiveRole(peerId, unknownNodeInfo);
 
         // Send AddNode BEFORE ConnectionEstablished if unknown
         unknownNodeInfo.onPresent(nodeInfo -> router.route(new TopologyManagementMessage.AddNode(nodeInfo)));
@@ -328,12 +335,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         log.debug("Node {} connected via QUIC Hello handshake", peerId);
     }
 
-    private Option<NodeInfo> buildUnknownNodeInfo(QuicPeerConnection connection) {
-        // QUIC connections use QuicConnectionAddress, not InetSocketAddress.
-        // For unknown nodes connecting inbound, we cannot reliably extract a routable address.
-        // The peer will be discovered via topology discovery protocol instead.
-        log.info("Unknown node {} connected via QUIC; awaiting topology discovery", connection.peerId());
-        return Option.empty();
+    private Option<NodeInfo> buildUnknownNodeInfo(NodeId peerId, NodeRole peerRole, NodeAddress peerAddress) {
+        log.info("Unknown node {} connected via QUIC Hello with address {}", peerId, peerAddress.asString());
+        return Option.some(NodeInfo.nodeInfo(peerId, peerAddress, peerRole));
     }
 
     private void trackPassiveRole(NodeId nodeId, Option<NodeInfo> unknownNodeInfo) {

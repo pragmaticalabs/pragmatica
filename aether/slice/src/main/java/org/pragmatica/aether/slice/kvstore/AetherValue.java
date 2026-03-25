@@ -789,20 +789,39 @@ public sealed interface AetherValue {
     ///
     /// @param state the current lifecycle state
     /// @param updatedAt timestamp of last state transition
-    record NodeLifecycleValue(NodeLifecycleState state, long updatedAt) implements AetherValue {
-        /// Creates a new lifecycle value with current timestamp.
+    /// @param host the node's cluster address host (empty string for backward compatibility)
+    /// @param port the node's cluster address port (0 for backward compatibility)
+    record NodeLifecycleValue(NodeLifecycleState state, long updatedAt, String host, int port) implements AetherValue {
+        /// Compact constructor: normalize null host for backward compatibility with old serialization.
+        public NodeLifecycleValue {
+            if (host == null) {
+                host = "";
+            }
+        }
+
+        /// Creates a new lifecycle value with current timestamp (no address).
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state) {
-            return new NodeLifecycleValue(state, System.currentTimeMillis());
+            return new NodeLifecycleValue(state, System.currentTimeMillis(), "", 0);
         }
 
-        /// Creates a new lifecycle value with explicit timestamp.
+        /// Creates a new lifecycle value with explicit timestamp (no address).
         public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, long updatedAt) {
-            return new NodeLifecycleValue(state, updatedAt);
+            return new NodeLifecycleValue(state, updatedAt, "", 0);
         }
 
-        /// Returns a new value with updated state and current timestamp.
+        /// Creates a new lifecycle value with current timestamp and address.
+        public static NodeLifecycleValue nodeLifecycleValue(NodeLifecycleState state, String host, int port) {
+            return new NodeLifecycleValue(state, System.currentTimeMillis(), host, port);
+        }
+
+        /// Returns true if this value carries a valid cluster address.
+        public boolean hasAddress() {
+            return ! host.isEmpty() && port > 0;
+        }
+
+        /// Returns a new value with updated state and current timestamp, preserving address.
         public NodeLifecycleValue withState(NodeLifecycleState newState) {
-            return new NodeLifecycleValue(newState, System.currentTimeMillis());
+            return new NodeLifecycleValue(newState, System.currentTimeMillis(), host, port);
         }
     }
 

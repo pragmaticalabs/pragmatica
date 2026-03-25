@@ -19,13 +19,15 @@ package org.pragmatica.consensus.net;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeRole;
 import org.pragmatica.messaging.Message;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Codec;
 
 @Codec
 public sealed interface NetworkMessage extends Message.Wired {
     /// Hello - connection handshake, sent by both sides on channel activation.
-    /// Carries the sender's role so receiving nodes can identify passive peers.
-    record Hello(NodeId sender, NodeRole role) implements NetworkMessage {}
+    /// Carries the sender's role and cluster address so receiving nodes can identify
+    /// passive peers and add dynamically provisioned nodes to their topology.
+    record Hello(NodeId sender, NodeRole role, NodeAddress address) implements NetworkMessage {}
 
     /// Topology discovery request - asks recipient to share their known nodes
     record DiscoverNodes(NodeId self) implements NetworkMessage {}
