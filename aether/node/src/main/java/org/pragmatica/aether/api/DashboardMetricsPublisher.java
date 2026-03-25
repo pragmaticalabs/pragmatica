@@ -138,7 +138,8 @@ public class DashboardMetricsPublisher {
         var allMetrics = node.metricsCollector()
                              .allMetrics();
         // Filter against current topology to exclude stale entries for dead nodes
-        var currentTopology = new HashSet<>(node.topologyManager().topology());
+        var currentTopology = new HashSet<>(node.topologyManager()
+                                                .topology());
         var sortedNodes = allMetrics.keySet()
                                     .stream()
                                     .filter(currentTopology::contains)
