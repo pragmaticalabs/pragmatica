@@ -417,6 +417,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
                 if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
                     router.route(QuorumStateNotification.disappeared());
                 }
+                router.route(new TopologyManagementMessage.RemoveNode(peerId));
                 yield TopologyChangeNotification.nodeRemoved(peerId, currentView());
             }
             case SHUTDOWN -> {

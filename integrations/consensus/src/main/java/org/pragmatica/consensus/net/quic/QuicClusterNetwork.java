@@ -27,6 +27,8 @@ import java.util.stream.Stream;
 
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.quic.QuicSslContext;
+import io.netty.handler.codec.quic.QuicStreamChannel;
+import io.netty.util.concurrent.Future;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.ClusterNetwork;
@@ -79,6 +81,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private final Set<NodeId> passivePeers = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final AtomicBoolean quorumEstablished = new AtomicBoolean(false);
+    private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
 
     private volatile QuicClusterServer server;
     private volatile QuicClusterClient client;
@@ -191,6 +194,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
         connectionEstablishedAt.remove(nodeId);
         passivePeers.remove(nodeId);
+        quicMetrics.onConnectionClosed();
         processViewChange(REMOVE, nodeId);
         connection.close()
                   .onSuccess(_ -> log.info("Node {} disconnected from node {}", self.id(), nodeId))
@@ -225,6 +229,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return Option.empty();
     }
 
+    @Override
+    public Map<String, Number> transportMetrics() {
+        return quicMetrics.snapshot();
+    }
+
+    /// Get the typed QUIC transport metrics collector.
+    public QuicTransportMetrics quicMetrics() {
+        return quicMetrics;
+    }
+
     /// Get the actual UDP port the QUIC server is bound to.
     /// Useful when started on port 0 (OS-assigned).
     Option<Integer> boundPort() {
@@ -242,6 +256,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// Network messages (discovery) are handled as service messages.
     @SuppressWarnings("JBCT-PAT-01") // Message routing dispatch
     private void onMessageReceived(NodeId sender, Object message) {
+        quicMetrics.onMessageReceived();
         if (message instanceof Message.Wired wired) {
             router.route(wired);
         } else {
@@ -268,6 +283,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private void onConnectFailed(NodeInfo peer, Cause cause) {
+        quicMetrics.onHandshakeFailure();
         log.warn("Failed to connect from {} to {}: {}", self, peer, cause.message());
         router.route(new NetworkServiceMessage.ConnectionFailed(
             peer.id(), ConnectionError.networkError(peer.address().asString(), cause.message())));
@@ -297,6 +313,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
 
         connectionEstablishedAt.put(peerId, System.nanoTime());
+        quicMetrics.onConnectionEstablished();
         trackPassiveRole(peerId, unknownNodeInfo);
 
         // Send AddNode BEFORE ConnectionEstablished if unknown
@@ -335,18 +352,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (!connection.isActive()) {
             if (peerLinks.remove(peerId, connection)) {
                 connectionEstablishedAt.remove(peerId);
+                quicMetrics.onConnectionClosed();
                 processViewChange(REMOVE, peerId);
-                attemptReconnect(peerId);
             }
             log.warn("Node {} connection is not active, removed stale link", peerId);
             return;
         }
         writeToStream(peerId, message, connection);
-    }
-
-    private void attemptReconnect(NodeId peerId) {
-        topologyManager.get(peerId)
-                       .onPresent(this::connectPeer);
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Stream selection and write
@@ -358,8 +370,39 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var stream = connection.stream(streamType)
                                .fold(() -> connection.stream(StreamType.CONSENSUS), Option::some);
 
-        stream.onPresent(ch -> ch.writeAndFlush(Unpooled.wrappedBuffer(bytes)))
+        stream.onPresent(ch -> writeIfWritable(ch, bytes, peerId, streamType))
               .onEmpty(() -> log.warn("No stream available for peer {}", peerId));
+    }
+
+    private void writeIfWritable(QuicStreamChannel ch, byte[] bytes, NodeId peerId, StreamType streamType) {
+        if (!ch.isWritable()) {
+            quicMetrics.onBackpressureDrop();
+            log.warn("Channel to peer {} not writable on stream {}, dropping message", peerId, streamType);
+            return;
+        }
+        quicMetrics.onMessageSent();
+        ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
+          .addListener(future -> handleWriteResult(future, peerId, streamType));
+    }
+
+    private void handleWriteResult(Future<? super Void> future, NodeId peerId, StreamType streamType) {
+        if (!future.isSuccess()) {
+            quicMetrics.onWriteFailure();
+            log.error("Failed to write to peer {} on stream {}", peerId, streamType, future.cause());
+            handleWriteFailure(peerId);
+        }
+    }
+
+    private void handleWriteFailure(NodeId peerId) {
+        var staleConnection = peerLinks.remove(peerId);
+
+        if (staleConnection != null) {
+            connectionEstablishedAt.remove(peerId);
+            quicMetrics.onConnectionClosed();
+            staleConnection.close()
+                           .onFailure(cause -> log.warn("Error closing stale connection to peer {}: {}", peerId, cause.message()));
+            processViewChange(REMOVE, peerId);
+        }
     }
 
     private <M extends ProtocolMessage> void broadcastToEligiblePeer(NodeId peerId, QuicPeerConnection conn, M message) {
@@ -391,6 +434,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 if (!currentlyHaveQuorum && quorumEstablished.compareAndSet(true, false)) {
                     router.route(QuorumStateNotification.disappeared());
                 }
+                router.route(new TopologyManagementMessage.RemoveNode(peerId));
                 yield TopologyChangeNotification.nodeRemoved(peerId, currentView());
             }
             case SHUTDOWN -> {
