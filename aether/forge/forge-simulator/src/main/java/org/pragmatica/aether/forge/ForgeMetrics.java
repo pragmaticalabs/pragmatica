@@ -33,7 +33,7 @@ public final class ForgeMetrics {
 
     // Current rates (updated by snapshot)
     private volatile double requestsPerSecond = 0;
-    private volatile double successRate = 100.0;
+    private volatile double successRate = 1.0;
     private volatile double avgLatencyMs = 0;
 
     private ForgeMetrics() {}
@@ -81,7 +81,7 @@ public final class ForgeMetrics {
         var instantRps = (totalDelta * 1000.0) / elapsed;
         requestsPerSecond = smoothEma(requestsPerSecond, instantRps);
         if (Verify.Is.positive(totalDelta)) {
-            var instantSuccessRate = (successDelta * 100.0) / totalDelta;
+            var instantSuccessRate = (double) successDelta / totalDelta;
             successRate = EMA_ALPHA * instantSuccessRate + (1 - EMA_ALPHA) * successRate;
         }
         lastSuccessSnapshot = currentSuccess;
@@ -131,7 +131,7 @@ public final class ForgeMetrics {
         lastFailureSnapshot = 0;
         lastSnapshotTime = System.currentTimeMillis();
         requestsPerSecond = 0;
-        successRate = 100.0;
+        successRate = 1.0;
         avgLatencyMs = 0;
         return unitResult();
     }
