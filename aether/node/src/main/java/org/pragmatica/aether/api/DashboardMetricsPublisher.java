@@ -137,8 +137,11 @@ public class DashboardMetricsPublisher {
         // Nodes (first node in sorted list is typically the leader in Rabia)
         var allMetrics = node.metricsCollector()
                              .allMetrics();
+        // Filter against current topology to exclude stale entries for dead nodes
+        var currentTopology = new HashSet<>(node.topologyManager().topology());
         var sortedNodes = allMetrics.keySet()
                                     .stream()
+                                    .filter(currentTopology::contains)
                                     .sorted((a, b) -> a.id()
                                                        .compareTo(b.id()))
                                     .collect(Collectors.toList());

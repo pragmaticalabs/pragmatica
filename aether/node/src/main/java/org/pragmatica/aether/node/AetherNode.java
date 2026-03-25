@@ -21,6 +21,7 @@ import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
@@ -185,6 +186,9 @@ public interface AetherNode {
 
     /// Get the artifact store for artifact storage operations.
     ArtifactStore artifactStore();
+
+    /// Get the topology manager for cluster membership visibility.
+    TopologyManager topologyManager();
 
     /// Get the invocation metrics collector for method-level metrics.
     InvocationMetricsCollector invocationMetrics();
@@ -461,6 +465,11 @@ public interface AetherNode {
             @Override
             public NodeId self() {
                 return config.self();
+            }
+
+            @Override
+            public TopologyManager topologyManager() {
+                return clusterNode.topologyManager();
             }
 
             @Override
