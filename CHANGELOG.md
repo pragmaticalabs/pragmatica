@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.24.1] - Unreleased
 
+### Added
+- **Per-route security** — routes.toml `[security]` section with per-route policies (public/authenticated/role:name), type-safe `RouteSecurityPolicy` interface with `canAccess()`, `SecurityPolicy` sealed variants in Aether, route-level enforcement in AppHttpServer (per-route wins over global SecurityMode)
+- **Principal/SecurityContext injection** — slice handler methods can declare `Principal` or `SecurityContext` parameters; code generator injects from `SecurityContextHolder` automatically
+- **Blueprint security overrides** — operators can override route security at deploy time via `[security.overrides]` in blueprint.toml with `strengthen_only`/`full`/`none` policies
+- **QUIC transport metrics** — `QuicTransportMetrics` with active connections, handshakes, messages sent/received, write failures, backpressure drops; exposed via `/api/metrics/transport`
+- **Per-route request metrics** — Micrometer counters and timers per route pattern; security denial counters with denial type classification
+- **Dashboard route security badges** — Routes panel on Deployments page shows security policy per route
+- **Config validation warnings** — blueprint parser warns on unrecognized TOML sections
+- **Streaming lifecycle operations spec** — §16 added to in-memory streams spec: replica count change, repartitioning, stream deletion, migration patterns
+
+### Changed
+- **`RouteSecurityPolicy` renamed to `SecurityPolicy`** — moved from transport-level to intent-based (Public, Authenticated, ApiKeyRequired, BearerTokenRequired, RoleRequired); extends generic `RouteSecurityPolicy` from http-routing layer
+- **`[security]` section optional** — routes.toml without `[security]` defaults to PUBLIC with STRENGTHEN_ONLY policy (backward compatible)
+- **Security validators handle all policy variants** — ApiKeySecurityValidator and JwtSecurityValidator now handle Authenticated and RoleRequired in addition to their primary types
+- **Route security in KV-Store** — `NodeRoutesValue.RouteEntry` carries security field; serialization is backward compatible with old format
+
+### Fixed
+- **Node departure healing** — SWIM FAULTY now routes `RemoveNode` to topology manager; QUIC disconnect routes `RemoveNode` for passive LB (no SWIM); CDM rebuilds state from KV-Store before cleanup; cleanup and reconciliation run sequentially to avoid consensus batch collisions
+- **Reconnection storm after node kill** — `ConnectionFailed` routed to topology manager for exponential backoff; `attemptReconnect()` removed from write failure path; reconciliation loop is sole reconnection driver
+- **QUIC write failures detected** — `writeAndFlush()` listener detects failures, removes stale links, triggers reconnection
+- **QUIC DataHandler error containment** — `exceptionCaught()` closes channel; deserialization wrapped in try-catch to prevent single malformed message from killing connection
+- **QUIC write backpressure** — writability check before write; `WriteTimeoutHandler(10s)` in stream pipelines
+- **QUIC Hello deserialization safety** — try-catch in both server and client Hello handlers
+- **SecurityMode=NONE + authenticated route** — returns clear 401 "Route requires authentication but no security mode is configured" instead of vague error
+- **WWW-Authenticate header** — no longer sent when SecurityMode=NONE (was misleadingly advertising ApiKey)
+- **WebSocket auth timeout** — sends AUTH_TIMEOUT message before closing instead of silent disconnect
+- **Overlapping route detection** — compile WARNING when two routes have same method+path pattern
+- **Invocation metrics strategy** — returns 501 Not Implemented with clear message; CLI explains limitation
+
 ## [0.24.0] - 2026-03-24
 
 ### Added

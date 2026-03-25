@@ -249,7 +249,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 |---|---------|--------|-------------|
 | 61 | ~~Per-data-source DB schema management~~ | ~~Complete~~ | ~~Moved to Deployment & Lifecycle section (feature 128)~~ |
 | 62 | ~~Canary & blue-green deployment~~ | ~~Complete~~ | ~~Moved to Deployment & Lifecycle section (features 133-135)~~ |
-| 63 | RBAC Tier 2 — per-endpoint authorization | Planned | Per-endpoint role-based authorization rules (admin, operator, viewer). Route-level security policy from KV-Store. Auth failure rate limiting |
+| 63 | RBAC Tier 2 — per-route security | Complete | Per-route security via routes.toml `[security]` section (public/authenticated/role:name), type-safe `RouteSecurityPolicy`/`SecurityPolicy` with `canAccess()`, route-level enforcement in AppHttpServer, Principal/SecurityContext injection in handlers, blueprint operator overrides with strengthen_only policy, security metadata in KV-Store, dashboard security badges, security denial metrics |
 | 64 | Per-route rate limiting | Planned | Per-HTTP-route rate limiting via blueprint or management API. Token bucket or sliding window. Cluster-aware distributed counters |
 | 65 | Spot instance support | Planned | Elastic pool of spot/preemptible instances for cost-optimized scaling. Core (on-demand) + elastic (spot) pools. Prerequisite: Cloud Integration. Deferred from worker pool Phase 2 to Phase 3 |
 | 66 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts. Prerequisite: Cloud Integration |
