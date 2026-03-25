@@ -30,9 +30,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/// Topology manager for TCP/IP networks.
-public interface TcpTopologyManager extends TopologyManager {
-    /// Errors that can occur during topology manager creation.
+/// Topology observer for cluster networks. Tracks connections, health states,
+/// SWIM events, and reconnection. This is the read-only topology tracking component;
+/// cluster size management is handled by ClusterTopologyManager in the deployment layer.
+public interface TopologyObserver extends TopologyManager {
+    /// Errors that can occur during topology observer creation.
     sealed interface TopologyError extends Cause {
         record SelfNodeNotInCoreNodes(NodeId self) implements TopologyError {
             @Override
@@ -66,13 +68,13 @@ public interface TcpTopologyManager extends TopologyManager {
     @MessageReceiver
     void handleSetClusterSize(TopologyManagementMessage.SetClusterSize message);
 
-    static Result<TcpTopologyManager> tcpTopologyManager(TopologyConfig config, MessageRouter router) {
-        return tcpTopologyManager(config, router, TimeSource.system());
+    static Result<TopologyObserver> topologyObserver(TopologyConfig config, MessageRouter router) {
+        return topologyObserver(config, router, TimeSource.system());
     }
 
-    static Result<TcpTopologyManager> tcpTopologyManager(TopologyConfig config,
-                                                         MessageRouter router,
-                                                         TimeSource timeSource) {
+    static Result<TopologyObserver> topologyObserver(TopologyConfig config,
+                                                     MessageRouter router,
+                                                     TimeSource timeSource) {
         // Validate that self node is in coreNodes - required for self() to work
         var selfInCoreNodes = config.coreNodes()
                                     .stream()
@@ -87,8 +89,9 @@ public interface TcpTopologyManager extends TopologyManager {
                        TopologyConfig config,
                        TimeSource timeSource,
                        AtomicBoolean active,
-                       AtomicInteger effectiveClusterSize) implements TcpTopologyManager {
-            private static final Logger log = LoggerFactory.getLogger(TcpTopologyManager.class);
+                       AtomicInteger effectiveClusterSize,
+                       java.util.Set<NodeId> readyNodes) implements TopologyObserver {
+            private static final Logger log = LoggerFactory.getLogger(TopologyObserver.class);
 
             Manager(Map<NodeId, NodeState> nodeStatesById,
                     Map<NodeAddress, NodeId> nodeIdsByAddress,
@@ -96,7 +99,8 @@ public interface TcpTopologyManager extends TopologyManager {
                     TopologyConfig config,
                     TimeSource timeSource,
                     AtomicBoolean active,
-                    AtomicInteger effectiveClusterSize) {
+                    AtomicInteger effectiveClusterSize,
+                    java.util.Set<NodeId> readyNodes) {
                 this.config = config;
                 this.router = router;
                 this.nodeStatesById = nodeStatesById;
@@ -104,11 +108,12 @@ public interface TcpTopologyManager extends TopologyManager {
                 this.timeSource = timeSource;
                 this.active = active;
                 this.effectiveClusterSize = effectiveClusterSize;
+                this.readyNodes = readyNodes;
                 this.effectiveClusterSize.set(config.clusterSize());
                 config().coreNodes()
                       .forEach(this::addNode);
                 // Self node validation is done in the factory method before construction
-                log.trace("Topology manager {} initialized with {} nodes, cluster size {}",
+                log.trace("Topology observer {} initialized with {} nodes, cluster size {}",
                           config.self(),
                           config.coreNodes(),
                           config.clusterSize());
@@ -217,7 +222,7 @@ public interface TcpTopologyManager extends TopologyManager {
                       .onEmpty(() -> {
                                    nodeIdsByAddress().putIfAbsent(nodeInfo.address(),
                                                                   nodeInfo.id());
-                                   // Only request connection if topology manager is active (router is ready)
+                                   // Only request connection if topology observer is active (router is ready)
                 if (active().get()) {
                                        requestConnection(nodeInfo.id());
                                    }
@@ -234,6 +239,8 @@ public interface TcpTopologyManager extends TopologyManager {
                     log.warn("Ignoring removal of self node {}", nodeId);
                     return;
                 }
+                // Remove from ready set — node is no longer operational
+                readyNodes.remove(nodeId);
                 // To avoid reliance on the networking layer behavior, removing is done
                 // atomically and command to drop the connection is sent only once.
                 Option.option(nodeStatesById().remove(nodeId))
@@ -266,6 +273,40 @@ public interface TcpTopologyManager extends TopologyManager {
             @Override
             public int clusterSize() {
                 return effectiveClusterSize.get();
+            }
+
+            @Override
+            public void markReady(NodeId nodeId) {
+                readyNodes.add(nodeId);
+                log.debug("Node {} marked ready (ON_DUTY). Ready nodes: {}", nodeId, readyNodes.size());
+            }
+
+            @Override
+            public void markReady(NodeId nodeId, NodeAddress address) {
+                readyNodes.add(nodeId);
+                // If this node is not in our topology, it was dynamically provisioned
+                // by another leader. Add it and request connection.
+                if (nodeStatesById.get(nodeId) == null && !nodeId.equals(config.self())) {
+                    var nodeInfo = NodeInfo.nodeInfo(nodeId, address);
+                    addNode(nodeInfo);
+                    log.info("Node {} added to topology via ON_DUTY notification at {}", nodeId, address.asString());
+                }
+                log.debug("Node {} marked ready (ON_DUTY) with address. Ready nodes: {}", nodeId, readyNodes.size());
+            }
+
+            @Override
+            public void markDeparted(NodeId nodeId) {
+                readyNodes.remove(nodeId);
+                log.debug("Node {} marked departed. Ready nodes: {}", nodeId, readyNodes.size());
+            }
+
+            @Override
+            public int readyNodeCount() {
+                // ON_DUTY from consensus is authoritative — no cross-reference against local topology.
+                // Dynamically provisioned nodes may be ON_DUTY before appearing in local nodeStatesById.
+                return (int) readyNodes.stream()
+                                       .filter(id -> !isPassive(id))
+                                       .count();
             }
 
             private int activeTopologySize() {
@@ -324,7 +365,7 @@ public interface TcpTopologyManager extends TopologyManager {
             @Override
             public Promise<Unit> start() {
                 if (active().compareAndSet(false, true)) {
-                    log.trace("Starting topology manager at {}", config.self());
+                    log.trace("Starting topology observer at {}", config.self());
                     initReconcile();
                 }
                 return Promise.success(Unit.unit());
@@ -365,6 +406,7 @@ public interface TcpTopologyManager extends TopologyManager {
                                           config,
                                           timeSource,
                                           new AtomicBoolean(false),
-                                          new AtomicInteger(config.clusterSize())));
+                                          new AtomicInteger(config.clusterSize()),
+                                          ConcurrentHashMap.newKeySet()));
     }
 }

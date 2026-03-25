@@ -40,7 +40,7 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncRespo
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound2;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
-import org.pragmatica.consensus.topology.TcpTopologyManager;
+import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
@@ -216,7 +216,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               RabiaPersistence<C> persistence,
                                                               Option<TlsConfig> tlsConfig) {
         return Result.all(
-            TcpTopologyManager.tcpTopologyManager(config.topology(), delegateRouter),
+            TopologyObserver.topologyObserver(config.topology(), delegateRouter),
             QuicTlsProvider.serverContext(tlsConfig),
             QuicTlsProvider.clientContext(tlsConfig)
         ).map((topologyManager, serverSsl, clientSsl) -> assembleNode(config,
@@ -239,7 +239,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                  Serializer serializer,
                                                                  Deserializer deserializer,
                                                                  ConsensusMetrics metrics,
-                                                                 TcpTopologyManager topologyManager,
+                                                                 TopologyObserver topologyManager,
                                                                  QuicSslContext serverSsl,
                                                                  QuicSslContext clientSsl,
                                                                  boolean useConsensusLeaderElection,

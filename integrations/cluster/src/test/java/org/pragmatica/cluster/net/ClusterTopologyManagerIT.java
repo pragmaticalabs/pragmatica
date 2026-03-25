@@ -20,10 +20,10 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.consensus.NodeId.randomNodeId;
-import static org.pragmatica.consensus.topology.TcpTopologyManager.tcpTopologyManager;
+import static org.pragmatica.consensus.topology.TopologyObserver.topologyObserver;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-class TcpTopologyManagerIT {
+class ClusterTopologyManagerIT {
     private final MessageRouter.MutableRouter router = MessageRouter.mutable();
 
     private TopologyManager topologyManager;
@@ -55,7 +55,7 @@ class TcpTopologyManagerIT {
                                         TimeSpan.timeSpan(10).seconds(),
                                         List.of(nodeInfo1, nodeInfo2));
 
-        tcpTopologyManager(config, router)
+        topologyObserver(config, router)
             .onFailure(cause -> fail("Failed to create topology manager: " + cause.message()))
             .onSuccess(tcpManager -> {
                 topologyManager = tcpManager;

@@ -36,7 +36,7 @@ var topologyConfig = new TopologyConfig(
 
 // 3. Create and start engine
 var router = MessageRouter.mutable();
-var topologyManager = TcpTopologyManager.tcpTopologyManager(topologyConfig, router)
+var topologyManager = TopologyObserver.topologyObserver(topologyConfig, router)
     .expect("valid topology config");
 var network = new NettyClusterNetwork(topologyManager, router);
 var engine = new RabiaEngine<>(topologyManager, network, stateMachine, ProtocolConfig.defaultConfig());
