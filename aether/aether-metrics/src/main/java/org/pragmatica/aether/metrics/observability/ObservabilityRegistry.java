@@ -60,6 +60,9 @@ public interface ObservabilityRegistry {
     /// Register active slice count gauge.
     Result<Unit> registerSliceCount(Supplier<Number> sliceCountSupplier);
 
+    /// Register QUIC transport metrics as gauges for Prometheus exposition.
+    Result<Unit> registerTransportMetrics(Supplier<java.util.Map<String, Number>> metricsSupplier);
+
     /// Create an observability registry with Prometheus backend.
     static ObservabilityRegistry prometheus() {
         var prometheusRegistry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
@@ -137,6 +140,30 @@ public interface ObservabilityRegistry {
                  .description("Number of active slice instances")
                  .register(prometheusRegistry);
             return unitResult();
+        }
+
+        @Override
+        @SuppressWarnings("JBCT-PAT-01") // Registration of multiple gauges from a metrics map
+        public Result<Unit> registerTransportMetrics(Supplier<java.util.Map<String, Number>> metricsSupplier) {
+            registerTransportGauge("quic_active_connections", "Active QUIC peer connections", metricsSupplier);
+            registerTransportGauge("quic_handshake_total", "Total QUIC handshakes completed", metricsSupplier);
+            registerTransportGauge("quic_handshake_failures_total", "Failed QUIC handshakes", metricsSupplier);
+            registerTransportGauge("quic_messages_sent_total", "Messages sent over QUIC", metricsSupplier);
+            registerTransportGauge("quic_messages_received_total", "Messages received over QUIC", metricsSupplier);
+            registerTransportGauge("quic_write_failures_total", "QUIC write failures", metricsSupplier);
+            registerTransportGauge("quic_backpressure_drops_total", "QUIC backpressure drops", metricsSupplier);
+            return unitResult();
+        }
+
+        private void registerTransportGauge(String name,
+                                            String description,
+                                            Supplier<java.util.Map<String, Number>> metricsSupplier) {
+            Gauge.builder(name,
+                          () -> metricsSupplier.get()
+                                               .getOrDefault(name, 0)
+                                               .doubleValue())
+                 .description(description)
+                 .register(prometheusRegistry);
         }
     }
 }

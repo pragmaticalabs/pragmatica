@@ -40,6 +40,7 @@ import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.deployment.DeploymentMap.SliceDeploymentInfo;
 import org.pragmatica.aether.deployment.DeploymentMap.SliceInstanceInfo;
+import org.pragmatica.aether.metrics.observability.HttpRequestObserver;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.consensus.NodeId;
@@ -146,6 +147,7 @@ class ManagementServerImpl implements ManagementServer {
     private final EventWebSocketHandler eventWsHandler;
     private final EventWebSocketPublisher eventWsPublisher;
     private final ObservabilityRegistry observability;
+    private final HttpRequestObserver requestObserver;
     private final Option<TlsConfig> tls;
     private final SecurityValidator securityValidator;
     private final boolean securityEnabled;
@@ -209,6 +211,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                                 ManagementServerImpl::buildEventsJson);
         this.staticFileHandler = StaticFileHandler.staticFileHandler();
         this.observability = ObservabilityRegistry.prometheus();
+        this.requestObserver = HttpRequestObserver.httpRequestObserver(observability);
         this.tls = tls;
         this.probeJsonMapper = JsonMapper.defaultJsonMapper();
         // Route-based router for migrated routes — build route sources dynamically
@@ -347,6 +350,8 @@ class ManagementServerImpl implements ManagementServer {
         metricsPublisher.start();
         statusWsPublisher.start();
         eventWsPublisher.start();
+        observability.registerTransportMetrics(() -> nodeSupplier.get()
+                                                                 .transportMetrics());
         var transport = tls.isPresent()
                         ? "HTTPS"
                         : "HTTP";
@@ -538,29 +543,42 @@ class ManagementServerImpl implements ManagementServer {
 
     @SuppressWarnings("JBCT-PAT-01") // HTTP dispatcher: inherently mixes condition checks and iteration over legacy routes
     private void handleRequest(RequestContext ctx, ResponseWriter response) {
+        var startTime = System.nanoTime();
         var path = ctx.path();
         var method = ctx.method();
+        var methodName = method.name();
         log.debug("Received {} {}", method, path);
+        var instrumented = InstrumentedResponseWriter.instrumentedResponseWriter(response);
         // Probe endpoints — handled before router for HTTP status code control
-        if (handleProbeRequest(path, response)) {
+        if (handleProbeRequest(path, instrumented)) {
+            recordRequestMetrics(methodName, path, instrumented, startTime);
             return;
         }
         // Security check — probes already bypassed
-        if (securityEnabled && !validateManagementSecurity(ctx, response, path, method)) {
+        if (securityEnabled && !validateManagementSecurity(ctx, instrumented, path, method)) {
+            recordRequestMetrics(methodName, path, instrumented, startTime);
             return;
         }
         // Try route-based routing first
-        if (router.handle(ctx, response)) {
+        if (router.handle(ctx, instrumented)) {
+            recordRequestMetrics(methodName, path, instrumented, startTime);
             return;
         }
         // Fall back to legacy route handlers
         for (var handler : legacyRoutes) {
-            if (handler.handle(ctx, response)) {
+            if (handler.handle(ctx, instrumented)) {
+                recordRequestMetrics(methodName, path, instrumented, startTime);
                 return;
             }
         }
         // No route matched — fall back to static dashboard files
-        staticFileHandler.handle(ctx, response);
+        staticFileHandler.handle(ctx, instrumented);
+        recordRequestMetrics(methodName, path, instrumented, startTime);
+    }
+
+    private void recordRequestMetrics(String method, String path, InstrumentedResponseWriter writer, long startTime) {
+        var durationNanos = System.nanoTime() - startTime;
+        requestObserver.recordRequest(method, path, writer.statusCategory(), durationNanos);
     }
 
     @SuppressWarnings("JBCT-PAT-01")
@@ -654,6 +672,7 @@ class ManagementServerImpl implements ManagementServer {
     private void handleManagementSecurityFailure(ResponseWriter response, Cause cause, String path, String method) {
         AuditLog.authFailure("mgmt", cause.message(), method, path);
         var status = resolveSecurityErrorStatus(cause);
+        requestObserver.recordSecurityDenial(classifyDenialType(cause), method, path);
         if (status == HttpStatus.UNAUTHORIZED) {
             response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"")
                     .error(status,
@@ -661,6 +680,16 @@ class ManagementServerImpl implements ManagementServer {
         } else {
             response.error(status, cause.message());
         }
+    }
+
+    private static String classifyDenialType(Cause cause) {
+        return switch (cause) {
+            case SecurityError.MissingCredentials _ -> "auth_failure";
+            case SecurityError.InvalidCredentials _ -> "auth_failure";
+            case SecurityError.AccessDenied _ -> "insufficient_role";
+            case RoleEnforcer.AuthorizationError.AccessDenied _ -> "insufficient_role";
+            default -> "auth_failure";
+        };
     }
 
     private static HttpStatus resolveSecurityErrorStatus(Cause cause) {
@@ -671,5 +700,43 @@ class ManagementServerImpl implements ManagementServer {
             case RoleEnforcer.AuthorizationError.AccessDenied _ -> HttpStatus.FORBIDDEN;
             default -> HttpStatus.UNAUTHORIZED;
         };
+    }
+}
+
+/// Response writer wrapper that captures the HTTP status code for metrics recording.
+@SuppressWarnings("JBCT-RET-01") // Implements ResponseWriter interface which uses void returns
+final class InstrumentedResponseWriter implements ResponseWriter {
+    private final ResponseWriter delegate;
+    private int statusCode;
+
+    private InstrumentedResponseWriter(ResponseWriter delegate) {
+        this.delegate = delegate;
+    }
+
+    static InstrumentedResponseWriter instrumentedResponseWriter(ResponseWriter delegate) {
+        return new InstrumentedResponseWriter(delegate);
+    }
+
+    @Override
+    public void write(org.pragmatica.http.HttpStatus status, byte[] body, org.pragmatica.http.ContentType contentType) {
+        statusCode = status.code();
+        delegate.write(status, body, contentType);
+    }
+
+    @Override
+    public ResponseWriter header(String name, String value) {
+        delegate.header(name, value);
+        return this;
+    }
+
+    /// Returns the status category: "2xx", "4xx", or "5xx".
+    String statusCategory() {
+        if (statusCode >= 500) {
+            return "5xx";
+        }
+        if (statusCode >= 400) {
+            return "4xx";
+        }
+        return "2xx";
     }
 }

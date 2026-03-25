@@ -78,7 +78,8 @@ public sealed interface ManagementApiResponses {
 
     record RouteInfo(String method,
                      String path,
-                     List<String> nodes) {}
+                     List<String> nodes,
+                     String security) {}
 
     record ScaleResponse(String status,
                          String artifact,
@@ -118,7 +119,8 @@ public sealed interface ManagementApiResponses {
     record BlueprintValidationResponse(boolean valid,
                                        String id,
                                        int sliceCount,
-                                       List<String> errors) {}
+                                       List<String> errors,
+                                       List<String> warnings) {}
 
     // ===== Metrics Routes =====
     record MetricsFullResponse(Map<String, Map<String, Double>> load,

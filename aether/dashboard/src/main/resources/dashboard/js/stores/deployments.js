@@ -3,6 +3,14 @@ document.addEventListener('alpine:init', function() {
         slices: [],
         blueprints: [],
         rollingUpdates: [],
+        routes: [],
+
+        _securityLabel: function(security) {
+            if (!security || security === 'PUBLIC') return '\uD83D\uDD13 Public';
+            if (security === 'AUTHENTICATED') return '\uD83D\uDD11 Authenticated';
+            if (security.startsWith('ROLE:')) return '\uD83D\uDC64 Role:' + security.substring(5);
+            return security;
+        },
 
         updateFromStatus(data) {
             if (data.slices && Array.isArray(data.slices)) {
@@ -33,12 +41,40 @@ document.addEventListener('alpine:init', function() {
                     };
                 });
             }
+            if (data.routes && Array.isArray(data.routes)) {
+                var self = this;
+                this.routes = data.routes.map(function(r) {
+                    return {
+                        method: r.method,
+                        path: r.path,
+                        nodes: r.nodes || [],
+                        security: r.security || 'PUBLIC',
+                        securityLabel: self._securityLabel(r.security || 'PUBLIC')
+                    };
+                });
+            }
         },
 
         async refreshSlices() {
             var data = await RestClient.get('/api/slices/status');
             if (data) {
                 this.updateFromStatus({ slices: data });
+            }
+        },
+
+        async refreshRoutes() {
+            var data = await RestClient.get('/api/routes');
+            if (data && data.routes) {
+                var self = this;
+                this.routes = data.routes.map(function(r) {
+                    return {
+                        method: r.method,
+                        path: r.path,
+                        nodes: r.nodes || [],
+                        security: r.security || 'PUBLIC',
+                        securityLabel: self._securityLabel(r.security || 'PUBLIC')
+                    };
+                });
             }
         }
     });
