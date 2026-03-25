@@ -8,6 +8,7 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -193,6 +194,7 @@ public final class SliceRoutes implements RouteSource {
         return nodeSupplier.get()
                            .blueprintService()
                            .publish(body)
+                           .withSuccess(this::pushSecurityOverrides)
                            .map(expanded -> new BlueprintResponse("applied",
                                                                   expanded.id()
                                                                           .asString(),
@@ -213,6 +215,7 @@ public final class SliceRoutes implements RouteSource {
                      .flatMap(coords -> nodeSupplier.get()
                                                     .blueprintService()
                                                     .publishFromArtifact(coords))
+                     .withSuccess(this::pushSecurityOverrides)
                      .map(expanded -> new BlueprintResponse("deployed",
                                                             expanded.id()
                                                                     .asString(),
@@ -222,6 +225,13 @@ public final class SliceRoutes implements RouteSource {
                                                                    r.slices()))
                      .onFailure(cause -> log.warn("Blueprint artifact deploy failed: {}",
                                                   cause.message()));
+    }
+
+    private void pushSecurityOverrides(ExpandedBlueprint expanded) {
+        nodeSupplier.get()
+                    .appHttpServer()
+                    .httpRoutePublisher()
+                    .onPresent(pub -> pub.updateSecurityOverrides(expanded.securityOverrides()));
     }
 
     private BlueprintListResponse buildBlueprintListResponse() {
@@ -378,27 +388,30 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private Promise<BlueprintValidationResponse> handleValidateBlueprint(String body) {
+        var warnings = BlueprintParser.detectUnrecognizedSections(body);
         return Promise.success(nodeSupplier.get()
                                            .blueprintService()
                                            .validate(body)
-                                           .fold(SliceRoutes::failedValidationResponse,
-                                                 SliceRoutes::successValidationResponse));
+                                           .fold(cause -> failedValidationResponse(cause, warnings),
+                                                 blueprint -> successValidationResponse(blueprint, warnings)));
     }
 
-    private static BlueprintValidationResponse failedValidationResponse(Cause cause) {
+    private static BlueprintValidationResponse failedValidationResponse(Cause cause, List<String> warnings) {
         return new BlueprintValidationResponse(false,
                                                "",
                                                0,
-                                               List.of(cause.message()));
+                                               List.of(cause.message()),
+                                               warnings);
     }
 
-    private static BlueprintValidationResponse successValidationResponse(Blueprint blueprint) {
+    private static BlueprintValidationResponse successValidationResponse(Blueprint blueprint, List<String> warnings) {
         return new BlueprintValidationResponse(true,
                                                blueprint.id()
                                                         .asString(),
                                                blueprint.slices()
                                                         .size(),
-                                               List.of());
+                                               List.of(),
+                                               warnings);
     }
 
     private Promise<List<Long>> applyDeployCommand(Artifact artifact, int instances, Option<String> placement) {
@@ -499,7 +512,7 @@ public final class SliceRoutes implements RouteSource {
                                     .stream()
                                     .map(NodeId::id)
                                     .toList();
-        return new RouteInfo(route.httpMethod(), route.pathPrefix(), nodeIds);
+        return new RouteInfo(route.httpMethod(), route.pathPrefix(), nodeIds, route.security());
     }
 
     private SlicesStatusResponse buildSlicesStatusResponse() {

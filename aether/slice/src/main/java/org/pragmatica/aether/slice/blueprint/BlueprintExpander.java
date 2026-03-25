@@ -57,7 +57,9 @@ public interface BlueprintExpander {
         var graph = buildDependencyGraph(allDeps);
         return checkCycles(graph).flatMap(_ -> buildLoadOrder(explicitSlices, allDeps, graph))
                           .map(loadOrder -> ExpandedBlueprint.expandedBlueprint(blueprint.id(),
-                                                                                loadOrder))
+                                                                                loadOrder,
+                                                                                Option.none(),
+                                                                                blueprint.securityOverrides()))
                           .async();
     }
 

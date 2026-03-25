@@ -17,6 +17,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -84,10 +85,12 @@ public interface BlueprintParser {
         if (idOpt.isEmpty()) {
             return MISSING_ID.result();
         }
+        var securityOverrides = parseSecurityOverrides(doc);
         return BlueprintId.blueprintId(idOpt.unwrap())
                           .flatMap(id -> parseSlices(doc).flatMap(slices -> Blueprint.blueprint(id,
                                                                                                 slices,
-                                                                                                parseDeploymentConfig(doc))));
+                                                                                                parseDeploymentConfig(doc),
+                                                                                                securityOverrides)));
     }
 
     private static Option<DeploymentConfig> parseDeploymentConfig(TomlDocument doc) {
@@ -183,5 +186,55 @@ public interface BlueprintParser {
             return success(n.intValue());
         }
         return success(Math.ceilDiv(instanceCount, 2));
+    }
+
+    /// Known top-level sections in blueprint TOML.
+    Set<String> KNOWN_SECTIONS = Set.of("",
+                                        "slices",
+                                        "security",
+                                        "security.overrides",
+                                        "resources",
+                                        "config",
+                                        "deployment");
+
+    /// Known table array names in blueprint TOML.
+    Set<String> KNOWN_TABLE_ARRAYS = Set.of("slices", "deployment.canary.stages");
+
+    /// Detect unrecognized top-level sections in a blueprint TOML document.
+    /// Returns a list of warning messages for each unrecognized section found.
+    static List<String> detectUnrecognizedSections(String dsl) {
+        var parseResult = option(dsl).filter(s -> !s.isBlank())
+                                .toResult(MISSING_ID)
+                                .flatMap(content -> TomlParser.parse(content)
+                                                              .mapError(cause -> cause("TOML parse error: " + cause.message())));
+        return parseResult.fold(_ -> List.of(), BlueprintParser::collectUnrecognizedSections);
+    }
+
+    private static List<String> collectUnrecognizedSections(TomlDocument doc) {
+        var warnings = new ArrayList<String>();
+        doc.sectionNames()
+           .stream()
+           .filter(name -> !KNOWN_SECTIONS.contains(name))
+           .filter(name -> !name.startsWith("deployment."))
+           .filter(name -> !name.startsWith("security."))
+           .sorted()
+           .forEach(name -> warnings.add("Unrecognized config section: [" + name + "]"));
+        doc.tableArrayNames()
+           .stream()
+           .filter(name -> !KNOWN_TABLE_ARRAYS.contains(name))
+           .sorted()
+           .forEach(name -> warnings.add("Unrecognized config table array: [[" + name + "]]"));
+        return List.copyOf(warnings);
+    }
+
+    private static SecurityOverrides parseSecurityOverrides(TomlDocument doc) {
+        var policy = doc.getString("security", "override_policy")
+                        .map(SecurityOverridePolicy::fromString)
+                        .or(SecurityOverridePolicy.STRENGTHEN_ONLY);
+        var overrideMap = doc.getSection("security.overrides");
+        if (overrideMap.isEmpty()) {
+            return SecurityOverrides.securityOverrides(List.of(), policy);
+        }
+        return SecurityOverrides.fromMap(overrideMap, policy);
     }
 }

@@ -306,7 +306,8 @@ class BlueprintServiceInstance implements BlueprintService {
                                                             Option<String> resourcesConfig) {
         return Promise.success(resourcesConfig.map(rc -> ExpandedBlueprint.expandedBlueprint(expanded.id(),
                                                                                              expanded.loadOrder(),
-                                                                                             Option.some(rc)))
+                                                                                             Option.some(rc),
+                                                                                             expanded.securityOverrides()))
                                               .or(expanded));
     }
 

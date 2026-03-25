@@ -311,4 +311,97 @@ class BlueprintParserTest {
                                      );
         }
     }
+
+    @Nested
+    class SecurityOverridesCases {
+
+        @Test
+        void parse_parsesSecurityOverrides_withOverridesSection() {
+            var dsl = """
+                    id = "org.example:with-overrides:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:service:1.0.0"
+
+                    [security]
+                    override_policy = "strengthen_only"
+
+                    [security.overrides]
+                    "GET /api/v1/urls/*" = "authenticated"
+                    "POST /api/v1/admin/*" = "role:admin"
+                    """;
+
+            BlueprintParser.parse(dsl)
+                           .onFailureRun(Assertions::fail)
+                           .onSuccess(blueprint -> {
+                               var overrides = blueprint.securityOverrides();
+                               assertThat(overrides.isEmpty()).isFalse();
+                               assertThat(overrides.entries()).hasSize(2);
+                               assertThat(overrides.policy()).isEqualTo(SecurityOverridePolicy.STRENGTHEN_ONLY);
+                           });
+        }
+
+        @Test
+        void parse_parsesFullPolicy() {
+            var dsl = """
+                    id = "org.example:full-policy:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:service:1.0.0"
+
+                    [security]
+                    override_policy = "full"
+
+                    [security.overrides]
+                    "GET /api/v1/public/*" = "public"
+                    """;
+
+            BlueprintParser.parse(dsl)
+                           .onFailureRun(Assertions::fail)
+                           .onSuccess(blueprint -> {
+                               assertThat(blueprint.securityOverrides().policy())
+                                   .isEqualTo(SecurityOverridePolicy.FULL);
+                               assertThat(blueprint.securityOverrides().entries()).hasSize(1);
+                           });
+        }
+
+        @Test
+        void parse_defaultsToEmptyOverrides_withNoSecuritySection() {
+            var dsl = """
+                    id = "org.example:no-security:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:service:1.0.0"
+                    """;
+
+            BlueprintParser.parse(dsl)
+                           .onFailureRun(Assertions::fail)
+                           .onSuccess(blueprint -> {
+                               assertThat(blueprint.securityOverrides().isEmpty()).isTrue();
+                               assertThat(blueprint.securityOverrides().policy())
+                                   .isEqualTo(SecurityOverridePolicy.STRENGTHEN_ONLY);
+                           });
+        }
+
+        @Test
+        void parse_defaultsPolicy_withOverridesButNoPolicy() {
+            var dsl = """
+                    id = "org.example:default-policy:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:service:1.0.0"
+
+                    [security.overrides]
+                    "GET /api/health" = "public"
+                    """;
+
+            BlueprintParser.parse(dsl)
+                           .onFailureRun(Assertions::fail)
+                           .onSuccess(blueprint -> {
+                               assertThat(blueprint.securityOverrides().entries()).hasSize(1);
+                               assertThat(blueprint.securityOverrides().policy())
+                                   .isEqualTo(SecurityOverridePolicy.STRENGTHEN_ONLY);
+                           });
+        }
+    }
 }
