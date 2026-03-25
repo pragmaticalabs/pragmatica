@@ -16,6 +16,7 @@ import javax.tools.JavaFileObject;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -180,7 +181,7 @@ public class RouteSourceGenerator {
         out.println("package " + basePackage + ";");
         out.println();
         // Imports
-        generateImports(out, sliceName, errorMappings);
+        generateImports(out, sliceName, errorMappings, model.methods());
         out.println();
         // Class
         out.println("/**");
@@ -229,7 +230,7 @@ public class RouteSourceGenerator {
         out.println("}");
     }
 
-    private void generateImports(PrintWriter out, String sliceName, List<ErrorTypeMapping> errorMappings) {
+    private void generateImports(PrintWriter out, String sliceName, List<ErrorTypeMapping> errorMappings, List<MethodModel> methods) {
         out.println("import org.pragmatica.aether.http.adapter.ErrorMapper;");
         out.println("import org.pragmatica.aether.http.adapter.SliceRouter;");
         out.println("import org.pragmatica.aether.http.adapter.SliceRouterFactory;");
@@ -240,6 +241,10 @@ public class RouteSourceGenerator {
         out.println("import org.pragmatica.http.routing.Route;");
         out.println("import org.pragmatica.http.routing.RouteSource;");
         out.println("import org.pragmatica.aether.http.handler.security.SecurityPolicy;");
+        if (anyMethodHasSecurityParams(methods)) {
+            out.println("import org.pragmatica.aether.http.handler.security.SecurityContext;");
+            out.println("import org.pragmatica.aether.http.handler.security.SecurityContextHolder;");
+        }
         out.println("import org.pragmatica.lang.Cause;");
         out.println("import org.pragmatica.lang.Option;");
         out.println("import org.pragmatica.lang.type.TypeToken;");
@@ -265,6 +270,8 @@ public class RouteSourceGenerator {
                                       .stream()
                                       .sorted(Map.Entry.comparingByKey())
                                       .toList();
+        // Check for overlapping routes (same HTTP method + path pattern)
+        warnOnDuplicateRoutes(routeConfig, model, sliceElement);
         // Filter valid routes and report errors for invalid ones
         var validRoutes = new ArrayList<Map.Entry<String, RouteDsl>>();
         for (var entry : routeEntries) {
@@ -315,6 +322,28 @@ public class RouteSourceGenerator {
         out.println("    }");
     }
 
+    private void warnOnDuplicateRoutes(RouteConfig routeConfig, SliceModel model, TypeElement sliceElement) {
+        var routesByIdentity = new HashMap<String, List<String>>();
+        for (var entry : routeConfig.routes().entrySet()) {
+            var handlerName = entry.getKey();
+            var routeDsl = entry.getValue();
+            var fullPath = routeConfig.prefix().isEmpty()
+                           ? routeDsl.pathTemplate()
+                           : routeConfig.prefix() + routeDsl.pathTemplate();
+            var identity = routeDsl.method() + " " + fullPath;
+            routesByIdentity.computeIfAbsent(identity, _ -> new ArrayList<>()).add(handlerName);
+        }
+        for (var entry : routesByIdentity.entrySet()) {
+            if (entry.getValue().size() > 1) {
+                var routesToml = model.packageName().replace('.', '/') + "/routes.toml";
+                messager.printMessage(Diagnostic.Kind.WARNING,
+                                      "Overlapping route '" + entry.getKey() + "' is mapped to multiple handlers: "
+                                      + entry.getValue() + " (check routes.toml: " + routesToml + ")",
+                                      sliceElement);
+            }
+        }
+    }
+
     private Map<String, MethodModel> buildMethodMap(List<MethodModel> methods) {
         return methods.stream()
                       .collect(Collectors.toMap(MethodModel::name, m -> m));
@@ -338,8 +367,9 @@ public class RouteSourceGenerator {
                                  .toLowerCase();
         var responseType = method.responseType()
                                  .toString();
-        var parameterType = method.parameterType()
-                                  .toString();
+        // Use business parameter type (excludes security params like Principal/SecurityContext)
+        // Lazy: only resolve when route actually needs a body/parameter type
+        var parameterType = resolveParameterType(method);
         var comma = hasMore
                     ? ","
                     : "";
@@ -375,6 +405,62 @@ public class RouteSourceGenerator {
         };
     }
 
+    /// Resolve the parameter type for route generation.
+    /// For methods with security params, uses the business parameter type.
+    /// For methods with no business params (only security), returns empty string (not used by no-param routes).
+    private String resolveParameterType(MethodModel method) {
+        if (method.hasSecurityParams()) {
+            var bizParams = method.businessParameters();
+            if (bizParams.size() == 1) {
+                return bizParams.getFirst().type().toString();
+            }
+            return "";
+        }
+        return method.parameterType().toString();
+    }
+
+    /// Build the delegate method call with security params injected in the correct positions.
+    /// For non-security methods, returns a simple delegate call.
+    /// For security methods, inserts __ctx.principal() or __ctx for security params.
+    private String delegateCallWithSecurity(MethodModel method, Map<String, String> businessArgsByName) {
+        if (!method.hasSecurityParams()) {
+            var args = method.parameters()
+                             .stream()
+                             .map(p -> businessArgsByName.getOrDefault(p.name(), p.name()))
+                             .collect(Collectors.joining(", "));
+            return "delegate." + method.name() + "(" + args + ")";
+        }
+        var args = method.parameters()
+                         .stream()
+                         .map(p -> securityArgForParam(p, businessArgsByName))
+                         .collect(Collectors.joining(", "));
+        return "delegate." + method.name() + "(" + args + ")";
+    }
+
+    private String securityArgForParam(MethodModel.MethodParameterInfo param, Map<String, String> businessArgsByName) {
+        if (MethodModel.isPrincipalParam(param)) {
+            return "__ctx.principal()";
+        }
+        if (MethodModel.isSecurityContextParam(param)) {
+            return "__ctx";
+        }
+        return businessArgsByName.getOrDefault(param.name(), param.name());
+    }
+
+    /// Generate a block lambda with security context extraction.
+    /// Wraps: `lambdaParams -> { var __ctx = ...; return delegateCall; }`
+    private void generateSecurityLambda(PrintWriter out, String lambdaParams, String delegateCall) {
+        out.println("                 .to(" + lambdaParams + " {");
+        out.println("                     var __ctx = SecurityContextHolder.currentContext().or(SecurityContext.securityContext());");
+        out.println("                     return " + delegateCall + ";");
+        out.println("                 })");
+    }
+
+    /// Check if any method in the model has security parameters.
+    private boolean anyMethodHasSecurityParams(List<MethodModel> methods) {
+        return methods.stream().anyMatch(MethodModel::hasSecurityParams);
+    }
+
     private void generateNoParamsRoute(PrintWriter out,
                                        String path,
                                        String httpMethod,
@@ -384,7 +470,12 @@ public class RouteSourceGenerator {
                                        String security) {
         out.println("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println("                 .withoutParameters()");
-        out.println("                 .to(_ -> delegate." + method.name() + "(new " + method.parameterType() + "()))");
+        if (method.hasSecurityParams()) {
+            var delegateCall = delegateCallWithSecurity(method, Map.of());
+            generateSecurityLambda(out, "_ ->", delegateCall);
+        } else {
+            out.println("                 .to(_ -> delegate." + method.name() + "(new " + method.parameterType() + "()))");
+        }
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
 
@@ -397,8 +488,9 @@ public class RouteSourceGenerator {
                                    String comma,
                                    String security) {
         var pathParams = routeDsl.pathParams();
-        var parameterType = method.parameterType()
-                                  .toString();
+        var parameterType = method.hasSecurityParams()
+                            ? method.businessParameterType().toString()
+                            : method.parameterType().toString();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
         out.println("                 .withPath(" + pathParamList(pathParams) + ")");
@@ -409,8 +501,15 @@ public class RouteSourceGenerator {
         var handler = pathParams.size() == 1
                       ? paramList + " -> "
                       : "(" + paramList + ") -> ";
-        out.println("                 .to(" + handler + "delegate." + method.name() + "(new " + parameterType + "(" + paramList
-                    + ")))");
+        if (method.hasSecurityParams()) {
+            var constructorExpr = "new " + parameterType + "(" + paramList + ")";
+            var bizParam = method.businessParameters().getFirst();
+            var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), constructorExpr));
+            generateSecurityLambda(out, handler, delegateCall);
+        } else {
+            out.println("                 .to(" + handler + "delegate." + method.name() + "(new " + parameterType + "(" + paramList
+                        + ")))");
+        }
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
 
@@ -423,8 +522,9 @@ public class RouteSourceGenerator {
                                     String comma,
                                     String security) {
         var queryParams = routeDsl.queryParams();
-        var parameterType = method.parameterType()
-                                  .toString();
+        var parameterType = method.hasSecurityParams()
+                            ? method.businessParameterType().toString()
+                            : method.parameterType().toString();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
         out.println("                 .withQuery(" + queryParamList(queryParams) + ")");
@@ -435,11 +535,16 @@ public class RouteSourceGenerator {
         var constructorArgs = queryParams.stream()
                                          .map(QueryParam::name)
                                          .collect(Collectors.joining(", "));
-        if (queryParams.size() == 1) {
-            out.println("                 .to(" + handlerParams + " -> delegate." + method.name() + "(new " + parameterType
-                        + "(" + constructorArgs + ")))");
+        var handler = queryParams.size() == 1
+                      ? handlerParams + " -> "
+                      : "(" + handlerParams + ") -> ";
+        if (method.hasSecurityParams()) {
+            var constructorExpr = "new " + parameterType + "(" + constructorArgs + ")";
+            var bizParam = method.businessParameters().getFirst();
+            var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), constructorExpr));
+            generateSecurityLambda(out, handler, delegateCall);
         } else {
-            out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(new " + parameterType
+            out.println("                 .to(" + handler + "delegate." + method.name() + "(new " + parameterType
                         + "(" + constructorArgs + ")))");
         }
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
@@ -455,7 +560,13 @@ public class RouteSourceGenerator {
                                    String security) {
         out.println("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println("                 .withBody(new TypeToken<" + parameterType + ">() {})");
-        out.println("                 .to(request -> delegate." + method.name() + "(request))");
+        if (method.hasSecurityParams()) {
+            var bizParam = method.businessParameters().getFirst();
+            var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), "request"));
+            generateSecurityLambda(out, "request ->", delegateCall);
+        } else {
+            out.println("                 .to(request -> delegate." + method.name() + "(request))");
+        }
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
 
@@ -479,7 +590,13 @@ public class RouteSourceGenerator {
         var allParams = new ArrayList<>(pathParamNames);
         allParams.add("body");
         var handlerParams = String.join(", ", allParams);
-        out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(body))");
+        if (method.hasSecurityParams()) {
+            var bizParam = method.businessParameters().getFirst();
+            var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), "body"));
+            generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
+        } else {
+            out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(body))");
+        }
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
 
@@ -503,7 +620,13 @@ public class RouteSourceGenerator {
         var allParams = new ArrayList<>(queryParamNames);
         allParams.add("body");
         var handlerParams = String.join(", ", allParams);
-        out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(body))");
+        if (method.hasSecurityParams()) {
+            var bizParam = method.businessParameters().getFirst();
+            var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), "body"));
+            generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
+        } else {
+            out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(body))");
+        }
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
 
@@ -517,8 +640,9 @@ public class RouteSourceGenerator {
                                         String security) {
         var pathParams = routeDsl.pathParams();
         var queryParams = routeDsl.queryParams();
-        var parameterType = method.parameterType()
-                                  .toString();
+        var parameterType = method.hasSecurityParams()
+                            ? method.businessParameterType().toString()
+                            : method.parameterType().toString();
         out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
         out.println("                 .withPath(" + pathParamList(pathParams) + ")");
@@ -533,8 +657,15 @@ public class RouteSourceGenerator {
         allParams.addAll(queryParamNames);
         var handlerParams = String.join(", ", allParams);
         var constructorArgs = String.join(", ", allParams);
-        out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(new " + parameterType
-                    + "(" + constructorArgs + ")))");
+        if (method.hasSecurityParams()) {
+            var constructorExpr = "new " + parameterType + "(" + constructorArgs + ")";
+            var bizParam = method.businessParameters().getFirst();
+            var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), constructorExpr));
+            generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
+        } else {
+            out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(new " + parameterType
+                        + "(" + constructorArgs + ")))");
+        }
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
 
@@ -564,7 +695,13 @@ public class RouteSourceGenerator {
         allParams.addAll(queryParamNames);
         allParams.add("body");
         var handlerParams = String.join(", ", allParams);
-        out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(body))");
+        if (method.hasSecurityParams()) {
+            var bizParam = method.businessParameters().getFirst();
+            var delegateCall = delegateCallWithSecurity(method, Map.of(bizParam.name(), "body"));
+            generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
+        } else {
+            out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(body))");
+        }
         out.println("                 .named(\"" + method.name() + "\").withSecurity(" + security + ").asJson()" + comma);
     }
 
@@ -640,7 +777,13 @@ public class RouteSourceGenerator {
                 case '\n' -> sb.append("\\n");
                 case '\r' -> sb.append("\\r");
                 case '\t' -> sb.append("\\t");
-                default -> sb.append(c);
+                default -> {
+                    if (c < 0x20 || c > 0x7E) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+                }
             }
         }
         return sb.toString();

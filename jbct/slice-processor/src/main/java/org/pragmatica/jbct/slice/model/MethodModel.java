@@ -39,6 +39,8 @@ public record MethodModel(String name,
     private static final String SUBSCRIBER_TYPE = "org.pragmatica.aether.slice.Subscriber";
     private static final String SCHEDULED_TYPE = "org.pragmatica.aether.slice.Scheduled";
     private static final String STREAM_SUBSCRIBER_TYPE = "org.pragmatica.aether.slice.StreamSubscriber";
+    private static final String PRINCIPAL_TYPE = "org.pragmatica.aether.http.handler.security.Principal";
+    private static final String SECURITY_CONTEXT_TYPE = "org.pragmatica.aether.http.handler.security.SecurityContext";
 
     public MethodModel {
         interceptors = List.copyOf(interceptors);
@@ -80,6 +82,42 @@ public record MethodModel(String name,
     /// Check if this method has any stream subscriptions.
     public boolean hasStreamSubscriptions() {
         return !streamSubscriptions.isEmpty();
+    }
+
+    /// Check if a parameter is a security injection type (Principal or SecurityContext).
+    public static boolean isSecurityParam(MethodParameterInfo param) {
+        var typeName = param.type().toString();
+        return typeName.equals(PRINCIPAL_TYPE) || typeName.equals(SECURITY_CONTEXT_TYPE);
+    }
+
+    /// Check if parameter is Principal type.
+    public static boolean isPrincipalParam(MethodParameterInfo param) {
+        return param.type().toString().equals(PRINCIPAL_TYPE);
+    }
+
+    /// Check if parameter is SecurityContext type.
+    public static boolean isSecurityContextParam(MethodParameterInfo param) {
+        return param.type().toString().equals(SECURITY_CONTEXT_TYPE);
+    }
+
+    /// Check if this method has any security injection parameters.
+    public boolean hasSecurityParams() {
+        return parameters.stream().anyMatch(MethodModel::isSecurityParam);
+    }
+
+    /// Get only the business parameters (excluding Principal/SecurityContext).
+    public List<MethodParameterInfo> businessParameters() {
+        return parameters.stream().filter(p -> !isSecurityParam(p)).toList();
+    }
+
+    /// Returns the business parameter type for single-business-param methods.
+    /// Used by RouteSourceGenerator when security params are present.
+    public TypeMirror businessParameterType() {
+        var biz = businessParameters();
+        if (biz.size() == 1) {
+            return biz.getFirst().type();
+        }
+        throw new IllegalStateException("businessParameterType() called on method with " + biz.size() + " business params: " + name);
     }
 
     /// Returns true if the method parameter is List<T> (batch stream consumer).
