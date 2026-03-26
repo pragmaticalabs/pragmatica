@@ -28,6 +28,7 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.*;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.concurrent.AtomicHolder;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -84,7 +85,7 @@ public class RabiaEngine<C extends Command> {
     private final TimeSpan phaseStallCheck;
     private volatile boolean activationAuthorized;
     private volatile boolean observerMode;
-    private final AtomicReference<QuorumStateNotification> pendingQuorum = new AtomicReference<>();
+    private final AtomicHolder<QuorumStateNotification> pendingQuorum = AtomicHolder.atomicHolder();
 
     // Single-thread executor with DiscardPolicy to silently drop tasks after shutdown
     private final ExecutorService executor = new ThreadPoolExecutor(1,
@@ -246,8 +247,8 @@ public class RabiaEngine<C extends Command> {
             observerMode = false;
         }
         activationAuthorized = true;
-        var pending = pendingQuorum.getAndSet(null);
-        if (pending != null) {
+        var pending = pendingQuorum.getAndClear();
+        if (pending.isPresent()) {
             log.info("Node {}: replaying stored quorum notification", self);
             clusterConnected();
         } else if (engineState.get().isObserving()) {
@@ -269,16 +270,19 @@ public class RabiaEngine<C extends Command> {
         log.info("Node {}: consensus observation authorized (observer mode)", self);
         activationAuthorized = true;
         observerMode = true;
-        var pending = pendingQuorum.getAndSet(null);
-        if (pending != null) {
-            log.info("Node {}: replaying stored quorum notification for observer mode", self);
-            clusterConnected();
-        }
+        pendingQuorum.getAndClear()
+                     .onPresent(this::replayQuorumForObserver);
     }
 
     /// Returns true if the engine is currently in observer mode.
     public boolean isObserving() {
         return engineState.get().isObserving();
+    }
+
+    @SuppressWarnings("JBCT-RET-01") // Side-effect callback — void inherent
+    private void replayQuorumForObserver(QuorumStateNotification notification) {
+        log.info("Node {}: replaying stored quorum notification for observer mode", self);
+        clusterConnected();
     }
 
     private void clusterConnected() {

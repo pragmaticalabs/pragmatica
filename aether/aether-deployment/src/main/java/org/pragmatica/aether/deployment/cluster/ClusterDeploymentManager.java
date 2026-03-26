@@ -67,6 +67,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -77,7 +78,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -261,7 +261,7 @@ public interface ClusterDeploymentManager {
                       Map<String, GovernorAnnouncementValue> communityGovernors,
                       Map<SliceNodeKey, Long> transitionalStateTimestamps,
                       TimeSpan reconcileInterval,
-                      AtomicReference<ScheduledFuture<?>> reconcileTimer) implements ClusterDeploymentState {
+                      CancellableTask reconcileTimer) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
             private static final int MAX_RETRIES = 5;
             private static final long MAX_RETRY_DELAY_SECONDS = 30;
@@ -291,8 +291,7 @@ public interface ClusterDeploymentManager {
 
             /// Start periodic reconciliation to detect and remediate stuck transitional states.
             void startReconcileTimer() {
-                var future = SharedScheduler.scheduleAtFixedRate(this::reconcileIfActive, reconcileInterval);
-                reconcileTimer.set(future);
+                reconcileTimer.set(SharedScheduler.scheduleAtFixedRate(this::reconcileIfActive, reconcileInterval));
             }
 
             private void reconcileIfActive() {
@@ -302,8 +301,7 @@ public interface ClusterDeploymentManager {
             }
 
             private void cancelReconcileTimer() {
-                Option.option(reconcileTimer.getAndSet(null))
-                      .onPresent(future -> future.cancel(false));
+                reconcileTimer.cancel();
             }
 
             /// Rebuild state from KVStore snapshot on leader activation.
@@ -2258,7 +2256,7 @@ public interface ClusterDeploymentManager {
                                                                         new ConcurrentHashMap<>(),
                                                                         new ConcurrentHashMap<>(),
                                                                         reconcileInterval,
-                                                                        new AtomicReference<>());
+                                                                        CancellableTask.cancellableTask());
                     // Swap to Active FIRST — ensures topology changes arriving on other threads
                     // are dispatched to Active.onTopologyChange() instead of being lost in Dormant.
                     state.set(activeState);

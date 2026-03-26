@@ -29,6 +29,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -40,7 +41,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -80,7 +80,7 @@ public final class EmberCluster {
     private final String nodeIdPrefix;
     private final AtomicBoolean rollingRestartActive = new AtomicBoolean(false);
     private final ScheduledExecutorService rollingRestartExecutor = Executors.newSingleThreadScheduledExecutor();
-    private final AtomicReference<ScheduledFuture<?>> rollingRestartTask = new AtomicReference<>();
+    private final CancellableTask rollingRestartTask = CancellableTask.cancellableTask();
     private final Random random = new Random();
 
     // Aether invocation metrics EMA state
@@ -436,10 +436,7 @@ public final class EmberCluster {
     public Promise<Unit> stop() {
         log.info("Stopping Ember cluster");
         // Cancel rolling restart if active
-        var task = rollingRestartTask.getAndSet(null);
-        if (task != null) {
-            task.cancel(false);
-        }
+        rollingRestartTask.cancel();
         rollingRestartActive.set(false);
         var stopPromises = nodes.values()
                                 .stream()
@@ -977,10 +974,7 @@ public final class EmberCluster {
     /// Stop rolling restart cycle.
     public Promise<RollingRestartResponse> stopRollingRestart(Consumer<EventLogEntry> eventLogger) {
         if (rollingRestartActive.compareAndSet(true, false)) {
-            var activeTask = rollingRestartTask.getAndSet(null);
-            if (activeTask != null) {
-                activeTask.cancel(false);
-            }
+            rollingRestartTask.cancel();
             eventLogger.accept(new EventLogEntry("ROLLING_RESTART", "Rolling restart stopped"));
             log.info("Rolling restart stopped");
             return Promise.success(new RollingRestartResponse(true, "Rolling restart stopped"));

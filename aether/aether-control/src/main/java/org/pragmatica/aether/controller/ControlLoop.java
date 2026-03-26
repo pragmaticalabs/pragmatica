@@ -29,6 +29,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.CommunityScalingRequest;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -36,7 +37,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -123,7 +123,7 @@ public interface ControlLoop {
                            TimeSpan interval,
                            AtomicReference<ControllerConfig> configRef,
                            CompositeLoadFactor compositeLoadFactor,
-                           AtomicReference<ScheduledFuture<?>> evaluationTask,
+                           CancellableTask evaluationTask,
                            AtomicReference<List<NodeId>> topology,
                            ConcurrentHashMap<Artifact, ClusterController.Blueprint> blueprints,
                            ConcurrentHashMap<SliceNodeKey, SliceState> sliceStates,
@@ -241,7 +241,7 @@ public interface ControlLoop {
 
             @Override
             public void onCommunityScalingRequest(CommunityScalingRequest request) {
-                if (evaluationTask.get() == null) {
+                if (!evaluationTask.isScheduled()) {
                     log.debug("Ignoring community scaling request: not leader");
                     return;
                 }
@@ -349,14 +349,11 @@ public interface ControlLoop {
             }
 
             private void startEvaluation() {
-                stopEvaluation();
-                var task = SharedScheduler.scheduleAtFixedRate(this::runEvaluation, interval);
-                evaluationTask.set(task);
+                evaluationTask.set(SharedScheduler.scheduleAtFixedRate(this::runEvaluation, interval));
             }
 
             private void stopEvaluation() {
-                Option.option(evaluationTask.getAndSet(null))
-                      .onPresent(existing -> existing.cancel(false));
+                evaluationTask.cancel();
             }
 
             private void runEvaluation() {
@@ -677,7 +674,7 @@ public interface ControlLoop {
                                interval,
                                new AtomicReference<>(config),
                                CompositeLoadFactor.compositeLoadFactor(config.scalingConfig()),
-                               new AtomicReference<>(),
+                               CancellableTask.cancellableTask(),
                                new AtomicReference<>(List.of()),
                                new ConcurrentHashMap<>(),
                                new ConcurrentHashMap<>(),

@@ -15,9 +15,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -83,7 +83,7 @@ public interface TTMManager {
                                     analyzer,
                                     aggregator,
                                     controllerConfigSupplier,
-                                    new AtomicReference<>(),
+                                    CancellableTask.cancellableTask(),
                                     new AtomicReference<>(),
                                     new AtomicReference<>(TTMState.STOPPED),
                                     new CopyOnWriteArrayList<>());
@@ -129,7 +129,7 @@ public interface TTMManager {
                             ForecastAnalyzer analyzer,
                             MinuteAggregator aggregator,
                             Supplier<ControllerConfig> controllerConfigSupplier,
-                            AtomicReference<ScheduledFuture<?>> evaluationTask,
+                            CancellableTask evaluationTask,
                             AtomicReference<TTMForecast> currentForecastRef,
                             AtomicReference<TTMState> stateRef,
                             CopyOnWriteArrayList<Consumer<TTMForecast>> callbacks) implements TTMManager {
@@ -181,19 +181,13 @@ public interface TTMManager {
         private void startEvaluation() {
             stopEvaluation();
             stateRef.set(TTMState.RUNNING);
-            var task = SharedScheduler.scheduleAtFixedRate(this::runEvaluation, config.evaluationInterval());
-            evaluationTask.set(task);
+            evaluationTask.set(SharedScheduler.scheduleAtFixedRate(this::runEvaluation, config.evaluationInterval()));
             log.info("TTM evaluation started with interval {}", config.evaluationInterval());
         }
 
         private void stopEvaluation() {
             stateRef.set(TTMState.STOPPED);
-            Option.option(evaluationTask.getAndSet(null))
-                  .onPresent(this::cancelEvaluationTask);
-        }
-
-        private void cancelEvaluationTask(ScheduledFuture<?> task) {
-            task.cancel(false);
+            evaluationTask.cancel();
             log.info("TTM evaluation stopped");
         }
 

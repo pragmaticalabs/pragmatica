@@ -7,6 +7,7 @@ import org.pragmatica.cloud.azure.AzureClient;
 import org.pragmatica.cloud.azure.api.ResourceRow;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.concurrent.StoppableThread;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -41,7 +42,7 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
     private final String clusterName;
     private final Option<String> selfVmName;
     private final long pollIntervalMs;
-    private final AtomicReference<Thread> watchThread = new AtomicReference<>();
+    private final StoppableThread watchThread = StoppableThread.stoppableThread();
 
     private AzureDiscoveryProvider(AzureClient client,
                                    String clusterName,
@@ -216,10 +217,7 @@ public final class AzureDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: interrupt and clear the watch thread ---
     private void interruptWatchThread() {
-        var thread = watchThread.getAndSet(null);
-        if (thread != null) {
-            thread.interrupt();
-        }
+        watchThread.stop();
     }
 
     // --- Leaf: map cause to discovery error ---

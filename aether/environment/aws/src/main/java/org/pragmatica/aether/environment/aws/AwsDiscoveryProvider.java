@@ -8,6 +8,7 @@ import org.pragmatica.cloud.aws.api.DescribeInstancesResponse;
 import org.pragmatica.cloud.aws.api.Instance;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.concurrent.StoppableThread;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
@@ -39,7 +40,7 @@ public final class AwsDiscoveryProvider implements DiscoveryProvider {
     private final AwsClient client;
     private final String clusterName;
     private final long pollIntervalMs;
-    private final AtomicReference<Thread> watchThread = new AtomicReference<>();
+    private final StoppableThread watchThread = StoppableThread.stoppableThread();
 
     private AwsDiscoveryProvider(AwsClient client,
                                  String clusterName,
@@ -201,10 +202,7 @@ public final class AwsDiscoveryProvider implements DiscoveryProvider {
 
     // --- Leaf: interrupt and clear the watch thread ---
     private void interruptWatchThread() {
-        var thread = watchThread.getAndSet(null);
-        if (thread != null) {
-            thread.interrupt();
-        }
+        watchThread.stop();
     }
 
     // --- Leaf: map cause to discovery error ---

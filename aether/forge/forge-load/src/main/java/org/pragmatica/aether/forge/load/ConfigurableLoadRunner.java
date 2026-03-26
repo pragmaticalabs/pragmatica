@@ -10,6 +10,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.concurrent.AtomicHolder;
 import org.pragmatica.lang.parse.Network;
 
 import java.net.URI;
@@ -82,7 +83,7 @@ public final class ConfigurableLoadRunner {
     private final Map<String, TargetRunner> activeRunners = new ConcurrentHashMap<>();
     private final List<Thread> runnerThreads = new CopyOnWriteArrayList<>();
 
-    private final AtomicReference<ScheduledExecutorService> scheduler = new AtomicReference<>();
+    private final AtomicHolder<ScheduledExecutorService> scheduler = AtomicHolder.atomicHolder();
 
     private ConfigurableLoadRunner(Supplier<List<Integer>> portSupplier,
                                    ForgeMetrics metrics,
@@ -221,14 +222,19 @@ public final class ConfigurableLoadRunner {
     }
 
     private void scheduleMetricsSync() {
-        var sched = scheduler.get();
+        scheduler.get()
+                 .onPresent(this::scheduleMetricsSyncOn);
+    }
+
+    private void scheduleMetricsSyncOn(ScheduledExecutorService sched) {
         sched.schedule(() -> sched.scheduleAtFixedRate(this::syncMetrics, 0, 100, TimeUnit.MILLISECONDS),
                        200,
                        TimeUnit.MILLISECONDS);
     }
 
     private void cleanupScheduler() {
-        option(scheduler.getAndSet(null)).onPresent(ScheduledExecutorService::shutdownNow);
+        scheduler.getAndClear()
+                 .onPresent(ScheduledExecutorService::shutdownNow);
     }
 
     /// Stop all load generation.

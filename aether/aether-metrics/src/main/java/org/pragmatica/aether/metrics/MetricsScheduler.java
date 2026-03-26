@@ -11,9 +11,9 @@ import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.util.List;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -76,7 +76,7 @@ class MetricsSchedulerImpl implements MetricsScheduler {
     private final MetricsCollector metricsCollector;
     private final TimeSpan interval;
 
-    private final AtomicReference<ScheduledFuture<?>> pingTask = new AtomicReference<>();
+    private final CancellableTask pingTask = CancellableTask.cancellableTask();
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
     private final AtomicLong quorumSequence = new AtomicLong();
 
@@ -132,16 +132,11 @@ class MetricsSchedulerImpl implements MetricsScheduler {
     }
 
     private void startPinging() {
-        stopPinging();
-        var task = SharedScheduler.scheduleAtFixedRate(this::sendPingsToAllNodes, interval);
-        pingTask.set(task);
+        pingTask.set(SharedScheduler.scheduleAtFixedRate(this::sendPingsToAllNodes, interval));
     }
 
     private void stopPinging() {
-        var existing = pingTask.getAndSet(null);
-        if (existing != null) {
-            existing.cancel(false);
-        }
+        pingTask.cancel();
     }
 
     private void sendPingsToAllNodes() {

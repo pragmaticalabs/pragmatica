@@ -22,12 +22,12 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.KSUID;
+import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -135,7 +135,7 @@ public interface CanaryDeploymentManager {
                                        long terminalRetentionMs,
                                        TimeSpan evaluationInterval,
                                        Map<String, CanaryDeployment> canaries,
-                                       AtomicReference<ScheduledFuture<?>> evaluationFuture) implements CanaryDeploymentManager {
+                                       CancellableTask evaluationFuture) implements CanaryDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(CanaryDeploymentManager.class);
 
             @Override
@@ -176,19 +176,16 @@ public interface CanaryDeploymentManager {
                                               cause.message()));
             }
 
-            // --- Evaluation loop (SharedScheduler + ScheduledFuture pattern from ControlLoop) ---
+            // --- Evaluation loop (SharedScheduler + CancellableTask pattern from ControlLoop) ---
             @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private void startEvaluationLoop() {
-                stopEvaluationLoop();
-                var task = SharedScheduler.scheduleAtFixedRate(this::evaluateCanaries, evaluationInterval);
-                evaluationFuture.set(task);
+                evaluationFuture.set(SharedScheduler.scheduleAtFixedRate(this::evaluateCanaries, evaluationInterval));
                 log.info("Canary evaluation loop started (interval: {}ms)", evaluationInterval.millis());
             }
 
             @SuppressWarnings("JBCT-RET-01") // Side-effect helper — void inherent
             private void stopEvaluationLoop() {
-                Option.option(evaluationFuture.getAndSet(null))
-                      .onPresent(existing -> existing.cancel(false));
+                evaluationFuture.cancel();
             }
 
             @SuppressWarnings("JBCT-RET-01")
@@ -758,7 +755,7 @@ public interface CanaryDeploymentManager {
                                            terminalRetentionMs,
                                            evaluationInterval,
                                            new ConcurrentHashMap<>(),
-                                           new AtomicReference<>());
+                                           CancellableTask.cancellableTask());
     }
 
     /// Parse a single stage entry from serialized format.

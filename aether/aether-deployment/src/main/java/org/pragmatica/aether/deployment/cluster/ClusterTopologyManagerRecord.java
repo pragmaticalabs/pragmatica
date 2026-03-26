@@ -21,13 +21,13 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.net.SocketAddress;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -46,7 +46,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicInteger desiredSizeRef,
                                     AtomicReference<NodeReconcilerState> stateRef,
                                     AtomicBoolean active,
-                                    AtomicReference<ScheduledFuture<?>> recheckFuture) implements ClusterTopologyManager {
+                                    CancellableTask recheckFuture) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_WAVE_SIZE = 5;
@@ -60,7 +60,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicInteger(observer.clusterSize()),
                                                 new AtomicReference<>(new NodeReconcilerState.Inactive("not yet activated")),
                                                 new AtomicBoolean(false),
-                                                new AtomicReference<>());
+                                                CancellableTask.cancellableTask());
     }
 
     // --- ClusterTopologyManager interface ---
@@ -324,20 +324,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private void scheduleRecheck() {
-        var future = SharedScheduler.scheduleAtFixedRate(this::reconcile, autoHealConfig.retryInterval());
-        var previous = recheckFuture.getAndSet(future);
-        cancelFuture(previous);
+        recheckFuture.set(SharedScheduler.scheduleAtFixedRate(this::reconcile, autoHealConfig.retryInterval()));
     }
 
     private void cancelRecheck() {
-        var future = recheckFuture.getAndSet(null);
-        cancelFuture(future);
-    }
-
-    private static void cancelFuture(ScheduledFuture<?> future) {
-        if (future != null) {
-            future.cancel(false);
-        }
+        recheckFuture.cancel();
     }
 
     private static int provisionBatchSize(int deficit) {

@@ -7,6 +7,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter.DelegateRouter;
+import org.pragmatica.lang.concurrent.CancellableTask;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
@@ -14,8 +15,6 @@ import java.lang.management.OperatingSystemMXBean;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.slf4j.Logger;
@@ -67,23 +66,21 @@ public interface WorkerMetricsAggregator {
                                        long aggregationIntervalMs,
                                        ConcurrentHashMap<NodeId, WorkerMetricsPong> pongStore,
                                        CommunityScalingEvaluator evaluator,
-                                       AtomicReference<ScheduledFuture<?>> task) implements WorkerMetricsAggregator {
+                                       CancellableTask task) implements WorkerMetricsAggregator {
             private static final int STALE_MULTIPLIER = 2;
 
             @Override
             public void start() {
                 stop();
-                var scheduled = SharedScheduler.scheduleAtFixedRate(this::runCycle,
-                                                                    TimeSpan.timeSpan(aggregationIntervalMs)
-                                                                            .millis());
-                task.set(scheduled);
+                task.set(SharedScheduler.scheduleAtFixedRate(this::runCycle,
+                                                             TimeSpan.timeSpan(aggregationIntervalMs)
+                                                                     .millis()));
                 LOG.info("Started metrics aggregator for governor {}", self.id());
             }
 
             @Override
             public void stop() {
-                Option.option(task.getAndSet(null))
-                      .onPresent(existing -> existing.cancel(false));
+                task.cancel();
                 pongStore.clear();
                 evaluator.reset();
                 LOG.debug("Stopped metrics aggregator for governor {}", self.id());
@@ -203,6 +200,6 @@ public interface WorkerMetricsAggregator {
                                            aggregationIntervalMs,
                                            new ConcurrentHashMap<>(),
                                            CommunityScalingEvaluator.communityScalingEvaluator(),
-                                           new AtomicReference<>());
+                                           CancellableTask.cancellableTask());
     }
 }
