@@ -1140,6 +1140,67 @@ aether stream publish user-events "order_created:12345"
 
 ---
 
+## Cluster Management
+
+### `aether cluster scale`
+
+Scale the cluster core node count. Validates quorum safety on the CLI side before sending.
+
+```bash
+aether cluster scale --core <N>
+```
+
+| Option | Description |
+|--------|-------------|
+| `--core` | Target core node count (minimum 3, must be odd) |
+| `--json` | Output raw JSON |
+
+Example:
+```bash
+# Scale to 7 core nodes
+aether cluster scale --core 7
+
+# Output:
+# Scale successful.
+# Core nodes: 5 -> 7
+# Config version: 8
+```
+
+Scaling down displays a warning:
+```
+Warning: scaling down from 7 to 5 nodes. Excess nodes will be drained.
+```
+
+### `aether cluster upgrade`
+
+Initiate a cluster version upgrade.
+
+```bash
+aether cluster upgrade --version <X.Y.Z>
+```
+
+| Option | Description |
+|--------|-------------|
+| `--version` | Target version in X.Y.Z format |
+| `--json` | Output raw JSON |
+
+Example:
+```bash
+# Upgrade cluster to 0.26.0
+aether cluster upgrade --version 0.26.0
+
+# Output:
+# Upgrade initiated.
+# Version: 0.25.0 -> 0.26.0
+```
+
+If the cluster is already at the target version:
+```
+Already at version 0.26.0. No upgrade needed.
+```
+
+---
+
 ## Exit Codes
 
 | Code | Meaning |

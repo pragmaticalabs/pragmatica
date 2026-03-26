@@ -1517,6 +1517,141 @@ Returns empty list if no worker communities exist (all nodes are core).
 
 ---
 
+## Declarative Cluster Configuration
+
+### GET /api/cluster/config
+
+Get the current cluster configuration from the KV-Store.
+
+**Response:**
+```json
+{
+  "tomlContent": "[cluster]\nname = \"production\"\n...",
+  "clusterName": "production",
+  "version": "0.21.1",
+  "coreCount": 5,
+  "coreMin": 3,
+  "coreMax": 9,
+  "deploymentType": "local",
+  "configVersion": 7,
+  "updatedAt": 1711468800000
+}
+```
+
+### GET /api/cluster/status
+
+Get aggregated cluster status including node health, slice deployment info, and certificate status.
+
+**Response:**
+```json
+{
+  "clusterName": "production",
+  "desiredVersion": "0.21.1",
+  "desiredCoreCount": 5,
+  "actualCoreCount": 5,
+  "state": "CONVERGED",
+  "leaderId": "node-1",
+  "nodes": [
+    {"nodeId": "node-1", "role": "core", "lifecycleState": "ON_DUTY", "version": "0.21.1", "isLeader": true}
+  ],
+  "slicesDeployed": 12,
+  "sliceInstances": 36,
+  "certificateExpiresAt": "2026-04-25T00:00:00Z",
+  "certificateDaysRemaining": 29,
+  "configVersion": 7,
+  "uptimeSeconds": 86400
+}
+```
+
+### POST /api/cluster/config
+
+Apply a cluster configuration change. Computes a diff against the stored config and executes actionable changes.
+
+**Request:**
+```json
+{
+  "tomlContent": "[cluster]\nname = \"production\"\n...",
+  "expectedVersion": 7
+}
+```
+
+**Response (applied):**
+```json
+{
+  "configVersion": 8,
+  "clusterName": "production",
+  "coreCount": 5,
+  "updatedAt": 1711468800000
+}
+```
+
+**Response (dry-run / no actionable changes):**
+```json
+{
+  "clusterName": "production",
+  "fromVersion": 7,
+  "toVersion": 7,
+  "plannedChanges": ["[NOOP] core.count unchanged"],
+  "changeCount": 0,
+  "rejectedCount": 0
+}
+```
+
+### POST /api/cluster/scale
+
+Scale the cluster core node count. Validates quorum safety (minimum 3, odd count, within min/max bounds).
+
+**RBAC:** ADMIN
+
+**Request:**
+```json
+{
+  "coreCount": 7,
+  "expectedVersion": 7
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "previousCount": 5,
+  "newCount": 7,
+  "configVersion": 8
+}
+```
+
+### POST /api/cluster/upgrade
+
+Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store config. Full rolling upgrade orchestration uses existing RollingUpdateManager infrastructure.
+
+**RBAC:** ADMIN
+
+**Request:**
+```json
+{
+  "targetVersion": "0.26.0"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "INITIATED",
+  "from": "0.25.0",
+  "to": "0.26.0"
+}
+```
+
+**Error (already at target version):**
+```json
+{
+  "error": "Cluster is already at version 0.26.0"
+}
+```
+
+---
+
 ## Topology
 
 ### GET /api/topology

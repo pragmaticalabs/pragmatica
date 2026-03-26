@@ -441,6 +441,13 @@ public sealed interface ManagementApiResponses {
                                 int newCount,
                                 long configVersion) {}
 
+    // ===== Cluster Upgrade Routes =====
+    record UpgradeRequest(String targetVersion) {}
+
+    record UpgradeResponse(String status,
+                           String from,
+                           String to) {}
+
     // ===== Repository Routes =====
     record ArtifactInfoResponse(String artifact,
                                 long size,

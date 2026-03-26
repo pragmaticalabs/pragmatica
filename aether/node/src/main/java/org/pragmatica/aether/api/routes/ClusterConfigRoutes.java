@@ -9,6 +9,8 @@ import org.pragmatica.aether.api.ManagementApiResponses.ClusterStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.DryRunResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ScaleClusterResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ScaleRequest;
+import org.pragmatica.aether.api.ManagementApiResponses.UpgradeRequest;
+import org.pragmatica.aether.api.ManagementApiResponses.UpgradeResponse;
 import org.pragmatica.aether.config.cluster.ClusterConfigDiff;
 import org.pragmatica.aether.config.cluster.ClusterConfigDiff.ConfigChange;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
@@ -75,7 +77,10 @@ public final class ClusterConfigRoutes implements RouteSource {
                               .toJson(this::handleApplyConfig),
                          Route.<ScaleClusterResponse> post("/api/cluster/scale")
                               .withBody(ScaleRequest.class)
-                              .toJson(this::handleScale));
+                              .toJson(this::handleScale),
+                         Route.<UpgradeResponse> post("/api/cluster/upgrade")
+                              .withBody(UpgradeRequest.class)
+                              .toJson(this::handleUpgrade));
     }
 
     // ===== GET /api/cluster/config =====
@@ -347,6 +352,50 @@ public final class ClusterConfigRoutes implements RouteSource {
         return nodeSupplier.get()
                            .<Object> apply(List.of(command))
                            .map(_ -> (Object) configValue);
+    }
+
+    // ===== POST /api/cluster/upgrade =====
+    private Promise<UpgradeResponse> handleUpgrade(UpgradeRequest request) {
+        return lookupClusterConfig().flatMap(stored -> initiateUpgrade(stored, request));
+    }
+
+    private Promise<UpgradeResponse> initiateUpgrade(ClusterConfigValue stored, UpgradeRequest request) {
+        var currentVersion = stored.version();
+        var targetVersion = request.targetVersion();
+        if (currentVersion.equals(targetVersion)) {
+            return new UpgradeError.AlreadyAtVersion(targetVersion).promise();
+        }
+        log.info("Cluster upgrade initiated: {} -> {}",
+                 currentVersion,
+                 targetVersion);
+        return storeUpgradedVersion(stored, targetVersion)
+        .map(_ -> new UpgradeResponse("INITIATED", currentVersion, targetVersion));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Promise<Object> storeUpgradedVersion(ClusterConfigValue stored, String targetVersion) {
+        var configValue = new ClusterConfigValue(stored.tomlContent(),
+                                                 stored.clusterName(),
+                                                 targetVersion,
+                                                 stored.coreCount(),
+                                                 stored.coreMin(),
+                                                 stored.coreMax(),
+                                                 stored.deploymentType(),
+                                                 stored.configVersion() + 1,
+                                                 System.currentTimeMillis());
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ClusterConfigKey.CURRENT, configValue);
+        return nodeSupplier.get()
+                           .<Object> apply(List.of(command))
+                           .map(_ -> (Object) configValue);
+    }
+
+    sealed interface UpgradeError extends Cause {
+        record AlreadyAtVersion(String version) implements UpgradeError {
+            @Override
+            public String message() {
+                return "Cluster is already at version " + version;
+            }
+        }
     }
 
     // ===== Shared helpers =====

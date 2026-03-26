@@ -255,7 +255,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 | 66 | Cluster expense tracking | Planned | Real-time cost visibility from cloud billing APIs. Per-node, per-slice, per-request cost derivation. Budget alerts. Prerequisite: Cloud Integration |
 | 67 | ~~TLS certificate management~~ | ~~Complete~~ | ~~Moved to Security section (features 88-91)~~ |
 | 69 | ~~KV-Store state backup~~ | ~~Complete~~ | ~~Delivered in v0.19.3 — moved to Storage & Data section~~ |
-| 70 | Aether runtime rolling upgrade | Planned | Upgrade Aether node software across running cluster without downtime. Node-by-node with health verification |
+| 70 | Aether runtime rolling upgrade | Partial | Phase 1: `POST /api/cluster/upgrade` endpoint updates version in KV-Store config. CLI `aether cluster upgrade --version X.Y.Z`. Full rolling orchestration deferred to Phase 2 |
 | 71 | Email notification resource | Complete | Phase 1: `integrations/net/smtp` (async Netty SMTP client), `integrations/email-http` (HTTP sender with SendGrid/Mailgun/Postmark/Resend SPI), `aether/resource/notification` (ResourceFactory + @Notify qualifier). SMTP and HTTP backends with retry. 57 tests |
 | 103 | Per-blueprint artifact scoping (Tier 2) | Planned | Per-blueprint SliceTargetKey scoping for multi-tenant clusters. Blueprint-scoped CDM maps, WorkerSliceDirectiveKey blueprint scoping, Management API `blueprintId` parameter. Prerequisite: Tier 1 (#102) |
 

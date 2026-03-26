@@ -13,7 +13,11 @@ ClusterUseCommand.class,
 ClusterRemoveCommand.class,
 ClusterStatusCommand.class,
 ClusterExportCommand.class,
-ClusterApplyCommand.class})
+ClusterApplyCommand.class,
+ClusterDrainCommand.class,
+ClusterDestroyCommand.class,
+ClusterScaleCommand.class,
+ClusterUpgradeCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class ClusterCommand implements Runnable {
     @Override
