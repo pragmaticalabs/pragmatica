@@ -1,0 +1,4 @@
+prefix = "/api/v1/analytics"
+
+[routes]
+stats = ["GET /", "public"]

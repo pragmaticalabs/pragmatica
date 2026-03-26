@@ -1,0 +1,7 @@
+[[slices]]
+artifact = "org.pragmatica.aether.example:notification-hub-notification-service:0.25.0"
+instances = 3
+
+[[slices]]
+artifact = "org.pragmatica.aether.example:notification-hub-notification-analytics:0.25.0"
+instances = 3

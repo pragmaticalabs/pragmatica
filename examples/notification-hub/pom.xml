@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.pragmatica-lite</groupId>
+        <artifactId>examples</artifactId>
+        <version>0.25.0</version>
+    </parent>
+
+    <groupId>org.pragmatica.aether.example</groupId>
+    <artifactId>notification-hub</artifactId>
+    <packaging>pom</packaging>
+
+    <properties>
+        <jbct.skip>false</jbct.skip>
+    </properties>
+    <name>Aether Example - Notification Hub</name>
+    <description>
+        Multi-module demo showing streaming + per-route security with @Slice pattern.
+        NotificationService publishes events; AnalyticsService subscribes and counts.
+    </description>
+
+    <modules>
+        <module>notification-service</module>
+        <module>notification-analytics</module>
+    </modules>
+
+    <dependencies>
+        <!-- Framework dependencies - provided at runtime by Aether node -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>slice-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>slice-annotations</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>http-routing-adapter</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>core</artifactId>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.pragmatica-lite</groupId>
+                    <artifactId>jbct-maven-plugin</artifactId>
+                    <version>0.25.0</version>
+                    <executions>
+                        <execution>
+                            <id>package-slices</id>
+                            <phase>package</phase>
+                            <goals>
+                                <goal>package-slices</goal>
+                                <goal>generate-blueprint</goal>
+                            </goals>
+                        </execution>
+                        <execution>
+                            <id>install-slices</id>
+                            <phase>install</phase>
+                            <goals>
+                                <goal>install-slices</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+        <plugins>
+            <plugin>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jbct-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.pragmatica.aether.example</groupId>
+                <artifactId>notification-hub-notification-service</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>
