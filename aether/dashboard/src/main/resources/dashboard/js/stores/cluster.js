@@ -8,7 +8,6 @@ document.addEventListener('alpine:init', function() {
         controllerConfig: null,
         ttmStatus: 'DISABLED',
         logLevels: {},
-        observabilityDepth: {},
 
         updateFromStatus(data) {
             if (data.cluster) {
@@ -109,15 +108,6 @@ document.addEventListener('alpine:init', function() {
 
         async setLogLevel(logger, level) {
             await RestClient.put('/api/log-levels/' + encodeURIComponent(logger), { level: level });
-        },
-
-        async refreshObservabilityDepth() {
-            var data = await RestClient.get('/api/observability/depth');
-            if (data) this.observabilityDepth = data;
-        },
-
-        async setObservabilityDepth(key, depth) {
-            await RestClient.put('/api/observability/depth', { key: key, depth: depth });
         }
     });
 });

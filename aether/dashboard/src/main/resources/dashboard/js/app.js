@@ -9,8 +9,6 @@ document.addEventListener('alpine:init', function() {
             chartsInitialized: false,
             lastNodeCount: 0,
             lastPerNode: false,
-            requestFilters: { artifact: '', method: '', status: '' },
-            invocationSort: { field: 'count', dir: -1 },
             newThreshold: { metric: '', warning: 0.7, critical: 0.9 },
 
             init() {
@@ -52,14 +50,12 @@ document.addEventListener('alpine:init', function() {
                     }
                 });
 
-                // Reset invocation sort state when entering Requests page
+                // Start/stop requests store polling when entering/leaving Requests page
                 this.$watch('currentPage', function(page) {
                     if (page === 'requests') {
-                        InvocationTable.sortField = 'count';
-                        InvocationTable.sortDir = -1;
-                        InvocationTable.expandedRow = null;
-                        self.invocationSort.field = 'count';
-                        self.invocationSort.dir = -1;
+                        Alpine.store('requests').startPolling();
+                    } else {
+                        Alpine.store('requests').stopPolling();
                     }
                 });
 
@@ -154,7 +150,7 @@ document.addEventListener('alpine:init', function() {
                 Alpine.store('cluster').refreshConfig();
                 Alpine.store('cluster').refreshTtm();
                 Alpine.store('cluster').refreshLogLevels();
-                Alpine.store('cluster').refreshObservabilityDepth();
+                Alpine.store('observability').refresh();
                 Alpine.store('alerts').refresh();
                 Alpine.store('alerts').refreshThresholds();
                 Alpine.store('topology').refresh();
@@ -351,22 +347,8 @@ document.addEventListener('alpine:init', function() {
                 return active + '/' + total + ' (' + loading + ' LOADING)';
             },
 
-            filteredInvocations() {
-                var invs = Alpine.store('metrics').entryPoints;
-                invs = InvocationTable.filter(invs, this.requestFilters);
-                invs = InvocationTable.sort(invs, this.invocationSort.field, this.invocationSort.dir);
-                return invs;
-            },
-
-            sortInvocations(field) {
-                InvocationTable.toggleSort(field);
-                this.invocationSort.field = InvocationTable.sortField;
-                this.invocationSort.dir = InvocationTable.sortDir;
-            },
-
-            toggleInvocationDetail(inv) {
-                InvocationTable.toggleExpand(inv);
-            }
+            // No-op: invocation methods moved to $store.requests
+            noop() {}
         };
     });
 });
