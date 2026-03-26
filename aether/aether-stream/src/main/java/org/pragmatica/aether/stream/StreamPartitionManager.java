@@ -44,8 +44,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Publish an event to the appropriate partition.
     /// If this node owns the target partition, writes directly to the ring buffer.
     /// Otherwise, returns an error (remote routing is a future layer).
+    /// Rejects events exceeding the stream's configured max event size.
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
-        return resolvePartitionBuffer(streamName, partition).flatMap(buffer -> buffer.append(payload, timestamp));
+        return resolveStreamEntry(streamName).flatMap(entry -> checkEventSize(entry, payload))
+                                 .flatMap(_ -> resolvePartitionBuffer(streamName, partition))
+                                 .flatMap(buffer -> buffer.append(payload, timestamp));
     }
 
     /// Read events from a locally-owned partition.
@@ -79,6 +82,24 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     // --- Private helpers ---
+    private Result<StreamEntry> resolveStreamEntry(String streamName) {
+        var entry = streams.get(streamName);
+        if (entry == null) {
+            return new StreamError.StreamNotFound(streamName).result();
+        }
+        return success(entry);
+    }
+
+    private static Result<Unit> checkEventSize(StreamEntry entry, byte[] payload) {
+        if (payload.length > entry.config()
+                                  .maxEventSizeBytes()) {
+            return new StreamError.EventTooLarge(payload.length,
+                                                 entry.config()
+                                                      .maxEventSizeBytes()).result();
+        }
+        return success(unit());
+    }
+
     private Result<OffHeapRingBuffer> resolvePartitionBuffer(String streamName, int partition) {
         var entry = streams.get(streamName);
         if (entry == null) {

@@ -23,6 +23,14 @@
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>slice-api</artifactId>
         </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-api</artifactId>
+        </dependency>
 
         <!-- Testing -->
         <dependency>

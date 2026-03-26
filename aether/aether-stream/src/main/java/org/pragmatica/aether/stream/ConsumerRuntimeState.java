@@ -27,7 +27,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private static final TimeSpan POLL_INTERVAL = TimeSpan.timeSpan(50)
                                                          .millis();
     private static final int MAX_POLL_BATCH = 100;
-    private static final int MAX_RETRIES = 5;
+    private static final int DEFAULT_MAX_RETRIES = 5;
     private static final long BASE_BACKOFF_MS = 100;
     private static final long MAX_BACKOFF_MS = 10_000;
 
@@ -153,7 +153,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                              OffHeapRingBuffer.RawEvent event,
                              String errorMessage) {
         var attempt = state.incrementRetryCount();
-        if (attempt >= MAX_RETRIES) {
+        if (attempt >= state.maxRetries()) {
             recordDeadLetter(key, event, errorMessage, attempt);
             advanceCursor(state, event.offset());
             return;
@@ -187,7 +187,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                          OffHeapRingBuffer.RawEvent event,
                                          String errorMessage) {
         var attempt = state.incrementRetryCount();
-        if (attempt >= MAX_RETRIES) {
+        if (attempt >= state.maxRetries()) {
             recordDeadLetter(key, event, errorMessage, attempt);
             advanceCursor(state, event.offset());
             return;
@@ -276,6 +276,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         ErrorStrategy errorStrategy() {
             return config.errorStrategy();
+        }
+
+        int maxRetries() {
+            return config.maxRetries() > 0
+                   ? config.maxRetries()
+                   : DEFAULT_MAX_RETRIES;
         }
 
         long cursor() {
