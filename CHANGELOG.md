@@ -13,6 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **HTTP server certificate rotation** — ManagementServer and AppHttpServer receive renewed bundles and restart with new TLS contexts (H1 + H3)
 - **Certificate expiry observability** — `GET /api/certificate` endpoint, `aether cert status` CLI command, expiry timestamp and renewal status
 - **QUIC per-stream backpressure queue** — bounded queue (100 per peer per stream type) replaces silent drop, drain on channel writable, queue depth metrics
+- **Declarative cluster management** — `aether-cluster.toml` config format with `[deployment]` + `[cluster]` sections, config parser with 14 validation rules, diff engine with field-to-action matrix, `aether cluster` CLI (bootstrap, apply, status, export, scale, upgrade, drain, destroy, list, use, remove), cluster registry (`~/.aether/clusters.toml`), cloud-init user-data template, KV-Store config storage with optimistic concurrency, 5 management API endpoints
+- **Gossip key rotation** — `RotatingGossipEncryptor` with VarHandle hot-swap, epoch-day versioned keys from `SelfSignedCertificateProvider`, KV-Store `GossipKeyRotationHandler` for cluster-wide key distribution, 24-hour dual-key overlap window
+- **TLS operator guide** — comprehensive documentation: auto-generated certs, manual cert files, rotation lifecycle, monitoring, gossip encryption, troubleshooting
 
 ### Changed
 - **ConsumerConfig** — added `checkpointIntervalMs`, `maxRetries`, `deadLetterStream` fields (backward compatible)
