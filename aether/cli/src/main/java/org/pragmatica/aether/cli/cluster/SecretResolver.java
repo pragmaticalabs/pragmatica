@@ -45,7 +45,8 @@ sealed interface SecretResolver {
                                              deployment.zones(),
                                              deployment.ports(),
                                              Option.some(tls),
-                                             deployment.nodes());
+                                             deployment.nodes(),
+                                             deployment.ssh());
     }
 
     private static Result<TlsDeploymentConfig> resolveTlsSecrets(TlsDeploymentConfig tls) {

@@ -28,10 +28,23 @@ class ClusterBootstrapCommand implements Callable<Integer> {
     @Option(names = "--yes", description = "Skip confirmation prompt")
     private boolean skipConfirmation;
 
+    @Option(names = "--compose-only", description = "Generate docker-compose.yml and print to stdout, then exit")
+    private boolean composeOnly;
+
     @Override
     public Integer call() {
+        if (composeOnly) {
+            return parseConfig().map(this::generateCompose)
+                              .fold(ClusterBootstrapCommand::onFailure, _ -> 0);
+        }
         return parseConfig().flatMap(this::confirmAndBootstrap)
                           .fold(ClusterBootstrapCommand::onFailure, ClusterBootstrapCommand::onSuccess);
+    }
+
+    private String generateCompose(ClusterManagementConfig config) {
+        var compose = DockerComposeGenerator.generate(config, "");
+        System.out.print(compose);
+        return compose;
     }
 
     private Result<ClusterManagementConfig> parseConfig() {

@@ -27,6 +27,7 @@ public final class ClusterConfigParser {
     private static final String DEPLOYMENT_PORTS = "deployment.ports";
     private static final String DEPLOYMENT_TLS = "deployment.tls";
     private static final String DEPLOYMENT_NODES = "deployment.nodes";
+    private static final String DEPLOYMENT_SSH = "deployment.ssh";
     private static final String CLUSTER = "cluster";
     private static final String CLUSTER_CORE = "cluster.core";
     private static final String CLUSTER_WORKERS = "cluster.workers";
@@ -74,7 +75,8 @@ public final class ClusterConfigParser {
                                              parseZones(doc),
                                              parsePorts(doc),
                                              parseTlsConfig(doc),
-                                             parseNodes(doc));
+                                             parseNodes(doc),
+                                             parseSshConfig(doc));
     }
 
     private static Map<String, String> parseInstances(TomlDocument doc) {
@@ -129,6 +131,19 @@ public final class ClusterConfigParser {
             return none();
         }
         return Option.some(doc.getSection(DEPLOYMENT_NODES));
+    }
+
+    private static Option<SshConfig> parseSshConfig(TomlDocument doc) {
+        if (!doc.hasSection(DEPLOYMENT_SSH)) {
+            return none();
+        }
+        var user = doc.getString(DEPLOYMENT_SSH, "user")
+                      .or("root");
+        var keyPath = doc.getString(DEPLOYMENT_SSH, "key_path")
+                         .or("~/.ssh/id_ed25519");
+        var port = doc.getInt(DEPLOYMENT_SSH, "port")
+                      .or(22);
+        return Option.some(SshConfig.sshConfig(user, keyPath, port));
     }
 
     private static Result<ClusterSpec> parseClusterSpec(TomlDocument doc) {

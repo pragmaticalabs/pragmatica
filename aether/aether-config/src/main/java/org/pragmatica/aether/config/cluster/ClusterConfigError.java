@@ -205,6 +205,34 @@ public sealed interface ClusterConfigError extends Cause {
         }
     }
 
+    record MissingNodeInventory(String deploymentType) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return deploymentType + " deployment requires deployment.nodes.core list";
+        }
+    }
+
+    record NodeCountMismatch(int nodeCount, int coreCount) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "deployment.nodes.core has " + nodeCount + " entries but cluster.core.count is " + coreCount;
+        }
+    }
+
+    record MissingSshConfig(String deploymentType) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return deploymentType + " deployment requires deployment.ssh section";
+        }
+    }
+
+    record MissingSshKeyPath() implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "deployment.ssh.key_path must be specified";
+        }
+    }
+
     /// Seal completeness placeholder.
     record unused() implements ClusterConfigError {
         @Override

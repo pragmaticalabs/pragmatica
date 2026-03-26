@@ -234,4 +234,71 @@ class ClusterConfigParserTest {
                                });
         }
     }
+
+    @Nested
+    class SshConfigParsing {
+        @Test
+        void parse_onPremisesWithSsh_sshConfigPopulated() {
+            var toml = """
+                    [deployment]
+                    type = "on-premises"
+                    [deployment.runtime]
+                    type = "jvm"
+                    [deployment.nodes]
+                    core = ["10.0.1.1", "10.0.1.2", "10.0.1.3"]
+                    [deployment.ssh]
+                    user = "aether"
+                    key_path = "~/.ssh/id_ed25519"
+                    port = 22
+                    [cluster]
+                    name = "onprem-prod"
+                    version = "0.21.1"
+                    [cluster.core]
+                    count = 3
+                    """;
+            ClusterConfigParser.parse(toml)
+                               .onFailureRun(Assertions::fail)
+                               .onSuccess(config -> {
+                                   assertThat(config.deployment().ssh().isPresent()).isTrue();
+                                   config.deployment().ssh().onPresent(ssh -> {
+                                       assertThat(ssh.user()).isEqualTo("aether");
+                                       assertThat(ssh.keyPath()).isEqualTo("~/.ssh/id_ed25519");
+                                       assertThat(ssh.port()).isEqualTo(22);
+                                   });
+                               });
+        }
+
+        @Test
+        void parse_onPremisesWithSshDefaults_defaultsApplied() {
+            var toml = """
+                    [deployment]
+                    type = "on-premises"
+                    [deployment.runtime]
+                    type = "jvm"
+                    [deployment.ssh]
+                    [cluster]
+                    name = "onprem-test"
+                    version = "0.21.1"
+                    [cluster.core]
+                    count = 3
+                    """;
+            ClusterConfigParser.parse(toml)
+                               .onFailureRun(Assertions::fail)
+                               .onSuccess(config -> {
+                                   assertThat(config.deployment().ssh().isPresent()).isTrue();
+                                   config.deployment().ssh().onPresent(ssh -> {
+                                       assertThat(ssh.user()).isEqualTo("root");
+                                       assertThat(ssh.keyPath()).isEqualTo("~/.ssh/id_ed25519");
+                                       assertThat(ssh.port()).isEqualTo(22);
+                                   });
+                               });
+        }
+
+        @Test
+        void parse_withoutSshSection_sshEmpty() {
+            ClusterConfigParser.parse(MINIMAL_TOML)
+                               .onFailureRun(Assertions::fail)
+                               .onSuccess(config -> assertThat(config.deployment().ssh().isEmpty()).isTrue());
+        }
+    }
 }

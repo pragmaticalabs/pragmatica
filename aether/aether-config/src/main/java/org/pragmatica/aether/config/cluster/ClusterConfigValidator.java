@@ -33,6 +33,7 @@ public final class ClusterConfigValidator {
         validateRuntimeConfig(deployment, errors);
         validatePorts(deployment, errors);
         validateTls(deployment, errors);
+        validateOnPremisesSsh(deployment, errors);
     }
 
     private static void validateCluster(ClusterSpec cluster,
@@ -43,6 +44,7 @@ public final class ClusterConfigValidator {
         validateCoreSpec(cluster.core(), errors);
         validateDistribution(cluster.distribution(), deployment, errors);
         validateRetryInterval(cluster.autoHeal(), errors);
+        validateOnPremisesNodes(deployment, cluster, errors);
     }
 
     /// VAL-07: deployment.instances must have "core" entry.
@@ -193,6 +195,68 @@ public final class ClusterConfigValidator {
             };
         } catch (NumberFormatException _) {
             return - 1;
+        }
+    }
+
+    /// VAL-ONPREM-01: ON_PREMISES requires deployment.nodes.core and its size must equal cluster.core.count.
+    private static void validateOnPremisesNodes(DeploymentSpec deployment,
+                                                ClusterSpec cluster,
+                                                List<ClusterConfigError> errors) {
+        if (deployment.type() != DeploymentType.ON_PREMISES) {
+            return;
+        }
+        var coreNodes = deployment.nodes()
+                                  .flatMap(nodes -> org.pragmatica.lang.Option.option(nodes.get("core")));
+        if (coreNodes.isEmpty()) {
+            errors.add(new ClusterConfigError.MissingNodeInventory("on-premises"));
+            return;
+        }
+        coreNodes.onPresent(value -> validateNodeCount(value,
+                                                       cluster.core()
+                                                              .count(),
+                                                       errors));
+    }
+
+    private static void validateNodeCount(String coreNodesValue, int coreCount, List<ClusterConfigError> errors) {
+        var nodeList = parseNodeList(coreNodesValue);
+        if (nodeList.size() != coreCount) {
+            errors.add(new ClusterConfigError.NodeCountMismatch(nodeList.size(), coreCount));
+        }
+    }
+
+    /// Parse a node list from the stringified TOML array or comma-separated format.
+    public static List<String> parseNodeList(String value) {
+        if (value == null || value.isBlank()) {
+            return List.of();
+        }
+        var trimmed = value.trim();
+        if (trimmed.startsWith("[")) {
+            trimmed = trimmed.substring(1, trimmed.length() - 1);
+        }
+        return java.util.Arrays.stream(trimmed.split(","))
+                   .map(String::trim)
+                   .filter(s -> !s.isEmpty())
+                   .toList();
+    }
+
+    /// VAL-ONPREM-02: ON_PREMISES requires deployment.ssh section with key_path.
+    private static void validateOnPremisesSsh(DeploymentSpec deployment, List<ClusterConfigError> errors) {
+        if (deployment.type() != DeploymentType.ON_PREMISES) {
+            return;
+        }
+        if (deployment.ssh()
+                      .isEmpty()) {
+            errors.add(new ClusterConfigError.MissingSshConfig("on-premises"));
+            return;
+        }
+        deployment.ssh()
+                  .onPresent(ssh -> validateSshKeyPath(ssh, errors));
+    }
+
+    private static void validateSshKeyPath(SshConfig ssh, List<ClusterConfigError> errors) {
+        if (ssh.keyPath() == null || ssh.keyPath()
+                                        .isBlank()) {
+            errors.add(new ClusterConfigError.MissingSshKeyPath());
         }
     }
 

@@ -43,12 +43,57 @@ sealed interface BootstrapOrchestrator {
 
     HttpOperations HTTP = JdkHttpOperations.jdkHttpOperations();
 
-    /// Execute the full bootstrap flow.
+    /// Execute the full bootstrap flow, dispatching by deployment type.
     static Result<BootstrapResult> bootstrap(ClusterManagementConfig config) {
         return validateConfig(config).flatMap(SecretResolver::resolve)
-                             .flatMap(BootstrapOrchestrator::resolveCloudCredentials)
-                             .flatMap(BootstrapOrchestrator::checkNoExistingCluster)
-                             .flatMap(BootstrapOrchestrator::executeProvisioning);
+                             .flatMap(BootstrapOrchestrator::dispatchByType);
+    }
+
+    private static Result<BootstrapResult> dispatchByType(ClusterManagementConfig config) {
+        return switch (config.deployment()
+                             .type()) {
+            case HETZNER -> bootstrapHetzner(config);
+            case ON_PREMISES -> bootstrapOnPremises(config);
+            default -> new BootstrapError.UnsupportedProvider(config.deployment()
+                                                                    .type()
+                                                                    .value()).result();
+        };
+    }
+
+    private static Result<BootstrapResult> bootstrapHetzner(ClusterManagementConfig config) {
+        return resolveCloudCredentials(config).flatMap(BootstrapOrchestrator::checkNoExistingCluster)
+                                      .flatMap(BootstrapOrchestrator::executeProvisioning);
+    }
+
+    private static Result<BootstrapResult> bootstrapOnPremises(ClusterManagementConfig config) {
+        var apiKey = generateApiKey();
+        var clusterSecret = resolveClusterSecret(config);
+        System.out.println("Step 5/12: Generated API key.");
+        System.out.println("Step 6/12: Provisioning on-premises nodes via SSH...");
+        return SshBootstrapOrchestrator.bootstrap(config, clusterSecret)
+                                       .flatMap(nodes -> waitAndFinalizeOnPremises(config, nodes, apiKey));
+    }
+
+    private static Result<BootstrapResult> waitAndFinalizeOnPremises(ClusterManagementConfig config,
+                                                                     List<ProvisionedNode> nodes,
+                                                                     String apiKey) {
+        System.out.println("Step 7/12: Waiting for nodes to become healthy...");
+        var managementPort = config.deployment()
+                                   .ports()
+                                   .management();
+        var healthyCount = waitForHealth(nodes, managementPort);
+        var requiredQuorum = quorumSize(config.cluster()
+                                              .core()
+                                              .count());
+        if (healthyCount < requiredQuorum) {
+            return new ClusterConfigError.QuorumTimeout(healthyCount, requiredQuorum, HEALTH_TIMEOUT_SECONDS).result();
+        }
+        System.out.println("Step 8/12: Waiting for quorum...");
+        var firstEndpoint = nodeEndpoint(nodes.getFirst(), managementPort);
+        if (!waitForQuorum(firstEndpoint)) {
+            return new ClusterConfigError.QuorumTimeout(healthyCount, requiredQuorum, QUORUM_TIMEOUT_SECONDS).result();
+        }
+        return finalizeBootstrap(new BootstrapContext(config, "", ""), nodes, apiKey, firstEndpoint);
     }
 
     // --- Step 1: Validate config ---

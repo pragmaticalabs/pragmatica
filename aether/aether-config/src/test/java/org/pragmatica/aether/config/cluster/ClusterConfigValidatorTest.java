@@ -235,6 +235,51 @@ class ClusterConfigValidatorTest {
         }
     }
 
+    @Nested
+    class ValOnPremisesNodes {
+        @Test
+        void validate_onPremisesWithoutNodes_failure() {
+            var config = withDeploymentType(DeploymentType.ON_PREMISES);
+            assertValidationContains(config, "requires deployment.nodes.core");
+        }
+
+        @Test
+        void validate_onPremisesNodeCountMismatch_failure() {
+            var config = onPremisesConfig(List.of("10.0.1.1", "10.0.1.2"), 3);
+            assertValidationContains(config, "has 2 entries but cluster.core.count is 3");
+        }
+
+        @Test
+        void validate_onPremisesNodeCountMatches_noNodeError() {
+            var config = onPremisesConfig(List.of("10.0.1.1", "10.0.1.2", "10.0.1.3"), 3);
+            // Should not contain node-related errors (may fail for other reasons like missing instance type)
+            ClusterConfigValidator.validate(config)
+                                  .onFailure(cause -> {
+                                      assertThat(cause.message()).doesNotContain("requires deployment.nodes.core");
+                                      assertThat(cause.message()).doesNotContain("entries but cluster.core.count");
+                                  });
+        }
+    }
+
+    @Nested
+    class ValOnPremisesSsh {
+        @Test
+        void validate_onPremisesWithoutSsh_failure() {
+            var config = withDeploymentType(DeploymentType.ON_PREMISES);
+            assertValidationContains(config, "requires deployment.ssh");
+        }
+
+        @Test
+        void validate_onPremisesWithSsh_noSshError() {
+            var config = onPremisesConfigWithSsh();
+            ClusterConfigValidator.validate(config)
+                                  .onFailure(cause -> {
+                                      assertThat(cause.message()).doesNotContain("requires deployment.ssh");
+                                      assertThat(cause.message()).doesNotContain("key_path must be specified");
+                                  });
+        }
+    }
+
     // --- Helper methods for building test configs ---
 
     private static ClusterManagementConfig withClusterName(String name) {
@@ -321,6 +366,65 @@ class ClusterConfigValidatorTest {
                                     base.cluster().distribution(),
                                     AutoHealSpec.autoHealSpec(true, interval, "15s"),
                                     base.cluster().upgrade())
+        );
+    }
+
+    private static ClusterManagementConfig withDeploymentType(DeploymentType type) {
+        var base = validConfig();
+        return ClusterManagementConfig.clusterManagementConfig(
+            DeploymentSpec.deploymentSpec(type, base.deployment().instances(),
+                                          base.deployment().runtime(), base.deployment().zones(),
+                                          base.deployment().ports(), base.deployment().tls(),
+                                          base.deployment().nodes()),
+            base.cluster()
+        );
+    }
+
+    private static ClusterManagementConfig onPremisesConfig(List<String> nodeIps, int coreCount) {
+        return ClusterManagementConfig.clusterManagementConfig(
+            DeploymentSpec.deploymentSpec(
+                DeploymentType.ON_PREMISES,
+                Map.of("core", "bare-metal"),
+                RuntimeConfig.runtimeConfig(RuntimeType.JVM, Option.none(), Option.none()),
+                Map.of(),
+                PortMapping.portMapping(6000, 5150, 8070, 6100),
+                Option.none(),
+                Option.some(Map.of("core", String.join(", ", nodeIps))),
+                Option.some(SshConfig.sshConfig("aether", "~/.ssh/id_ed25519", 22))
+            ),
+            ClusterSpec.clusterSpec(
+                "onprem-test",
+                "0.21.1",
+                CoreSpec.coreSpec(coreCount, 3, coreCount > 3 ? coreCount : 3),
+                WorkerSpec.workerSpec(0),
+                DistributionConfig.distributionConfig(DistributionStrategy.BALANCED, List.of()),
+                AutoHealSpec.autoHealSpec(true, "60s", "15s"),
+                UpgradeSpec.upgradeSpec(UpgradeStrategy.ROLLING)
+            )
+        );
+    }
+
+    private static ClusterManagementConfig onPremisesConfigWithSsh() {
+        return ClusterManagementConfig.clusterManagementConfig(
+            DeploymentSpec.deploymentSpec(
+                DeploymentType.ON_PREMISES,
+                Map.of("core", "bare-metal"),
+                RuntimeConfig.runtimeConfig(RuntimeType.JVM, Option.none(), Option.none()),
+                Map.of(),
+                PortMapping.portMapping(6000, 5150, 8070, 6100),
+                Option.none(),
+                Option.some(Map.of("core", "10.0.1.1, 10.0.1.2, 10.0.1.3, 10.0.1.4, 10.0.1.5")),
+                Option.some(SshConfig.sshConfig("aether", "~/.ssh/id_ed25519", 22))
+            ),
+            ClusterSpec.clusterSpec(
+                "onprem-test",
+                "0.21.1",
+                CoreSpec.coreSpec(5, 3, 9),
+                WorkerSpec.workerSpec(0),
+                DistributionConfig.distributionConfig(DistributionStrategy.BALANCED, List.of()),
+                AutoHealSpec.autoHealSpec(true, "60s", "15s"),
+                UpgradeSpec.upgradeSpec(UpgradeStrategy.ROLLING)
+            )
         );
     }
 
