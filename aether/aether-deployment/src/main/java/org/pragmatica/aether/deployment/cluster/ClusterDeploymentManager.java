@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamMetadataKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.WorkerSliceDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -37,6 +38,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamMetadataValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkerSliceDirectiveValue;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
@@ -940,6 +942,8 @@ public interface ClusterDeploymentManager {
                                                                                                 slice.minAvailable(),
                                                                                                 Option.some(expanded.id()))));
                 }
+                // Create stream metadata entries from blueprint resources config
+                collectStreamMetadataCommands(expanded.id(), consensusCommands);
                 submitBatch(consensusCommands);
                 // Track in-flight blueprint for atomicity enforcement
                 trackInFlightBlueprint(expanded, previousExpanded);
@@ -958,6 +962,38 @@ public interface ClusterDeploymentManager {
                               .flatMap(org.pragmatica.aether.slice.blueprint.Blueprint::deploymentConfig)
                               .map(DeploymentConfig::schemaRequired)
                               .or(true);
+            }
+
+            /// Write stream metadata to KV store for streams declared in the blueprint.
+            ///
+            /// Stream names are resolved from config sections referenced by slice manifests
+            /// (e.g., `streams.order-events`). Each resolved stream gets a StreamMetadataKey
+            /// so the runtime can create ring buffers on partition-owning nodes.
+            ///
+            /// Currently a hook — stream config section discovery requires BlueprintParser
+            /// support for `[[streams]]` table arrays (Phase 2). Stream subscriptions are
+            /// already registered during slice activation via manifest metadata.
+            private void collectStreamMetadataCommands(BlueprintId blueprintId,
+                                                       List<KVCommand<AetherKey>> commands) {
+                // Phase 2 will add: parse [[streams]] from resources TOML, resolve each to
+                // StreamMetadataKey + StreamMetadataValue, and append to commands.
+                // Stream consumer registrations are handled by NDM during slice activation.
+                log.trace("Stream metadata collection hook for blueprint '{}'", blueprintId.asString());
+            }
+
+            /// Build a stream metadata consensus command for a resolved stream.
+            /// Ready for use when BlueprintParser gains [[streams]] table array support.
+            private KVCommand<AetherKey> buildStreamMetadataCommand(String streamName,
+                                                                    BlueprintId blueprintId) {
+                var key = StreamMetadataKey.streamMetadataKey(streamName);
+                var value = StreamMetadataValue.streamMetadataValue(streamName,
+                                                                    4,
+                                                                    "count",
+                                                                    "100000",
+                                                                    "65536",
+                                                                    "block",
+                                                                    blueprintId.asString());
+                return new KVCommand.Put<>(key, value);
             }
 
             private Option<ExpandedBlueprint> capturePreviousBlueprint(ExpandedBlueprint expanded) {

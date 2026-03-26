@@ -18,6 +18,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
@@ -26,6 +27,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLifecycleValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -35,6 +37,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.aether.resource.ScheduleConfig;
+import org.pragmatica.aether.resource.StreamNameConfig;
 import org.pragmatica.aether.resource.TopicConfig;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.lang.Cause;
@@ -221,6 +224,7 @@ public interface NodeDeploymentManager {
 
             private void forceCleanupSlice(SliceNodeKey sliceKey) {
                 unpublishEndpoints(sliceKey).flatMap(this::unpublishTopicSubscriptions)
+                                  .flatMap(this::unpublishStreamSubscriptions)
                                   .flatMap(this::unpublishScheduledTasks)
                                   .flatMap(this::unpublishHttpRoutes)
                                   .withSuccess(this::unregisterSliceFromInvocation)
@@ -302,6 +306,7 @@ public interface NodeDeploymentManager {
                 transitionTo(sliceKey, SliceState.ACTIVATING).flatMap(this::activateSliceWithTimeout)
                             .flatMap(this::registerSliceForInvocation)
                             .flatMap(this::publishTopicSubscriptions)
+                            .flatMap(this::publishStreamSubscriptions)
                             .flatMap(this::publishScheduledTasks)
                             .flatMap(key -> transitionTo(key, SliceState.ACTIVE))
                             .flatMap(this::publishEndpointsAndRoutes)
@@ -330,6 +335,7 @@ public interface NodeDeploymentManager {
                 unpublishEndpoints(sliceKey);
                 unpublishHttpRoutes(sliceKey);
                 unpublishTopicSubscriptions(sliceKey);
+                unpublishStreamSubscriptions(sliceKey);
                 unpublishScheduledTasks(sliceKey);
                 transitionToFailed(sliceKey, cause);
             }
@@ -443,6 +449,7 @@ public interface NodeDeploymentManager {
                 // 1. Write DEACTIVATING first - wait for consensus before starting deactivation
                 transitionTo(sliceKey, SliceState.DEACTIVATING).flatMap(this::unpublishEndpoints)
                             .flatMap(this::unpublishTopicSubscriptions)
+                            .flatMap(this::unpublishStreamSubscriptions)
                             .flatMap(this::unpublishScheduledTasks)
                             .flatMap(this::unpublishHttpRoutes)
                             .withSuccess(this::unregisterSliceFromInvocation)
@@ -742,6 +749,150 @@ public interface NodeDeploymentManager {
                                                        .option());
             }
 
+            // --- Stream subscription publish/unpublish ---
+            private Promise<SliceNodeKey> publishStreamSubscriptions(SliceNodeKey sliceKey) {
+                var artifact = sliceKey.artifact();
+                return findLoadedSlice(artifact).map(ls -> doPublishStreamSubscriptions(artifact,
+                                                                                        ls.slice()))
+                                      .or(Promise.unitPromise())
+                                      .map(_ -> sliceKey);
+            }
+
+            private Promise<Unit> doPublishStreamSubscriptions(Artifact artifact, Slice slice) {
+                var entries = readStreamSubscriptionsFromManifest(slice);
+                if (entries.isEmpty()) {
+                    return Promise.unitPromise();
+                }
+                var commands = entries.stream()
+                                      .<KVCommand<AetherKey>> map(entry -> buildStreamSubscriptionPutCommand(artifact,
+                                                                                                             entry))
+                                      .toList();
+                return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Published {} stream subscriptions for {}",
+                                                                            entries.size(),
+                                                                            artifact))
+                                     .onFailure(cause -> log.error("Failed to publish stream subscriptions for {}: {}",
+                                                                   artifact,
+                                                                   cause.message()));
+            }
+
+            private KVCommand<AetherKey> buildStreamSubscriptionPutCommand(Artifact artifact,
+                                                                           StreamSubscriptionManifestEntry entry) {
+                var streamName = entry.streamName();
+                var key = StreamRegistrationKey.streamRegistrationKey(streamName,
+                                                                      entry.configSection(),
+                                                                      artifact,
+                                                                      entry.methodName());
+                var consumerGroup = artifact.base()
+                                            .asString() + "-" + entry.methodName()
+                                                                    .name();
+                var value = StreamRegistrationValue.streamRegistrationValue(self,
+                                                                            consumerGroup,
+                                                                            entry.batchMode(),
+                                                                            entry.eventType());
+                return new KVCommand.Put<>(key, value);
+            }
+
+            private Promise<SliceNodeKey> unpublishStreamSubscriptions(SliceNodeKey sliceKey) {
+                var artifact = sliceKey.artifact();
+                return findLoadedSlice(artifact).map(ls -> doUnpublishStreamSubscriptions(artifact,
+                                                                                          ls.slice()))
+                                      .or(Promise.unitPromise())
+                                      .map(_ -> sliceKey);
+            }
+
+            private Promise<Unit> doUnpublishStreamSubscriptions(Artifact artifact, Slice slice) {
+                var entries = readStreamSubscriptionsFromManifest(slice);
+                if (entries.isEmpty()) {
+                    return Promise.unitPromise();
+                }
+                var commands = entries.stream()
+                                      .<KVCommand<AetherKey>> map(entry -> buildStreamSubscriptionRemoveCommand(artifact,
+                                                                                                                entry))
+                                      .toList();
+                return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Unpublished {} stream subscriptions for {}",
+                                                                            entries.size(),
+                                                                            artifact))
+                                     .onFailure(cause -> log.error("Failed to unpublish stream subscriptions for {}: {}",
+                                                                   artifact,
+                                                                   cause.message()));
+            }
+
+            private KVCommand<AetherKey> buildStreamSubscriptionRemoveCommand(Artifact artifact,
+                                                                              StreamSubscriptionManifestEntry entry) {
+                var streamName = entry.streamName();
+                var key = StreamRegistrationKey.streamRegistrationKey(streamName,
+                                                                      entry.configSection(),
+                                                                      artifact,
+                                                                      entry.methodName());
+                return new KVCommand.Remove<>(key);
+            }
+
+            private record StreamSubscriptionManifestEntry(String streamName,
+                                                           String configSection,
+                                                           MethodName methodName,
+                                                           boolean batchMode,
+                                                           String eventType) {}
+
+            @SuppressWarnings("JBCT-EX-01")
+            private List<StreamSubscriptionManifestEntry> readStreamSubscriptionsFromManifest(Slice slice) {
+                var result = new ArrayList<StreamSubscriptionManifestEntry>();
+                var classLoader = slice.getClass()
+                                       .getClassLoader();
+                for (var iface : slice.getClass()
+                                      .getInterfaces()) {
+                    if (iface == Slice.class) {
+                        continue;
+                    }
+                    var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
+                    readStreamSubscriptionEntriesFromManifest(classLoader, manifestPath, result);
+                }
+                return result;
+            }
+
+            @SuppressWarnings("JBCT-EX-01")
+            private void readStreamSubscriptionEntriesFromManifest(ClassLoader classLoader,
+                                                                   String manifestPath,
+                                                                   List<StreamSubscriptionManifestEntry> result) {
+                try (var is = classLoader.getResourceAsStream(manifestPath)) {
+                    if (is == null) {
+                        return;
+                    }
+                    var props = new Properties();
+                    props.load(is);
+                    var count = Integer.parseInt(props.getProperty("stream.subscriptions.count", "0"));
+                    for (int i = 0; i < count; i++) {
+                        readStreamSubscriptionEntry(props, i).onPresent(result::add);
+                    }
+                } catch (Exception e) {
+                    log.debug("Could not read stream subscription manifest {}: {}", manifestPath, e.getMessage());
+                }
+            }
+
+            private Option<StreamSubscriptionManifestEntry> readStreamSubscriptionEntry(Properties props, int index) {
+                var configSection = props.getProperty("stream.subscription." + index + ".config");
+                var methodNameStr = props.getProperty("stream.subscription." + index + ".method");
+                if (configSection == null || methodNameStr == null) {
+                    return Option.none();
+                }
+                var batchMode = Boolean.parseBoolean(props.getProperty("stream.subscription." + index + ".batch",
+                                                                       "false"));
+                var eventType = props.getProperty("stream.subscription." + index + ".eventType", "");
+                return resolveStreamName(configSection).flatMap(streamName -> MethodName.methodName(methodNameStr)
+                                                                                        .map(method -> new StreamSubscriptionManifestEntry(streamName,
+                                                                                                                                           configSection,
+                                                                                                                                           method,
+                                                                                                                                           batchMode,
+                                                                                                                                           eventType)))
+                                        .option();
+            }
+
+            private Result<String> resolveStreamName(String configSection) {
+                return ConfigService.instance()
+                                    .toResult(Causes.cause("ConfigService not available for stream name resolution"))
+                                    .flatMap(svc -> svc.config(configSection, StreamNameConfig.class))
+                                    .map(StreamNameConfig::streamName);
+            }
+
             private void handleFailed(SliceNodeKey sliceKey) {
                 // Log the failure for observability
                 log.warn("Slice {} entered FAILED state", sliceKey.artifact());
@@ -753,6 +904,7 @@ public interface NodeDeploymentManager {
                 //    UNLOAD may skip DEACTIVATE, so cleanup must happen here too
                 transitionTo(sliceKey, SliceState.UNLOADING).flatMap(this::unpublishEndpoints)
                             .flatMap(this::unpublishTopicSubscriptions)
+                            .flatMap(this::unpublishStreamSubscriptions)
                             .flatMap(this::unpublishScheduledTasks)
                             .flatMap(this::unpublishHttpRoutes)
                             .withSuccess(this::unregisterSliceFromInvocation)
