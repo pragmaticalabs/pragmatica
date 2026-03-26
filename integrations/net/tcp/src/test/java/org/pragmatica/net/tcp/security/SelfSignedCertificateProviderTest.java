@@ -77,8 +77,50 @@ class SelfSignedCertificateProviderTest {
         }
 
         @Test
-        void previousGossipKey_returns_none() {
-            assertThat(provider.previousGossipKey().isEmpty()).isTrue();
+        void previousGossipKey_returns_validKey() {
+            assertThat(provider.previousGossipKey().isPresent()).isTrue();
+            provider.previousGossipKey()
+                    .onPresent(SelfSignedCertificateProviderTest::assertValidGossipKey);
+        }
+
+        @Test
+        void previousGossipKey_differentFrom_currentGossipKey() {
+            provider.currentGossipKey()
+                    .onSuccess(current -> provider.previousGossipKey()
+                                                  .onPresent(previous -> assertKeysDiffer(current, previous)));
+        }
+    }
+
+    @Nested
+    class VersionedKeyDerivation {
+        @Test
+        void deriveVersionedGossipKey_succeeds_withValidVersion() {
+            var concreteProvider = (SelfSignedCertificateProvider) provider;
+            concreteProvider.deriveVersionedGossipKey("42")
+                .onFailure(cause -> assertThat(cause).as("Expected success but got: " + cause.message()).isNull())
+                .onSuccess(SelfSignedCertificateProviderTest::assertValidGossipKey);
+        }
+
+        @Test
+        void deriveVersionedGossipKey_sameVersion_sameKey() {
+            var concreteProvider = (SelfSignedCertificateProvider) provider;
+            var key1 = concreteProvider.deriveVersionedGossipKey("42").or((GossipKey) null);
+            var key2 = concreteProvider.deriveVersionedGossipKey("42").or((GossipKey) null);
+
+            assertThat(key1).isNotNull();
+            assertThat(key1.key()).isEqualTo(key2.key());
+            assertThat(key1.keyId()).isEqualTo(key2.keyId());
+        }
+
+        @Test
+        void deriveVersionedGossipKey_differentVersions_differentKeys() {
+            var concreteProvider = (SelfSignedCertificateProvider) provider;
+            var key1 = concreteProvider.deriveVersionedGossipKey("1").or((GossipKey) null);
+            var key2 = concreteProvider.deriveVersionedGossipKey("2").or((GossipKey) null);
+
+            assertThat(key1).isNotNull();
+            assertThat(key2).isNotNull();
+            assertThat(key1.key()).isNotEqualTo(key2.key());
         }
     }
 
@@ -106,6 +148,11 @@ class SelfSignedCertificateProviderTest {
     }
 
     // ===== Assertion helpers =====
+
+    private static void assertKeysDiffer(GossipKey current, GossipKey previous) {
+        assertThat(previous.keyId()).isNotEqualTo(current.keyId());
+        assertThat(previous.key()).isNotEqualTo(current.key());
+    }
 
     private static void assertValidBundle(CertificateBundle bundle) {
         assertThat(bundle.certificatePem()).isNotEmpty();

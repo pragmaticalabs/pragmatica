@@ -141,6 +141,7 @@ import org.pragmatica.net.tcp.security.CertificateBundle;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import org.pragmatica.swim.AesGcmGossipEncryptor;
 import org.pragmatica.swim.GossipEncryptor;
+import org.pragmatica.swim.RotatingGossipEncryptor;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -1126,6 +1127,9 @@ public interface AetherNode {
         // so all nodes see committed directives. Each node checks if the directive targets itself.
         var growthLog = LoggerFactory.getLogger(AetherNode.class);
         var selfId = config.self();
+        // Create rotating encryptor once — shared between SWIM transport and rotation handler
+        var rotatingEncryptor = createGossipEncryptor(config);
+        var gossipKeyRotationHandler = GossipKeyRotationHandler.gossipKeyRotationHandler(rotatingEncryptor);
         var activationKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                      .onPut(AetherKey.ActivationDirectiveKey.class,
                                                             (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> handleActivationDirective(put,
@@ -1139,6 +1143,8 @@ public interface AetherNode {
                                                                                                                                                                                 sliceStore,
                                                                                                                                                                                 sliceInvoker,
                                                                                                                                                                                 growthLog))
+                                                     .onPut(AetherKey.GossipKeyRotationKey.class,
+                                                            gossipKeyRotationHandler::onGossipKeyRotationPut)
                                                      .build();
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
         allEntries.addAll(aetherEntries);
@@ -1148,12 +1154,12 @@ public interface AetherNode {
                                                                                config.topology(),
                                                                                serializer,
                                                                                deserializer);
-        // Defer SWIM start until quorum — encryptor resolved here (certificate provider guaranteed ready)
+        // Defer SWIM start until quorum — pass pre-built encryptor (certificate provider guaranteed ready)
         allEntries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
                                                  notification -> startSwimOnQuorum(notification,
                                                                                    swimHealthDetector,
                                                                                    clusterNode.network(),
-                                                                                   config)));
+                                                                                   rotatingEncryptor)));
         // Wire TCP connection events to SWIM: reset FAULTY members when TCP proves they're alive
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                                  connection -> swimHealthDetector.onNodeConnected(connection.nodeId())));
@@ -1352,12 +1358,10 @@ public interface AetherNode {
     private static void startSwimOnQuorum(QuorumStateNotification notification,
                                           CoreSwimHealthDetector swimHealthDetector,
                                           ClusterNetwork network,
-                                          AetherNodeConfig config) {
+                                          RotatingGossipEncryptor encryptor) {
         if (notification.state() == QuorumStateNotification.State.ESTABLISHED) {
             var workerGroup = network.server()
                                      .map(org.pragmatica.net.tcp.Server::workerGroup);
-            // Resolve encryptor at quorum time — certificate provider is guaranteed ready
-            var encryptor = createGossipEncryptor(config);
             swimHealthDetector.start(workerGroup, encryptor);
         }
     }
@@ -1475,14 +1479,41 @@ public interface AetherNode {
     }
 
     @SuppressWarnings("JBCT-RET-01")
-    private static GossipEncryptor createGossipEncryptor(AetherNodeConfig config) {
-        return config.certificateProvider()
-                     .flatMap(provider -> provider.currentGossipKey()
-                                                  .option())
-                     .flatMap(gossipKey -> AesGcmGossipEncryptor.aesGcmGossipEncryptor(gossipKey.key(),
-                                                                                       gossipKey.keyId())
-                                                                .option())
-                     .or(GossipEncryptor.none());
+    private static RotatingGossipEncryptor createGossipEncryptor(AetherNodeConfig config) {
+        var initial = config.certificateProvider()
+                            .flatMap(provider -> buildDualKeyEncryptor(provider))
+                            .or(GossipEncryptor.none());
+        return RotatingGossipEncryptor.rotatingGossipEncryptor(initial);
+    }
+
+    @SuppressWarnings("JBCT-RET-01")
+    private static Option<GossipEncryptor> buildDualKeyEncryptor(org.pragmatica.net.tcp.security.CertificateProvider provider) {
+        return provider.currentGossipKey()
+                       .option()
+                       .flatMap(current -> buildEncryptorFromKeys(current,
+                                                                  provider.previousGossipKey()));
+    }
+
+    @SuppressWarnings("JBCT-RET-01")
+    private static Option<GossipEncryptor> buildEncryptorFromKeys(org.pragmatica.net.tcp.security.GossipKey current,
+                                                                  Option<org.pragmatica.net.tcp.security.GossipKey> previous) {
+        return previous.flatMap(prev -> buildDualKeyAesEncryptor(current, prev))
+                       .orElse(() -> buildSingleKeyAesEncryptor(current));
+    }
+
+    private static Option<GossipEncryptor> buildDualKeyAesEncryptor(org.pragmatica.net.tcp.security.GossipKey current,
+                                                                    org.pragmatica.net.tcp.security.GossipKey prev) {
+        return AesGcmGossipEncryptor.aesGcmGossipEncryptor(current.key(),
+                                                           current.keyId(),
+                                                           prev.key(),
+                                                           prev.keyId())
+                                    .option();
+    }
+
+    private static Option<GossipEncryptor> buildSingleKeyAesEncryptor(org.pragmatica.net.tcp.security.GossipKey current) {
+        return AesGcmGossipEncryptor.aesGcmGossipEncryptor(current.key(),
+                                                           current.keyId())
+                                    .option();
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Conditional scheduler creation based on config
