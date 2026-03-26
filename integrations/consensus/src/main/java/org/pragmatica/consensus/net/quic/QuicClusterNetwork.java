@@ -18,14 +18,19 @@ package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
 
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.util.concurrent.Future;
@@ -69,17 +74,20 @@ import static org.pragmatica.lang.Unit.unit;
 public class QuicClusterNetwork implements ClusterNetwork {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterNetwork.class);
 
+    private static final int MAX_BACKPRESSURE_QUEUE_SIZE = 100;
+
     private final NodeInfo self;
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final TopologyManager topologyManager;
     private final MessageRouter router;
-    private final QuicSslContext serverSslContext;
-    private final QuicSslContext clientSslContext;
+    private volatile QuicSslContext serverSslContext;
+    private volatile QuicSslContext clientSslContext;
 
     private final Map<NodeId, QuicPeerConnection> peerLinks = new ConcurrentHashMap<>();
     private final Map<NodeId, Long> connectionEstablishedAt = new ConcurrentHashMap<>();
     private final Set<NodeId> passivePeers = ConcurrentHashMap.newKeySet();
+    private final Map<NodeId, Map<StreamType, Queue<byte[]>>> outboundQueues = new ConcurrentHashMap<>();
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private final AtomicBoolean quorumEstablished = new AtomicBoolean(false);
     private final QuicTransportMetrics quicMetrics = QuicTransportMetrics.quicTransportMetrics();
@@ -195,6 +203,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
         connectionEstablishedAt.remove(nodeId);
         passivePeers.remove(nodeId);
+        cleanupPeerQueues(nodeId);
         quicMetrics.onConnectionClosed();
         processViewChange(REMOVE, nodeId);
         connection.close()
@@ -245,6 +254,39 @@ public class QuicClusterNetwork implements ClusterNetwork {
     Option<Integer> boundPort() {
         var srv = server;
         return srv != null ? srv.boundPort() : Option.empty();
+    }
+
+    /// Rotate TLS certificates by restarting the QUIC server with new SSL contexts.
+    /// Existing connections drain naturally; peers reconnect automatically.
+    @SuppressWarnings("JBCT-PAT-01") // Lifecycle: stop old server, update contexts, start new
+    public Promise<Unit> rotateCertificate(QuicSslContext newServerSsl, QuicSslContext newClientSsl) {
+        return boundPort()
+            .async(new QuicTransportError.CertificateRotationFailed("Server not running"))
+            .flatMap(port -> stopAndRestartServer(port, newServerSsl, newClientSsl));
+    }
+
+    private Promise<Unit> stopAndRestartServer(int port, QuicSslContext newServerSsl, QuicSslContext newClientSsl) {
+        var oldServer = server;
+        server = null;
+        var stopPromise = oldServer != null ? oldServer.stop() : Promise.unitPromise();
+        return stopPromise.flatMap(_ -> rebuildAndStart(port, newServerSsl, newClientSsl));
+    }
+
+    private Promise<Unit> rebuildAndStart(int port, QuicSslContext newServerSsl, QuicSslContext newClientSsl) {
+        serverSslContext = newServerSsl;
+        clientSslContext = newClientSsl;
+        server = QuicClusterServer.quicClusterServer(
+            self.id(), self.role(), self.address(), serializer, deserializer,
+            newServerSsl, Option.empty(), this::onPeerConnected, this::onMessageReceived
+        );
+        client = QuicClusterClient.quicClusterClient(
+            self.id(), self.role(), self.address(), serializer, deserializer,
+            newClientSsl, Option.empty(), this::onMessageReceived
+        );
+        return server.start(port)
+                     .onSuccess(_ -> log.info("QUIC server restarted on port {} with new certificate", port))
+                     .onFailure(cause -> log.error("Failed to restart QUIC server after cert rotation: {}", cause.message()))
+                     .mapToUnit();
     }
 
     private void onStartFailed(Cause cause) {
@@ -322,6 +364,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         connectionEstablishedAt.put(peerId, System.nanoTime());
         quicMetrics.onConnectionEstablished();
+        installWritabilityHandler(connection, peerId);
 
         // Send AddNode BEFORE ConnectionEstablished if unknown
         unknownNodeInfo.onPresent(nodeInfo -> router.route(new TopologyManagementMessage.AddNode(nodeInfo)));
@@ -378,15 +421,90 @@ public class QuicClusterNetwork implements ClusterNetwork {
               .onEmpty(() -> log.warn("No stream available for peer {}", peerId));
     }
 
+    @SuppressWarnings("JBCT-PAT-01") // Backpressure: enqueue-or-drop + drain-then-send
     private void writeIfWritable(QuicStreamChannel ch, byte[] bytes, NodeId peerId, StreamType streamType) {
         if (!ch.isWritable()) {
-            quicMetrics.onBackpressureDrop();
-            log.warn("Channel to peer {} not writable on stream {}, dropping message", peerId, streamType);
+            enqueueOrDrop(bytes, peerId, streamType);
             return;
         }
+        drainQueue(ch, peerId, streamType);
         quicMetrics.onMessageSent();
         ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
           .addListener(future -> handleWriteResult(future, peerId, streamType));
+    }
+
+    private void enqueueOrDrop(byte[] bytes, NodeId peerId, StreamType streamType) {
+        var queue = getOrCreateQueue(peerId, streamType);
+        if (queue.size() < MAX_BACKPRESSURE_QUEUE_SIZE) {
+            queue.offer(bytes);
+            quicMetrics.onBackpressureQueued();
+            log.trace("Channel to peer {} not writable, queued message on stream {}", peerId, streamType);
+        } else {
+            quicMetrics.onBackpressureDrop();
+            log.warn("Backpressure queue full for peer {} stream {}, dropping message", peerId, streamType);
+        }
+    }
+
+    private Queue<byte[]> getOrCreateQueue(NodeId peerId, StreamType streamType) {
+        return outboundQueues.computeIfAbsent(peerId, _ -> new EnumMap<>(StreamType.class))
+                             .computeIfAbsent(streamType, _ -> new ConcurrentLinkedQueue<>());
+    }
+
+    private void drainQueue(QuicStreamChannel ch, NodeId peerId, StreamType streamType) {
+        var peerQueues = outboundQueues.get(peerId);
+        if (peerQueues == null) {
+            return;
+        }
+        var queue = peerQueues.get(streamType);
+        if (queue == null) {
+            return;
+        }
+        drainQueueMessages(ch, queue, peerId, streamType);
+    }
+
+    private void drainQueueMessages(QuicStreamChannel ch, Queue<byte[]> queue, NodeId peerId, StreamType streamType) {
+        byte[] queued;
+        while (ch.isWritable() && (queued = queue.poll()) != null) {
+            quicMetrics.onBackpressureDrained();
+            quicMetrics.onMessageSent();
+            ch.writeAndFlush(Unpooled.wrappedBuffer(queued))
+              .addListener(future -> handleWriteResult(future, peerId, streamType));
+        }
+    }
+
+    /// Called when a channel becomes writable again — drains queued messages for the peer/stream.
+    void onChannelWritable(NodeId peerId, StreamType streamType, QuicStreamChannel ch) {
+        drainQueue(ch, peerId, streamType);
+    }
+
+    /// Install a writability handler on the consensus stream to drain backpressure queues
+    /// when the channel becomes writable again.
+    private void installWritabilityHandler(QuicPeerConnection connection, NodeId peerId) {
+        connection.stream(StreamType.CONSENSUS)
+                  .onPresent(ch -> addWritabilityHandler(ch, peerId, StreamType.CONSENSUS));
+    }
+
+    private void addWritabilityHandler(QuicStreamChannel ch, NodeId peerId, StreamType streamType) {
+        ch.pipeline().addLast("backpressure-drain", new BackpressureDrainHandler(peerId, streamType));
+    }
+
+    /// Netty handler that drains queued messages when a channel becomes writable.
+    private class BackpressureDrainHandler extends ChannelInboundHandlerAdapter {
+        private final NodeId peerId;
+        private final StreamType streamType;
+
+        BackpressureDrainHandler(NodeId peerId, StreamType streamType) {
+            this.peerId = peerId;
+            this.streamType = streamType;
+        }
+
+        @Override
+        public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
+            if (ctx.channel().isWritable()) {
+                onChannelWritable(peerId, streamType, (QuicStreamChannel) ctx.channel());
+            }
+            super.channelWritabilityChanged(ctx);
+        }
     }
 
     private void handleWriteResult(Future<? super Void> future, NodeId peerId, StreamType streamType) {
@@ -402,10 +520,26 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         if (staleConnection != null) {
             connectionEstablishedAt.remove(peerId);
+            cleanupPeerQueues(peerId);
             quicMetrics.onConnectionClosed();
             staleConnection.close()
                            .onFailure(cause -> log.warn("Error closing stale connection to peer {}: {}", peerId, cause.message()));
             processViewChange(REMOVE, peerId);
+        }
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") // Queue cleanup with size tracking
+    private void cleanupPeerQueues(NodeId peerId) {
+        var peerQueues = outboundQueues.remove(peerId);
+        if (peerQueues != null) {
+            var totalDropped = peerQueues.values()
+                                         .stream()
+                                         .mapToInt(Queue::size)
+                                         .sum();
+            if (totalDropped > 0) {
+                quicMetrics.onBackpressureQueueCleared(totalDropped);
+                log.debug("Cleaned up {} queued messages for disconnected peer {}", totalDropped, peerId);
+            }
         }
     }
 
@@ -470,6 +604,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         peerLinks.clear();
         connectionEstablishedAt.clear();
         passivePeers.clear();
+        outboundQueues.clear();
         if (promises.isEmpty()) {
             return Promise.unitPromise();
         }

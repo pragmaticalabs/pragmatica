@@ -79,4 +79,12 @@ public sealed interface QuicTransportError extends Cause {
             return "Failed to create QUIC stream: " + Causes.fromThrowable(cause);
         }
     }
+
+    /// Failed to rotate TLS certificates on the QUIC server.
+    record CertificateRotationFailed(String detail) implements QuicTransportError {
+        @Override
+        public String message() {
+            return "Certificate rotation failed: " + detail;
+        }
+    }
 }

@@ -126,6 +126,26 @@ public final class QuicSslContextFactory {
         }
     }
 
+    /// Create a QUIC server SSL context from a [CertificateBundle].
+    /// Builds mutual TLS with the bundle's cert, key, and CA.
+    ///
+    /// @param bundle certificate bundle from a [CertificateProvider]
+    /// @return QUIC SSL context or error
+    public static Result<QuicSslContext> createServerFromBundle(org.pragmatica.net.tcp.security.CertificateBundle bundle) {
+        var identity = new TlsConfig.Identity.FromProvider(bundle.certificatePem(), bundle.privateKeyPem());
+        var trust = new TlsConfig.Trust.FromCaBytes(bundle.caCertificatePem());
+        return loadIdentityAndBuild(identity, Option.some(trust));
+    }
+
+    /// Create a QUIC client SSL context from a [CertificateBundle].
+    /// Trusts the CA from the bundle.
+    ///
+    /// @param bundle certificate bundle from a [CertificateProvider]
+    /// @return QUIC SSL context or error
+    public static Result<QuicSslContext> createClientFromBundle(org.pragmatica.net.tcp.security.CertificateBundle bundle) {
+        return buildClientContext(new TlsConfig.Trust.FromCaBytes(bundle.caCertificatePem()));
+    }
+
     // ===== Client Context =====
 
     /// Create a QUIC client SSL context from TLS configuration.

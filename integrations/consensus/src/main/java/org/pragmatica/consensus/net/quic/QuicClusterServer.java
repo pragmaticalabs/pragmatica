@@ -378,11 +378,18 @@ final class QuicClusterServerInstance implements QuicClusterServer {
 
     /// Handles ongoing data messages after Hello handshake completes.
     /// Deserializes incoming bytes and routes them via the message receiver callback.
+    /// Also monitors channel writability to drain backpressure queues.
     private class DataHandler extends SimpleChannelInboundHandler<ByteBuf> {
         private final NodeId peerId;
+        private final Runnable onWritable;
 
         DataHandler(NodeId peerId) {
+            this(peerId, () -> {});
+        }
+
+        DataHandler(NodeId peerId, Runnable onWritable) {
             this.peerId = peerId;
+            this.onWritable = onWritable;
         }
 
         @Override
@@ -397,6 +404,14 @@ final class QuicClusterServerInstance implements QuicClusterServer {
             } catch (Exception e) {
                 log.error("Failed to deserialize message from peer {}", peerId, e);
             }
+        }
+
+        @Override
+        public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
+            if (ctx.channel().isWritable()) {
+                onWritable.run();
+            }
+            super.channelWritabilityChanged(ctx);
         }
 
         @Override

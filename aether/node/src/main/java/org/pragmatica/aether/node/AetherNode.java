@@ -121,6 +121,8 @@ import org.pragmatica.dht.DHTRebalancer;
 import org.pragmatica.dht.DHTTopologyListener;
 import org.pragmatica.dht.DistributedDHTClient;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
+import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
+import org.pragmatica.consensus.net.quic.QuicTlsProvider;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -134,6 +136,9 @@ import org.pragmatica.aether.environment.PeerInfo;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
+import org.pragmatica.net.tcp.QuicSslContextFactory;
+import org.pragmatica.net.tcp.security.CertificateBundle;
+import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import org.pragmatica.swim.AesGcmGossipEncryptor;
 import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.messaging.Message;
@@ -459,6 +464,7 @@ public interface AetherNode {
                           CoreSwimHealthDetector swimHealthDetector,
                           Option<ManagementServer> managementServer,
                           Option<DiscoveryProvider> discoveryProvider,
+                          Option<CertificateRenewalScheduler> certRenewalScheduler,
                           long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
@@ -478,6 +484,8 @@ public interface AetherNode {
                 // Start comprehensive snapshot collection (feeds TTM pipeline)
                 snapshotCollector.start();
                 SliceRuntime.setSliceInvoker(sliceInvoker);
+                // Start certificate renewal scheduler if configured
+                certRenewalScheduler.onPresent(CertificateRenewalScheduler::start);
                 return managementServer.map(ManagementServer::start)
                                        .or(Promise.unitPromise())
                                        .flatMap(_ -> appHttpServer.start())
@@ -502,11 +510,13 @@ public interface AetherNode {
                 snapshotCollector.stop();
                 SliceRuntime.clear();
                 streamPartitionManager.close();
-                // 4. Stop SWIM health detector
+                // 4. Stop certificate renewal scheduler
+                certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
+                // 5. Stop SWIM health detector
                 swimHealthDetector.stop();
-                // 5. Deregister from discovery provider
+                // 6. Deregister from discovery provider
                 discoveryProvider.onPresent(this::deregisterFromDiscovery);
-                // 6. Stop servers and network
+                // 7. Stop servers and network
                 return managementServer.map(ManagementServer::stop)
                                        .or(Promise.unitPromise())
                                        .flatMap(_ -> appHttpServer.stop())
@@ -1146,6 +1156,8 @@ public interface AetherNode {
                                                  connection -> swimHealthDetector.onNodeConnected(connection.nodeId())));
         // Create stream partition manager for local stream operations
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager();
+        // Create certificate renewal scheduler if a provider is configured
+        var certRenewalScheduler = createCertRenewalScheduler(config, clusterNode);
         // Create the node first (without management server reference)
         var startTimeMs = System.currentTimeMillis();
         var node = new aetherNode(config,
@@ -1194,6 +1206,7 @@ public interface AetherNode {
                                   swimHealthDetector,
                                   Option.empty(),
                                   discoveryProvider,
+                                  certRenewalScheduler,
                                   startTimeMs);
         // Wire remote shutdown: when SHUTTING_DOWN lifecycle is received, stop the node
         nodeDeploymentManager.setShutdownCallback(node::stop);
@@ -1271,6 +1284,7 @@ public interface AetherNode {
                                                            swimHealthDetector,
                                                            Option.some(managementServer),
                                                            discoveryProvider,
+                                                           certRenewalScheduler,
                                                            startTimeMs);
                                  }
                                  return node;
@@ -1459,6 +1473,78 @@ public interface AetherNode {
                                                                                        gossipKey.keyId())
                                                                 .option())
                      .or(GossipEncryptor.none());
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") // Conditional scheduler creation based on config
+    private static Option<CertificateRenewalScheduler> createCertRenewalScheduler(AetherNodeConfig config,
+                                                                                  RabiaNode<KVCommand<AetherKey>> clusterNode) {
+        return config.certificateProvider()
+                     .flatMap(provider -> buildCertRenewalScheduler(config, provider, clusterNode));
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") // Certificate rotation wiring: issue cert, build scheduler
+    private static Option<CertificateRenewalScheduler> buildCertRenewalScheduler(AetherNodeConfig config,
+                                                                                 org.pragmatica.net.tcp.security.CertificateProvider provider,
+                                                                                 RabiaNode<KVCommand<AetherKey>> clusterNode) {
+        var nodeId = config.self()
+                           .id();
+        var hostname = resolveHostname(config);
+        return provider.issueCertificate(nodeId, hostname)
+                       .map(bundle -> createSchedulerFromBundle(provider, nodeId, hostname, bundle, clusterNode))
+                       .option();
+    }
+
+    private static CertificateRenewalScheduler createSchedulerFromBundle(org.pragmatica.net.tcp.security.CertificateProvider provider,
+                                                                         String nodeId,
+                                                                         String hostname,
+                                                                         CertificateBundle bundle,
+                                                                         RabiaNode<KVCommand<AetherKey>> clusterNode) {
+        return CertificateRenewalScheduler.certificateRenewalScheduler(provider,
+                                                                       nodeId,
+                                                                       hostname,
+                                                                       newBundle -> onCertificateRenewed(newBundle,
+                                                                                                         clusterNode),
+                                                                       bundle.notAfter());
+    }
+
+    private static void onCertificateRenewed(CertificateBundle newBundle,
+                                             RabiaNode<KVCommand<AetherKey>> clusterNode) {
+        var log = LoggerFactory.getLogger(AetherNode.class);
+        log.info("Certificate renewed, valid until {}", newBundle.notAfter());
+        Result.all(QuicSslContextFactory.createServerFromBundle(newBundle),
+                   QuicSslContextFactory.createClientFromBundle(newBundle))
+              .id()
+              .onSuccess(tuple -> triggerCertRotation(clusterNode,
+                                                      tuple.first(),
+                                                      tuple.last()))
+              .onFailure(cause -> log.error("Failed to build SSL contexts from renewed certificate: {}",
+                                            cause.message()));
+    }
+
+    private static void triggerCertRotation(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                            io.netty.handler.codec.quic.QuicSslContext serverSsl,
+                                            io.netty.handler.codec.quic.QuicSslContext clientSsl) {
+        var log = LoggerFactory.getLogger(AetherNode.class);
+        if (clusterNode.network() instanceof QuicClusterNetwork quicNetwork) {
+            quicNetwork.rotateCertificate(serverSsl, clientSsl)
+                       .onSuccess(_ -> log.info("QUIC certificate rotation complete"))
+                       .onFailure(cause -> log.error("QUIC certificate rotation failed: {}",
+                                                     cause.message()));
+        } else {
+            log.warn("Certificate rotation skipped: network is not QUIC-based");
+        }
+    }
+
+    private static String resolveHostname(AetherNodeConfig config) {
+        return config.topology()
+                     .coreNodes()
+                     .stream()
+                     .filter(n -> n.id()
+                                   .equals(config.self()))
+                     .findFirst()
+                     .map(n -> n.address()
+                                .host())
+                     .orElse("localhost");
     }
 
     @SuppressWarnings("JBCT-RET-01") // Side-effect: send response + dispatch notification
