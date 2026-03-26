@@ -483,6 +483,50 @@ Validate a blueprint without applying it.
 }
 ```
 
+### Security Overrides
+
+Operators can override per-route security policies at deploy time via the `[security]` section in blueprint.toml.
+
+#### TOML Syntax
+
+```toml
+[security]
+override_policy = "strengthen_only"    # strengthen_only | full | none
+
+[security.overrides]
+"GET /api/v1/urls/*" = "authenticated"     # Wildcard suffix match
+"POST /api/v1/admin/reset" = "role:admin"  # Exact match
+"* /api/v1/health" = "public"              # Any HTTP method
+```
+
+#### Override Policy
+
+| Policy | Behavior |
+|--------|----------|
+| `strengthen_only` (default) | Operator can only make routes MORE restrictive (public->authenticated, authenticated->public is rejected) |
+| `full` | Operator can change security in any direction |
+| `none` | No overrides allowed -- slice developer's security is final |
+
+#### Security Values
+
+| Value | Meaning |
+|-------|---------|
+| `public` | No authentication required |
+| `authenticated` | Any valid credential (API key or JWT based on server security mode) |
+| `role:<name>` | Requires specific role in SecurityContext |
+
+#### Pattern Matching
+
+| Pattern | Matches |
+|---------|---------|
+| `"GET /api/v1/urls/"` | Exact method + path |
+| `"GET /api/v1/urls/*"` | GET requests to any path starting with `/api/v1/urls/` |
+| `"* /api/v1/urls/*"` | Any HTTP method to paths starting with `/api/v1/urls/` |
+
+#### Strength Ordering
+
+For `strengthen_only` policy, security levels are ordered: `public (0) < authenticated (1) < role:* (2)`. Overrides that weaken security are silently ignored.
+
 ---
 
 ## Metrics
