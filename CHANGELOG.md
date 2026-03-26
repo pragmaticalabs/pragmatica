@@ -13,6 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 - **ConsumerConfig** — added `checkpointIntervalMs`, `maxRetries`, `deadLetterStream` fields (backward compatible)
 - **StreamConfig** — added `maxEventSizeBytes` field with enforcement in `StreamPartitionManager.publishLocal()`
+- **Nullable AtomicReference eliminated** — `CancellableTask` (VarHandle, 9 usages), `StoppableThread` (VarHandle, 4 usages), `AtomicHolder<T>` (VarHandle, 4 usages) in `core/` replace all `getAndSet(null)` patterns
+
+### Fixed
+- **Schema migration lock failover** — new leader scans for MIGRATING schemas with expired locks and resets to PENDING
+- **Dashboard schema retry button** — FAILED migrations can be retried from dashboard UI
 
 ## [0.24.1] - 2026-03-25
 
