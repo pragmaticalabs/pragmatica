@@ -10,7 +10,9 @@ import picocli.CommandLine.Command;
 description = "Cluster lifecycle management",
 subcommands = {ClusterListCommand.class,
 ClusterUseCommand.class,
-ClusterRemoveCommand.class})
+ClusterRemoveCommand.class,
+ClusterStatusCommand.class,
+ClusterExportCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class ClusterCommand implements Runnable {
     @Override

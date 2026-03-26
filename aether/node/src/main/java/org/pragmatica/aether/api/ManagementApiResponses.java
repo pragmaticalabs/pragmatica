@@ -388,6 +388,37 @@ public sealed interface ManagementApiResponses {
                         int memberCount,
                         List<String> members) {}
 
+    // ===== Cluster Config Routes =====
+    record ClusterConfigResponse(String tomlContent,
+                                 String clusterName,
+                                 String version,
+                                 int coreCount,
+                                 int coreMin,
+                                 int coreMax,
+                                 String deploymentType,
+                                 long configVersion,
+                                 long updatedAt) {}
+
+    record ClusterStatusResponse(String clusterName,
+                                 String desiredVersion,
+                                 int desiredCoreCount,
+                                 int actualCoreCount,
+                                 String state,
+                                 String leaderId,
+                                 List<ClusterStatusNodeInfo> nodes,
+                                 int slicesDeployed,
+                                 int sliceInstances,
+                                 String certificateExpiresAt,
+                                 long certificateDaysRemaining,
+                                 long configVersion,
+                                 long uptimeSeconds) {}
+
+    record ClusterStatusNodeInfo(String nodeId,
+                                 String role,
+                                 String lifecycleState,
+                                 String version,
+                                 boolean isLeader) {}
+
     // ===== Repository Routes =====
     record ArtifactInfoResponse(String artifact,
                                 long size,
