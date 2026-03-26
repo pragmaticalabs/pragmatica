@@ -16,6 +16,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Declarative cluster management** — `aether-cluster.toml` config format with `[deployment]` + `[cluster]` sections, config parser with 14 validation rules, diff engine with field-to-action matrix, `aether cluster` CLI (bootstrap, apply, status, export, scale, upgrade, drain, destroy, list, use, remove), cluster registry (`~/.aether/clusters.toml`), cloud-init user-data template, KV-Store config storage with optimistic concurrency, 5 management API endpoints
 - **Gossip key rotation** — `RotatingGossipEncryptor` with VarHandle hot-swap, epoch-day versioned keys from `SelfSignedCertificateProvider`, KV-Store `GossipKeyRotationHandler` for cluster-wide key distribution, 24-hour dual-key overlap window
 - **TLS operator guide** — comprehensive documentation: auto-generated certs, manual cert files, rotation lifecycle, monitoring, gossip encryption, troubleshooting
+- **On-premises SSH bootstrap** — `SshBootstrapOrchestrator` with per-node Docker deployment, `DockerComposeGenerator` for single-host testing, `SystemdUnitTemplate` for JVM deployments, `RemoteCommandRunner` (ProcessBuilder SSH/SCP), `--compose-only` flag
+- **Notification hub example** — two-slice example exercising streaming + per-route security + Principal injection end-to-end
+- **PostgreSQL LISTEN/NOTIFY resource** — `PgNotificationSubscriber` with dedicated connection, multi-channel config (`[pg-notifications.xxx]`), `PgNotification(channel, payload, pid)`, annotation processor detection, comprehensive developer guide
+- **Dashboard observability** — depth registry config UI (inline edit, add/remove rules) + invocation requests tab (sortable metrics, slow requests, traces, filters)
+- **Integration test suite** — 14 suites, 56 Docker-based test scripts (smoke, stability, chaos, scaling, streaming, security, deployment, cluster-mgmt, resources, artifacts, database, observability, network, edge-cases)
+- **Installation binaries** — jlink custom JRE + shaded JAR bundles for node/cli/forge, multi-platform archives (linux-amd64, linux-arm64, darwin), platform-aware install.sh/upgrade.sh
 
 ### Changed
 - **ConsumerConfig** — added `checkpointIntervalMs`, `maxRetries`, `deadLetterStream` fields (backward compatible)
