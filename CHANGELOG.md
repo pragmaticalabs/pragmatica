@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 - **Streaming Phase 1 runtime** — `StreamPublisherFactory` and `StreamAccessFactory` (ResourceFactory SPI), `StreamPublisherImpl` with partition-key routing or round-robin, `StreamAccessImpl` with cross-partition fetch and consensus cursor checkpointing, `StreamConsumerAdapter` for single-event and batch handlers, `StreamConfigParser` for blueprint `[streams.xxx]` TOML sections
 - **CDM stream integration** — stream creation from blueprint config during deployment, consumer subscription registration at slice activation via KV-Store, unsubscription on deactivation
+- **QUIC certificate rotation** — `CertificateRenewalScheduler` wired to node startup, triggers at 60% remaining validity, exponential retry backoff (5min→4h cap), server restart on same port with atomic SSL context swap
+- **HTTP server certificate rotation** — ManagementServer and AppHttpServer receive renewed bundles and restart with new TLS contexts (H1 + H3)
+- **Certificate expiry observability** — `GET /api/certificate` endpoint, `aether cert status` CLI command, expiry timestamp and renewal status
+- **QUIC per-stream backpressure queue** — bounded queue (100 per peer per stream type) replaces silent drop, drain on channel writable, queue depth metrics
 
 ### Changed
 - **ConsumerConfig** — added `checkpointIntervalMs`, `maxRetries`, `deadLetterStream` fields (backward compatible)
@@ -18,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 - **Schema migration lock failover** — new leader scans for MIGRATING schemas with expired locks and resets to PENDING
 - **Dashboard schema retry button** — FAILED migrations can be retried from dashboard UI
+- **Certificate rotation race condition** — SSL contexts updated before server stop, eliminating null-server window
 
 ## [0.24.1] - 2026-03-25
 
