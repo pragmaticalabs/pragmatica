@@ -85,12 +85,13 @@ AetherCli.CanaryCommand.class,
 AetherCli.BlueGreenCommand.class,
 AetherCli.AbTestCommand.class,
 AetherCli.StreamCommand.class,
-AetherCli.CertCommand.class})
+AetherCli.CertCommand.class,
+org.pragmatica.aether.cli.cluster.ClusterCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
 
-    @CommandLine.Option(names = {"-c", "--connect"},
+    @CommandLine.Option(names = {"-c", "--connect", "--endpoint"},
     description = "Node address to connect to (host:port)")
     private String nodeAddress;
 
@@ -144,7 +145,7 @@ public class AetherCli implements Runnable {
     }
 
     private static boolean isConnectionFlag(String arg) {
-        return arg.startsWith("-c") || arg.startsWith("--connect") || arg.startsWith("--config") || arg.startsWith("-k") || arg.startsWith("--api-key");
+        return arg.startsWith("-c") || arg.startsWith("--connect") || arg.startsWith("--endpoint") || arg.startsWith("--config") || arg.startsWith("-k") || arg.startsWith("--api-key");
     }
 
     @SuppressWarnings("JBCT-UTIL-02")
@@ -173,10 +174,12 @@ public class AetherCli implements Runnable {
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
     private static Option<String> extractConnectArg(String[] args) {
         for (int i = 0; i < args.length; i++) {
-            if ((args[i].equals("-c") || args[i].equals("--connect")) && i + 1 < args.length) {
+            if ((args[i].equals("-c") || args[i].equals("--connect") || args[i].equals("--endpoint")) && i + 1 < args.length) {
                 return some(args[i + 1]);
             } else if (args[i].startsWith("--connect=")) {
                 return some(args[i].substring("--connect=".length()));
+            } else if (args[i].startsWith("--endpoint=")) {
+                return some(args[i].substring("--endpoint=".length()));
             }
         }
         return empty();
