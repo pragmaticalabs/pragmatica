@@ -219,6 +219,19 @@ public record SliceModel(String packageName,
                       .toList();
     }
 
+    /// Check if any method has PostgreSQL notification subscriptions.
+    public boolean hasPgNotificationSubscriptions() {
+        return methods.stream()
+                      .anyMatch(MethodModel::hasPgNotificationSubscriptions);
+    }
+
+    /// Get all methods that have PostgreSQL notification subscriptions.
+    public List<MethodModel> pgNotificationSubscriptionMethods() {
+        return methods.stream()
+                      .filter(MethodModel::hasPgNotificationSubscriptions)
+                      .toList();
+    }
+
     public String factoryMethodName() {
         return factoryMethod.getSimpleName()
                             .toString();

@@ -221,6 +221,18 @@ public class ManifestGenerator {
                 sa.streamEventType()
                   .onPresent(et -> props.setProperty(saPrefix + "eventType", et));
             }
+            // PG notification subscription metadata
+            var pgNotifMethods = model.pgNotificationSubscriptionMethods();
+            int pgNotifIndex = 0;
+            for (var method : pgNotifMethods) {
+                for (var pgNotifSub : method.pgNotificationSubscriptions()) {
+                    var pnPrefix = "pg.notification." + pgNotifIndex + ".";
+                    props.setProperty(pnPrefix + "config", pgNotifSub.configSection());
+                    props.setProperty(pnPrefix + "method", method.name());
+                    pgNotifIndex++;
+                }
+            }
+            props.setProperty("pg.notifications.count", String.valueOf(pgNotifIndex));
             // Stream event codec classes (union of all stream event types)
             var streamEventTypes = collectStreamEventTypes(model);
             if (!streamEventTypes.isEmpty()) {

@@ -19,6 +19,7 @@ import org.pragmatica.postgres.message.ExtendedQueryMessage;
 import org.pragmatica.postgres.message.Message;
 import org.pragmatica.postgres.message.backend.*;
 import org.pragmatica.postgres.message.frontend.*;
+import org.pragmatica.postgres.net.NotificationHandler;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
@@ -62,6 +63,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
 
     private final Deque<PendingQuery> pipeline = new ConcurrentLinkedDeque<>();
     private final Map<String, Set<Consumer<String>>> subscriptions = new HashMap<>();
+    private final Map<String, Set<NotificationHandler>> detailedSubscriptions = new HashMap<>();
 
     private boolean seenReadyForQuery;
     private Message readyForQueryPendingMessage;
@@ -164,6 +166,18 @@ public abstract class PgProtocolStream implements ProtocolStream {
             .add(onNotification);
 
         return () -> subscriptions.computeIfPresent(channel, (_, subscription) -> {
+            subscription.remove(onNotification);
+            return subscription.isEmpty() ? null : subscription;
+        });
+    }
+
+    @Override
+    public Runnable subscribeWithDetails(String channel, NotificationHandler onNotification) {
+        detailedSubscriptions
+            .computeIfAbsent(channel, _ -> new HashSet<>())
+            .add(onNotification);
+
+        return () -> detailedSubscriptions.computeIfPresent(channel, (_, subscription) -> {
             subscription.remove(onNotification);
             return subscription.isEmpty() ? null : subscription;
         });
@@ -272,6 +286,12 @@ public abstract class PgProtocolStream implements ProtocolStream {
 
         if (consumers != null) {
             consumers.forEach(c -> c.accept(notification.getPayload()));
+        }
+
+        var detailed = detailedSubscriptions.get(notification.getChannel());
+
+        if (detailed != null) {
+            detailed.forEach(h -> h.onNotification(notification.getChannel(), notification.getPayload(), notification.getBackend()));
         }
     }
 

@@ -46,6 +46,18 @@ public interface Connection extends QueryExecutor {
     @SuppressWarnings("JavadocDeclaration")
     Promise<Listening> subscribe(String channel, Consumer<String> onNotification);
 
+    /**
+     * Subscribe with full notification details including backend PID and channel.
+     * Default delegates to the payload-only variant (ignoring extra fields).
+     *
+     * @param channel        Channel name to listen to.
+     * @param onNotification Callback invoked with channel, payload, and backend PID.
+     * @return Promise instance, completed when subscription will be registered at the backend.
+     */
+    default Promise<Listening> subscribe(String channel, NotificationHandler onNotification) {
+        return subscribe(channel, payload -> onNotification.onNotification(channel, payload, 0));
+    }
+
     Promise<Transaction> begin();
 
     Promise<Unit> close();

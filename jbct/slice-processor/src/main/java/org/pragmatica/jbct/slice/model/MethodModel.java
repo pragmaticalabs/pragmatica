@@ -27,6 +27,7 @@ public record MethodModel(String name,
                            List<ResourceQualifierModel> subscriptions,
                            List<ResourceQualifierModel> scheduled,
                            List<ResourceQualifierModel> streamSubscriptions,
+                           List<ResourceQualifierModel> pgNotificationSubscriptions,
                            Option<KeyExtractorInfo> keyExtractor,
                            Option<MethodParameterInfo> multiParamKeyParam) {
 
@@ -39,6 +40,7 @@ public record MethodModel(String name,
     private static final String SUBSCRIBER_TYPE = "org.pragmatica.aether.slice.Subscriber";
     private static final String SCHEDULED_TYPE = "org.pragmatica.aether.slice.Scheduled";
     private static final String STREAM_SUBSCRIBER_TYPE = "org.pragmatica.aether.slice.StreamSubscriber";
+    private static final String PG_NOTIFICATION_SUBSCRIBER_TYPE = "org.pragmatica.aether.slice.PgNotificationSubscriber";
     private static final String PRINCIPAL_TYPE = "org.pragmatica.aether.http.handler.security.Principal";
     private static final String SECURITY_CONTEXT_TYPE = "org.pragmatica.aether.http.handler.security.SecurityContext";
 
@@ -47,6 +49,7 @@ public record MethodModel(String name,
         subscriptions = List.copyOf(subscriptions);
         scheduled = List.copyOf(scheduled);
         streamSubscriptions = List.copyOf(streamSubscriptions);
+        pgNotificationSubscriptions = List.copyOf(pgNotificationSubscriptions);
         parameters = List.copyOf(parameters);
     }
 
@@ -82,6 +85,11 @@ public record MethodModel(String name,
     /// Check if this method has any stream subscriptions.
     public boolean hasStreamSubscriptions() {
         return !streamSubscriptions.isEmpty();
+    }
+
+    /// Check if this method has any PostgreSQL notification subscriptions.
+    public boolean hasPgNotificationSubscriptions() {
+        return !pgNotificationSubscriptions.isEmpty();
     }
 
     /// Check if a parameter is a security injection type (Principal or SecurityContext).
@@ -205,6 +213,7 @@ public record MethodModel(String name,
         var methodSubscriptions = methodAnnotations.subscriptions();
         var methodScheduled = methodAnnotations.scheduled();
         var methodStreamSubscriptions = methodAnnotations.streamSubscriptions();
+        var methodPgNotificationSubscriptions = methodAnnotations.pgNotificationSubscriptions();
         var paramInfos = buildParameterInfos(params, env);
 
         // Validate subscription methods
@@ -225,6 +234,12 @@ public record MethodModel(String name,
             return streamSubValidation.flatMap(_ -> Result.success(null)); // propagate error
         }
 
+        // Validate pg-notification subscription methods
+        var pgNotifValidation = validatePgNotificationSubscriptions(methodPgNotificationSubscriptions, paramInfos, name, returnType);
+        if (pgNotifValidation.isFailure()) {
+            return pgNotifValidation.flatMap(_ -> Result.success(null)); // propagate error
+        }
+
         return validateKeyAnnotations(paramInfos, name)
         .flatMap(_ -> resolveKeyInfo(paramInfos, env, methodInterceptors, name))
         .map(keyResult -> new MethodModel(name,
@@ -236,6 +251,7 @@ public record MethodModel(String name,
                                            methodSubscriptions,
                                            methodScheduled,
                                            methodStreamSubscriptions,
+                                           methodPgNotificationSubscriptions,
                                            keyResult.keyExtractor(),
                                            keyResult.multiParamKeyParam()));
     }
@@ -327,7 +343,8 @@ public record MethodModel(String name,
     private record MethodAnnotations(List<ResourceQualifierModel> interceptors,
                                       List<ResourceQualifierModel> subscriptions,
                                       List<ResourceQualifierModel> scheduled,
-                                      List<ResourceQualifierModel> streamSubscriptions) {}
+                                      List<ResourceQualifierModel> streamSubscriptions,
+                                      List<ResourceQualifierModel> pgNotificationSubscriptions) {}
 
     /// Extract method-level annotations with @ResourceQualifier meta-annotation.
     /// Splits them into interceptors, subscriptions, scheduled, and stream subscriptions based on resource type.
@@ -337,24 +354,29 @@ public record MethodModel(String name,
         var subscriptions = new ArrayList<ResourceQualifierModel>();
         var scheduled = new ArrayList<ResourceQualifierModel>();
         var streamSubscriptions = new ArrayList<ResourceQualifierModel>();
+        var pgNotificationSubscriptions = new ArrayList<ResourceQualifierModel>();
         for (var annotation : method.getAnnotationMirrors()) {
             ResourceQualifierModel.fromAnnotationMirror(annotation, env)
-                                  .onPresent(model -> classifyAnnotation(model, interceptors, subscriptions, scheduled, streamSubscriptions));
+                                  .onPresent(model -> classifyAnnotation(model, interceptors, subscriptions, scheduled,
+                                                                         streamSubscriptions, pgNotificationSubscriptions));
         }
-        return new MethodAnnotations(interceptors, subscriptions, scheduled, streamSubscriptions);
+        return new MethodAnnotations(interceptors, subscriptions, scheduled, streamSubscriptions, pgNotificationSubscriptions);
     }
 
     private static void classifyAnnotation(ResourceQualifierModel model,
                                             List<ResourceQualifierModel> interceptors,
                                             List<ResourceQualifierModel> subscriptions,
                                             List<ResourceQualifierModel> scheduled,
-                                            List<ResourceQualifierModel> streamSubscriptions) {
+                                            List<ResourceQualifierModel> streamSubscriptions,
+                                            List<ResourceQualifierModel> pgNotificationSubscriptions) {
         if (SUBSCRIBER_TYPE.equals(model.resourceType().toString())) {
             subscriptions.add(model);
         } else if (SCHEDULED_TYPE.equals(model.resourceType().toString())) {
             scheduled.add(model);
         } else if (STREAM_SUBSCRIBER_TYPE.equals(model.resourceType().toString())) {
             streamSubscriptions.add(model);
+        } else if (PG_NOTIFICATION_SUBSCRIBER_TYPE.equals(model.resourceType().toString())) {
+            pgNotificationSubscriptions.add(model);
         } else {
             interceptors.add(model);
         }
@@ -428,6 +450,38 @@ public record MethodModel(String name,
             var typeArg = dt.getTypeArguments().getFirst().toString();
             if (!"org.pragmatica.lang.Unit".equals(typeArg)) {
                 return Causes.cause("Stream subscription method '" + methodName
+                                    + "' must return Promise<Unit>, found: Promise<" + typeArg + ">")
+                             .result();
+            }
+        }
+        return Result.success(Unit.unit());
+    }
+
+    private static Result<Unit> validatePgNotificationSubscriptions(List<ResourceQualifierModel> pgNotificationSubscriptions,
+                                                                       List<MethodParameterInfo> params,
+                                                                       String methodName,
+                                                                       TypeMirror returnType) {
+        if (pgNotificationSubscriptions.isEmpty()) {
+            return Result.success(Unit.unit());
+        }
+        // PG notification subscription methods must have exactly one parameter (PgNotification)
+        if (params.size() != 1) {
+            return Causes.cause("PG notification subscription method '" + methodName
+                                + "' must have exactly one parameter (PgNotification), found: " + params.size())
+                         .result();
+        }
+        // Parameter type must be PgNotification
+        var paramType = params.getFirst().type().toString();
+        if (!"org.pragmatica.aether.slice.PgNotification".equals(paramType)) {
+            return Causes.cause("PG notification subscription method '" + methodName
+                                + "' parameter must be PgNotification, found: " + paramType)
+                         .result();
+        }
+        // Return type must be Promise<Unit>
+        if (returnType instanceof DeclaredType dt && !dt.getTypeArguments().isEmpty()) {
+            var typeArg = dt.getTypeArguments().getFirst().toString();
+            if (!"org.pragmatica.lang.Unit".equals(typeArg)) {
+                return Causes.cause("PG notification subscription method '" + methodName
                                     + "' must return Promise<Unit>, found: Promise<" + typeArg + ">")
                              .result();
             }

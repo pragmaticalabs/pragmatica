@@ -1,1 +1,2 @@
 org.pragmatica.aether.resource.db.async.AsyncSqlConnectorFactory
+org.pragmatica.aether.resource.db.async.NotificationListenerFactory
