@@ -8,7 +8,8 @@ import picocli.CommandLine.Command;
 /// listing registered clusters, switching active context, and removing entries.
 @Command(name = "cluster",
 description = "Cluster lifecycle management",
-subcommands = {ClusterListCommand.class,
+subcommands = {ClusterBootstrapCommand.class,
+ClusterListCommand.class,
 ClusterUseCommand.class,
 ClusterRemoveCommand.class,
 ClusterStatusCommand.class,
