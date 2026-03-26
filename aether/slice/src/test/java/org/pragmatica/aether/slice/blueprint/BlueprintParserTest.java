@@ -404,4 +404,86 @@ class BlueprintParserTest {
                            });
         }
     }
+
+    @Nested
+    class SchemaRequiredCases {
+
+        @Test
+        void parse_schemaRequired_defaultsToTrue_withNoDeploymentSection() {
+            var dsl = """
+                    id = "org.example:no-deployment:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:service:1.0.0"
+                    """;
+
+            BlueprintParser.parse(dsl)
+                           .onFailureRun(Assertions::fail)
+                           .onSuccess(blueprint ->
+                                              assertThat(blueprint.deploymentConfig().isEmpty()).isTrue()
+                                     );
+        }
+
+        @Test
+        void parse_schemaRequired_defaultsToTrue_withDeploymentSection() {
+            var dsl = """
+                    id = "org.example:default-schema:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:service:1.0.0"
+
+                    [deployment]
+                    strategy = "rolling"
+                    """;
+
+            BlueprintParser.parse(dsl)
+                           .onFailureRun(Assertions::fail)
+                           .onSuccess(blueprint -> {
+                               assertThat(blueprint.deploymentConfig().isPresent()).isTrue();
+                               assertThat(blueprint.deploymentConfig().unwrap().schemaRequired()).isTrue();
+                           });
+        }
+
+        @Test
+        void parse_schemaRequired_parsedAsFalse() {
+            var dsl = """
+                    id = "org.example:no-schema:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:service:1.0.0"
+
+                    [deployment]
+                    strategy = "rolling"
+                    schema_required = false
+                    """;
+
+            BlueprintParser.parse(dsl)
+                           .onFailureRun(Assertions::fail)
+                           .onSuccess(blueprint -> {
+                               assertThat(blueprint.deploymentConfig().isPresent()).isTrue();
+                               assertThat(blueprint.deploymentConfig().unwrap().schemaRequired()).isFalse();
+                           });
+        }
+
+        @Test
+        void parse_schemaRequired_parsedAsTrue_whenExplicit() {
+            var dsl = """
+                    id = "org.example:explicit-schema:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:service:1.0.0"
+
+                    [deployment]
+                    strategy = "canary"
+                    schema_required = true
+                    """;
+
+            BlueprintParser.parse(dsl)
+                           .onFailureRun(Assertions::fail)
+                           .onSuccess(blueprint -> {
+                               assertThat(blueprint.deploymentConfig().isPresent()).isTrue();
+                               assertThat(blueprint.deploymentConfig().unwrap().schemaRequired()).isTrue();
+                           });
+        }
+    }
 }

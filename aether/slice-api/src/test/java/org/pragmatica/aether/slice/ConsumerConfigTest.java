@@ -49,6 +49,23 @@ class ConsumerConfigTest {
     }
 
     @Nested
+    class BackwardCompatibility {
+
+        @Test
+        void fourFieldFactory_usesDefaults_forCheckpointRetryDlq() {
+            var config = consumerConfig("compat", 50, ProcessingMode.PARALLEL, ErrorStrategy.SKIP);
+
+            assertThat(config.groupId()).isEqualTo("compat");
+            assertThat(config.maxBatchSize()).isEqualTo(50);
+            assertThat(config.processingMode()).isEqualTo(ProcessingMode.PARALLEL);
+            assertThat(config.errorStrategy()).isEqualTo(ErrorStrategy.SKIP);
+            assertThat(config.checkpointIntervalMs()).isEqualTo(1000L);
+            assertThat(config.maxRetries()).isEqualTo(3);
+            assertThat(config.deadLetterStream()).isEmpty();
+        }
+    }
+
+    @Nested
     class EnumValues {
 
         @Test

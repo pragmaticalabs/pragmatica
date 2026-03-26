@@ -35,6 +35,22 @@ class StreamConfigTest {
     }
 
     @Nested
+    class BackwardCompatibility {
+
+        @Test
+        void fourFieldFactory_usesDefaults_forMaxEventSize() {
+            var retention = RetentionPolicy.retentionPolicy(50, 1024L, 5000L);
+            var config = streamConfig("compat", 8, retention, "earliest");
+
+            assertThat(config.name()).isEqualTo("compat");
+            assertThat(config.partitions()).isEqualTo(8);
+            assertThat(config.retention()).isSameAs(retention);
+            assertThat(config.autoOffsetReset()).isEqualTo("earliest");
+            assertThat(config.maxEventSizeBytes()).isEqualTo(1_048_576L);
+        }
+    }
+
+    @Nested
     class CustomFactory {
 
         @Test

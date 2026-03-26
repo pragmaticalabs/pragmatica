@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLifecycleKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaMigrationLockKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -32,6 +33,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintResourcesValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
@@ -323,6 +325,8 @@ public interface ClusterDeploymentManager {
                 cleanupOrphanedSliceEntries();
                 // Resume drain evictions for any nodes that were mid-drain
                 resumeDrainEvictions();
+                // Recover stalled schema migrations (MIGRATING with expired locks)
+                recoverStalledSchemaMigrations();
             }
 
             /// Resume drain evictions for nodes that were DRAINING when the previous leader died.
@@ -332,6 +336,63 @@ public interface ClusterDeploymentManager {
                 }
                 log.info("Resuming drain evictions for {} nodes", drainingNodes.size());
                 drainingNodes.forEach(this::evictNextSliceFromNode);
+            }
+
+            /// Recover schema migrations stuck in MIGRATING state with expired locks.
+            /// On leader failover, the previous leader may have died mid-migration.
+            /// This scans for MIGRATING schemas whose locks have expired and resets them to PENDING.
+            private void recoverStalledSchemaMigrations() {
+                var stalledDatasources = new ArrayList<String>();
+                kvStore.forEach(SchemaVersionKey.class,
+                                SchemaVersionValue.class,
+                                (_, value) -> collectStalledMigration(value, stalledDatasources));
+                if (stalledDatasources.isEmpty()) {
+                    return;
+                }
+                log.info("Found {} stalled schema migrations, resetting to PENDING", stalledDatasources.size());
+                stalledDatasources.forEach(this::resetStalledMigration);
+            }
+
+            private void collectStalledMigration(SchemaVersionValue value, List<String> stalledDatasources) {
+                if (value.status() != SchemaStatus.MIGRATING) {
+                    return;
+                }
+                var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(value.datasourceName());
+                var lockExpired = kvStore.get(lockKey)
+                                         .filter(SchemaMigrationLockValue.class::isInstance)
+                                         .map(SchemaMigrationLockValue.class::cast)
+                                         .map(SchemaMigrationLockValue::isExpired)
+                                         .or(true);
+                if (lockExpired) {
+                    stalledDatasources.add(value.datasourceName());
+                }
+            }
+
+            private void resetStalledMigration(String datasourceName) {
+                log.info("Resetting stalled schema migration for '{}' to PENDING", datasourceName);
+                var versionKey = SchemaVersionKey.schemaVersionKey(datasourceName);
+                kvStore.get(versionKey)
+                       .filter(SchemaVersionValue.class::isInstance)
+                       .map(SchemaVersionValue.class::cast)
+                       .onPresent(value -> submitStalledMigrationReset(datasourceName, versionKey, value));
+            }
+
+            private void submitStalledMigrationReset(String datasourceName,
+                                                     SchemaVersionKey versionKey,
+                                                     SchemaVersionValue value) {
+                var updated = SchemaVersionValue.schemaVersionValue(datasourceName,
+                                                                    value.currentVersion(),
+                                                                    value.lastMigration(),
+                                                                    SchemaStatus.PENDING,
+                                                                    value.artifactCoords(),
+                                                                    value.attemptCount());
+                var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
+                var commands = List.<KVCommand<AetherKey>>of(new KVCommand.Put<>(versionKey, updated),
+                                                             new KVCommand.Remove<>(lockKey));
+                cluster.apply(commands)
+                       .onFailure(cause -> log.error("Failed to reset stalled migration for '{}': {}",
+                                                     datasourceName,
+                                                     cause.message()));
             }
 
             /// After state rebuild, check all LOADED slices and trigger activation if dependencies are ready.

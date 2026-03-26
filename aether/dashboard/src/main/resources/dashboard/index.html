@@ -151,6 +151,9 @@
                                         <span class="schema-badge" :class="$store.schema.statusClass(ds.status)" x-text="ds.status"></span>
                                         <span class="schema-version" x-text="'v' + ds.currentVersion"></span>
                                         <span class="schema-migration" x-text="ds.lastMigration"></span>
+                                        <button class="schema-retry-btn"
+                                                x-show="(ds.status || '').toUpperCase() === 'FAILED'"
+                                                @click="$store.schema.retrySchema(ds.name)">Retry</button>
                                     </div>
                                 </template>
                             </div>
