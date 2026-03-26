@@ -61,6 +61,12 @@ public sealed interface ManagementApiResponses {
                            String status,
                            String detail) {}
 
+    // ===== Certificate Status =====
+    record CertificateStatusResponse(String expiresAt,
+                                     long secondsUntilExpiry,
+                                     String lastRenewalAt,
+                                     String renewalStatus) {}
+
     // ===== Slice Routes =====
     record SlicesResponse(List<String> slices) {}
 

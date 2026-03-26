@@ -84,7 +84,8 @@ AetherCli.SchemaCommand.class,
 AetherCli.CanaryCommand.class,
 AetherCli.BlueGreenCommand.class,
 AetherCli.AbTestCommand.class,
-AetherCli.StreamCommand.class})
+AetherCli.StreamCommand.class,
+AetherCli.CertCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -3185,6 +3186,34 @@ public class AetherCli implements Runnable {
                                     .encodeToString(message.getBytes());
                 var body = "{\"data\":\"" + encoded + "\"}";
                 var response = streamParent.parent.postToNode("/api/streams/" + name + "/publish", body);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+    }
+
+    // ===== Certificate Commands =====
+    @Command(name = "cert", description = "Certificate management",
+    subcommands = {CertCommand.StatusCommand.class})
+    static class CertCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            // Default: show certificate status
+            var response = parent.fetchFromNode("/api/certificate");
+            System.out.println(formatJson(response));
+        }
+
+        @Command(name = "status", description = "Show certificate status and expiry info")
+        static class StatusCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private CertCommand certParent;
+
+            @Override
+            public Integer call() {
+                var response = certParent.parent.fetchFromNode("/api/certificate");
                 System.out.println(formatJson(response));
                 return 0;
             }

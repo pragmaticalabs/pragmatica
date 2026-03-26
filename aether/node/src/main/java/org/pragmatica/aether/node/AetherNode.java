@@ -261,6 +261,9 @@ public interface AetherNode {
     /// Get the stream partition manager for local stream operations.
     StreamPartitionManager streamPartitionManager();
 
+    /// Get the certificate renewal scheduler for observability.
+    Option<CertificateRenewalScheduler> certRenewalScheduler();
+
     /// Get the number of currently connected peer nodes in the cluster.
     /// This is a network-level count, not based on metrics exchange.
     int connectedNodeCount();
@@ -1157,7 +1160,12 @@ public interface AetherNode {
         // Create stream partition manager for local stream operations
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager();
         // Create certificate renewal scheduler if a provider is configured
-        var certRenewalScheduler = createCertRenewalScheduler(config, clusterNode);
+        // Management server is created later; use AtomicReference for deferred access
+        var managementServerRef = new java.util.concurrent.atomic.AtomicReference<Option<ManagementServer>>(Option.empty());
+        var certRenewalScheduler = createCertRenewalScheduler(config,
+                                                              clusterNode,
+                                                              appHttpServer,
+                                                              managementServerRef::get);
         // Create the node first (without management server reference)
         var startTimeMs = System.currentTimeMillis();
         var node = new aetherNode(config,
@@ -1238,6 +1246,8 @@ public interface AetherNode {
                                                                                               serverBossGroup,
                                                                                               serverWorkerGroup,
                                                                                               config.managementHttpProtocol());
+                                     // Wire management server into certificate renewal callback
+        managementServerRef.set(Option.some(managementServer));
                                      return new aetherNode(config,
                                                            delegateRouter,
                                                            kvStore,
@@ -1477,20 +1487,34 @@ public interface AetherNode {
 
     @SuppressWarnings("JBCT-PAT-01") // Conditional scheduler creation based on config
     private static Option<CertificateRenewalScheduler> createCertRenewalScheduler(AetherNodeConfig config,
-                                                                                  RabiaNode<KVCommand<AetherKey>> clusterNode) {
+                                                                                  RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                                                                  AppHttpServer appHttpServer,
+                                                                                  java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
         return config.certificateProvider()
-                     .flatMap(provider -> buildCertRenewalScheduler(config, provider, clusterNode));
+                     .flatMap(provider -> buildCertRenewalScheduler(config,
+                                                                    provider,
+                                                                    clusterNode,
+                                                                    appHttpServer,
+                                                                    managementServerSupplier));
     }
 
     @SuppressWarnings("JBCT-PAT-01") // Certificate rotation wiring: issue cert, build scheduler
     private static Option<CertificateRenewalScheduler> buildCertRenewalScheduler(AetherNodeConfig config,
                                                                                  org.pragmatica.net.tcp.security.CertificateProvider provider,
-                                                                                 RabiaNode<KVCommand<AetherKey>> clusterNode) {
+                                                                                 RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                                                                 AppHttpServer appHttpServer,
+                                                                                 java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
         var nodeId = config.self()
                            .id();
         var hostname = resolveHostname(config);
         return provider.issueCertificate(nodeId, hostname)
-                       .map(bundle -> createSchedulerFromBundle(provider, nodeId, hostname, bundle, clusterNode))
+                       .map(bundle -> createSchedulerFromBundle(provider,
+                                                                nodeId,
+                                                                hostname,
+                                                                bundle,
+                                                                clusterNode,
+                                                                appHttpServer,
+                                                                managementServerSupplier))
                        .option();
     }
 
@@ -1498,17 +1522,24 @@ public interface AetherNode {
                                                                          String nodeId,
                                                                          String hostname,
                                                                          CertificateBundle bundle,
-                                                                         RabiaNode<KVCommand<AetherKey>> clusterNode) {
+                                                                         RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                                                         AppHttpServer appHttpServer,
+                                                                         java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
         return CertificateRenewalScheduler.certificateRenewalScheduler(provider,
                                                                        nodeId,
                                                                        hostname,
                                                                        newBundle -> onCertificateRenewed(newBundle,
-                                                                                                         clusterNode),
+                                                                                                         clusterNode,
+                                                                                                         appHttpServer,
+                                                                                                         managementServerSupplier),
                                                                        bundle.notAfter());
     }
 
+    @SuppressWarnings("JBCT-PAT-01") // Certificate rotation: QUIC + HTTP servers
     private static void onCertificateRenewed(CertificateBundle newBundle,
-                                             RabiaNode<KVCommand<AetherKey>> clusterNode) {
+                                             RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                             AppHttpServer appHttpServer,
+                                             java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
         var log = LoggerFactory.getLogger(AetherNode.class);
         log.info("Certificate renewed, valid until {}", newBundle.notAfter());
         Result.all(QuicSslContextFactory.createServerFromBundle(newBundle),
@@ -1516,23 +1547,61 @@ public interface AetherNode {
               .id()
               .onSuccess(tuple -> triggerCertRotation(clusterNode,
                                                       tuple.first(),
-                                                      tuple.last()))
+                                                      tuple.last(),
+                                                      newBundle,
+                                                      appHttpServer,
+                                                      managementServerSupplier))
               .onFailure(cause -> log.error("Failed to build SSL contexts from renewed certificate: {}",
                                             cause.message()));
     }
 
+    @SuppressWarnings("JBCT-PAT-01") // Fork-join: rotate QUIC + management server + app HTTP server
     private static void triggerCertRotation(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                             io.netty.handler.codec.quic.QuicSslContext serverSsl,
-                                            io.netty.handler.codec.quic.QuicSslContext clientSsl) {
+                                            io.netty.handler.codec.quic.QuicSslContext clientSsl,
+                                            CertificateBundle newBundle,
+                                            AppHttpServer appHttpServer,
+                                            java.util.function.Supplier<Option<ManagementServer>> managementServerSupplier) {
         var log = LoggerFactory.getLogger(AetherNode.class);
+        // 1. Rotate QUIC network
+        rotateQuicNetwork(clusterNode, serverSsl, clientSsl, log);
+        // 2. Rotate management server
+        managementServerSupplier.get()
+                                .onPresent(mgmt -> rotateManagementServer(mgmt, newBundle, log));
+        // 3. Rotate app HTTP server
+        rotateAppHttpServer(appHttpServer, newBundle, log);
+    }
+
+    private static void rotateQuicNetwork(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                          io.netty.handler.codec.quic.QuicSslContext serverSsl,
+                                          io.netty.handler.codec.quic.QuicSslContext clientSsl,
+                                          Logger log) {
         if (clusterNode.network() instanceof QuicClusterNetwork quicNetwork) {
             quicNetwork.rotateCertificate(serverSsl, clientSsl)
                        .onSuccess(_ -> log.info("QUIC certificate rotation complete"))
                        .onFailure(cause -> log.error("QUIC certificate rotation failed: {}",
                                                      cause.message()));
         } else {
-            log.warn("Certificate rotation skipped: network is not QUIC-based");
+            log.warn("QUIC certificate rotation skipped: network is not QUIC-based");
         }
+    }
+
+    private static void rotateManagementServer(ManagementServer mgmt,
+                                               CertificateBundle newBundle,
+                                               Logger log) {
+        mgmt.rotateCertificate(newBundle)
+            .onSuccess(_ -> log.info("Management server certificate rotation complete"))
+            .onFailure(cause -> log.error("Management server certificate rotation failed: {}",
+                                          cause.message()));
+    }
+
+    private static void rotateAppHttpServer(AppHttpServer appHttpServer,
+                                            CertificateBundle newBundle,
+                                            Logger log) {
+        appHttpServer.rotateCertificate(newBundle)
+                     .onSuccess(_ -> log.info("App HTTP server certificate rotation complete"))
+                     .onFailure(cause -> log.error("App HTTP server certificate rotation failed: {}",
+                                                   cause.message()));
     }
 
     private static String resolveHostname(AetherNodeConfig config) {

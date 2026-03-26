@@ -83,6 +83,17 @@ public final class TlsContextFactory {
         return createServer(config);
     }
 
+    /// Create server-side SSL context from a [CertificateBundle].
+    /// Builds mutual TLS with the bundle's cert, key, and CA.
+    ///
+    /// @param bundle certificate bundle from a [CertificateProvider]
+    /// @return SSL context or error
+    public static Result<SslContext> createServerFromBundle(org.pragmatica.net.tcp.security.CertificateBundle bundle) {
+        var identity = new TlsConfig.Identity.FromProvider(bundle.certificatePem(), bundle.privateKeyPem());
+        var trust = new TlsConfig.Trust.FromCaBytes(bundle.caCertificatePem());
+        return buildServerContext(identity, Option.some(trust));
+    }
+
     // ===== Server Context Building =====
     private static Result<SslContext> buildServerContext(TlsConfig.Identity identity,
                                                          Option<TlsConfig.Trust> clientAuth) {

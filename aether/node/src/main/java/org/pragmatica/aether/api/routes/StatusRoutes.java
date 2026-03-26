@@ -1,6 +1,7 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.ClusterEvent;
+import org.pragmatica.aether.api.ManagementApiResponses.CertificateStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.ComponentHealth;
 import org.pragmatica.aether.api.ManagementApiResponses.EnrichedNodeInfo;
@@ -11,6 +12,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.NodeInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.NodesResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ReadinessResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StatusResponse;
+import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -63,7 +65,9 @@ public final class StatusRoutes implements RouteSource {
                          Route.<List<ClusterEvent>> get("/api/events")
                               .<String> withQuery(QueryParameter.aString("since"))
                               .toValue(this::buildEventsResponse)
-                              .asJson());
+                              .asJson(),
+                         Route.<CertificateStatusResponse> get("/api/certificate")
+                              .toJson(this::buildCertificateStatusResponse));
     }
 
     private List<ClusterEvent> buildEventsResponse(Option<String> sinceParam) {
@@ -227,6 +231,23 @@ public final class StatusRoutes implements RouteSource {
                                    routesReady
                                    ? "Route sync received"
                                    : "Awaiting initial route sync");
+    }
+
+    private CertificateStatusResponse buildCertificateStatusResponse() {
+        return nodeSupplier.get()
+                           .certRenewalScheduler()
+                           .map(StatusRoutes::toCertificateStatus)
+                           .or(new CertificateStatusResponse("N/A", 0, "N/A", "NOT_CONFIGURED"));
+    }
+
+    private static CertificateStatusResponse toCertificateStatus(CertificateRenewalScheduler scheduler) {
+        return new CertificateStatusResponse(scheduler.currentNotAfter()
+                                                      .toString(),
+                                             scheduler.secondsUntilExpiry(),
+                                             scheduler.lastRenewalAt()
+                                                      .toString(),
+                                             scheduler.renewalStatus()
+                                                      .name());
     }
 
     private static ComponentHealth buildQuorumHealth(AetherNode node) {

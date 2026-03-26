@@ -86,6 +86,9 @@ public interface AppHttpServer {
 
     Promise<Unit> stop();
 
+    /// Rotate TLS certificate by restarting HTTP servers with the new bundle.
+    Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle);
+
     Option<Integer> boundPort();
 
     /// Handle KV-Store updates to rebuild router when routes change.
@@ -393,6 +396,71 @@ class AppHttpServerImpl implements AppHttpServer {
                                                 .onSuccessRun(() -> log.info("App HTTP/3 server stopped")))
                            .or(Promise.success(unit()));
         return h1Stop.flatMap(_ -> h3Stop);
+    }
+
+    @Override
+    public Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
+        if (!config.enabled()) {
+            return Promise.success(unit());
+        }
+        log.info("Rotating app HTTP server TLS certificate");
+        return stopHttpServers().flatMap(_ -> restartWithNewBundle(newBundle));
+    }
+
+    private Promise<Unit> stopHttpServers() {
+        var h1Stop = Option.option(serverRef.getAndSet(null))
+                           .map(HttpServer::stop)
+                           .or(Promise.success(unit()));
+        var h3Stop = Option.option(h3ServerRef.getAndSet(null))
+                           .map(HttpServer::stop)
+                           .or(Promise.success(unit()));
+        return h1Stop.flatMap(_ -> h3Stop);
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") // Lifecycle: rebuild TLS from bundle and restart
+    private Promise<Unit> restartWithNewBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
+        var newTlsConfig = buildTlsFromBundle(newBundle);
+        var protocol = config.httpProtocol();
+        if (protocol.includesH1()) {
+            return restartH1WithTls(newTlsConfig).flatMap(_ -> protocol.includesH3()
+                                                               ? restartH3WithBundle(newBundle)
+                                                               : Promise.success(unit()));
+        }
+        return restartH3WithBundle(newBundle);
+    }
+
+    private Promise<Unit> restartH1WithTls(Option<TlsConfig> newTls) {
+        var serverConfig = HttpServerConfig.httpServerConfig("app-http",
+                                                             config.port())
+                                           .withMaxContentLength(config.maxRequestSize());
+        var finalConfig = newTls.map(serverConfig::withTls)
+                                .or(serverConfig);
+        java.util.function.BiConsumer<RequestContext, ResponseWriter> handler = config.httpProtocol() == HttpProtocol.BOTH
+                                                                                ? this::handleRequestWithAltSvc
+                                                                                : this::handleRequest;
+        var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(finalConfig,
+                                                                                                handler,
+                                                                                                bg,
+                                                                                                wg)))
+                                     .or(HttpServer.httpServer(finalConfig, handler));
+        return serverPromise.map(this::registerStartedH1Server)
+                            .onSuccess(_ -> log.info("App HTTP/1.1 server restarted with new certificate"))
+                            .onFailure(cause -> log.error("Failed to restart app HTTP/1.1 server: {}",
+                                                          cause.message()));
+    }
+
+    private Promise<Unit> restartH3WithBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
+        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle);
+        return quicTls.map(this::startH3WithSslContext)
+                      .onFailure(cause -> log.error("Failed to create QUIC SSL context for app server rotation: {}",
+                                                    cause.message()))
+                      .or(Promise.success(unit()));
+    }
+
+    private static Option<TlsConfig> buildTlsFromBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
+        var identity = new TlsConfig.Identity.FromProvider(newBundle.certificatePem(), newBundle.privateKeyPem());
+        var trust = new TlsConfig.Trust.FromCaBytes(newBundle.caCertificatePem());
+        return Option.some(new TlsConfig.Server(identity, Option.some(trust)));
     }
 
     @Override

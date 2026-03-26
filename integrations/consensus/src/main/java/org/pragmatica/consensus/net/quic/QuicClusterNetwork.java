@@ -265,16 +265,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
             .flatMap(port -> stopAndRestartServer(port, newServerSsl, newClientSsl));
     }
 
+    @SuppressWarnings("JBCT-PAT-01") // Lifecycle: update contexts, stop old, start new
     private Promise<Unit> stopAndRestartServer(int port, QuicSslContext newServerSsl, QuicSslContext newClientSsl) {
+        // Update client context immediately — new outbound connections use the new cert
+        clientSslContext = newClientSsl;
+        serverSslContext = newServerSsl;
+        // Stop old server, then immediately create and start new one
         var oldServer = server;
-        server = null;
         var stopPromise = oldServer != null ? oldServer.stop() : Promise.unitPromise();
         return stopPromise.flatMap(_ -> rebuildAndStart(port, newServerSsl, newClientSsl));
     }
 
     private Promise<Unit> rebuildAndStart(int port, QuicSslContext newServerSsl, QuicSslContext newClientSsl) {
-        serverSslContext = newServerSsl;
-        clientSslContext = newClientSsl;
         server = QuicClusterServer.quicClusterServer(
             self.id(), self.role(), self.address(), serializer, deserializer,
             newServerSsl, Option.empty(), this::onPeerConnected, this::onMessageReceived
@@ -284,8 +286,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
             newClientSsl, Option.empty(), this::onMessageReceived
         );
         return server.start(port)
-                     .onSuccess(_ -> log.info("QUIC server restarted on port {} with new certificate", port))
-                     .onFailure(cause -> log.error("Failed to restart QUIC server after cert rotation: {}", cause.message()))
+                     .onSuccess(_ -> log.info("QUIC server restarted on port {} with renewed certificate", port))
+                     .onFailure(cause -> log.error("Failed to restart QUIC server after certificate rotation: {}", cause.message()))
                      .mapToUnit();
     }
 

@@ -93,6 +93,9 @@ public interface ManagementServer {
 
     Promise<Unit> stop();
 
+    /// Rotate TLS certificate by restarting HTTP servers with the new bundle.
+    Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle);
+
     static ManagementServer managementServer(int port,
                                              Supplier<AetherNode> nodeSupplier,
                                              AlertManager alertManager,
@@ -344,6 +347,74 @@ class ManagementServerImpl implements ManagementServer {
                                                 .onSuccessRun(() -> log.info("Management HTTP/3 server stopped")))
                            .or(Promise.success(unit()));
         return h1Stop.flatMap(_ -> h3Stop);
+    }
+
+    @Override
+    public Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
+        log.info("Rotating management server TLS certificate");
+        return stopHttpServers().flatMap(_ -> restartWithNewBundle(newBundle));
+    }
+
+    private Promise<Unit> stopHttpServers() {
+        var h1Stop = Option.option(serverRef.getAndSet(null))
+                           .map(HttpServer::stop)
+                           .or(Promise.success(unit()));
+        var h3Stop = Option.option(h3ServerRef.getAndSet(null))
+                           .map(HttpServer::stop)
+                           .or(Promise.success(unit()));
+        return h1Stop.flatMap(_ -> h3Stop);
+    }
+
+    @SuppressWarnings("JBCT-PAT-01") // Lifecycle: rebuild TLS config from bundle and restart servers
+    private Promise<Unit> restartWithNewBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
+        var newTlsConfig = buildTlsFromBundle(newBundle);
+        var protocol = httpProtocol;
+        if (protocol.includesH1()) {
+            return restartH1WithTls(newTlsConfig).flatMap(_ -> protocol.includesH3()
+                                                               ? restartH3WithBundle(newBundle)
+                                                               : Promise.success(unit()));
+        }
+        return restartH3WithBundle(newBundle);
+    }
+
+    private Promise<Unit> restartH1WithTls(Option<TlsConfig> newTls) {
+        var wsHandler = new DashboardWebSocketHandler(metricsPublisher, wsAuthenticator);
+        var wsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/dashboard", wsHandler);
+        var statusWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/status", statusWsHandler);
+        var eventWsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/events", eventWsHandler);
+        var config = HttpServerConfig.httpServerConfig("management", port)
+                                     .withMaxContentLength(MAX_CONTENT_LENGTH)
+                                     .withWebSocket(wsEndpoint)
+                                     .withWebSocket(statusWsEndpoint)
+                                     .withWebSocket(eventWsEndpoint);
+        var serverConfig = newTls.map(config::withTls)
+                                 .or(config);
+        java.util.function.BiConsumer<RequestContext, ResponseWriter> handler = httpProtocol == HttpProtocol.BOTH
+                                                                                ? this::handleRequestWithAltSvc
+                                                                                : this::handleRequest;
+        var serverPromise = bossGroup.flatMap(bg -> workerGroup.map(wg -> HttpServer.httpServer(serverConfig,
+                                                                                                handler,
+                                                                                                bg,
+                                                                                                wg)))
+                                     .or(HttpServer.httpServer(serverConfig, handler));
+        return serverPromise.map(this::registerStartedH1Server)
+                            .onSuccess(_ -> log.info("Management HTTP/1.1 server restarted with new certificate"))
+                            .onFailure(cause -> log.error("Failed to restart management HTTP/1.1 server: {}",
+                                                          cause.message()));
+    }
+
+    private Promise<Unit> restartH3WithBundle(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
+        var quicTls = QuicSslContextFactory.createServerFromBundle(newBundle);
+        return quicTls.map(this::startH3WithSslContext)
+                      .onFailure(cause -> log.error("Failed to create QUIC SSL context for management server rotation: {}",
+                                                    cause.message()))
+                      .or(Promise.success(unit()));
+    }
+
+    private static Option<TlsConfig> buildTlsFromBundle(org.pragmatica.net.tcp.security.CertificateBundle bundle) {
+        var identity = new TlsConfig.Identity.FromProvider(bundle.certificatePem(), bundle.privateKeyPem());
+        var trust = new TlsConfig.Trust.FromCaBytes(bundle.caCertificatePem());
+        return Option.some(new TlsConfig.Server(identity, Option.some(trust)));
     }
 
     private void onServerStarted(HttpServer server) {
