@@ -12,7 +12,8 @@ subcommands = {ClusterListCommand.class,
 ClusterUseCommand.class,
 ClusterRemoveCommand.class,
 ClusterStatusCommand.class,
-ClusterExportCommand.class})
+ClusterExportCommand.class,
+ClusterApplyCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class ClusterCommand implements Runnable {
     @Override

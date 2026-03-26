@@ -419,6 +419,28 @@ public sealed interface ManagementApiResponses {
                                  String version,
                                  boolean isLeader) {}
 
+    // ===== Cluster Config Apply Routes =====
+    record ApplyConfigRequest(String tomlContent, long expectedVersion) {}
+
+    record ApplyConfigResponse(long configVersion,
+                               String clusterName,
+                               int coreCount,
+                               long updatedAt) {}
+
+    record DryRunResponse(String clusterName,
+                          long fromVersion,
+                          long toVersion,
+                          List<String> plannedChanges,
+                          int changeCount,
+                          int rejectedCount) {}
+
+    record ScaleRequest(int coreCount, long expectedVersion) {}
+
+    record ScaleClusterResponse(boolean success,
+                                int previousCount,
+                                int newCount,
+                                long configVersion) {}
+
     // ===== Repository Routes =====
     record ArtifactInfoResponse(String artifact,
                                 long size,

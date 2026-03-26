@@ -49,6 +49,26 @@ sealed interface ClusterHttpClient {
                        .flatMap(ClusterHttpClient::extractBody);
     }
 
+    /// Resolve the active cluster endpoint from the registry and POST JSON body to a path.
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
+    static Result<String> postToCluster(String path, String jsonBody) {
+        return resolveEndpoint().flatMap(endpoint -> doPost(endpoint, path, jsonBody));
+    }
+
+    @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
+    private static Result<String> doPost(String endpoint, String path, String jsonBody) {
+        var uri = URI.create(endpoint + path);
+        var apiKey = resolveApiKey();
+        var builder = HttpRequest.newBuilder()
+                                 .uri(uri)
+                                 .header("Content-Type", "application/json")
+                                 .POST(HttpRequest.BodyPublishers.ofString(jsonBody));
+        apiKey.onPresent(key -> builder.header("X-API-Key", key));
+        return HTTP_OPS.sendString(builder.build())
+                       .await()
+                       .flatMap(ClusterHttpClient::extractBody);
+    }
+
     private static Result<String> extractBody(HttpResult<String> response) {
         return response.statusCode() >= 200 && response.statusCode() < 300
                ? Result.success(response.body())
