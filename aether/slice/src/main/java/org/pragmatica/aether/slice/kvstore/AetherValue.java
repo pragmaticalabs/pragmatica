@@ -1180,4 +1180,83 @@ public sealed interface AetherValue {
             return new StreamRegistrationValue(nodeId, consumerGroup, batchMode, eventType);
         }
     }
+
+    /// Canonical cluster configuration stored in consensus KV-Store.
+    ///
+    /// The TOML content is stored as a string for human readability and
+    /// round-trip fidelity (comments are stripped, but field ordering is preserved).
+    /// Structured fields are extracted for quick access without parsing.
+    ///
+    /// @param tomlContent full TOML string (comments stripped)
+    /// @param clusterName extracted from [cluster].name
+    /// @param version extracted from [cluster].version
+    /// @param coreCount extracted from [cluster.core].count
+    /// @param coreMin extracted from [cluster.core].min
+    /// @param coreMax extracted from [cluster.core].max
+    /// @param deploymentType extracted from [deployment].type
+    /// @param configVersion monotonically increasing version for optimistic concurrency
+    /// @param updatedAt epoch millis
+    record ClusterConfigValue(String tomlContent,
+                              String clusterName,
+                              String version,
+                              int coreCount,
+                              int coreMin,
+                              int coreMax,
+                              String deploymentType,
+                              long configVersion,
+                              long updatedAt) implements AetherValue {
+        /// Factory method with current timestamp.
+        public static ClusterConfigValue clusterConfigValue(String tomlContent,
+                                                            String clusterName,
+                                                            String version,
+                                                            int coreCount,
+                                                            int coreMin,
+                                                            int coreMax,
+                                                            String deploymentType,
+                                                            long configVersion) {
+            return new ClusterConfigValue(tomlContent,
+                                          clusterName,
+                                          version,
+                                          coreCount,
+                                          coreMin,
+                                          coreMax,
+                                          deploymentType,
+                                          configVersion,
+                                          System.currentTimeMillis());
+        }
+
+        /// Factory method with explicit timestamp.
+        public static ClusterConfigValue clusterConfigValue(String tomlContent,
+                                                            String clusterName,
+                                                            String version,
+                                                            int coreCount,
+                                                            int coreMin,
+                                                            int coreMax,
+                                                            String deploymentType,
+                                                            long configVersion,
+                                                            long updatedAt) {
+            return new ClusterConfigValue(tomlContent,
+                                          clusterName,
+                                          version,
+                                          coreCount,
+                                          coreMin,
+                                          coreMax,
+                                          deploymentType,
+                                          configVersion,
+                                          updatedAt);
+        }
+
+        /// Returns a copy with incremented config version and updated timestamp.
+        public ClusterConfigValue withIncrementedVersion() {
+            return new ClusterConfigValue(tomlContent,
+                                          clusterName,
+                                          version,
+                                          coreCount,
+                                          coreMin,
+                                          coreMax,
+                                          deploymentType,
+                                          configVersion + 1,
+                                          System.currentTimeMillis());
+        }
+    }
 }

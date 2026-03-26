@@ -166,6 +166,7 @@ public final class KVStoreSerializer {
             case StreamPartitionAssignmentKey _ -> "stream-assign";
             case StreamCursorCheckpointKey _ -> "stream-cursor";
             case StreamRegistrationKey _ -> "stream-reg";
+            case ClusterConfigKey _ -> "cluster-config";
         };
     }
 
@@ -224,6 +225,7 @@ public final class KVStoreSerializer {
             case StreamPartitionAssignmentValue v -> serializeStreamPartitionAssignment(v);
             case StreamCursorCheckpointValue v -> serializeStreamCursorCheckpoint(v);
             case StreamRegistrationValue v -> serializeStreamRegistration(v);
+            case ClusterConfigValue v -> serializeClusterConfig(v);
         };
     }
 
@@ -347,6 +349,12 @@ public final class KVStoreSerializer {
                 .id() + PIPE + v.memberCount() + PIPE + memberIds + PIPE + v.tcpAddress() + PIPE + v.announcedAt();
     }
 
+    private static String serializeClusterConfig(ClusterConfigValue v) {
+        return v.clusterName() + PIPE + v.version() + PIPE + v.coreCount() + PIPE + v.coreMin() + PIPE + v.coreMax() + PIPE + v.deploymentType() + PIPE + v.configVersion() + PIPE + v.updatedAt() + PIPE + v.tomlContent()
+                                                                                                                                                                                                             .replace("|",
+                                                                                                                                                                                                                      "\\|");
+    }
+
     // --- Deserialization helpers ---
     private static Result<Map.Entry<AetherKey, AetherValue>> parseEntry(String section, String line) {
         var eqIndex = line.indexOf(" = ");
@@ -392,6 +400,7 @@ public final class KVStoreSerializer {
             case "schema-lock" -> parseSchemaMigrationLockEntry(identity, rawValue);
             case "ab-test" -> parseAbTestEntry(identity, rawValue);
             case "ab-test-routing" -> parseAbTestRoutingEntry(identity, rawValue);
+            case "cluster-config" -> parseClusterConfigEntry(identity, rawValue);
             default -> new SerializationError.UnknownKeyType(section).result();
         };
     }
@@ -1005,6 +1014,24 @@ public final class KVStoreSerializer {
     private static String serializeStreamRegistration(StreamRegistrationValue v) {
         return v.nodeId()
                 .id() + PIPE + v.consumerGroup() + PIPE + v.batchMode() + PIPE + v.eventType();
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseClusterConfigEntry(String identity, String raw) {
+        var parts = raw.split("(?<!\\\\)\\|", - 1);
+        if (parts.length != 9) {
+            return parseFailure("cluster-config value requires 9 fields, got " + parts.length);
+        }
+        return ClusterConfigKey.clusterConfigKey("cluster-config/" + identity)
+                               .map(key -> entry(key,
+                                                 new ClusterConfigValue(parts[8].replace("\\|", "|"),
+                                                                        parts[0],
+                                                                        parts[1],
+                                                                        Integer.parseInt(parts[2]),
+                                                                        Integer.parseInt(parts[3]),
+                                                                        Integer.parseInt(parts[4]),
+                                                                        parts[5],
+                                                                        Long.parseLong(parts[6]),
+                                                                        Long.parseLong(parts[7]))));
     }
 
     private static <T> Result<T> parseFailure(String detail) {

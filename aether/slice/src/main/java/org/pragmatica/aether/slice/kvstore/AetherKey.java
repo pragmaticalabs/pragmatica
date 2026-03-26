@@ -1250,6 +1250,8 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> AB_TEST_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid ab-test key format: %s");
     Fn1<Cause, String> AB_TEST_ROUTING_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid ab-test-routing key format: %s");
 
+    Fn1<Cause, String> CLUSTER_CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-config key format: %s");
+
     // Stream key format errors
     Fn1<Cause, String> STREAM_METADATA_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-meta key format: %s");
     Fn1<Cause, String> STREAM_PARTITION_ASSIGNMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-assign key format: %s");
@@ -1445,6 +1447,49 @@ public sealed interface AetherKey extends StructuredKey {
                                                                               configSection,
                                                                               artifact,
                                                                               method));
+        }
+    }
+
+    /// Cluster config key format:
+    /// ```
+    /// cluster-config/{configVersion}
+    /// ```
+    /// Stores cluster-wide configuration in consensus.
+    /// Version 0 is the "current" (active) config; versioned keys are historical snapshots.
+    record ClusterConfigKey(long configVersion) implements AetherKey {
+        private static final String PREFIX = "cluster-config/";
+
+        @Override
+        public String asString() {
+            return PREFIX + configVersion;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        /// The "current" key always points to the latest version.
+        @SuppressWarnings("JBCT-VO-02")
+        public static final ClusterConfigKey CURRENT = new ClusterConfigKey(0);
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static ClusterConfigKey clusterConfigKey(long configVersion) {
+            return new ClusterConfigKey(configVersion);
+        }
+
+        public static Result<ClusterConfigKey> clusterConfigKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return CLUSTER_CONFIG_KEY_FORMAT_ERROR.apply(key)
+                                                      .result();
+            }
+            var versionPart = key.substring(PREFIX.length());
+            if (versionPart.isEmpty()) {
+                return CLUSTER_CONFIG_KEY_FORMAT_ERROR.apply(key)
+                                                      .result();
+            }
+            return Number.parseLong(versionPart)
+                         .map(ClusterConfigKey::new);
         }
     }
 }
