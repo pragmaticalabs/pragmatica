@@ -319,7 +319,15 @@ Part of Cloud Integration (#3). Per-provider status:
 
 ### LOWER PRIORITY
 
-6. **Configurable Rate Limiting per HTTP Route**
+6. **Cross-Environment Fluid Migration** — [spec](../../specs/fluid-migration-spec.md), [#101](https://github.com/pragmaticalabs/pragmatica/issues/101)
+    - Zero-downtime migration between cloud providers, cloud↔on-prem, or regions
+    - NodeLifecycleValue `provider` field + CLI `--provider` filter
+    - DNS Provider SPI (Route53, Cloud DNS, Azure DNS)
+    - `aether cluster migrate` composite command with rollback
+    - Operator runbook for each migration scenario
+    - **Target: RC2**
+
+7. **Configurable Rate Limiting per HTTP Route**
      - Per-route rate limiting configuration in blueprint or management API
      - Token bucket or sliding window algorithm
      - Configurable limits: requests/second, burst size
@@ -327,26 +335,26 @@ Part of Cloud Integration (#3). Per-provider status:
      - Cluster-aware: distributed counters via consensus or per-node local limits
      - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
 
-7. **Advanced Topology Management**
+8. **Advanced Topology Management**
     - Proactive node replacement: track node age/health, replace before failure (rolling replacement for zero-downtime patching)
     - Placement constraints: min N nodes per availability zone, zone-aware provisioning on failure
     - Cost-aware scaling: prefer spot for scale-up, prefer spot termination for scale-down
     - Node quality scoring: replace consistently underperforming nodes proactively
     - Spot termination notice handling: preemptive on-demand replacement on 2-min AWS spot warning
 
-8. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
+9. **Passive Worker Pools — Remaining Phases** — [design spec](../../specs/passive-worker-pools-spec.md)
     - Phases 1, 2a, 2b, 2b.5 complete in v0.19.3. Remaining work driven by real demand:
       - Phase 2c: Spot pool, spot-node exclusion from DHT ring
       - Phase 3: Multi-region, cross-region governors
     - **Architecture:** Small consensus core (5-7-9 active nodes) + self-organizing worker pools with elected governors. SWIM gossip for O(1) membership. Zone-aware grouping. Event-based community scaling.
     - **Research:** [10-system comparative analysis](../../internal/passive-worker-pool-research.md)
 
-9. **Observability Dashboard UI**
+10. **Observability Dashboard UI**
    - Wire `ObservabilityDepthRegistry` data to dashboard with UI for configuring per-method depth thresholds
    - Backend REST API (`/api/observability/depth`) and KV-store sync already implemented
    - Current state is functional; production value but no customers yet
 
-10. **Invocation Observability Dashboard Tab**
+11. **Invocation Observability Dashboard Tab**
    - "Requests" tab: table view with timestamp, requestId, caller → callee, depth, duration, status
    - Click-to-expand tree view showing invocation depth with input/output at each level
    - Waterfall view for multi-hop request visualization
@@ -355,7 +363,7 @@ Part of Cloud Integration (#3). Per-provider status:
    - See [RFC-0010](../../../../docs/rfc/RFC-0010-unified-invocation-observability.md) for data model and API
    - Backend complete (RFC-0010): REST API and trace store ready
 
-11. **Slice Development IDE Plugins**
+12. **Slice Development IDE Plugins**
     - IDE plugins for Aether slice development, providing deep integration with the JBCT toolchain
     - **Recommended approach:** build a shared **Language Server (LSP)** backend first, then thin IDE-specific clients. IntelliJ IDEA gets a native plugin for features that LSP cannot express (refactoring, inspections, run configs). VS Code, Eclipse, and NetBeans consume the LSP directly.
 
