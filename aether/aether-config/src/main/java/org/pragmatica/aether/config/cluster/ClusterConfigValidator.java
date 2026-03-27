@@ -99,7 +99,7 @@ public final class ClusterConfigValidator {
     }
 
     private static void validateSecretReference(String secret, List<ClusterConfigError> errors) {
-        if (!secret.startsWith("${secrets:") && secret.contains("${")) {
+        if (secret.contains("${") && !secret.startsWith("${secrets:") && !secret.startsWith("${env:")) {
             errors.add(new ClusterConfigError.InvalidSecretReference(secret));
         }
     }

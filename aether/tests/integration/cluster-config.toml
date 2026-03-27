@@ -1,15 +1,18 @@
 # Aether integration test cluster configuration
-# 5-node on-premises Docker cluster
+# 5-node on-premises Docker cluster (single host via Docker Compose)
 
 [deployment]
 type = "on-premises"
+
+[deployment.instances]
+core = "default"
 
 [deployment.runtime]
 type = "container"
 image = "ghcr.io/pragmaticalabs/aether-node:0.25.0"
 
 [deployment.nodes]
-core = "${TARGET_HOST}"
+core = "${TARGET_HOST},${TARGET_HOST},${TARGET_HOST},${TARGET_HOST},${TARGET_HOST}"
 
 [deployment.ports]
 cluster = 6000
@@ -19,7 +22,7 @@ swim = 6100
 
 [deployment.tls]
 auto_generate = true
-cluster_secret = "${env:AETHER_CLUSTER_SECRET}"
+cluster_secret = "integration-test-secret-do-not-use-in-production"
 
 [deployment.ssh]
 user = "${env:AETHER_SSH_USER}"
@@ -37,30 +40,3 @@ max = 15
 [cluster.auto_heal]
 enabled = true
 retry_interval = "10s"
-
-[management]
-port = 5150
-
-[management.api-keys.admin-key]
-name = "test-admin"
-roles = ["admin"]
-
-[management.api-keys.operator-key]
-name = "test-operator"
-roles = ["operator"]
-
-[management.api-keys.viewer-key]
-name = "test-viewer"
-roles = ["viewer"]
-
-[app-http]
-enabled = true
-port = 8070
-
-[app-http.api-keys.admin-key]
-name = "test-admin"
-roles = ["admin"]
-
-[app-http.api-keys.viewer-key]
-name = "test-viewer"
-roles = ["viewer"]
