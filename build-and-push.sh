@@ -50,9 +50,9 @@ echo ""
 
 # Step 1: Build
 if [ "$SKIP_BUILD" = false ]; then
-    echo "[1/4] Building project..."
+    echo "[1/4] Building project (full build with lint + tests)..."
     START=$(date +%s)
-    mvn install -DskipTests -q
+    ./build.sh
     END=$(date +%s)
     echo "  Built in $((END - START))s"
 else
