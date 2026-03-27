@@ -59,6 +59,12 @@ else
     echo "[1/4] Skipping build (--skip-build)"
 fi
 
+# Update local CLI if installed
+if [ -d "$HOME/.aether/lib" ]; then
+    cp aether/cli/target/aether.jar "$HOME/.aether/lib/aether.jar"
+    echo "  Updated local CLI at ~/.aether/lib/aether.jar"
+fi
+
 # Verify JAR exists
 JAR="aether/node/target/aether-node.jar"
 if [ ! -f "$JAR" ]; then
