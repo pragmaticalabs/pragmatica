@@ -95,23 +95,28 @@ START=$(date +%s)
 
 remote << REMOTE_BUILD
 cd /tmp/aether-build
-# Simple Dockerfile that copies from local context
+# Create Dockerfile only if missing (preserves Docker layer cache)
+if [ ! -f Dockerfile.local ]; then
 cat > Dockerfile.local << 'DFILE'
 FROM eclipse-temurin:25-alpine
 
 RUN addgroup -g 1000 aether && adduser -D -u 1000 -G aether aether
 RUN mkdir -p /app /data /config && chown -R aether:aether /app /data /config
 
-COPY --chown=aether:aether aether-node.jar /app/aether-node.jar
+# Config changes rarely — cached layer
 COPY --chown=aether:aether aether.toml /app/aether.toml
 
 USER aether
 WORKDIR /app
-
 EXPOSE 8090/udp 8190/udp 8080
+
+# JAR changes often — last layer for optimal caching
+COPY --chown=aether:aether aether-node.jar /app/aether-node.jar
 
 ENTRYPOINT ["sh", "-c", "exec java \${JAVA_OPTS:--Xmx512m -XX:+UseZGC -XX:+ZGenerational} -Djdk.virtualThreadScheduler.parallelism=\${VTHREAD_PARALLELISM:-\$(nproc)} -jar /app/aether-node.jar --config=\${CONFIG_PATH:-/app/aether.toml} --node-id=\${NODE_ID:-node-1} --port=\${CLUSTER_PORT:-8090} --management-port=\${MANAGEMENT_PORT:-8080} \${PEERS:+--peers=\$PEERS}"]
 DFILE
+echo "  Dockerfile created"
+fi
 
 docker build -t ${IMAGE} -f Dockerfile.local . 2>&1 | tail -3
 REMOTE_BUILD
