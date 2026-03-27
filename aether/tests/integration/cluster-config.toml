@@ -12,7 +12,7 @@ type = "container"
 image = "ghcr.io/pragmaticalabs/aether-node:0.25.0"
 
 [deployment.nodes]
-core = "${TARGET_HOST},${TARGET_HOST},${TARGET_HOST},${TARGET_HOST},${TARGET_HOST}"
+core = "${env:TARGET_HOST},${env:TARGET_HOST},${env:TARGET_HOST},${env:TARGET_HOST},${env:TARGET_HOST}"
 
 [deployment.ports]
 cluster = 6000

@@ -1,10 +1,12 @@
 package org.pragmatica.aether.cli.cluster;
 
+import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.ClusterConfigParser;
 import org.pragmatica.aether.config.cluster.ClusterManagementConfig;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.Callable;
 
@@ -49,7 +51,15 @@ class ClusterBootstrapCommand implements Callable<Integer> {
 
     private Result<ClusterManagementConfig> parseConfig() {
         System.out.printf("Reading config from %s...%n", configFile);
-        return ClusterConfigParser.parseFile(configFile);
+        return readFileContent(configFile).flatMap(ConfigReferenceResolver::resolveAll)
+                              .flatMap(ClusterConfigParser::parse);
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<String> readFileContent(Path path) {
+        return Result.lift(e -> new ClusterConfigError.ParseFailed("Failed to read file: " + path + " (" + e.getMessage()
+                                                                   + ")"),
+                           () -> Files.readString(path));
     }
 
     private Result<BootstrapOrchestrator.BootstrapResult> confirmAndBootstrap(ClusterManagementConfig config) {

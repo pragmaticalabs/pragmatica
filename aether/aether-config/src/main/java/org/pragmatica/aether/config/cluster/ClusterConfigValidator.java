@@ -91,18 +91,8 @@ public final class ClusterConfigValidator {
         }
     }
 
-    /// VAL-14: TLS secret reference validation.
-    private static void validateTls(DeploymentSpec deployment, List<ClusterConfigError> errors) {
-        deployment.tls()
-                  .onPresent(tls -> tls.clusterSecret()
-                                       .onPresent(secret -> validateSecretReference(secret, errors)));
-    }
-
-    private static void validateSecretReference(String secret, List<ClusterConfigError> errors) {
-        if (secret.contains("${") && !secret.startsWith("${secrets:") && !secret.startsWith("${env:")) {
-            errors.add(new ClusterConfigError.InvalidSecretReference(secret));
-        }
-    }
+    /// VAL-14: TLS validation (secret references are resolved before parsing, so no reference validation needed).
+    private static void validateTls(DeploymentSpec deployment, List<ClusterConfigError> errors) {}
 
     /// VAL-02: cluster name must be non-blank, match pattern, max 63 chars.
     private static void validateClusterName(ClusterSpec cluster, List<ClusterConfigError> errors) {

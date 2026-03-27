@@ -44,9 +44,9 @@ sealed interface BootstrapOrchestrator {
     HttpOperations HTTP = JdkHttpOperations.jdkHttpOperations();
 
     /// Execute the full bootstrap flow, dispatching by deployment type.
+    /// References must already be resolved before calling this method.
     static Result<BootstrapResult> bootstrap(ClusterManagementConfig config) {
-        return validateConfig(config).flatMap(SecretResolver::resolve)
-                             .flatMap(BootstrapOrchestrator::dispatchByType);
+        return validateConfig(config).flatMap(BootstrapOrchestrator::dispatchByType);
     }
 
     private static Result<BootstrapResult> dispatchByType(ClusterManagementConfig config) {

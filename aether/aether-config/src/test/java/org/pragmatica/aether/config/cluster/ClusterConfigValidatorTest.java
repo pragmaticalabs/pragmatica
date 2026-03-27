@@ -213,9 +213,11 @@ class ClusterConfigValidatorTest {
     }
 
     @Nested
-    class Val14InvalidSecretReference {
+    class Val14SecretReferences {
         @Test
-        void validate_invalidSecretPlaceholder_failure() {
+        void validate_resolvedSecretValue_success() {
+            // Secret references are now resolved at string level before parsing.
+            // Validator should accept any resolved (plain) value.
             var base = validConfig();
             var config = ClusterManagementConfig.clusterManagementConfig(
                 DeploymentSpec.deploymentSpec(
@@ -225,13 +227,14 @@ class ClusterConfigValidatorTest {
                     base.deployment().zones(),
                     base.deployment().ports(),
                     Option.some(TlsDeploymentConfig.tlsDeploymentConfig(true,
-                                                                        Option.some("${invalid:ref}"),
+                                                                        Option.some("my-resolved-secret-value"),
                                                                         "720h")),
                     base.deployment().nodes()
                 ),
                 base.cluster()
             );
-            assertValidationContains(config, "Invalid secret reference");
+            ClusterConfigValidator.validate(config)
+                                  .onFailure(cause -> assertThat(cause.message()).doesNotContain("secret"));
         }
     }
 
