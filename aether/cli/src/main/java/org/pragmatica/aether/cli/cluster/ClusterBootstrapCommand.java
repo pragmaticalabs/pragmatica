@@ -1,7 +1,6 @@
 package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.ExitCode;
-import org.pragmatica.aether.cli.OutputOptions;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.ClusterConfigParser;
 import org.pragmatica.aether.config.cluster.ClusterManagementConfig;
@@ -12,8 +11,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.Callable;
 
+import picocli.CommandLine;
 import picocli.CommandLine.Command;
-import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
@@ -36,8 +35,8 @@ class ClusterBootstrapCommand implements Callable<Integer> {
     @Option(names = "--compose-only", description = "Generate docker-compose.yml and print to stdout, then exit")
     private boolean composeOnly;
 
-    @Mixin
-    private OutputOptions output;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
     @Override
     public Integer call() {

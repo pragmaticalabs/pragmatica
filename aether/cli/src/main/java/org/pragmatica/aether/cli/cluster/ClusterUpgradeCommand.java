@@ -2,7 +2,6 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
-import org.pragmatica.aether.cli.OutputOptions;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
@@ -10,8 +9,8 @@ import org.pragmatica.lang.Result;
 import java.util.concurrent.Callable;
 import java.util.regex.Pattern;
 
+import picocli.CommandLine;
 import picocli.CommandLine.Command;
-import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 
 import tools.jackson.databind.JsonNode;
@@ -32,8 +31,8 @@ class ClusterUpgradeCommand implements Callable<Integer> {
     @Option(names = "--version", required = true, description = "Target version (e.g., 0.26.0)")
     private String targetVersion;
 
-    @Mixin
-    private OutputOptions output;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
     @Override
     public Integer call() {
@@ -64,7 +63,7 @@ class ClusterUpgradeCommand implements Callable<Integer> {
     }
 
     private int onSuccess(String json) {
-        return OutputFormatter.printAction(json, output, "Upgrade initiated.");
+        return OutputFormatter.printAction(json, parent.outputOptions(), "Upgrade initiated.");
     }
 
     private static int onFailure(Cause cause) {

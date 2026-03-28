@@ -1,15 +1,13 @@
 package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.ExitCode;
-import org.pragmatica.aether.cli.OutputFormatter;
-import org.pragmatica.aether.cli.OutputOptions;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 
 import java.util.concurrent.Callable;
 
+import picocli.CommandLine;
 import picocli.CommandLine.Command;
-import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
@@ -35,8 +33,8 @@ class ClusterDrainCommand implements Callable<Integer> {
     @Option(names = "--timeout", description = "Timeout in seconds when waiting (default: 120)")
     private int timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
 
-    @Mixin
-    private OutputOptions output;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
     @Override
     public Integer call() {

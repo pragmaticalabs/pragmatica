@@ -2,13 +2,12 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
-import org.pragmatica.aether.cli.OutputOptions;
 import org.pragmatica.lang.Cause;
 
 import java.util.concurrent.Callable;
 
+import picocli.CommandLine;
 import picocli.CommandLine.Command;
-import picocli.CommandLine.Mixin;
 
 /// Displays aggregated cluster status from the management API.
 ///
@@ -16,8 +15,8 @@ import picocli.CommandLine.Mixin;
 @Command(name = "status", description = "Show cluster status")
 @SuppressWarnings("JBCT-RET-01")
 class ClusterStatusCommand implements Callable<Integer> {
-    @Mixin
-    private OutputOptions output;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
     @Override
     public Integer call() {
@@ -26,7 +25,7 @@ class ClusterStatusCommand implements Callable<Integer> {
     }
 
     private int onSuccess(String json) {
-        return OutputFormatter.printQuery(json, output);
+        return OutputFormatter.printQuery(json, parent.outputOptions());
     }
 
     private static int onFailure(Cause cause) {

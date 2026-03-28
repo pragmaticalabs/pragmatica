@@ -2,7 +2,6 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
-import org.pragmatica.aether.cli.OutputOptions;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
@@ -11,8 +10,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.Callable;
 
+import picocli.CommandLine;
 import picocli.CommandLine.Command;
-import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
@@ -36,8 +35,8 @@ class ClusterApplyCommand implements Callable<Integer> {
     @Option(names = "--yes", description = "Skip confirmation prompt")
     private boolean skipConfirmation;
 
-    @Mixin
-    private OutputOptions output;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
     @Override
     public Integer call() {
@@ -66,7 +65,7 @@ class ClusterApplyCommand implements Callable<Integer> {
     }
 
     private int printResult(String json) {
-        return OutputFormatter.printAction(json, output, dryRun ? "Dry-run complete." : "Applied successfully.");
+        return OutputFormatter.printAction(json, parent.outputOptions(), dryRun ? "Dry-run complete." : "Applied successfully.");
     }
 
     private static String buildApplyJson(String tomlContent, long expectedVersion) {

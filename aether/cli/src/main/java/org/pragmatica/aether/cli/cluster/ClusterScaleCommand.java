@@ -2,15 +2,14 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
-import org.pragmatica.aether.cli.OutputOptions;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
 import java.util.concurrent.Callable;
 
+import picocli.CommandLine;
 import picocli.CommandLine.Command;
-import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 
 /// Scales the cluster core node count via the management API.
@@ -26,8 +25,8 @@ class ClusterScaleCommand implements Callable<Integer> {
     @Option(names = "--core", required = true, description = "Target core node count (minimum 3, must be odd)")
     private int coreCount;
 
-    @Mixin
-    private OutputOptions output;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
     @Override
     public Integer call() {
@@ -57,7 +56,7 @@ class ClusterScaleCommand implements Callable<Integer> {
     }
 
     private int onSuccess(String json) {
-        return OutputFormatter.printAction(json, output, "Scale successful.");
+        return OutputFormatter.printAction(json, parent.outputOptions(), "Scale successful.");
     }
 
     private static Result<Long> extractConfigVersion(String responseJson) {

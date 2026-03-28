@@ -1,15 +1,14 @@
 package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.ExitCode;
-import org.pragmatica.aether.cli.OutputOptions;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 
 import java.time.Instant;
 import java.util.concurrent.Callable;
 
+import picocli.CommandLine;
 import picocli.CommandLine.Command;
-import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 
 import tools.jackson.databind.JsonNode;
@@ -26,8 +25,8 @@ class ClusterExportCommand implements Callable<Integer> {
     @Option(names = "--with-status", description = "Include runtime state as comments")
     private boolean withStatus;
 
-    @Mixin
-    private OutputOptions output;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
     @Override
     public Integer call() {

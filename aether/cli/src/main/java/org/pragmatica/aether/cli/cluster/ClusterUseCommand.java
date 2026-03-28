@@ -2,13 +2,12 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
-import org.pragmatica.aether.cli.OutputOptions;
 import org.pragmatica.lang.Cause;
 
 import java.util.concurrent.Callable;
 
+import picocli.CommandLine;
 import picocli.CommandLine.Command;
-import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Parameters;
 
 /// Switches the active cluster context to the specified name.
@@ -20,8 +19,8 @@ class ClusterUseCommand implements Callable<Integer> {
     @Parameters(index = "0", description = "Cluster name to activate")
     private String name;
 
-    @Mixin
-    private OutputOptions output;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
     @Override
     public Integer call() {
@@ -32,7 +31,7 @@ class ClusterUseCommand implements Callable<Integer> {
     }
 
     private int onSuccess() {
-        return OutputFormatter.printAction("{\"context\":\"" + name + "\"}", output,
+        return OutputFormatter.printAction("{\"context\":\"" + name + "\"}", parent.outputOptions(),
                                           "Switched to cluster context: " + name);
     }
 

@@ -2,14 +2,13 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
-import org.pragmatica.aether.cli.OutputOptions;
 import org.pragmatica.lang.Cause;
 
 import java.util.List;
 import java.util.concurrent.Callable;
 
+import picocli.CommandLine;
 import picocli.CommandLine.Command;
-import picocli.CommandLine.Mixin;
 
 /// Lists all registered clusters with a current-context marker.
 ///
@@ -35,8 +34,8 @@ class ClusterListCommand implements Callable<Integer> {
         null
     );
 
-    @Mixin
-    private OutputOptions output;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
     @Override
     public Integer call() {
@@ -51,7 +50,7 @@ class ClusterListCommand implements Callable<Integer> {
             return ExitCode.SUCCESS;
         }
         var json = buildEntriesJson(registry);
-        return OutputFormatter.printQuery(json, output, TABLE_SPEC);
+        return OutputFormatter.printQuery(json, parent.outputOptions(), TABLE_SPEC);
     }
 
     @SuppressWarnings("JBCT-PAT-01")

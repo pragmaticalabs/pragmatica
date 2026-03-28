@@ -1,5 +1,9 @@
 package org.pragmatica.aether.cli.cluster;
 
+import org.pragmatica.aether.cli.AetherCli;
+import org.pragmatica.aether.cli.OutputOptions;
+
+import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
 /// Cluster lifecycle management command group.
@@ -21,8 +25,15 @@ ClusterScaleCommand.class,
 ClusterUpgradeCommand.class})
 @SuppressWarnings("JBCT-RET-01")
 public class ClusterCommand implements Runnable {
+    @CommandLine.ParentCommand
+    private AetherCli parent;
+
+    OutputOptions outputOptions() {
+        return parent.outputOptions();
+    }
+
     @Override
     public void run() {
-        picocli.CommandLine.usage(this, System.out);
+        CommandLine.usage(this, System.out);
     }
 }

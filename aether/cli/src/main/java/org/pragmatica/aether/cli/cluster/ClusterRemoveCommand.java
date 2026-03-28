@@ -2,13 +2,12 @@ package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
-import org.pragmatica.aether.cli.OutputOptions;
 import org.pragmatica.lang.Cause;
 
 import java.util.concurrent.Callable;
 
+import picocli.CommandLine;
 import picocli.CommandLine.Command;
-import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Parameters;
 
 /// Removes a cluster from the registry.
@@ -21,8 +20,8 @@ class ClusterRemoveCommand implements Callable<Integer> {
     @Parameters(index = "0", description = "Cluster name to remove")
     private String name;
 
-    @Mixin
-    private OutputOptions output;
+    @CommandLine.ParentCommand
+    private ClusterCommand parent;
 
     @Override
     public Integer call() {
@@ -33,7 +32,7 @@ class ClusterRemoveCommand implements Callable<Integer> {
     }
 
     private int onSuccess() {
-        return OutputFormatter.printAction("{\"removed\":\"" + name + "\"}", output,
+        return OutputFormatter.printAction("{\"removed\":\"" + name + "\"}", parent.outputOptions(),
                                           "Removed cluster: " + name);
     }
 

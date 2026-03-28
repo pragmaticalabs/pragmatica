@@ -121,7 +121,7 @@ public class AetherCli implements Runnable {
 
     private HttpOperations httpOps;
 
-    OutputOptions outputOptions() { return outputOptions; }
+    public OutputOptions outputOptions() { return outputOptions; }
 
     @SuppressWarnings("JBCT-RET-01")
     public static void main(String[] args) {
@@ -897,13 +897,11 @@ public class AetherCli implements Runnable {
             @CommandLine.ParentCommand
             private BlueprintCommand blueprintParent;
 
-            @CommandLine.Mixin
-            private OutputOptions output = new OutputOptions();
-
             @Override
             @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
                 var response = blueprintParent.parent.fetchFromNode("/api/blueprints");
+                var output = blueprintParent.parent.outputOptions();
                 var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to list blueprints");
                 if (errorCode >= 0) {
                     return errorCode;
@@ -920,13 +918,11 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Blueprint ID (group:artifact:version)")
             private String blueprintId;
 
-            @CommandLine.Mixin
-            private OutputOptions output = new OutputOptions();
-
             @Override
             @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
                 var response = blueprintParent.parent.fetchFromNode("/api/blueprint/" + blueprintId);
+                var output = blueprintParent.parent.outputOptions();
                 var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to get blueprint");
                 if (errorCode >= 0) {
                     return errorCode;
@@ -985,13 +981,11 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Blueprint ID (group:artifact:version)")
             private String blueprintId;
 
-            @CommandLine.Mixin
-            private OutputOptions output = new OutputOptions();
-
             @Override
             @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
                 var response = blueprintParent.parent.fetchFromNode("/api/blueprint/" + blueprintId + "/status");
+                var output = blueprintParent.parent.outputOptions();
                 var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to get blueprint status");
                 if (errorCode >= 0) {
                     return errorCode;
