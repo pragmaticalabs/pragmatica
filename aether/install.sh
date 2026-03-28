@@ -26,11 +26,13 @@ main() {
     get_latest_version
     if [ "$JAR_ONLY" = "0" ] && try_archive_install; then
         setup_path
+        install_completions
         print_success
     else
         check_java
         jar_install
         setup_path
+        install_completions
         print_success
     fi
 }
@@ -221,6 +223,46 @@ WRAPPER
     chmod +x "$INSTALL_DIR/bin/aether-forge"
 
     INSTALL_MODE="jar"
+}
+
+install_completions() {
+    mkdir -p "$INSTALL_DIR/completions"
+
+    # Bash completions
+    if [ -n "${BASH_VERSION:-}" ] || [ "${SHELL:-}" = "/bin/bash" ] || [ -f "$HOME/.bashrc" ]; then
+        "$INSTALL_DIR/bin/aether" generate-completion > "$INSTALL_DIR/completions/aether.bash" 2>/dev/null || true
+        if [ -f "$INSTALL_DIR/completions/aether.bash" ]; then
+            COMPLETION_LINE="source \"$INSTALL_DIR/completions/aether.bash\""
+            for rc in "$HOME/.bashrc" "$HOME/.bash_profile"; do
+                if [ -f "$rc" ] && ! grep -q "aether.bash" "$rc" 2>/dev/null; then
+                    echo "" >> "$rc"
+                    echo "# Aether shell completions" >> "$rc"
+                    echo "$COMPLETION_LINE" >> "$rc"
+                    break
+                fi
+            done
+        fi
+    fi
+
+    # Zsh completions
+    if [ -n "${ZSH_VERSION:-}" ] || [ "${SHELL:-}" = "/bin/zsh" ] || [ -f "$HOME/.zshrc" ]; then
+        "$INSTALL_DIR/bin/aether" generate-completion > "$INSTALL_DIR/completions/_aether" 2>/dev/null || true
+        if [ -f "$INSTALL_DIR/completions/_aether" ] && [ -f "$HOME/.zshrc" ]; then
+            FPATH_LINE="fpath=($INSTALL_DIR/completions \$fpath)"
+            if ! grep -q "aether/completions" "$HOME/.zshrc" 2>/dev/null; then
+                echo "" >> "$HOME/.zshrc"
+                echo "# Aether shell completions" >> "$HOME/.zshrc"
+                echo "$FPATH_LINE" >> "$HOME/.zshrc"
+                echo "autoload -Uz compinit && compinit" >> "$HOME/.zshrc"
+            fi
+        fi
+    fi
+
+    # Fish completions
+    if [ "${SHELL:-}" = "/usr/bin/fish" ] || [ -d "$HOME/.config/fish" ]; then
+        mkdir -p "$HOME/.config/fish/completions"
+        "$INSTALL_DIR/bin/aether" generate-completion > "$HOME/.config/fish/completions/aether.fish" 2>/dev/null || true
+    fi
 }
 
 setup_path() {
