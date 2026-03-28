@@ -22,7 +22,10 @@ import org.pragmatica.lang.type.TypeToken;
 
 import java.util.function.Consumer;
 
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper.Builder;
+
+import static org.pragmatica.json.JsonError.PathNotFound.pathNotFound;
 
 /// Functional wrapper around Jackson's JsonMapper providing Result-based API.
 /// All operations return Result<T> instead of throwing exceptions, enabling
@@ -93,6 +96,50 @@ public interface JsonMapper {
     /// @return Result containing deserialized value or error
     <T> Result<T> readBytes(byte[] json, TypeToken<T> typeToken);
 
+    /// Parse JSON string into a Jackson tree model.
+    ///
+    /// @param json JSON string
+    ///
+    /// @return Result containing JsonNode tree or error
+    Result<JsonNode> readTree(String json);
+
+    /// Pretty-print a JSON string with indentation.
+    ///
+    /// @param json JSON string
+    ///
+    /// @return Result containing formatted JSON string or error
+    Result<String> prettyPrint(String json);
+
+    /// Extract a field value using dot-notation path.
+    /// For objects/arrays, returns their JSON representation.
+    /// For scalar values, returns the text value.
+    ///
+    /// @param json    JSON string
+    /// @param dotPath Dot-separated path (e.g., "cluster.leaderId")
+    ///
+    /// @return Result containing the value as a string or error
+    default Result<String> extractField(String json, String dotPath) {
+        return readTree(json)
+            .flatMap(tree -> navigatePath(tree, dotPath));
+    }
+
+    /// Navigate a JsonNode tree using a dot-separated path.
+    private static Result<String> navigatePath(JsonNode root, String dotPath) {
+        var node = root;
+        for (var segment : dotPath.split("\\.")) {
+            node = node.path(segment);
+            if (node.isMissingNode()) {
+                return pathNotFound(dotPath).result();
+            }
+        }
+        return Result.success(nodeToString(node));
+    }
+
+    /// Convert a JsonNode to its string representation.
+    private static String nodeToString(JsonNode node) {
+        return node.isValueNode() ? node.asText() : node.toString();
+    }
+
     /// Creates a new JsonMapper builder.
     ///
     /// @return Builder instance
@@ -148,6 +195,17 @@ public interface JsonMapper {
         @Override
         public <T> Result<T> readBytes(byte[] json, Class<T> type) {
             return Result.lift(JsonError::fromException, () -> mapper.readValue(json, type));
+        }
+
+        @Override
+        public Result<JsonNode> readTree(String json) {
+            return Result.lift(JsonError::fromException, () -> mapper.readTree(json));
+        }
+
+        @Override
+        public Result<String> prettyPrint(String json) {
+            return readTree(json)
+                .flatMap(tree -> Result.lift(JsonError::fromException, () -> mapper.writerWithDefaultPrettyPrinter().writeValueAsString(tree)));
         }
 
         @Override
