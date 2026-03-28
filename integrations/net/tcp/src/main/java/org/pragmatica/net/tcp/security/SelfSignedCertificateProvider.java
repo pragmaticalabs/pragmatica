@@ -27,6 +27,8 @@ import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
 import org.bouncycastle.jce.ECNamedCurveTable;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
+import org.bouncycastle.jce.spec.ECPrivateKeySpec;
+import org.bouncycastle.jce.spec.ECPublicKeySpec;
 import org.bouncycastle.openssl.jcajce.JcaPEMWriter;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.pragmatica.lang.Option;
@@ -40,12 +42,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
-import java.security.PrivateKey;
-import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Security;
 import java.security.cert.X509Certificate;
-import java.security.spec.ECPrivateKeySpec;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -230,33 +229,14 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
     }
 
     private static KeyPair keyPairFromSeed(byte[] seed) throws Exception {
-        var ecSpec = org.bouncycastle.jce.ECNamedCurveTable.getParameterSpec(EC_CURVE);
+        var ecSpec = ECNamedCurveTable.getParameterSpec(EC_CURVE);
         var privateKeyScalar = new BigInteger(1, seed).mod(ecSpec.getN().subtract(BigInteger.ONE)).add(BigInteger.ONE);
         var publicKeyPoint = ecSpec.getG().multiply(privateKeyScalar).normalize();
 
         var keyFactory = KeyFactory.getInstance("EC", "BC");
 
-        var javaEcSpec = new java.security.spec.ECParameterSpec(
-            new java.security.spec.EllipticCurve(
-                new java.security.spec.ECFieldFp(ecSpec.getCurve().getField().getCharacteristic()),
-                ecSpec.getCurve().getA().toBigInteger(),
-                ecSpec.getCurve().getB().toBigInteger()
-            ),
-            new java.security.spec.ECPoint(
-                ecSpec.getG().normalize().getAffineXCoord().toBigInteger(),
-                ecSpec.getG().normalize().getAffineYCoord().toBigInteger()
-            ),
-            ecSpec.getN(),
-            ecSpec.getH().intValue()
-        );
-
-        var privateKey = keyFactory.generatePrivate(new ECPrivateKeySpec(privateKeyScalar, javaEcSpec));
-
-        var publicPoint = new java.security.spec.ECPoint(
-            publicKeyPoint.getAffineXCoord().toBigInteger(),
-            publicKeyPoint.getAffineYCoord().toBigInteger()
-        );
-        var publicKey = keyFactory.generatePublic(new java.security.spec.ECPublicKeySpec(publicPoint, javaEcSpec));
+        var privateKey = keyFactory.generatePrivate(new ECPrivateKeySpec(privateKeyScalar, ecSpec));
+        var publicKey = keyFactory.generatePublic(new ECPublicKeySpec(publicKeyPoint, ecSpec));
 
         return new KeyPair(publicKey, privateKey);
     }

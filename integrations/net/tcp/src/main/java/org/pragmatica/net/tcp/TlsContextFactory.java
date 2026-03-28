@@ -220,7 +220,7 @@ public final class TlsContextFactory {
     @SuppressWarnings("deprecation") // SelfSignedCertificate is for dev/testing only
     private static Result<KeyMaterial> generateSelfSigned() {
         try{
-            var ssc = new SelfSignedCertificate();
+            var ssc = new SelfSignedCertificate("localhost", "RSA", 2048);
             return Result.success(new KeyMaterial.FromFile(ssc.certificate(), ssc.privateKey(), null));
         } catch (Exception e) {
             return new TlsError.SelfSignedGenerationFailed(e).result();

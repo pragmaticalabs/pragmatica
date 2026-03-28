@@ -17,8 +17,22 @@
 package org.pragmatica.net.tcp;
 
 import java.io.ByteArrayInputStream;
+import java.io.StringReader;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.KeyFactory;
+import java.security.PrivateKey;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.nio.file.Path;
+import java.util.Base64;
+
+import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
+import org.bouncycastle.openssl.PEMKeyPair;
+import org.bouncycastle.openssl.PEMParser;
+import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
 
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicSslContextBuilder;
@@ -211,15 +225,15 @@ public final class QuicSslContextFactory {
     @SuppressWarnings({"deprecation", "JBCT-UTIL-01"}) // SelfSignedCertificate is for dev/testing only
     private static Result<KeyMaterial> generateSelfSigned() {
         try {
-            var ssc = new SelfSignedCertificate();
+            var ssc = new SelfSignedCertificate("localhost", "RSA", 2048);
             return Result.success(new KeyMaterial.FromFile(ssc.certificate(), ssc.privateKey(), Option.empty()));
         } catch (Exception e) {
             return new TlsError.SelfSignedGenerationFailed(e).result();
         }
     }
 
-    private static Result<KeyMaterial> loadFromFiles(java.nio.file.Path certPath,
-                                                     java.nio.file.Path keyPath,
+    private static Result<KeyMaterial> loadFromFiles(Path certPath,
+                                                     Path keyPath,
                                                      Option<String> password) {
         var certFile = certPath.toFile();
         var keyFile = keyPath.toFile();
@@ -239,29 +253,27 @@ public final class QuicSslContextFactory {
         try {
             var certFactory = CertificateFactory.getInstance("X.509");
             var cert = (X509Certificate) certFactory.generateCertificate(new ByteArrayInputStream(certPem));
-            var keySpec = new java.security.spec.PKCS8EncodedKeySpec(parsePemKey(keyPem));
-            var privateKey = loadPrivateKey(keySpec);
+            var privateKey = loadPrivateKeyFromPem(keyPem);
             return Result.success(new KeyMaterial.FromCerts(privateKey, Option.empty(), new X509Certificate[]{cert}));
         } catch (Exception e) {
             return new TlsError.ContextBuildFailed(e).result();
         }
     }
 
-    @SuppressWarnings("JBCT-EX-01") // Key algorithm detection: try RSA first, fall back to EC
-    private static java.security.PrivateKey loadPrivateKey(java.security.spec.PKCS8EncodedKeySpec keySpec)
-        throws java.security.GeneralSecurityException {
-        try {
-            return java.security.KeyFactory.getInstance("RSA").generatePrivate(keySpec);
-        } catch (java.security.spec.InvalidKeySpecException _) {
-            return java.security.KeyFactory.getInstance("EC").generatePrivate(keySpec);
+    /// Read PEM private key using BouncyCastle PEMParser to preserve named EC curve encoding.
+    @SuppressWarnings("JBCT-UTIL-01")
+    private static PrivateKey loadPrivateKeyFromPem(byte[] keyPem) throws Exception {
+        try (var reader = new StringReader(new String(keyPem, StandardCharsets.UTF_8));
+             var parser = new PEMParser(reader)) {
+            var obj = parser.readObject();
+            var converter = new JcaPEMKeyConverter().setProvider("BC");
+            if (obj instanceof PEMKeyPair pemKeyPair) {
+                return converter.getKeyPair(pemKeyPair).getPrivate();
+            }
+            if (obj instanceof PrivateKeyInfo keyInfo) {
+                return converter.getPrivateKey(keyInfo);
+            }
+            throw new GeneralSecurityException("Unsupported PEM object: " + obj.getClass().getName());
         }
-    }
-
-    private static byte[] parsePemKey(byte[] keyPem) {
-        var pemStr = new String(keyPem, java.nio.charset.StandardCharsets.UTF_8);
-        var base64 = pemStr.replaceAll("-----BEGIN.*-----", "")
-                           .replaceAll("-----END.*-----", "")
-                           .replaceAll("\\s", "");
-        return java.util.Base64.getDecoder().decode(base64);
     }
 }
