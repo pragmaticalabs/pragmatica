@@ -1,14 +1,20 @@
 package org.pragmatica.aether.cli.cluster;
 
+import org.pragmatica.aether.cli.ExitCode;
+import org.pragmatica.aether.cli.OutputFormatter;
+import org.pragmatica.aether.cli.OutputOptions;
+import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
-import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.regex.Pattern;
 
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
+
+import tools.jackson.databind.JsonNode;
 
 /// Initiates a cluster upgrade to a target version via the management API.
 ///
@@ -21,35 +27,35 @@ import picocli.CommandLine.Option;
 @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
 class ClusterUpgradeCommand implements Callable<Integer> {
     private static final Pattern VERSION_PATTERN = Pattern.compile("^\\d+\\.\\d+\\.\\d+$");
+    private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
     @Option(names = "--version", required = true, description = "Target version (e.g., 0.26.0)")
     private String targetVersion;
 
-    @Option(names = "--json", description = "Output raw JSON")
-    private boolean jsonOutput;
+    @Mixin
+    private OutputOptions output;
 
     @Override
     public Integer call() {
         return validateVersion().flatMap(this::fetchCurrentConfig)
-                              .flatMap(this::initiateUpgrade)
-                              .fold(ClusterUpgradeCommand::onFailure, this::onSuccess);
+                                .flatMap(this::initiateUpgrade)
+                                .fold(ClusterUpgradeCommand::onFailure, this::onSuccess);
     }
 
     private Result<String> validateVersion() {
-        if (!VERSION_PATTERN.matcher(targetVersion)
-                            .matches()) {
+        if (!VERSION_PATTERN.matcher(targetVersion).matches()) {
             return new UpgradeError.InvalidVersion(targetVersion).result();
         }
         return Result.success(targetVersion);
     }
 
-    private Result<Map<String, String>> fetchCurrentConfig(String version) {
+    private Result<JsonNode> fetchCurrentConfig(String version) {
         return ClusterHttpClient.fetchFromCluster("/api/cluster/config")
-                                .map(SimpleJsonReader::parseObject);
+                                .flatMap(MAPPER::readTree);
     }
 
-    private Result<String> initiateUpgrade(Map<String, String> config) {
-        var currentVersion = config.getOrDefault("version", "unknown");
+    private Result<String> initiateUpgrade(JsonNode config) {
+        var currentVersion = config.path("version").asText("unknown");
         if (targetVersion.equals(currentVersion)) {
             return new UpgradeError.AlreadyAtVersion(targetVersion).result();
         }
@@ -57,31 +63,17 @@ class ClusterUpgradeCommand implements Callable<Integer> {
         return ClusterHttpClient.postToCluster("/api/cluster/upgrade", jsonBody);
     }
 
-    private Integer onSuccess(String body) {
-        if (jsonOutput) {
-            System.out.println(body);
-            return 0;
-        }
-        return printFormatted(body);
+    private int onSuccess(String json) {
+        return OutputFormatter.printAction(json, output, "Upgrade initiated.");
     }
 
-    private static Integer printFormatted(String json) {
-        var fields = SimpleJsonReader.parseObject(json);
-        var status = fields.getOrDefault("status", "UNKNOWN");
-        var fromVersion = fields.getOrDefault("from", "?");
-        var toVersion = fields.getOrDefault("to", "?");
-        System.out.printf("Upgrade %s.%n", status.toLowerCase());
-        System.out.printf("Version: %s -> %s%n", fromVersion, toVersion);
-        return 0;
-    }
-
-    private static Integer onFailure(Cause cause) {
+    private static int onFailure(Cause cause) {
         if (cause instanceof UpgradeError.AlreadyAtVersion alreadyAt) {
             System.out.printf("Already at version %s. No upgrade needed.%n", alreadyAt.version());
-            return 0;
+            return ExitCode.SUCCESS;
         }
         System.err.println("Error: " + cause.message());
-        return 1;
+        return ExitCode.ERROR;
     }
 
     sealed interface UpgradeError extends Cause {

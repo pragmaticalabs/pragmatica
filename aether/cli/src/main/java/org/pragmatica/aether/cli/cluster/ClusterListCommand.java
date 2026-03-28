@@ -1,8 +1,15 @@
 package org.pragmatica.aether.cli.cluster;
 
+import org.pragmatica.aether.cli.ExitCode;
+import org.pragmatica.aether.cli.OutputFormatter;
+import org.pragmatica.aether.cli.OutputOptions;
+import org.pragmatica.lang.Cause;
+
+import java.util.List;
 import java.util.concurrent.Callable;
 
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 
 /// Lists all registered clusters with a current-context marker.
 ///
@@ -17,48 +24,65 @@ import picocli.CommandLine.Command;
 @Command(name = "list", description = "List all registered clusters")
 @SuppressWarnings("JBCT-RET-01")
 class ClusterListCommand implements Callable<Integer> {
+    private static final OutputFormatter.TableSpec TABLE_SPEC = new OutputFormatter.TableSpec(
+        "Clusters",
+        List.of(
+            new OutputFormatter.Column("", "marker", 1),
+            new OutputFormatter.Column("NAME", "name", 16),
+            new OutputFormatter.Column("ENDPOINT", "endpoint", 40),
+            new OutputFormatter.Column("API KEY ENV", "apiKeyEnv", 30)
+        ),
+        null
+    );
+
+    @Mixin
+    private OutputOptions output;
+
     @Override
     public Integer call() {
         return ClusterRegistry.load()
-                              .fold(ClusterListCommand::onLoadFailure, ClusterListCommand::printList);
+                              .fold(ClusterListCommand::onLoadFailure, this::printList);
     }
 
-    private static Integer printList(ClusterRegistry registry) {
+    private int printList(ClusterRegistry registry) {
         var entries = registry.entries();
         if (entries.isEmpty()) {
             System.out.println("No clusters registered. Use 'aether cluster add' to register a cluster.");
-            return 0;
+            return ExitCode.SUCCESS;
         }
-        printHeader();
+        var json = buildEntriesJson(registry);
+        return OutputFormatter.printQuery(json, output, TABLE_SPEC);
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private static String buildEntriesJson(ClusterRegistry registry) {
         var currentName = registry.currentContext()
                                   .or("");
-        entries.forEach(entry -> printEntry(entry, currentName));
-        printFooter();
-        return 0;
+        var sb = new StringBuilder("[");
+        var first = true;
+        for (var entry : registry.entries()) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            appendEntryJson(sb, entry, currentName);
+        }
+        sb.append(']');
+        return sb.toString();
     }
 
-    private static void printHeader() {
-        System.out.printf("  %-16s %-40s %s%n", "NAME", "ENDPOINT", "API KEY ENV");
-        System.out.println("\u2500".repeat(80));
+    private static void appendEntryJson(StringBuilder sb, ClusterRegistry.ClusterEntry entry, String currentName) {
+        var marker = entry.name().equals(currentName) ? "*" : " ";
+        var apiKeyEnv = entry.apiKeyEnv().or("-");
+        sb.append("{\"marker\":\"").append(marker)
+          .append("\",\"name\":\"").append(entry.name())
+          .append("\",\"endpoint\":\"").append(entry.endpoint())
+          .append("\",\"apiKeyEnv\":\"").append(apiKeyEnv)
+          .append("\"}");
     }
 
-    private static void printEntry(ClusterRegistry.ClusterEntry entry, String currentName) {
-        var marker = entry.name()
-                          .equals(currentName)
-                     ? "*"
-                     : " ";
-        var apiKeyEnv = entry.apiKeyEnv()
-                             .or("-");
-        System.out.printf("%s %-16s %-40s %s%n", marker, entry.name(), entry.endpoint(), apiKeyEnv);
-    }
-
-    private static void printFooter() {
-        System.out.println();
-        System.out.println("* = active context");
-    }
-
-    private static Integer onLoadFailure(org.pragmatica.lang.Cause cause) {
+    private static int onLoadFailure(Cause cause) {
         System.err.println("Error: " + cause.message());
-        return 1;
+        return ExitCode.ERROR;
     }
 }

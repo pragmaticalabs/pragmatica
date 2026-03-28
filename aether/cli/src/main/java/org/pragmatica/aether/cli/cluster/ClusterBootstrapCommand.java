@@ -1,5 +1,7 @@
 package org.pragmatica.aether.cli.cluster;
 
+import org.pragmatica.aether.cli.ExitCode;
+import org.pragmatica.aether.cli.OutputOptions;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.ClusterConfigParser;
 import org.pragmatica.aether.config.cluster.ClusterManagementConfig;
@@ -11,6 +13,7 @@ import java.nio.file.Path;
 import java.util.concurrent.Callable;
 
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
@@ -33,14 +36,17 @@ class ClusterBootstrapCommand implements Callable<Integer> {
     @Option(names = "--compose-only", description = "Generate docker-compose.yml and print to stdout, then exit")
     private boolean composeOnly;
 
+    @Mixin
+    private OutputOptions output;
+
     @Override
     public Integer call() {
         if (composeOnly) {
             return parseConfig().map(this::generateCompose)
-                              .fold(ClusterBootstrapCommand::onFailure, _ -> 0);
+                                .fold(ClusterBootstrapCommand::onFailure, _ -> ExitCode.SUCCESS);
         }
         return parseConfig().flatMap(this::confirmAndBootstrap)
-                          .fold(ClusterBootstrapCommand::onFailure, ClusterBootstrapCommand::onSuccess);
+                            .fold(ClusterBootstrapCommand::onFailure, ClusterBootstrapCommand::onSuccess);
     }
 
     private String generateCompose(ClusterManagementConfig config) {
@@ -52,7 +58,7 @@ class ClusterBootstrapCommand implements Callable<Integer> {
     private Result<ClusterManagementConfig> parseConfig() {
         System.out.printf("Reading config from %s...%n", configFile);
         return readFileContent(configFile).flatMap(ConfigReferenceResolver::resolveAll)
-                              .flatMap(ClusterConfigParser::parse);
+                                          .flatMap(ClusterConfigParser::parse);
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -64,8 +70,7 @@ class ClusterBootstrapCommand implements Callable<Integer> {
 
     private Result<BootstrapOrchestrator.BootstrapResult> confirmAndBootstrap(ClusterManagementConfig config) {
         printPlan(config);
-        if (!skipConfirmation && !confirmBootstrap(config.cluster()
-                                                         .name())) {
+        if (!skipConfirmation && !confirmBootstrap(config.cluster().name())) {
             System.out.println("Aborted.");
             return new AbortedError().result();
         }
@@ -80,29 +85,20 @@ class ClusterBootstrapCommand implements Callable<Integer> {
         System.out.printf("  Cluster:       %s%n", cluster.name());
         System.out.printf("  Version:       %s%n", cluster.version());
         System.out.printf("  Provider:      %s%n",
-                          deployment.type()
-                                    .value());
+                          deployment.type().value());
         System.out.printf("  Instance type: %s%n",
-                          deployment.instances()
-                                    .getOrDefault("core", "?"));
+                          deployment.instances().getOrDefault("core", "?"));
         System.out.printf("  Core nodes:    %d%n",
-                          cluster.core()
-                                 .count());
+                          cluster.core().count());
         System.out.printf("  Runtime:       %s%n",
-                          deployment.runtime()
-                                    .type()
-                                    .name()
-                                    .toLowerCase());
+                          deployment.runtime().type().name().toLowerCase());
         deployment.runtime()
                   .image()
                   .onPresent(img -> System.out.printf("  Image:         %s%n", img));
         System.out.printf("  Ports:         cluster=%d, mgmt=%d, swim=%d%n",
-                          deployment.ports()
-                                    .cluster(),
-                          deployment.ports()
-                                    .management(),
-                          deployment.ports()
-                                    .swim());
+                          deployment.ports().cluster(),
+                          deployment.ports().management(),
+                          deployment.ports().swim());
         System.out.println();
     }
 
@@ -115,27 +111,26 @@ class ClusterBootstrapCommand implements Callable<Integer> {
 
     @SuppressWarnings("JBCT-EX-01")
     private static boolean readConfirmation() {
-        try{
+        try {
             var bytes = System.in.readNBytes(256);
-            var input = new String(bytes).trim()
-                                         .toLowerCase();
+            var input = new String(bytes).trim().toLowerCase();
             return "y".equals(input) || "yes".equals(input);
         } catch (Exception _) {
             return false;
         }
     }
 
-    private static Integer onSuccess(BootstrapOrchestrator.BootstrapResult result) {
+    private static int onSuccess(BootstrapOrchestrator.BootstrapResult result) {
         System.out.println("Step 12/12: Done.");
-        return 0;
+        return ExitCode.SUCCESS;
     }
 
-    private static Integer onFailure(Cause cause) {
+    private static int onFailure(Cause cause) {
         if (cause instanceof AbortedError) {
-            return 0;
+            return ExitCode.SUCCESS;
         }
         System.err.println("Error: " + cause.message());
-        return 1;
+        return ExitCode.ERROR;
     }
 
     /// Sentinel error for user-aborted bootstrap.

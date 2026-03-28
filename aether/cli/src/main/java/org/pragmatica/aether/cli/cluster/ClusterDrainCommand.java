@@ -1,13 +1,19 @@
 package org.pragmatica.aether.cli.cluster;
 
+import org.pragmatica.aether.cli.ExitCode;
+import org.pragmatica.aether.cli.OutputFormatter;
+import org.pragmatica.aether.cli.OutputOptions;
+import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 
-import java.util.Map;
 import java.util.concurrent.Callable;
 
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
+
+import tools.jackson.databind.JsonNode;
 
 /// Drains a node by transitioning it from ON_DUTY to DRAINING state.
 ///
@@ -18,6 +24,7 @@ import picocli.CommandLine.Parameters;
 class ClusterDrainCommand implements Callable<Integer> {
     private static final int POLL_INTERVAL_MS = 2000;
     private static final int DEFAULT_TIMEOUT_SECONDS = 120;
+    private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
     @Parameters(index = "0", description = "Node ID to drain")
     private String nodeId;
@@ -28,17 +35,20 @@ class ClusterDrainCommand implements Callable<Integer> {
     @Option(names = "--timeout", description = "Timeout in seconds when waiting (default: 120)")
     private int timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
 
+    @Mixin
+    private OutputOptions output;
+
     @Override
     public Integer call() {
         return ClusterHttpClient.postToCluster("/api/node/drain/" + nodeId, "{}")
+                                .flatMap(MAPPER::readTree)
                                 .fold(ClusterDrainCommand::onFailure, this::onDrainInitiated);
     }
 
-    private Integer onDrainInitiated(String responseJson) {
-        var fields = SimpleJsonReader.parseObject(responseJson);
-        var success = "true".equals(fields.getOrDefault("success", "false"));
-        var state = fields.getOrDefault("state", "UNKNOWN");
-        var message = fields.getOrDefault("message", "");
+    private int onDrainInitiated(JsonNode root) {
+        var success = root.path("success").asBoolean(false);
+        var state = root.path("state").asText("UNKNOWN");
+        var message = root.path("message").asText("");
         if (!success) {
             return handleDrainRejection(state, message);
         }
@@ -46,49 +56,49 @@ class ClusterDrainCommand implements Callable<Integer> {
         if (waitForCompletion) {
             return pollUntilDecommissioned();
         }
-        return 0;
+        return ExitCode.SUCCESS;
     }
 
-    private static Integer handleDrainRejection(String state, String message) {
+    private static int handleDrainRejection(String state, String message) {
         if (state.contains("DRAINING") || state.contains("DECOMMISSIONED")) {
             System.out.printf("Node already %s: %s%n", state, message);
-            return 0;
+            return ExitCode.SUCCESS;
         }
         System.err.printf("Failed to drain: %s%n", message);
-        return 1;
+        return ExitCode.ERROR;
     }
 
     @SuppressWarnings("JBCT-SEQ-01")
-    private Integer pollUntilDecommissioned() {
+    private int pollUntilDecommissioned() {
         System.out.printf("Waiting for node %s to reach DECOMMISSIONED (timeout: %ds)...%n", nodeId, timeoutSeconds);
         var deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
         while (System.currentTimeMillis() < deadline) {
             var stateResult = queryNodeLifecycleState();
             if ("DECOMMISSIONED".equals(stateResult)) {
                 System.out.printf("Node %s is now DECOMMISSIONED.%n", nodeId);
-                return 0;
+                return ExitCode.SUCCESS;
             }
             System.out.printf("  Current state: %s%n", stateResult);
             sleepQuietly();
         }
         System.err.printf("Timeout: node %s did not reach DECOMMISSIONED within %ds.%n", nodeId, timeoutSeconds);
-        return 1;
+        return ExitCode.TIMEOUT;
     }
 
     private String queryNodeLifecycleState() {
         return ClusterHttpClient.fetchFromCluster("/api/node/lifecycle/" + nodeId)
+                                .flatMap(MAPPER::readTree)
                                 .map(ClusterDrainCommand::extractState)
                                 .or("UNKNOWN");
     }
 
-    private static String extractState(String json) {
-        return SimpleJsonReader.parseObject(json)
-                               .getOrDefault("state", "UNKNOWN");
+    private static String extractState(JsonNode node) {
+        return node.path("state").asText("UNKNOWN");
     }
 
     @SuppressWarnings("JBCT-EX-01")
     private static void sleepQuietly() {
-        try{
+        try {
             Thread.sleep(POLL_INTERVAL_MS);
         } catch (InterruptedException _) {
             Thread.currentThread()
@@ -96,8 +106,8 @@ class ClusterDrainCommand implements Callable<Integer> {
         }
     }
 
-    private static Integer onFailure(Cause cause) {
+    private static int onFailure(Cause cause) {
         System.err.println("Error: " + cause.message());
-        return 1;
+        return ExitCode.ERROR;
     }
 }

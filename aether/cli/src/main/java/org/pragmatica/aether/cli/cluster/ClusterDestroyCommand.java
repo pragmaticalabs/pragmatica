@@ -1,15 +1,18 @@
 package org.pragmatica.aether.cli.cluster;
 
+import org.pragmatica.aether.cli.ExitCode;
+import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.Callable;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
+
+import tools.jackson.databind.JsonNode;
 
 /// Destroys the active cluster: drains all nodes, shuts them down, and removes the registry entry.
 ///
@@ -20,6 +23,7 @@ import picocli.CommandLine.Option;
 class ClusterDestroyCommand implements Callable<Integer> {
     private static final int DRAIN_POLL_INTERVAL_MS = 2000;
     private static final int DRAIN_TIMEOUT_SECONDS = 120;
+    private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
     @Option(names = "--yes", description = "Skip interactive confirmation")
     private boolean skipConfirmation;
@@ -40,7 +44,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
     private Result<Integer> destroyCluster(ClusterRegistry registry, ClusterRegistry.ClusterEntry entry) {
         if (!skipConfirmation && !confirmDestruction(entry.name())) {
             System.out.println("Aborted.");
-            return Result.success(0);
+            return Result.success(ExitCode.SUCCESS);
         }
         return performDestruction(registry, entry);
     }
@@ -50,7 +54,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
         var drainResults = drainAllNodes(nodeIds);
         var shutdownResults = shutdownAllNodes(nodeIds);
         return removeRegistryEntry(registry, entry.name())
-        .map(_ -> printSummary(entry.name(), nodeIds, drainResults, shutdownResults));
+            .map(_ -> printSummary(entry.name(), nodeIds, drainResults, shutdownResults));
     }
 
     private static boolean confirmDestruction(String clusterName) {
@@ -63,7 +67,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
     @SuppressWarnings("JBCT-EX-01")
     private static String readLineFromConsole() {
-        try{
+        try {
             var bytes = System.in.readNBytes(256);
             return new String(bytes).trim();
         } catch (Exception _) {
@@ -73,30 +77,21 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
     private List<String> fetchNodeIds() {
         return ClusterHttpClient.fetchFromCluster("/api/nodes/lifecycle")
+                                .flatMap(MAPPER::readTree)
                                 .map(ClusterDestroyCommand::extractNodeIds)
                                 .or(List.of());
     }
 
-    private static List<String> extractNodeIds(String json) {
-        var trimmed = json.trim();
-        if (!trimmed.startsWith("[")) {
+    private static List<String> extractNodeIds(JsonNode root) {
+        var result = new ArrayList<String>();
+        if (!root.isArray()) {
             return List.of();
         }
-        var result = new ArrayList<String>();
-        var inner = trimmed.substring(1, trimmed.length() - 1);
-        var pos = 0;
-        while (pos < inner.length()) {
-            var braceStart = inner.indexOf('{', pos);
-            if (braceStart < 0) break;
-            var braceEnd = inner.indexOf('}', braceStart);
-            if (braceEnd < 0) break;
-            var entry = inner.substring(braceStart, braceEnd + 1);
-            var fields = SimpleJsonReader.parseObject(entry);
-            var nodeId = fields.getOrDefault("nodeId", "");
+        for (var node : root) {
+            var nodeId = node.path("nodeId").asText("");
             if (!nodeId.isEmpty()) {
                 result.add(nodeId);
             }
-            pos = braceEnd + 1;
         }
         return List.copyOf(result);
     }
@@ -130,8 +125,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
         var deadline = System.currentTimeMillis() + (long) DRAIN_TIMEOUT_SECONDS * 1000;
         while (System.currentTimeMillis() < deadline) {
             var state = ClusterHttpClient.fetchFromCluster("/api/node/lifecycle/" + nodeId)
-                                         .map(json -> SimpleJsonReader.parseObject(json)
-                                                                      .getOrDefault("state", "UNKNOWN"))
+                                         .flatMap(MAPPER::readTree)
+                                         .map(node -> node.path("state").asText("UNKNOWN"))
                                          .or("UNKNOWN");
             if ("DECOMMISSIONED".equals(state)) {
                 return true;
@@ -157,27 +152,27 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
     private static Result<ClusterRegistry> removeRegistryEntry(ClusterRegistry registry, String name) {
         return registry.remove(name)
-                       .flatMap(updated -> updated.save()
-                                                  .map(_ -> updated));
+                       .flatMap(updated -> updated.save().map(_ -> updated));
     }
 
-    private static Integer printSummary(String clusterName,
-                                        List<String> nodeIds,
-                                        List<NodeResult> drainResults,
-                                        List<NodeResult> shutdownResults) {
+    private static int printSummary(String clusterName,
+                                    List<String> nodeIds,
+                                    List<NodeResult> drainResults,
+                                    List<NodeResult> shutdownResults) {
         System.out.println();
         System.out.printf("Cluster '%s' destruction summary:%n", clusterName);
         System.out.printf("  Nodes processed: %d%n", nodeIds.size());
         System.out.printf("  Drains succeeded: %d/%d%n", countSuccesses(drainResults), drainResults.size());
         System.out.printf("  Shutdowns succeeded: %d/%d%n", countSuccesses(shutdownResults), shutdownResults.size());
         System.out.println("  Registry entry removed.");
-        var allSucceeded = countSuccesses(drainResults) == drainResults.size() && countSuccesses(shutdownResults) == shutdownResults.size();
+        var allSucceeded = countSuccesses(drainResults) == drainResults.size()
+                           && countSuccesses(shutdownResults) == shutdownResults.size();
         if (!allSucceeded) {
             System.err.println("Warning: some operations failed. Check output above.");
-            return 1;
+            return ExitCode.ERROR;
         }
         System.out.printf("Cluster '%s' destroyed successfully.%n", clusterName);
-        return 0;
+        return ExitCode.SUCCESS;
     }
 
     private static long countSuccesses(List<NodeResult> results) {
@@ -188,7 +183,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
     @SuppressWarnings("JBCT-EX-01")
     private static void sleepQuietly() {
-        try{
+        try {
             Thread.sleep(DRAIN_POLL_INTERVAL_MS);
         } catch (InterruptedException _) {
             Thread.currentThread()
@@ -196,9 +191,9 @@ class ClusterDestroyCommand implements Callable<Integer> {
         }
     }
 
-    private static Integer onFailure(Cause cause) {
+    private static int onFailure(Cause cause) {
         System.err.println("Error: " + cause.message());
-        return 1;
+        return ExitCode.ERROR;
     }
 
     record NodeResult(String nodeId, boolean success) {}

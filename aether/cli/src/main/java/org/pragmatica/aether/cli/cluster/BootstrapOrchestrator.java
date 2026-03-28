@@ -7,6 +7,7 @@ import org.pragmatica.aether.config.cluster.DeploymentType;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -17,7 +18,8 @@ import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
-import java.util.Map;
+
+import tools.jackson.databind.JsonNode;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
@@ -41,6 +43,7 @@ sealed interface BootstrapOrchestrator {
     int API_KEY_BYTES = 32;
     String HETZNER_API_BASE = "https://api.hetzner.cloud/v1";
 
+    JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
     HttpOperations HTTP = JdkHttpOperations.jdkHttpOperations();
 
     /// Execute the full bootstrap flow, dispatching by deployment type.
@@ -285,20 +288,19 @@ sealed interface BootstrapOrchestrator {
     }
 
     private static ProvisionedNode parseProvisionedNode(String responseJson, String nodeId) {
-        var fields = SimpleJsonReader.parseObject(responseJson);
-        var serverJson = fields.getOrDefault("server", "{}");
-        var serverFields = SimpleJsonReader.parseObject(serverJson);
-        var serverId = serverFields.getOrDefault("id", "0");
-        var publicIp = extractPublicIp(serverFields);
+        return MAPPER.readTree(responseJson)
+                     .map(root -> extractProvisionedNode(root.path("server"), nodeId))
+                     .or(new ProvisionedNode(nodeId, "0", ""));
+    }
+
+    private static ProvisionedNode extractProvisionedNode(JsonNode server, String nodeId) {
+        var serverId = server.path("id").asText("0");
+        var publicIp = extractPublicIp(server);
         return new ProvisionedNode(nodeId, serverId, publicIp);
     }
 
-    private static String extractPublicIp(Map<String, String> serverFields) {
-        var publicNet = serverFields.getOrDefault("public_net", "{}");
-        var publicNetFields = SimpleJsonReader.parseObject(publicNet);
-        var ipv4 = publicNetFields.getOrDefault("ipv4", "{}");
-        var ipv4Fields = SimpleJsonReader.parseObject(ipv4);
-        return ipv4Fields.getOrDefault("ip", "");
+    private static String extractPublicIp(JsonNode server) {
+        return server.path("public_net").path("ipv4").path("ip").asText("");
     }
 
     // --- Step 7: Wait for health ---
@@ -443,55 +445,23 @@ sealed interface BootstrapOrchestrator {
     }
 
     private static List<ProvisionedNode> parseServersFromJson(String json) {
-        var fields = SimpleJsonReader.parseObject(json);
-        var serversJson = fields.getOrDefault("servers", "[]");
-        return parseServerArray(serversJson);
+        return MAPPER.readTree(json)
+                     .map(root -> parseServerArray(root.path("servers")))
+                     .or(List.of());
     }
 
-    private static List<ProvisionedNode> parseServerArray(String serversJson) {
+    private static List<ProvisionedNode> parseServerArray(JsonNode serversNode) {
         var result = new ArrayList<ProvisionedNode>();
-        var trimmed = serversJson.trim();
-        if (!trimmed.startsWith("[")) {
-            return result;
+        if (!serversNode.isArray()) {
+            return List.of();
         }
-        var inner = trimmed.substring(1, trimmed.length() - 1);
-        var pos = 0;
-        while (pos < inner.length()) {
-            var braceStart = inner.indexOf('{', pos);
-            if (braceStart < 0) break;
-            var braceEnd = findMatchingBrace(inner, braceStart);
-            if (braceEnd < 0) break;
-            var entry = inner.substring(braceStart, braceEnd + 1);
-            var serverFields = SimpleJsonReader.parseObject(entry);
-            var serverId = serverFields.getOrDefault("id", "0");
-            var name = serverFields.getOrDefault("name", "");
-            var publicIp = extractPublicIp(serverFields);
+        for (var server : serversNode) {
+            var serverId = server.path("id").asText("0");
+            var name = server.path("name").asText("");
+            var publicIp = extractPublicIp(server);
             result.add(new ProvisionedNode(name, serverId, publicIp));
-            pos = braceEnd + 1;
         }
         return List.copyOf(result);
-    }
-
-    private static int findMatchingBrace(String content, int openPos) {
-        var depth = 1;
-        var i = openPos + 1;
-        while (i < content.length() && depth > 0) {
-            var ch = content.charAt(i);
-            if (ch == '{') depth++;else if (ch == '}') depth--;else if (ch == '"') i = skipQuotedString(content, i);
-            i++;
-        }
-        return depth == 0
-               ? i - 1
-               : - 1;
-    }
-
-    private static int skipQuotedString(String content, int pos) {
-        var i = pos + 1;
-        while (i < content.length()) {
-            if (content.charAt(i) == '\\') i++;else if (content.charAt(i) == '"') return i;
-            i++;
-        }
-        return i;
     }
 
     // --- Generic HTTP helpers ---
