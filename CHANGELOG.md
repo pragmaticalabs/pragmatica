@@ -28,7 +28,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **StreamConfig** — added `maxEventSizeBytes` field with enforcement in `StreamPartitionManager.publishLocal()`
 - **Nullable AtomicReference eliminated** — `CancellableTask` (VarHandle, 9 usages), `StoppableThread` (VarHandle, 4 usages), `AtomicHolder<T>` (VarHandle, 4 usages) in `core/` replace all `getAndSet(null)` patterns
 
+### Changed
+- **Docker image base** — switched from `eclipse-temurin:25-alpine` to `eclipse-temurin:25-noble` (glibc required by netty-quiche native library)
+- **SSH bootstrap** — Docker bridge network with container hostnames instead of `--network host`, env-var-based config (PEERS, CLUSTER_PORT, MANAGEMENT_PORT), `$HOME/aether` paths instead of `/opt/aether`
+- **Docker config** — `repositories = ["builtin"]` (DHT is fully distributed; `local` fallback removed)
+- **Integration test assertions** — cluster health checks use `/api/status` instead of `/health/ready` and `/api/nodes`
+
 ### Fixed
+- **Java 25 TLS compatibility** — RSA self-signed certs for dev mode, BouncyCastle PEMParser for EC key loading (preserves named curve encoding for BoringSSL), explicit BC KeyFactory in `SelfSignedCertificateProvider`
 - **Schema migration lock failover** — new leader scans for MIGRATING schemas with expired locks and resets to PENDING
 - **Dashboard schema retry button** — FAILED migrations can be retried from dashboard UI
 - **Certificate rotation race condition** — SSL contexts updated before server stop, eliminating null-server window
