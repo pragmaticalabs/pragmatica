@@ -4,6 +4,7 @@ import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.ClusterConfigParser;
 import org.pragmatica.aether.config.cluster.ClusterManagementConfig;
+import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
@@ -26,6 +27,9 @@ import picocli.CommandLine.Parameters;
 @Command(name = "bootstrap", description = "Bootstrap a new cluster from config file")
 @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
 class ClusterBootstrapCommand implements Callable<Integer> {
+    private static final int POLL_INTERVAL_MS = 2000;
+    private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
+
     @Parameters(index = "0", description = "Path to aether-cluster.toml config file")
     private Path configFile;
 
@@ -34,6 +38,12 @@ class ClusterBootstrapCommand implements Callable<Integer> {
 
     @Option(names = "--compose-only", description = "Generate docker-compose.yml and print to stdout, then exit")
     private boolean composeOnly;
+
+    @Option(names = "--wait", description = "Wait for cluster to become healthy after bootstrap")
+    private boolean waitForCompletion;
+
+    @Option(names = "--timeout", description = "Timeout in seconds when waiting")
+    private int timeoutSeconds = 0;
 
     @CommandLine.ParentCommand
     private ClusterCommand parent;
@@ -45,7 +55,7 @@ class ClusterBootstrapCommand implements Callable<Integer> {
                                 .fold(ClusterBootstrapCommand::onFailure, _ -> ExitCode.SUCCESS);
         }
         return parseConfig().flatMap(this::confirmAndBootstrap)
-                            .fold(ClusterBootstrapCommand::onFailure, ClusterBootstrapCommand::onSuccess);
+                            .fold(ClusterBootstrapCommand::onFailure, this::onSuccess);
     }
 
     private String generateCompose(ClusterManagementConfig config) {
@@ -119,9 +129,58 @@ class ClusterBootstrapCommand implements Callable<Integer> {
         }
     }
 
-    private static int onSuccess(BootstrapOrchestrator.BootstrapResult result) {
+    private int onSuccess(BootstrapOrchestrator.BootstrapResult result) {
         System.out.println("Step 12/12: Done.");
+        if (waitForCompletion) {
+            return validateTimeoutAndPoll();
+        }
         return ExitCode.SUCCESS;
+    }
+
+    private int validateTimeoutAndPoll() {
+        if (timeoutSeconds <= 0) {
+            System.err.println("--timeout is required when using --wait");
+            return ExitCode.ERROR;
+        }
+        return pollUntilHealthy();
+    }
+
+    @SuppressWarnings("JBCT-SEQ-01")
+    private int pollUntilHealthy() {
+        System.out.printf("Waiting for cluster to become healthy (timeout: %ds)...%n", timeoutSeconds);
+        var deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
+        while (System.currentTimeMillis() < deadline) {
+            var status = queryClusterHealthStatus();
+            if (isHealthy(status)) {
+                System.out.println("Cluster is healthy.");
+                return ExitCode.SUCCESS;
+            }
+            System.out.printf("  Current status: %s%n", status);
+            sleepQuietly();
+        }
+        System.err.printf("Timeout: cluster did not become healthy within %ds.%n", timeoutSeconds);
+        return ExitCode.TIMEOUT;
+    }
+
+    private static boolean isHealthy(String status) {
+        return "healthy".equalsIgnoreCase(status);
+    }
+
+    private static String queryClusterHealthStatus() {
+        return ClusterHttpClient.fetchFromCluster("/api/health")
+                                .flatMap(MAPPER::readTree)
+                                .map(node -> node.path("status").asText("UNKNOWN"))
+                                .or("UNKNOWN");
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static void sleepQuietly() {
+        try {
+            Thread.sleep(POLL_INTERVAL_MS);
+        } catch (InterruptedException _) {
+            Thread.currentThread()
+                  .interrupt();
+        }
     }
 
     private static int onFailure(Cause cause) {

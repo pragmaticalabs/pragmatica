@@ -557,7 +557,10 @@ public class AetherCli implements Runnable {
     }
 
     @Command(name = "scale", description = "Scale a deployed slice")
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
     static class ScaleCommand implements Callable<Integer> {
+        private static final int POLL_INTERVAL_MS = 2000;
+
         @CommandLine.ParentCommand
         private AetherCli parent;
 
@@ -570,11 +573,79 @@ public class AetherCli implements Runnable {
         @CommandLine.Option(names = {"-p", "--placement"}, description = "Placement strategy: CORE_ONLY, WORKER_PREFERRED, WORKER_ONLY")
         private String placement;
 
+        @CommandLine.Option(names = "--wait", description = "Wait for scaling to complete")
+        private boolean waitForCompletion;
+
+        @CommandLine.Option(names = "--timeout", description = "Timeout in seconds when waiting")
+        private int timeoutSeconds = 0;
+
         @Override
         public Integer call() {
             var body = buildScaleBody();
             var response = parent.postToNode("/api/scale", body);
-            return OutputFormatter.printAction(response, parent.outputOptions(), "Scaled " + artifact + " to " + instances + " instances");
+            var result = OutputFormatter.printAction(response, parent.outputOptions(), "Scaled " + artifact + " to " + instances + " instances");
+            if (result != ExitCode.SUCCESS || !waitForCompletion) {
+                return result;
+            }
+            return validateTimeoutAndPoll();
+        }
+
+        private int validateTimeoutAndPoll() {
+            if (timeoutSeconds <= 0) {
+                System.err.println("--timeout is required when using --wait");
+                return ExitCode.ERROR;
+            }
+            return pollUntilScaled();
+        }
+
+        @SuppressWarnings("JBCT-EX-01")
+        private int pollUntilScaled() {
+            System.out.printf("Waiting for %s to reach %d instances (timeout: %ds)...%n", artifact, instances, timeoutSeconds);
+            var deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
+            while (System.currentTimeMillis() < deadline) {
+                var currentInstances = queryCurrentInstances();
+                if (currentInstances >= instances) {
+                    System.out.printf("Scaling complete: %s now has %d instances.%n", artifact, currentInstances);
+                    return ExitCode.SUCCESS;
+                }
+                System.out.printf("  Current instances: %d / %d%n", currentInstances, instances);
+                sleepQuietly();
+            }
+            System.err.printf("Timeout: %s did not reach %d instances within %ds.%n", artifact, instances, timeoutSeconds);
+            return ExitCode.TIMEOUT;
+        }
+
+        private int queryCurrentInstances() {
+            var response = parent.fetchFromNode("/api/slices");
+            return parseInstanceCount(response);
+        }
+
+        private int parseInstanceCount(String response) {
+            if (response.contains("\"error\"")) {
+                return -1;
+            }
+            return countMatchingInstances(response);
+        }
+
+        private int countMatchingInstances(String response) {
+            // Count occurrences of the artifact in running slices
+            var index = 0;
+            var count = 0;
+            while ((index = response.indexOf(artifact, index)) >= 0) {
+                count++;
+                index += artifact.length();
+            }
+            return count;
+        }
+
+        @SuppressWarnings("JBCT-EX-01")
+        private static void sleepQuietly() {
+            try {
+                Thread.sleep(POLL_INTERVAL_MS);
+            } catch (InterruptedException _) {
+                Thread.currentThread()
+                      .interrupt();
+            }
         }
 
         private String buildScaleBody() {
@@ -1090,15 +1161,24 @@ public class AetherCli implements Runnable {
         }
 
         @Command(name = "deploy", description = "Deploy a blueprint from an artifact in the cluster repository")
+        @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
         static class DeployArtifactCommand implements Callable<Integer> {
+            private static final int POLL_INTERVAL_MS = 2000;
+
             @CommandLine.ParentCommand
             private BlueprintCommand blueprintParent;
 
             @Parameters(index = "0", description = "Artifact coordinates (groupId:artifactId:version)")
             private String coords;
 
+            @CommandLine.Option(names = "--wait", description = "Wait for deployment to complete")
+            private boolean waitForCompletion;
+
+            @CommandLine.Option(names = "--timeout", description = "Timeout in seconds when waiting")
+            private int timeoutSeconds = 0;
+
             @Override
-            @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"})
+            @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
                 var body = "{\"artifact\":\"" + escapeJsonValue(coords) + "\"}";
                 var response = blueprintParent.parent.postToNode("/api/blueprint/deploy", body);
@@ -1106,7 +1186,58 @@ public class AetherCli implements Runnable {
                 if (errorCode >= 0) {
                     return errorCode;
                 }
-                return OutputFormatter.printQuery(response, blueprintParent.parent.outputOptions());
+                var printResult = OutputFormatter.printQuery(response, blueprintParent.parent.outputOptions());
+                if (printResult != ExitCode.SUCCESS || !waitForCompletion) {
+                    return printResult;
+                }
+                return validateTimeoutAndPoll();
+            }
+
+            private int validateTimeoutAndPoll() {
+                if (timeoutSeconds <= 0) {
+                    System.err.println("--timeout is required when using --wait");
+                    return ExitCode.ERROR;
+                }
+                return pollUntilDeployed();
+            }
+
+            @SuppressWarnings("JBCT-EX-01")
+            private int pollUntilDeployed() {
+                System.out.printf("Waiting for %s deployment to complete (timeout: %ds)...%n", coords, timeoutSeconds);
+                var deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
+                while (System.currentTimeMillis() < deadline) {
+                    var status = queryDeploymentStatus();
+                    if (isDeploymentComplete(status)) {
+                        System.out.printf("Deployment complete: %s is active.%n", coords);
+                        return ExitCode.SUCCESS;
+                    }
+                    System.out.printf("  Deployment status: %s%n", status);
+                    sleepQuietly();
+                }
+                System.err.printf("Timeout: %s deployment did not complete within %ds.%n", coords, timeoutSeconds);
+                return ExitCode.TIMEOUT;
+            }
+
+            private static boolean isDeploymentComplete(String status) {
+                return "ACTIVE".equalsIgnoreCase(status) || "DEPLOYED".equalsIgnoreCase(status);
+            }
+
+            private String queryDeploymentStatus() {
+                var response = blueprintParent.parent.fetchFromNode("/api/slices");
+                if (response.contains("\"error\"")) {
+                    return "UNKNOWN";
+                }
+                return response.contains(coords) ? "ACTIVE" : "PENDING";
+            }
+
+            @SuppressWarnings("JBCT-EX-01")
+            private static void sleepQuietly() {
+                try {
+                    Thread.sleep(POLL_INTERVAL_MS);
+                } catch (InterruptedException _) {
+                    Thread.currentThread()
+                          .interrupt();
+                }
             }
         }
 
