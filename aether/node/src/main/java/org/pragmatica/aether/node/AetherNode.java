@@ -1826,6 +1826,7 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
                                               deploymentMetricsScheduler::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, scheduledTaskManager::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, appHttpServer::onQuorumStateChange));
         // Leader change notifications - handlers may call cluster.apply(), which is safe because
         // consensus engine is already active by the time LeaderChange is emitted (see RabiaNode handler order).
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,

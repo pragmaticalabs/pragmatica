@@ -35,6 +35,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.routing.HttpStatus;
@@ -121,6 +122,11 @@ public interface AppHttpServer {
     /// Whether this server has received initial route synchronization from the KV store.
     /// Returns true if at least one route update has been processed, or if running in standalone mode.
     boolean isRouteReady();
+
+    /// Handle quorum state changes. When quorum is established, mark route sync as complete
+    /// because the KV store is operational — if no route entries exist, that IS the synced state.
+    @SuppressWarnings("JBCT-RET-01") // Event callback
+    void onQuorumStateChange(QuorumStateNotification notification);
 
     /// Handle node removal for immediate retry of pending forwards.
     @MessageReceiver
@@ -489,6 +495,14 @@ class AppHttpServerImpl implements AppHttpServer {
     @Override
     public boolean isRouteReady() {
         return routeSyncReceived.get() || httpRoutePublisher.isEmpty();
+    }
+
+    @Override
+    public void onQuorumStateChange(QuorumStateNotification notification) {
+        if (notification.state() == QuorumStateNotification.State.ESTABLISHED) {
+            routeSyncReceived.set(true);
+            log.info("Quorum established — marking route sync complete");
+        }
     }
 
     @Override
