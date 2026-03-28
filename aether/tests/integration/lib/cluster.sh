@@ -5,59 +5,53 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${LIB_DIR}/common.sh"
 
 # ---------------------------------------------------------------------------
-# Cluster queries
+# Cluster queries (CLI-based)
 # ---------------------------------------------------------------------------
 cluster_node_count() {
-    local status
-    status=$(cluster_status)
-    json_field "$status" "['cluster']['nodeCount']"
+    aether_field status cluster.nodeCount
 }
 
 cluster_leader() {
-    local status
-    status=$(api_get "/api/status")
-    json_field "$status" "['cluster']['leaderId']"
+    aether_field status cluster.leaderId
 }
 
 cluster_status() {
-    api_get "/api/status"
+    aether_json status
 }
 
 cluster_health() {
-    api_get "/api/health"
+    aether_json health
 }
 
 cluster_events() {
-    api_get "/api/events"
+    aether_json events
 }
 
 cluster_node_list() {
-    local status
-    status=$(cluster_status)
-    json_field "$status" "['cluster']['nodes']"
+    aether_field status cluster.nodes
 }
 
 cluster_slices() {
-    api_get "/api/slices"
+    aether_json slices
 }
 
 cluster_config() {
-    api_get "/api/config"
+    aether_json config
 }
 
 # ---------------------------------------------------------------------------
 # Health checks
 # ---------------------------------------------------------------------------
 is_cluster_healthy() {
-    local health
-    health=$(cluster_health)
-    [ -n "$health" ] && [ "$(json_field "$health" "['status']")" = "UP" ]
+    local status
+    status=$(aether_field health status)
+    [ "$status" = "UP" ] || [ "$status" = "healthy" ]
 }
 
 is_cluster_ready() {
-    local status
-    status=$(cluster_status)
-    [ -n "$status" ] && [ "$(json_field "$status" "['cluster']['nodeCount']")" -ge 3 ] 2>/dev/null
+    local count
+    count=$(cluster_node_count)
+    [ -n "$count" ] && [ "$count" -ge 3 ] 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -119,7 +113,7 @@ deploy_blueprint_file() {
 }
 
 list_blueprints() {
-    api_get "/api/blueprints"
+    aether_json blueprint list 2>/dev/null || api_get "/api/blueprints"
 }
 
 # ---------------------------------------------------------------------------
@@ -178,7 +172,7 @@ config_apply() {
 }
 
 config_export() {
-    api_get "/api/config"
+    aether_json config
 }
 
 config_get_key() {
@@ -288,7 +282,7 @@ schema_retry() {
 # Streams
 # ---------------------------------------------------------------------------
 stream_list() {
-    api_get "/api/streams"
+    aether_json streams 2>/dev/null || api_get "/api/streams"
 }
 
 stream_info() {

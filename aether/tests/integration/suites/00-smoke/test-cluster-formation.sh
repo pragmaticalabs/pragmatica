@@ -20,10 +20,8 @@ test_leader_elected() {
 }
 
 test_quorum_established() {
-    local status
-    status=$(cluster_status)
     local node_count
-    node_count=$(json_field "$status" "['cluster']['nodeCount']")
+    node_count=$(cluster_node_count)
     assert_ge "$node_count" "3" "Quorum established (${node_count} nodes >= 3)"
 }
 
@@ -41,9 +39,8 @@ test_status_endpoint() {
     local status
     status=$(cluster_status)
     assert_ne "$status" "" "Status endpoint returns data"
-    local cluster_name
     local node_id
-    node_id=$(json_field "$status" "['nodeId']")
+    node_id=$(aether_field status nodeId)
     assert_ne "$node_id" "" "Node ID present in status"
 }
 

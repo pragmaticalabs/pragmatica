@@ -5,8 +5,6 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC
 
 # Environment
 : "${TARGET_HOST:?TARGET_HOST must be set}"
-: "${AETHER_SSH_USER:?AETHER_SSH_USER must be set}"
-: "${AETHER_SSH_KEY:?AETHER_SSH_KEY must be set}"
 
 MGMT_PORT="${MGMT_PORT:-5150}"
 APP_PORT="${APP_PORT:-8070}"
@@ -16,6 +14,28 @@ API_KEY="${AETHER_API_KEY:-}"
 ADMIN_API_KEY="${AETHER_ADMIN_API_KEY:-${API_KEY}}"
 VIEWER_API_KEY="${AETHER_VIEWER_API_KEY:-}"
 OPERATOR_API_KEY="${AETHER_OPERATOR_API_KEY:-${API_KEY}}"
+
+# ---------------------------------------------------------------------------
+# Aether CLI
+# ---------------------------------------------------------------------------
+AETHER_CLI="aether -c ${TARGET_HOST}:${MGMT_PORT}"
+
+# Query a CLI command and extract a single field (--format value --field)
+# Usage: aether_field <command> <field>
+# Example: aether_field status cluster.nodeCount
+aether_field() {
+    local command="$1" field="$2"
+    $AETHER_CLI "$command" --format value --field "$field" 2>/dev/null
+}
+
+# Query a CLI command and return full JSON output
+# Usage: aether_json <command> [extra-args...]
+# Example: aether_json status
+# Example: aether_json events --since 2024-01-15T10:30:00Z
+aether_json() {
+    local command="$1"; shift
+    $AETHER_CLI "$command" --format json "$@" 2>/dev/null
+}
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -29,6 +49,7 @@ log_step()  { echo -e "${BLUE}[STEP]${NC}  $1"; }
 
 # ---------------------------------------------------------------------------
 # HTTP helpers — management API (port 5150)
+# Retained for tests that need raw HTTP access (status codes, custom headers)
 # ---------------------------------------------------------------------------
 api_get() {
     local path="$1"
@@ -157,7 +178,7 @@ assert_json_field() {
 }
 
 # ---------------------------------------------------------------------------
-# JSON helpers
+# JSON helpers (retained for suites that parse raw JSON responses)
 # ---------------------------------------------------------------------------
 json_field() {
     local json="$1" field="$2"
@@ -173,6 +194,8 @@ json_len() {
 # SSH helper
 # ---------------------------------------------------------------------------
 remote_exec() {
+    : "${AETHER_SSH_USER:?AETHER_SSH_USER must be set for remote_exec}"
+    : "${AETHER_SSH_KEY:?AETHER_SSH_KEY must be set for remote_exec}"
     ssh -i "$AETHER_SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
         "${AETHER_SSH_USER}@${TARGET_HOST}" "$@"
 }
