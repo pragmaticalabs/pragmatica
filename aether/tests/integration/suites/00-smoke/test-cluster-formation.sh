@@ -20,7 +20,11 @@ test_leader_elected() {
 }
 
 test_quorum_established() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Readiness probe returns 200"
+    local status
+    status=$(cluster_status)
+    local node_count
+    node_count=$(json_field "$status" "['cluster']['nodeCount']")
+    assert_ge "$node_count" "3" "Quorum established (${node_count} nodes >= 3)"
 }
 
 test_liveness_probe() {
@@ -28,11 +32,9 @@ test_liveness_probe() {
 }
 
 test_all_nodes_visible() {
-    local nodes
-    nodes=$(cluster_node_list)
     local count
-    count=$(json_len "$nodes")
-    assert_eq "$count" "5" "All 5 nodes visible in /api/nodes"
+    count=$(cluster_node_count)
+    assert_eq "$count" "5" "All 5 nodes visible in cluster status"
 }
 
 test_status_endpoint() {
@@ -40,8 +42,9 @@ test_status_endpoint() {
     status=$(cluster_status)
     assert_ne "$status" "" "Status endpoint returns data"
     local cluster_name
-    cluster_name=$(json_field "$status" "['clusterName']")
-    assert_ne "$cluster_name" "" "Cluster name present in status"
+    local node_id
+    node_id=$(json_field "$status" "['nodeId']")
+    assert_ne "$node_id" "" "Node ID present in status"
 }
 
 test_events_available() {

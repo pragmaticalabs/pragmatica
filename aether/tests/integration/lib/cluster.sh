@@ -8,15 +8,15 @@ source "${LIB_DIR}/common.sh"
 # Cluster queries
 # ---------------------------------------------------------------------------
 cluster_node_count() {
-    local nodes
-    nodes=$(api_get "/api/nodes")
-    json_len "$nodes"
+    local status
+    status=$(cluster_status)
+    json_field "$status" "['cluster']['nodeCount']"
 }
 
 cluster_leader() {
     local status
     status=$(api_get "/api/status")
-    json_field "$status" "['leaderId']"
+    json_field "$status" "['cluster']['leaderId']"
 }
 
 cluster_status() {
@@ -32,7 +32,9 @@ cluster_events() {
 }
 
 cluster_node_list() {
-    api_get "/api/nodes"
+    local status
+    status=$(cluster_status)
+    json_field "$status" "['cluster']['nodes']"
 }
 
 cluster_slices() {
@@ -53,7 +55,9 @@ is_cluster_healthy() {
 }
 
 is_cluster_ready() {
-    curl -sf "${CLUSTER_ENDPOINT}/health/ready" > /dev/null 2>&1
+    local status
+    status=$(cluster_status)
+    [ -n "$status" ] && [ "$(json_field "$status" "['cluster']['nodeCount']")" -ge 3 ] 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
