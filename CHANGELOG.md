@@ -27,12 +27,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **ConsumerConfig** — added `checkpointIntervalMs`, `maxRetries`, `deadLetterStream` fields (backward compatible)
 - **StreamConfig** — added `maxEventSizeBytes` field with enforcement in `StreamPartitionManager.publishLocal()`
 - **Nullable AtomicReference eliminated** — `CancellableTask` (VarHandle, 9 usages), `StoppableThread` (VarHandle, 4 usages), `AtomicHolder<T>` (VarHandle, 4 usages) in `core/` replace all `getAndSet(null)` patterns
-
-### Changed
 - **Docker image base** — switched from `eclipse-temurin:25-alpine` to `eclipse-temurin:25-noble` (glibc required by netty-quiche native library)
 - **SSH bootstrap** — Docker bridge network with container hostnames instead of `--network host`, env-var-based config (PEERS, CLUSTER_PORT, MANAGEMENT_PORT), `$HOME/aether` paths instead of `/opt/aether`
 - **Docker config** — `repositories = ["builtin"]` (DHT is fully distributed; `local` fallback removed)
 - **Integration test assertions** — cluster health checks use `/api/status` instead of `/health/ready` and `/api/nodes`
+- **CLI global output formatting** — `--format` (json/table/value/csv), `--field` (dot-notation extraction), `--quiet`, `--no-color` / `NO_COLOR` env var on all ~100 commands via picocli mixin
+- **CLI Jackson migration** — replaced hand-rolled JSON parsing with `JsonMapper` tree API; deleted `SimpleJsonReader`, `formatJson()`, `extractJsonString()` and duplicates
+- **CLI standardized exit codes** — `SUCCESS=0`, `ERROR=1`, `TIMEOUT=2`, `NOT_FOUND=3` across all commands
+- **CLI TLS support** — `--tls-skip-verify` / `-k` flag with trust-all SSL; scheme-aware URL resolution
+- **CLI shell completions** — `aether generate-completion` for bash/zsh/fish; auto-install in `install.sh`
+- **JsonMapper tree API** — `readTree()`, `extractField()`, `prettyPrint()` methods added to jackson integration module
 
 ### Fixed
 - **Java 25 TLS compatibility** — RSA self-signed certs for dev mode, BouncyCastle PEMParser for EC key loading (preserves named curve encoding for BoringSSL), explicit BC KeyFactory in `SelfSignedCertificateProvider`
