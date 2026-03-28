@@ -28,7 +28,32 @@ cluster_events() {
 }
 
 cluster_node_list() {
-    aether_field status cluster.nodes
+    aether_json status | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    nodes = data.get('cluster', {}).get('nodes', [])
+    json.dump(nodes, sys.stdout)
+except:
+    print('[]')
+" 2>/dev/null
+}
+
+# Pick a non-leader node ID from the known set (integration-test-1..5)
+pick_non_leader() {
+    local leader="$1"
+    local count="${2:-1}"
+    local found=0
+    for i in 1 2 3 4 5; do
+        local candidate="integration-test-$i"
+        if [ "$candidate" != "$leader" ]; then
+            echo "$candidate"
+            found=$((found + 1))
+            if [ "$found" -ge "$count" ]; then
+                return 0
+            fi
+        fi
+    done
 }
 
 cluster_slices() {
@@ -122,13 +147,19 @@ list_blueprints() {
 kill_node() {
     local node_id="$1"
     log_info "Killing node: ${node_id}"
-    remote_exec "docker stop aether-${node_id}" 2>/dev/null
+    remote_exec "docker kill aether-${node_id}" 2>/dev/null
 }
 
 start_node() {
     local node_id="$1"
     log_info "Starting node: ${node_id}"
     remote_exec "docker start aether-${node_id}" 2>/dev/null
+}
+
+# Restart all containers for clean cluster formation
+restart_all_nodes() {
+    log_info "Restarting all cluster containers..."
+    remote_exec "docker ps -a --filter 'name=aether-integration-test' -q | xargs -r docker restart" 2>/dev/null
 }
 
 drain_node() {

@@ -19,22 +19,34 @@ OPERATOR_API_KEY="${AETHER_OPERATOR_API_KEY:-${API_KEY}}"
 # Aether CLI
 # ---------------------------------------------------------------------------
 AETHER_CLI="aether -c ${TARGET_HOST}:${MGMT_PORT}"
+NODE_COUNT="${NODE_COUNT:-5}"
+
+# Try CLI command against available nodes (failover on connection failure)
+# Tries ports MGMT_PORT, MGMT_PORT+1, ... MGMT_PORT+NODE_COUNT-1
+aether_failover() {
+    local base_port="${MGMT_PORT}"
+    for i in $(seq 0 $((NODE_COUNT - 1))); do
+        local port=$((base_port + i))
+        local result
+        result=$(aether -c "${TARGET_HOST}:${port}" "$@" 2>/dev/null) && { echo "$result"; return 0; }
+    done
+    return 1
+}
 
 # Query a CLI command and extract a single field (--format value --field)
 # Usage: aether_field <command> <field>
 # Example: aether_field status cluster.nodeCount
 aether_field() {
     local command="$1" field="$2"
-    $AETHER_CLI "$command" --format value --field "$field" 2>/dev/null
+    aether_failover "$command" --format value --field "$field"
 }
 
 # Query a CLI command and return full JSON output
 # Usage: aether_json <command> [extra-args...]
 # Example: aether_json status
-# Example: aether_json events --since 2024-01-15T10:30:00Z
 aether_json() {
     local command="$1"; shift
-    $AETHER_CLI "$command" --format json "$@" 2>/dev/null
+    aether_failover "$command" --format json "$@"
 }
 
 # ---------------------------------------------------------------------------

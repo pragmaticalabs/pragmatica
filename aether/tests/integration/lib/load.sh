@@ -42,7 +42,7 @@ start_load() {
         echo "${success}:${failure}" > "/tmp/load_result_$$.txt"
     ) &
     LOAD_PIDS+=($!)
-    log_info "Load PID: ${LOAD_PIDS[-1]}"
+    log_info "Load PID: $!"
 }
 
 # Start background management API load
@@ -75,7 +75,7 @@ start_mgmt_load() {
 stop_load() {
     local total_success=0 total_failure=0
 
-    log_info "Stopping load generators (${#LOAD_PIDS[@]} processes)"
+    log_info "Stopping load generators (${#LOAD_PIDS[@]} processes)" >&2
     for pid in "${LOAD_PIDS[@]}"; do
         kill "$pid" 2>/dev/null
         wait "$pid" 2>/dev/null
@@ -95,7 +95,7 @@ stop_load() {
     done
 
     LOAD_PIDS=()
-    log_info "Load results: success=${total_success}, failure=${total_failure}"
+    log_info "Load results: success=${total_success}, failure=${total_failure}" >&2
     echo "${total_success}:${total_failure}"
 }
 

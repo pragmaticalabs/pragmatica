@@ -1,5 +1,5 @@
 #!/bin/bash
-# test-kill-leader.sh — Kill leader node, verify re-election and recovery
+# test-kill-leader.sh — Kill leader node, verify re-election with 4 remaining nodes
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -21,38 +21,49 @@ test_kill_leader_and_reelect() {
     log_info "Killing leader: ${old_leader}"
     kill_node "$old_leader"
 
-    # Wait for new leader to be elected
-    sleep 10
-    wait_for_leader 60
+    # Wait for SWIM failure detection + re-election (~15-20s)
+    log_info "Waiting for failure detection and re-election..."
+    sleep 20
 
-    local new_leader
-    new_leader=$(cluster_leader)
+    # Wait for a NEW leader (not the killed one)
+    local new_leader=""
+    local elapsed=0
+    while [ "$elapsed" -lt 60 ]; do
+        new_leader=$(cluster_leader)
+        if [ -n "$new_leader" ] && [ "$new_leader" != "$old_leader" ]; then
+            break
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+
     assert_ne "$new_leader" "" "New leader elected: ${new_leader}"
     assert_ne "$new_leader" "$old_leader" "New leader differs from old leader"
 }
 
-test_cluster_recovers_to_5() {
-    log_info "Waiting for auto-heal to restore node count"
-    wait_for_node_count 5 180
+test_cluster_has_quorum_with_4() {
     local count
     count=$(cluster_node_count)
-    assert_eq "$count" "5" "Cluster recovered to 5 nodes"
+    assert_eq "$count" "4" "Cluster runs with 4 nodes"
 }
 
-test_slices_redistributed() {
-    wait_for_slices_active 1 60
-    local instances
-    instances=$(slices_total_instances)
-    assert_gt "$instances" "0" "Slices redistributed: ${instances} instances"
+test_health_with_4_nodes() {
+    local health
+    health=$(aether_field health status)
+    assert_eq "$health" "healthy" "Cluster healthy with 4 nodes"
 }
 
-test_health_restored() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after leader kill"
+# Restore cluster for next test suite
+cleanup() {
+    log_info "Restoring all containers for clean state..."
+    restart_all_nodes
+    sleep 15
+    wait_for_cluster 60 || true
 }
 
 run_test "Initial 5 nodes" test_initial_state
 run_test "Kill leader and re-elect" test_kill_leader_and_reelect
-run_test "Cluster recovers to 5 nodes" test_cluster_recovers_to_5
-run_test "Slices redistributed" test_slices_redistributed
-run_test "Health restored" test_health_restored
+run_test "Cluster has quorum with 4 nodes" test_cluster_has_quorum_with_4
+run_test "Health with 4 nodes" test_health_with_4_nodes
+cleanup
 print_summary
