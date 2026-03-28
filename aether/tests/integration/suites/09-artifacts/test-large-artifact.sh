@@ -34,11 +34,11 @@ push_and_verify_size() {
     # Push
     local push_status
     push_status=$(curl -s -o /dev/null -w "%{http_code}" \
-        -X POST \
+        -X PUT \
         -H "X-API-Key: ${API_KEY}" \
         -H "Content-Type: application/octet-stream" \
         --data-binary "@${push_file}" \
-        "${CLUSTER_ENDPOINT}/repository/${ARTIFACT_BASE}/${label}")
+        "${CLUSTER_ENDPOINT}/repository/org/test/${ARTIFACT_BASE}/${label}/${ARTIFACT_BASE}-${label}.jar")
     if [ "$push_status" -lt 200 ] || [ "$push_status" -ge 300 ] 2>/dev/null; then
         log_fail "Push ${label} returned ${push_status}"
         return 1
@@ -48,7 +48,7 @@ push_and_verify_size() {
     local resolve_status
     resolve_status=$(curl -s -o "$resolve_file" -w "%{http_code}" \
         -H "X-API-Key: ${API_KEY}" \
-        "${CLUSTER_ENDPOINT}/repository/${ARTIFACT_BASE}/${label}")
+        "${CLUSTER_ENDPOINT}/repository/org/test/${ARTIFACT_BASE}/${label}/${ARTIFACT_BASE}-${label}.jar")
     if [ "$resolve_status" -lt 200 ] || [ "$resolve_status" -ge 300 ] 2>/dev/null; then
         log_fail "Resolve ${label} returned ${resolve_status}"
         return 1
@@ -62,15 +62,15 @@ push_and_verify_size() {
 }
 
 test_64kb_boundary() {
-    push_and_verify_size "64KB" 64
+    push_and_verify_size "1.0.64" 64
 }
 
 test_128kb() {
-    push_and_verify_size "128KB" 128
+    push_and_verify_size "1.0.128" 128
 }
 
 test_1mb() {
-    push_and_verify_size "1MB" 1024
+    push_and_verify_size "1.1.0" 1024
 }
 
 test_5mb() {
@@ -79,11 +79,13 @@ test_5mb() {
         log_pass "5MB test skipped by config"
         return 0
     fi
-    push_and_verify_size "5MB" 5120
+    push_and_verify_size "5.0.0" 5120
 }
 
 test_cluster_healthy_after_large_artifacts() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after large artifact tests"
+    local health
+    health=$(aether_field health status)
+    assert_eq "$health" "healthy" "Cluster healthy after large artifact tests"
 }
 
 run_test "Cluster ready" test_cluster_ready

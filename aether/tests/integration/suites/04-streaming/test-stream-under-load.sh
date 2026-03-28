@@ -63,7 +63,7 @@ test_cluster_stable() {
     local count
     count=$(cluster_node_count)
     assert_eq "$count" "5" "Cluster stable: 5 nodes after stream load"
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after stream load"
+    assert_cluster_healthy "Cluster healthy after stream load"
 }
 
 test_concurrent_publish_and_query() {

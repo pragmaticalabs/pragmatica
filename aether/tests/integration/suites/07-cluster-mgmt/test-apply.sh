@@ -34,7 +34,7 @@ test_apply_config_override() {
 test_config_converges() {
     # Give cluster time to propagate
     sleep 5
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after config apply"
+    assert_cluster_healthy "Cluster healthy after config apply"
 }
 
 test_config_visible_on_all_nodes() {

@@ -91,7 +91,7 @@ test_global_schema_status() {
 }
 
 test_cluster_healthy_after_schema_check() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after schema checks"
+    assert_cluster_healthy "Cluster healthy after schema checks"
 }
 
 run_test "Cluster ready" test_cluster_ready

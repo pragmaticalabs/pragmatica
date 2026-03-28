@@ -61,7 +61,7 @@ test_all_nodes_updated() {
 }
 
 test_cluster_healthy_after_update() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after rolling update"
+    assert_cluster_healthy "Cluster healthy after rolling update"
 }
 
 test_slices_active_after_update() {

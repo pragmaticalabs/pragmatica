@@ -55,7 +55,7 @@ test_schema_retry() {
 }
 
 test_cluster_healthy_after_migration() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after schema operations"
+    assert_cluster_healthy "Cluster healthy after schema operations"
 }
 
 run_test "Cluster ready" test_cluster_ready

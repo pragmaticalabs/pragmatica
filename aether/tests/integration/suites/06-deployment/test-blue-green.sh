@@ -77,7 +77,7 @@ test_switch_back() {
     log_info "Switching back to blue"
     blue_green_switch_back "$DEPLOYMENT_ID"
     sleep 10
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Healthy after switch-back"
+    assert_cluster_healthy "Healthy after switch-back"
 }
 
 test_complete_deployment() {
@@ -91,7 +91,7 @@ test_complete_deployment() {
     sleep 5
     blue_green_complete "$DEPLOYMENT_ID"
     sleep 5
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Healthy after complete"
+    assert_cluster_healthy "Healthy after complete"
 }
 
 test_cluster_stable() {

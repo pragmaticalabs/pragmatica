@@ -61,7 +61,7 @@ test_config_identical_after_reapply() {
 }
 
 test_cluster_healthy_after_roundtrip() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Healthy after config roundtrip"
+    assert_cluster_healthy "Healthy after config roundtrip"
     local count
     count=$(cluster_node_count)
     assert_eq "$count" "5" "5 nodes after config roundtrip"

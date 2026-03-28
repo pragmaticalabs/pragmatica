@@ -62,7 +62,7 @@ test_baseline_idempotent() {
 }
 
 test_cluster_healthy_after_baseline() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after schema baseline"
+    assert_cluster_healthy "Cluster healthy after schema baseline"
 }
 
 run_test "Cluster ready" test_cluster_ready

@@ -12,7 +12,7 @@ test_cluster_ready() {
 }
 
 test_mgmt_health_endpoint() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Management /health/ready returns 200"
+    assert_cluster_healthy "Management health check returns healthy"
 }
 
 test_mgmt_status_json() {

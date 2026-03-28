@@ -121,7 +121,7 @@ if len(entries) >= 3:
 }
 
 test_quorum_preserved() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Quorum preserved despite drains"
+    assert_cluster_healthy "Quorum preserved despite drains"
 }
 
 test_reactivate_nodes() {
@@ -148,7 +148,7 @@ except:
         done
     fi
     sleep 5
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after reactivation"
+    assert_cluster_healthy "Cluster healthy after reactivation"
 }
 
 run_test "Cluster ready (5 nodes)" test_cluster_ready

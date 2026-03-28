@@ -81,7 +81,7 @@ test_competing_consumers_multi_instance() {
 }
 
 test_cluster_healthy_after_pubsub() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after pub/sub test"
+    assert_cluster_healthy "Cluster healthy after pub/sub test"
 }
 
 run_test "Cluster ready" test_cluster_ready

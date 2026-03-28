@@ -8,6 +8,17 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 CONFIG_FILE="${SCRIPT_DIR}/../../cluster-config.toml"
 
+test_skip_if_running() {
+    local status
+    status=$(http_status "${CLUSTER_ENDPOINT}/health/live")
+    if [ "$status" = "200" ]; then
+        skip_test "Bootstrap" "Cluster already running — skipping bootstrap"
+        print_summary
+        exit 0
+    fi
+    log_pass "Cluster not running — proceeding with bootstrap"
+}
+
 test_config_exists() {
     if [ -f "$CONFIG_FILE" ]; then
         log_pass "Cluster config exists: ${CONFIG_FILE}"
@@ -49,7 +60,7 @@ test_leader_elected() {
 
 test_health_probes() {
     assert_http_status "${CLUSTER_ENDPOINT}/health/live" "200" "Liveness probe after bootstrap"
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Readiness probe after bootstrap"
+    assert_cluster_healthy "Cluster healthy after bootstrap"
 }
 
 test_management_api_accessible() {
@@ -58,6 +69,7 @@ test_management_api_accessible() {
     assert_ne "$status" "" "Management API returns status"
 }
 
+run_test "Skip if running" test_skip_if_running
 run_test "Config exists" test_config_exists
 run_test "Bootstrap cluster" test_bootstrap_cluster
 run_test "Cluster forms" test_cluster_forms

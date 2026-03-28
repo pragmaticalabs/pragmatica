@@ -65,7 +65,7 @@ test_cluster_stable_after_stream() {
 }
 
 test_health_after_stream() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after streaming soak"
+    assert_cluster_healthy "Cluster healthy after streaming soak"
 }
 
 run_test "Stream exists" test_stream_exists

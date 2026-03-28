@@ -54,7 +54,7 @@ test_connection_pooling_rapid_requests() {
 }
 
 test_cluster_healthy_after_sql_load() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after SQL load"
+    assert_cluster_healthy "Cluster healthy after SQL load"
 }
 
 run_test "Cluster ready" test_cluster_ready

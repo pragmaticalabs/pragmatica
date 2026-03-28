@@ -9,7 +9,7 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 test_health_public_no_auth() {
     # Health probes are always public
     assert_http_status "${CLUSTER_ENDPOINT}/health/live" "200" "Liveness probe — no auth required"
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Readiness probe — no auth required"
+    assert_cluster_healthy "Cluster healthy — no auth required"
 }
 
 test_status_requires_auth() {

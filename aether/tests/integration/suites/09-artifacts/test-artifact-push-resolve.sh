@@ -6,9 +6,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
-ARTIFACT_NAME="${ARTIFACT_NAME:-integration-test-artifact}"
+GROUP_ID="${GROUP_ID:-org.test}"
+ARTIFACT_ID="${ARTIFACT_ID:-integration-test}"
 ARTIFACT_VERSION="${ARTIFACT_VERSION:-1.0.0}"
-ARTIFACT_PATH="/repository/${ARTIFACT_NAME}/${ARTIFACT_VERSION}"
+GROUP_PATH="org/test"
+FILE_NAME="${ARTIFACT_ID}-${ARTIFACT_VERSION}.jar"
+ARTIFACT_PATH="/repository/${GROUP_PATH}/${ARTIFACT_ID}/${ARTIFACT_VERSION}/${FILE_NAME}"
 TMPDIR="${TMPDIR:-/tmp}"
 PUSH_FILE="${TMPDIR}/artifact-push-$$.bin"
 RESOLVE_FILE="${TMPDIR}/artifact-resolve-$$.bin"
@@ -33,7 +36,7 @@ test_generate_artifact() {
 test_push_artifact() {
     local status
     status=$(curl -s -o /dev/null -w "%{http_code}" \
-        -X POST \
+        -X PUT \
         -H "X-API-Key: ${API_KEY}" \
         -H "Content-Type: application/octet-stream" \
         --data-binary "@${PUSH_FILE}" \
@@ -47,6 +50,8 @@ test_push_artifact() {
 }
 
 test_resolve_artifact() {
+    # Allow time for DHT replication
+    sleep 2
     local status
     status=$(curl -s -o "$RESOLVE_FILE" -w "%{http_code}" \
         -H "X-API-Key: ${API_KEY}" \
@@ -66,8 +71,10 @@ test_checksum_matches() {
     assert_eq "$resolve_sha" "$push_sha" "SHA-256 checksum matches: ${push_sha}"
 }
 
-test_cluster_healthy_after_artifact_ops() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after artifact operations"
+test_cluster_healthy_after() {
+    local health
+    health=$(aether_field health status)
+    assert_eq "$health" "healthy" "Cluster healthy after artifact operations"
 }
 
 run_test "Cluster ready" test_cluster_ready
@@ -75,5 +82,5 @@ run_test "Generate artifact" test_generate_artifact
 run_test "Push artifact" test_push_artifact
 run_test "Resolve artifact" test_resolve_artifact
 run_test "Checksum matches" test_checksum_matches
-run_test "Healthy after artifact ops" test_cluster_healthy_after_artifact_ops
+run_test "Healthy after artifact ops" test_cluster_healthy_after
 print_summary

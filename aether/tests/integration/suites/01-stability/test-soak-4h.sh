@@ -46,7 +46,7 @@ test_no_node_drift() {
 }
 
 test_cluster_still_healthy() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster still healthy after soak"
+    assert_cluster_healthy "Cluster still healthy after soak"
 }
 
 test_no_leader_change() {

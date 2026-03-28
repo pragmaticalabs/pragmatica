@@ -6,6 +6,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
+test_destroy_guard() {
+    if [ "${ALLOW_DESTROY:-false}" != "true" ]; then
+        skip_test "Cluster destroy" "Set ALLOW_DESTROY=true to run"
+        print_summary
+        exit 0
+    fi
+    log_pass "Destroy guard passed (ALLOW_DESTROY=true)"
+}
+
 test_cluster_exists() {
     wait_for_cluster 60
     local count
@@ -60,6 +69,7 @@ test_data_cleaned() {
     fi
 }
 
+run_test "Destroy guard" test_destroy_guard
 run_test "Cluster exists" test_cluster_exists
 run_test "Destroy cluster" test_destroy_cluster
 run_test "Cluster gone" test_cluster_gone

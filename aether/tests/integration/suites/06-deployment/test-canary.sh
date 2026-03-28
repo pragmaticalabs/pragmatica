@@ -75,7 +75,7 @@ test_canary_promote_full() {
     canary_promote_full "$CANARY_ID"
     log_info "Promoted canary to 100%"
     sleep 10
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Healthy after full promotion"
+    assert_cluster_healthy "Healthy after full promotion"
 }
 
 test_cluster_stable_after_canary() {

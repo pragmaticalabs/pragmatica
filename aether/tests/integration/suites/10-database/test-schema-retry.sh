@@ -72,7 +72,7 @@ test_retry_idempotent() {
 }
 
 test_cluster_healthy_after_retry() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after schema retry"
+    assert_cluster_healthy "Cluster healthy after schema retry"
 }
 
 run_test "Cluster ready" test_cluster_ready

@@ -137,7 +137,7 @@ except:
 }
 
 test_cluster_healthy_after_task_ops() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after scheduled task operations"
+    assert_cluster_healthy "Cluster healthy after scheduled task operations"
 }
 
 run_test "Cluster ready" test_cluster_ready

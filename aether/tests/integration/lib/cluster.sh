@@ -73,6 +73,13 @@ is_cluster_healthy() {
     [ "$status" = "UP" ] || [ "$status" = "healthy" ]
 }
 
+assert_cluster_healthy() {
+    local desc="$1"
+    local health
+    health=$(aether_field health status)
+    assert_eq "$health" "healthy" "$desc"
+}
+
 is_cluster_ready() {
     local count
     count=$(cluster_node_count)

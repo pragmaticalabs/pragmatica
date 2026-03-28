@@ -28,7 +28,7 @@ test_app_routes_reachable() {
         log_pass "App route reachable (status: ${status})"
     else
         # Try management health instead
-        assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Management routes reachable"
+        assert_cluster_healthy "Management routes reachable"
     fi
 }
 
@@ -86,7 +86,7 @@ test_kv_store_routes_clean() {
 
 test_recovery_complete() {
     wait_for_node_count 5 180
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster recovered after stale route cleanup"
+    assert_cluster_healthy "Cluster recovered after stale route cleanup"
 }
 
 run_test "Cluster ready" test_cluster_ready

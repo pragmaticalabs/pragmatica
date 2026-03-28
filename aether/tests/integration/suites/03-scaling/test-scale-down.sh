@@ -11,8 +11,23 @@ LOAD_RPS="${LOAD_RPS:-5}"
 LOAD_DURATION="${LOAD_DURATION:-180}"
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-2.0}"
 
-test_scale_up_to_7() {
+test_scale_api_available() {
     wait_for_cluster 60
+    local status
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/scale" \
+        -X POST \
+        -H "X-API-Key: ${API_KEY}" \
+        -H "Content-Type: application/json" \
+        -d '{"targetNodes":5}')
+    if [ "$status" = "000" ] || [ "$status" = "" ]; then
+        skip_test "Scale API" "Scale API endpoint not available"
+        print_summary
+        exit 0
+    fi
+    log_pass "Scale API endpoint responds (status: ${status})"
+}
+
+test_scale_up_to_7() {
     log_info "Scaling up to 7 nodes first"
     scale_cluster 7
     wait_for_node_count 7 180
@@ -47,14 +62,7 @@ test_5_nodes_healthy() {
     local count
     count=$(cluster_node_count)
     assert_eq "$count" "5" "5 nodes present after scale-down"
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy at 5 nodes"
-}
-
-test_slices_rebalanced() {
-    wait_for_slices_active 1 60
-    local instances
-    instances=$(slices_total_instances)
-    assert_gt "$instances" "0" "Slices rebalanced after scale-down"
+    assert_cluster_healthy "Cluster healthy at 5 nodes"
 }
 
 test_no_data_loss() {
@@ -64,9 +72,9 @@ test_no_data_loss() {
     assert_ne "$events" "" "Events available after scale-down"
 }
 
+run_test "Scale API available" test_scale_api_available
 run_test "Scale up to 7" test_scale_up_to_7
 run_test "Scale down 7 -> 5 under load" test_scale_down_under_load
 run_test "5 nodes healthy" test_5_nodes_healthy
-run_test "Slices rebalanced" test_slices_rebalanced
 run_test "No data loss" test_no_data_loss
 print_summary

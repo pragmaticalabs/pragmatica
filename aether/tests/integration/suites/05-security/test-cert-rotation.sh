@@ -50,7 +50,7 @@ test_rotation_under_load() {
 
 test_cluster_healthy_after_rotation() {
     sleep 5
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after cert rotation"
+    assert_cluster_healthy "Cluster healthy after cert rotation"
 }
 
 test_all_nodes_present() {

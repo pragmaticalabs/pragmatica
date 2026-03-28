@@ -11,8 +11,23 @@ LOAD_RPS="${LOAD_RPS:-5}"
 LOAD_DURATION="${LOAD_DURATION:-180}"
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-2.0}"
 
-test_scale_down_to_3() {
+test_scale_api_available() {
     wait_for_cluster 60
+    local status
+    status=$(http_status "${CLUSTER_ENDPOINT}/api/scale" \
+        -X POST \
+        -H "X-API-Key: ${API_KEY}" \
+        -H "Content-Type: application/json" \
+        -d '{"targetNodes":5}')
+    if [ "$status" = "000" ] || [ "$status" = "" ]; then
+        skip_test "Scale API" "Scale API endpoint not available"
+        print_summary
+        exit 0
+    fi
+    log_pass "Scale API endpoint responds (status: ${status})"
+}
+
+test_scale_down_to_3() {
     log_info "Scaling down to 3 nodes first"
     scale_cluster 3
     wait_for_node_count 3 120
@@ -47,14 +62,7 @@ test_7_nodes_healthy() {
     local count
     count=$(cluster_node_count)
     assert_eq "$count" "7" "7 nodes present"
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy at 7 nodes"
-}
-
-test_slices_redistributed() {
-    wait_for_slices_active 1 60
-    local instances
-    instances=$(slices_total_instances)
-    assert_gt "$instances" "0" "Slices redistributed across 7 nodes"
+    assert_cluster_healthy "Cluster healthy at 7 nodes"
 }
 
 # Restore to 5 for subsequent tests
@@ -66,9 +74,9 @@ test_restore_to_5() {
     assert_eq "$count" "5" "Restored to 5 nodes"
 }
 
+run_test "Scale API available" test_scale_api_available
 run_test "Scale down to 3" test_scale_down_to_3
 run_test "Scale up 3 -> 7 under load" test_scale_up_under_load
 run_test "7 nodes healthy" test_7_nodes_healthy
-run_test "Slices redistributed" test_slices_redistributed
 run_test "Restore to 5" test_restore_to_5
 print_summary

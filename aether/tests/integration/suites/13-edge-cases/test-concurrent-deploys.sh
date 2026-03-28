@@ -126,7 +126,7 @@ except:
 }
 
 test_cluster_healthy_after_concurrent_deploys() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after concurrent deploys"
+    assert_cluster_healthy "Cluster healthy after concurrent deploys"
 }
 
 run_test "Cluster ready" test_cluster_ready

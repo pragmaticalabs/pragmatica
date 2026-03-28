@@ -87,7 +87,7 @@ test_node_removed_from_list() {
 
 test_recovery_after_detection() {
     wait_for_node_count 5 180
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster recovered after SWIM detection"
+    assert_cluster_healthy "Cluster recovered after SWIM detection"
 }
 
 run_test "Cluster ready (5 nodes)" test_cluster_ready

@@ -101,7 +101,7 @@ test_connections_recovered() {
     local count
     count=$(cluster_node_count)
     assert_eq "$count" "5" "All 5 nodes recovered after kill"
-    assert_http_status "${CLUSTER_ENDPOINT}/health/ready" "200" "Cluster healthy after QUIC recovery"
+    assert_cluster_healthy "Cluster healthy after QUIC recovery"
 }
 
 run_test "Cluster ready" test_cluster_ready
