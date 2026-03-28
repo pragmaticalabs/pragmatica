@@ -28,9 +28,9 @@ else
 fi
 
 # Create working directories
-mkdir -p /opt/aether/config
-mkdir -p /opt/aether/data
-mkdir -p /opt/aether/logs
+mkdir -p $HOME/aether/config
+mkdir -p $HOME/aether/data
+mkdir -p $HOME/aether/logs
 
 # Verify Docker is running
 docker info > /dev/null 2>&1 || { echo "[setup] ERROR: Docker not running"; exit 1; }

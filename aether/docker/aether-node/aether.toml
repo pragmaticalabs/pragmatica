@@ -1,7 +1,14 @@
 # Aether Node Configuration for Containerized Deployment
-# Artifacts resolved from DHT first, falling back to local Maven repo.
-# The DHT (builtin) is local-only per node, so local fallback is required
-# when the LOAD command targets a node that didn't receive the upload.
+#
+# TLS note: `tls = false` means the management API uses plain HTTP (needed for
+# curl-based health checks and integration tests). QUIC cluster transport still
+# uses TLS with ephemeral self-signed certs. Set `tls = true` for production
+# (enables mTLS management API + deterministic CA from cluster secret).
+
+[cluster]
+tls = false
 
 [slice]
-repositories = ["builtin", "local"]
+# "builtin" resolves artifacts from the distributed DHT (quorum reads, replicated across nodes).
+# "local" falls back to ~/.m2/repository — useful for dev, not needed in production.
+repositories = ["builtin"]

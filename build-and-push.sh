@@ -101,12 +101,13 @@ START=$(date +%s)
 
 remote << REMOTE_BUILD
 cd /tmp/aether-build
-# Create Dockerfile only if missing (preserves Docker layer cache)
-if [ ! -f Dockerfile.local ]; then
+# Always regenerate Dockerfile (base image may have changed)
+if true; then
 cat > Dockerfile.local << 'DFILE'
-FROM eclipse-temurin:25-alpine
+FROM eclipse-temurin:25-noble
 
-RUN addgroup -g 1000 aether && adduser -D -u 1000 -G aether aether
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends wget && rm -rf /var/lib/apt/lists/*
+RUN usermod -l aether -d /home/aether -m ubuntu && groupmod -n aether ubuntu
 RUN mkdir -p /app /data /config && chown -R aether:aether /app /data /config
 
 # Config changes rarely — cached layer

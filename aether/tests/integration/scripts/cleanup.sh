@@ -14,7 +14,7 @@ log_step "Removing all Aether containers"
 remote_exec "docker ps -a --filter 'name=aether-' --format '{{.Names}}' | xargs -r docker rm -f" 2>/dev/null || true
 
 log_step "Removing Aether data"
-remote_exec "rm -rf /opt/aether/data/*" 2>/dev/null || true
+remote_exec "rm -rf \$HOME/aether/data/*" 2>/dev/null || true
 
 log_step "Removing load test temp files"
 rm -f /tmp/load_result_*.txt

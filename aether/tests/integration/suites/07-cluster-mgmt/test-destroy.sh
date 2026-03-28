@@ -51,7 +51,7 @@ test_no_containers_running() {
 
 test_data_cleaned() {
     local data_exists
-    data_exists=$(remote_exec "ls /opt/aether/data/ 2>/dev/null | wc -l | tr -d ' '" 2>/dev/null || echo "0")
+    data_exists=$(remote_exec "ls \$HOME/aether/data/ 2>/dev/null | wc -l | tr -d ' '" 2>/dev/null || echo "0")
     if [ "$data_exists" = "0" ] || [ -z "$data_exists" ]; then
         log_pass "Aether data directory clean"
     else

@@ -8,28 +8,25 @@ import org.pragmatica.aether.config.cluster.SshConfig;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.pragmatica.lang.Result.success;
 
 /// SSH-based bootstrap orchestrator for on-premises Docker deployments.
 ///
-/// For each node in `deployment.nodes.core`:
-/// 1. Verify SSH connectivity
-/// 2. Install Docker if not present
-/// 3. Create config directory
-/// 4. Generate and upload node config
-/// 5. Pull and run the container
+/// Uses a Docker bridge network with container hostnames for peer discovery,
+/// matching the pattern from docker/scaling-test/docker-compose.yml.
+/// All configuration is passed via environment variables — no config file mounting.
 @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-RET-01", "JBCT-EX-01"})
 sealed interface SshBootstrapOrchestrator {
     record unused() implements SshBootstrapOrchestrator {}
 
     Duration SSH_WAIT_TIMEOUT = Duration.ofSeconds(120);
+    String DOCKER_NETWORK = "aether-network";
 
     /// Bootstrap on-premises nodes via SSH.
     static Result<List<BootstrapOrchestrator.ProvisionedNode>> bootstrap(ClusterManagementConfig config,
@@ -58,11 +55,26 @@ sealed interface SshBootstrapOrchestrator {
         var nodes = new ArrayList<BootstrapOrchestrator.ProvisionedNode>();
         var clusterName = config.cluster()
                                 .name();
+        var ports = config.deployment()
+                          .ports();
+        var peers = buildPeers(clusterName, nodeIps.size(), ports.cluster());
+
+        // Ensure Docker network exists on first host (all nodes on same host for on-premises)
+        var firstHost = nodeIps.getFirst();
+        var setupResult = RemoteCommandRunner.waitForSsh(firstHost, ssh, SSH_WAIT_TIMEOUT)
+                                             .flatMap(_ -> installDocker(firstHost, ssh, config))
+                                             .flatMap(_ -> createDockerNetwork(firstHost, ssh));
+        if (setupResult.isFailure()) {
+            return setupResult.flatMap(_ -> success(List.of()));
+        }
+
         for (int i = 0; i < nodeIps.size(); i++) {
             var ip = nodeIps.get(i);
             var nodeId = clusterName + "-" + (i + 1);
+            var containerName = "aether-" + clusterName + "-" + (i + 1);
+            var hostname = containerName;
             System.out.printf("  Provisioning node %d/%d (%s at %s)...%n", i + 1, nodeIps.size(), nodeId, ip);
-            var result = provisionSingleNode(config, ip, nodeId, i, ssh, clusterSecret, nodeIps);
+            var result = provisionSingleNode(config, ip, nodeId, containerName, hostname, i, ssh, clusterSecret, peers);
             if (result.isFailure()) {
                 return result.flatMap(_ -> success(List.of()));
             }
@@ -74,21 +86,15 @@ sealed interface SshBootstrapOrchestrator {
     private static Result<Unit> provisionSingleNode(ClusterManagementConfig config,
                                                     String host,
                                                     String nodeId,
+                                                    String containerName,
+                                                    String hostname,
                                                     int nodeIndex,
                                                     SshConfig ssh,
                                                     String clusterSecret,
-                                                    List<String> allNodeIps) {
-        return RemoteCommandRunner.waitForSsh(host, ssh, SSH_WAIT_TIMEOUT)
-                                  .flatMap(_ -> installDocker(host, ssh, config))
-                                  .flatMap(_ -> createConfigDir(host, ssh))
-                                  .flatMap(_ -> uploadNodeConfig(config,
-                                                                 host,
-                                                                 nodeId,
-                                                                 nodeIndex,
-                                                                 ssh,
-                                                                 clusterSecret,
-                                                                 allNodeIps))
-                                  .flatMap(_ -> pullAndRunContainer(config, host, nodeId, ssh, clusterSecret));
+                                                    String peers) {
+        return ensureImage(config, host, ssh)
+                .flatMap(_ -> runContainer(host, nodeId, containerName, hostname, resolveImage(config),
+                                           clusterSecret, peers, nodeIndex, ssh, config));
     }
 
     private static Result<Unit> installDocker(String host, SshConfig ssh, ClusterManagementConfig config) {
@@ -112,65 +118,51 @@ sealed interface SshBootstrapOrchestrator {
                                   .mapToUnit();
     }
 
-    private static Result<Unit> createConfigDir(String host, SshConfig ssh) {
-        return RemoteCommandRunner.ssh(host, "mkdir -p /opt/aether/config", ssh)
+    private static Result<Unit> createDockerNetwork(String host, SshConfig ssh) {
+        System.out.printf("    Ensuring Docker network '%s' exists...%n", DOCKER_NETWORK);
+        return RemoteCommandRunner.ssh(host,
+                                       "docker network inspect " + DOCKER_NETWORK + " >/dev/null 2>&1 || docker network create " + DOCKER_NETWORK,
+                                       ssh)
                                   .mapToUnit();
     }
 
-    private static Result<Unit> uploadNodeConfig(ClusterManagementConfig config,
-                                                 String host,
-                                                 String nodeId,
-                                                 int nodeIndex,
-                                                 SshConfig ssh,
-                                                 String clusterSecret,
-                                                 List<String> allNodeIps) {
-        System.out.printf("    Uploading config to %s...%n", host);
-        var configContent = NodeConfigTemplate.render(config, nodeId, nodeIndex, clusterSecret, allNodeIps);
-        return writeAndUploadConfig(configContent, host, ssh);
-    }
-
-    private static Result<Unit> writeAndUploadConfig(String configContent, String host, SshConfig ssh) {
-        try{
-            var tempFile = Files.createTempFile("aether-config-", ".toml");
-            Files.writeString(tempFile, configContent);
-            var result = RemoteCommandRunner.scp(tempFile.toString(), host, "/opt/aether/config/aether.toml", ssh);
-            Files.deleteIfExists(tempFile);
-            return result;
-        } catch (IOException e) {
-            return new RemoteCommandRunner.RemoteCommandError.CommandException("write temp config", e).result();
-        }
-    }
-
-    private static Result<Unit> pullAndRunContainer(ClusterManagementConfig config,
-                                                    String host,
-                                                    String nodeId,
-                                                    SshConfig ssh,
-                                                    String clusterSecret) {
+    private static Result<Unit> ensureImage(ClusterManagementConfig config, String host, SshConfig ssh) {
         var image = resolveImage(config);
-        var ports = config.deployment()
-                          .ports();
-        if (config.deployment()
-                  .runtime()
-                  .type() != RuntimeType.CONTAINER) {
-            return startJvmNode(config, host, ssh);
-        }
-        System.out.printf("    Pulling image %s on %s...%n", image, host);
-        return RemoteCommandRunner.ssh(host, "docker pull " + image, ssh)
-                                  .flatMap(_ -> runContainer(host, nodeId, image, clusterSecret, ssh, config));
+        System.out.printf("    Ensuring image %s on %s...%n", image, host);
+        return RemoteCommandRunner.ssh(host, "docker image inspect " + image + " >/dev/null 2>&1 || docker pull " + image, ssh)
+                                  .mapToUnit();
     }
 
     private static Result<Unit> runContainer(String host,
                                              String nodeId,
+                                             String containerName,
+                                             String hostname,
                                              String image,
                                              String clusterSecret,
+                                             String peers,
+                                             int nodeIndex,
                                              SshConfig ssh,
                                              ClusterManagementConfig config) {
         var ports = config.deployment()
                           .ports();
-        var runCmd = "docker run -d" + " --name aether-" + nodeId + " --restart unless-stopped" + " --network host"
-                     + " -e NODE_ID=" + nodeId + " -e AETHER_CLUSTER_SECRET=" + clusterSecret
-                     + " -v /opt/aether/config:/config:ro" + " " + image + " --config /config/aether.toml";
-        System.out.printf("    Starting container on %s...%n", host);
+        // Port mapping: first node gets the base ports, subsequent nodes get offset ports
+        var mgmtHostPort = ports.management() + nodeIndex;
+        var appHostPort = ports.appHttp() + nodeIndex;
+
+        var runCmd = "docker run -d"
+                     + " --name " + containerName
+                     + " --hostname " + hostname
+                     + " --restart unless-stopped"
+                     + " --network " + DOCKER_NETWORK
+                     + " -e NODE_ID=" + nodeId
+                     + " -e CLUSTER_PORT=" + ports.cluster()
+                     + " -e MANAGEMENT_PORT=" + ports.management()
+                     + " -e PEERS=" + peers
+                     + " -e JAVA_OPTS='-Xmx256m -XX:+UseZGC'"
+                     + " -p " + mgmtHostPort + ":" + ports.management()
+                     + " -p " + appHostPort + ":" + ports.appHttp()
+                     + " " + image;
+        System.out.printf("    Starting container %s (mgmt:%d, app:%d)...%n", containerName, mgmtHostPort, appHostPort);
         return RemoteCommandRunner.ssh(host, runCmd, ssh)
                                   .mapToUnit();
     }
@@ -181,10 +173,17 @@ sealed interface SshBootstrapOrchestrator {
                             .jvmArgs()
                             .or("-Xmx4g -XX:+UseZGC -XX:+ZGenerational");
         var cmd = "nohup java " + jvmArgs
-                  + " -jar /opt/aether/aether-node.jar --config=/opt/aether/config/aether.toml > /var/log/aether.log 2>&1 &";
+                  + " -jar $HOME/aether/aether-node.jar --config=$HOME/aether/config/aether.toml > /var/log/aether.log 2>&1 &";
         System.out.printf("    Starting JVM node on %s...%n", host);
         return RemoteCommandRunner.ssh(host, cmd, ssh)
                                   .mapToUnit();
+    }
+
+    /// Build PEERS env var: "clusterName-1:aether-clusterName-1:port,clusterName-2:aether-clusterName-2:port,..."
+    private static String buildPeers(String clusterName, int nodeCount, int clusterPort) {
+        return IntStream.rangeClosed(1, nodeCount)
+                        .mapToObj(i -> clusterName + "-" + i + ":aether-" + clusterName + "-" + i + ":" + clusterPort)
+                        .collect(Collectors.joining(","));
     }
 
     private static String resolveImage(ClusterManagementConfig config) {
