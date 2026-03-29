@@ -45,6 +45,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 - **Standalone passive load balancer** — `aether-lb.jar` shaded binary with `--peers`, `--http-port`, `--cluster-port` CLI args, joins cluster as PassiveNode, routes HTTP via binary protocol; includes Dockerfile
+- **Passive node KV-Store snapshot sync** — passive nodes (LB) receive full KV-Store state on cluster join via `KVSyncRequest`/`KVSyncResponse`; LB works regardless of when it starts relative to blueprint deployment
 - **Stream auto-creation on publish** — `POST /api/streams/{name}/publish` auto-creates stream with default config if it doesn't exist; follows Kafka `auto.create.topics.enable` pattern
 - **Stream creation endpoint** — `POST /api/streams` for explicit stream creation with configurable partition count
 
