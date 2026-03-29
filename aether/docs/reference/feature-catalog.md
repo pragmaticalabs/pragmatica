@@ -152,8 +152,8 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 49 | REST management API | Battle-tested | 60+ endpoints across 13 route classes: status, health, blueprints, slices, scaling, rolling updates, config, thresholds, alerts, aspects, logging, TTM, invocation metrics, controller config, node lifecycle |
-| 50 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, metrics, health, scale, artifact, blueprint, update, invocation-metrics, controller, alerts, thresholds, aspects, traces, observability, config, logging, events, node lifecycle/drain/activate/shutdown |
+| 49 | REST management API | Battle-tested | 60+ endpoints across 13 route classes: status, health, blueprints, slices, scaling, rolling updates, config, thresholds, alerts, aspects, logging, TTM, invocation metrics, controller config, node lifecycle. Cluster-wide vs per-node separation: `/api/slices` (cluster-wide), `/api/node/slices` (per-node), `/api/node/routes` (per-node) |
+| 50 | Interactive CLI | Complete | Batch and REPL modes. Commands: status, nodes, slices, node-slices, routes, node-routes, metrics, health, scale, artifact, blueprint, update, invocation-metrics, controller, alerts, thresholds, aspects, traces, observability, config, logging, events, node lifecycle/drain/activate/shutdown |
 | 51 | WebSocket streams | Complete | `/ws/dashboard` (metrics), `/ws/status` (cluster state), `/ws/events` (real-time cluster events with delta broadcasting) |
 | 146 | In-memory streaming | Complete | StreamPublisher/StreamSubscriber/StreamAccess API, OffHeapRingBuffer, StreamPartitionManager, ResourceFactory SPI (StreamPublisherFactory, StreamAccessFactory), StreamConsumerAdapter, StreamConfigParser (blueprint TOML), CDM stream creation + consumer wiring, consensus cursor checkpointing, max-event-size enforcement, annotation processor (envelope v7), consumer runtime with configurable retries, dead-letter handler, REST API, CLI |
 | 147 | Declarative cluster management | Complete (Phase 1) | TOML-based cluster config (`cluster.toml`), `ClusterManagementConfig` model with validation, secret resolution (env vars, files, Vault), Hetzner cloud provisioning via REST API, 12-step bootstrap orchestrator (validate, resolve, provision, health, quorum, store, register), cluster registry (JSON, multi-cluster), CLI commands (`aether cluster bootstrap`, `cluster scale`, `cluster upgrade`), Management API (`GET/POST /api/cluster/config`, `POST /api/cluster/scale`, `POST /api/cluster/upgrade`) |
@@ -296,4 +296,4 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 ---
 
-*Last updated: 2026-03-23 (v0.23.0)*
+*Last updated: 2026-03-29 (v0.25.0)*

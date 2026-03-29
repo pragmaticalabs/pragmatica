@@ -38,7 +38,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **CLI shell completions** — `aether generate-completion` for bash/zsh/fish; auto-install in `install.sh`
 - **JsonMapper tree API** — `readTree()`, `extractField()`, `prettyPrint()` methods added to jackson integration module
 
+### Changed
+- **Cluster-wide `/api/slices`** — returns all slices across all nodes with per-node instance states, target counts, and version; old per-node behavior moved to `/api/node/slices`
+- **Per-node route endpoint** — `/api/routes` moved to `/api/node/routes` for naming consistency
+- **CLI `slices` command** — now shows cluster-wide view; added `node-slices`, `routes`, `node-routes` commands
+
 ### Fixed
+- **CLI version** — was hardcoded at 0.19.2, now correctly shows 0.25.0
+- **Autoscaler noisy log** — scale-down rule logged at INFO every 5s even when blocked by min-instances guard; changed to DEBUG
 - **Java 25 TLS compatibility** — RSA self-signed certs for dev mode, BouncyCastle PEMParser for EC key loading (preserves named curve encoding for BoringSSL), explicit BC KeyFactory in `SelfSignedCertificateProvider`
 - **Schema migration lock failover** — new leader scans for MIGRATING schemas with expired locks and resets to PENDING
 - **Dashboard schema retry button** — FAILED migrations can be retried from dashboard UI
