@@ -44,6 +44,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **CLI `slices` command** — now shows cluster-wide view; added `node-slices`, `routes`, `node-routes` commands
 
 ### Added
+- **Standalone passive load balancer** — `aether-lb.jar` shaded binary with `--peers`, `--http-port`, `--cluster-port` CLI args, joins cluster as PassiveNode, routes HTTP via binary protocol; includes Dockerfile
 - **Stream auto-creation on publish** — `POST /api/streams/{name}/publish` auto-creates stream with default config if it doesn't exist; follows Kafka `auto.create.topics.enable` pattern
 - **Stream creation endpoint** — `POST /api/streams` for explicit stream creation with configurable partition count
 
@@ -52,7 +53,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 - **CLI version** — was hardcoded at 0.19.2, now correctly shows 0.25.0
-- **`@CodecFor` annotation processor** — now generates codecs for external records and enums (was only registering them for runtime validation)
+- **`@CodecFor` annotation processor** — two-pass processing: register all types first, then generate codecs (fixes ordering issues); generates codecs for external records and enums
 - **Java 25 ambiguous method reference** — `ListenNotifyTest.subscribe()` lambda → method reference for stricter overload resolution
 - **Streaming API** — REST publish failed with "Stream not found" because streams were only created lazily by slice factories, not available via management API
 - **Stream publish payload** — changed from base64-only to raw UTF-8 string for simpler management API usage
