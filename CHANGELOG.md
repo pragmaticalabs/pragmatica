@@ -59,7 +59,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Streaming API** — REST publish failed with "Stream not found" because streams were only created lazily by slice factories, not available via management API
 - **Stream publish payload** — changed from base64-only to raw UTF-8 string for simpler management API usage
 - **Stream memory allocation** — management API streams use 16MB default (was 1GB per stream, crashing containers)
-- **Integration test `api_post`** — bash brace expansion bug `"${2:-{}}"` appended extra `}` to all POST bodies
+- **Integration test `api_post`/`app_post`** — bash brace expansion bug `"${2:-{}}"` appended extra `}` to all POST bodies
+- **Integration test suite** — API key auth (`aether-integration-test-key` default), correct url-shortener endpoints (`/api/v1/urls/`), stream payload format (`data` as string), stream info JSON parsing, concurrent deploy test, reduced streaming load duration (30s from 300s)
 - **Autoscaler noisy log** — scale-down rule logged at INFO every 5s even when blocked by min-instances guard; changed to DEBUG
 - **Java 25 TLS compatibility** — RSA self-signed certs for dev mode, BouncyCastle PEMParser for EC key loading (preserves named curve encoding for BoringSSL), explicit BC KeyFactory in `SelfSignedCertificateProvider`
 - **Schema migration lock failover** — new leader scans for MIGRATING schemas with expired locks and resets to PENDING
