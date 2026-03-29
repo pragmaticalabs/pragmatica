@@ -3,11 +3,14 @@ package org.pragmatica.cluster.node.passive;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoverNodes;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
 import org.pragmatica.consensus.net.NetworkMessage.Hello;
+import org.pragmatica.consensus.net.NetworkMessage.KVSyncRequest;
+import org.pragmatica.consensus.net.NetworkMessage.KVSyncResponse;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Broadcast;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectedNodesList;
@@ -38,8 +41,11 @@ import org.pragmatica.serialization.Serializer;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.netty.handler.codec.quic.QuicSslContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.messaging.MessageRouter.Entry.route;
 
@@ -47,6 +53,7 @@ import static org.pragmatica.messaging.MessageRouter.Entry.route;
 /// Receives committed Decision messages and applies them to a local KVStore.
 /// Used by load balancers and read-only observers.
 public interface PassiveNode<K extends StructuredKey, V> {
+    Logger log = LoggerFactory.getLogger(PassiveNode.class);
 
     DelegateRouter delegateRouter();
 
@@ -75,7 +82,8 @@ public interface PassiveNode<K extends StructuredKey, V> {
             TopologyObserver.topologyObserver(topologyConfig, delegateRouter),
             QuicTlsProvider.serverContext(Option.empty()),
             QuicTlsProvider.clientContext(Option.empty())
-        ).map((topologyManager, serverSsl, clientSsl) -> assembleNode(delegateRouter,
+        ).map((topologyManager, serverSsl, clientSsl) -> assembleNode(topologyConfig.self(),
+                                                                       delegateRouter,
                                                                        topologyManager,
                                                                        kvStore,
                                                                        serializer,
@@ -86,6 +94,7 @@ public interface PassiveNode<K extends StructuredKey, V> {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static <K extends StructuredKey, V> PassiveNode<K, V> assembleNode(
+        NodeId selfId,
         DelegateRouter delegateRouter,
         TopologyObserver topologyManager,
         KVStore<K, V> kvStore,
@@ -105,7 +114,12 @@ public interface PassiveNode<K extends StructuredKey, V> {
         var networkMsgRoutes = SealedBuilder.from(NetworkMessage.class)
                                             .route(route(DiscoverNodes.class, topologyManager::handleDiscoverNodes),
                                                    route(DiscoveredNodes.class, topologyManager::handleDiscoveredNodes),
-                                                   route(Hello.class, _ -> {}));
+                                                   route(Hello.class, _ -> {}),
+                                                   route(KVSyncRequest.class, _ -> {}),
+                                                   route(KVSyncResponse.class,
+                                                         response -> handleKVSyncResponse(kvStore, response)));
+
+        var snapshotRequested = new AtomicBoolean(false);
 
         var networkServiceRoutes = SealedBuilder.from(NetworkServiceMessage.class)
                                                 .route(route(ConnectedNodesList.class, topologyManager::reconcile),
@@ -113,7 +127,9 @@ public interface PassiveNode<K extends StructuredKey, V> {
                                                        route(DisconnectNode.class, network::disconnect),
                                                        route(ListConnectedNodes.class, network::listNodes),
                                                        route(ConnectionFailed.class, topologyManager::handleConnectionFailed),
-                                                       route(ConnectionEstablished.class, topologyManager::handleConnectionEstablished),
+                                                       route(ConnectionEstablished.class,
+                                                             msg -> handleConnectionWithSnapshotRequest(
+                                                                 topologyManager, delegateRouter, selfId, snapshotRequested, msg)),
                                                        route(Send.class, network::handleSend),
                                                        route(Broadcast.class, network::handleBroadcast));
 
@@ -148,6 +164,26 @@ public interface PassiveNode<K extends StructuredKey, V> {
         }
 
         return new passiveNode<>(delegateRouter, topologyManager, network, kvStore, List.copyOf(allEntries));
+    }
+
+    private static void handleConnectionWithSnapshotRequest(TopologyObserver topologyManager,
+                                                               DelegateRouter delegateRouter,
+                                                               NodeId selfId,
+                                                               AtomicBoolean snapshotRequested,
+                                                               ConnectionEstablished msg) {
+        topologyManager.handleConnectionEstablished(msg);
+
+        if (snapshotRequested.compareAndSet(false, true)) {
+            log.info("Requesting KV-Store snapshot from {}", msg.nodeId());
+            delegateRouter.route(new Send(msg.nodeId(), new KVSyncRequest(selfId)));
+        }
+    }
+
+    private static <K extends StructuredKey, V> void handleKVSyncResponse(KVStore<K, V> kvStore,
+                                                                               KVSyncResponse response) {
+        kvStore.restoreSnapshot(response.snapshot())
+               .onSuccess(_ -> log.info("KV-Store snapshot restored from {}", response.target()))
+               .onFailure(cause -> log.error("Failed to restore KV snapshot: {}", cause));
     }
 
     @SuppressWarnings({"rawtypes", "JBCT-RET-01"}) // void required by Consumer<Decision> contract

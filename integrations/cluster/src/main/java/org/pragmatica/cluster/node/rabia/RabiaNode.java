@@ -16,6 +16,8 @@ import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoverNodes;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
 import org.pragmatica.consensus.net.NetworkMessage.Hello;
+import org.pragmatica.consensus.net.NetworkMessage.KVSyncRequest;
+import org.pragmatica.consensus.net.NetworkMessage.KVSyncResponse;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Broadcast;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectedNodesList;
@@ -283,8 +285,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         var networkMsgRoutes = SealedBuilder.from(NetworkMessage.class)
                                             .route(route(DiscoverNodes.class, topologyManager::handleDiscoverNodes),
                                                    route(DiscoveredNodes.class, topologyManager::handleDiscoveredNodes),
-                                                   route(Hello.class,
-                                                         _ -> {}));
+                                                   route(Hello.class, _ -> {}),
+                                                   route(KVSyncRequest.class,
+                                                         request -> handleKVSyncRequest(stateMachine, delegateRouter, config, request)),
+                                                   route(KVSyncResponse.class, _ -> {}));
         var networkServiceRoutes = SealedBuilder.from(NetworkServiceMessage.class)
                                                 .route(route(ConnectedNodesList.class, topologyManager::reconcile),
                                                        route(ConnectNode.class, network::connect),
@@ -433,6 +437,16 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         table.computeIfAbsent((Class) tuple.first(),
                               _ -> new ArrayList<>())
              .add((Consumer) tuple.last());
+    }
+
+    private static <C extends Command> void handleKVSyncRequest(StateMachine<C> stateMachine,
+                                                                      DelegateRouter delegateRouter,
+                                                                      NodeConfig config,
+                                                                      KVSyncRequest request) {
+        stateMachine.makeSnapshot()
+                    .onSuccess(snapshot -> delegateRouter.route(
+                        new Send(request.sender(), new KVSyncResponse(config.topology().self(), snapshot))))
+                    .onFailure(cause -> log.error("Failed to create KV snapshot: {}", cause));
     }
 
     /// Default timeout for leader proposals.
