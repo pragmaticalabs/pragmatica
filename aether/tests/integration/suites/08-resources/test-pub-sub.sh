@@ -28,7 +28,7 @@ test_stream_exists_or_created() {
 test_publish_events() {
     local success=0 failure=0
     for i in $(seq 1 "$EVENT_COUNT"); do
-        local payload="{\"key\":\"pubsub-${i}\",\"data\":{\"index\":${i},\"ts\":$(now_epoch)},\"timestamp\":$(now_epoch)}"
+        local payload="{\"key\":\"pubsub-${i}\",\"data\":\"event-${i}-$(now_epoch)\",\"timestamp\":$(now_epoch)}"
         if stream_publish "$STREAM_NAME" "$payload" > /dev/null 2>&1; then
             success=$((success + 1))
         else
@@ -68,7 +68,7 @@ test_competing_consumers_multi_instance() {
         # Publish another batch and verify no errors
         local success=0
         for i in $(seq 1 10); do
-            local payload="{\"key\":\"compete-${i}\",\"data\":{\"round\":2},\"timestamp\":$(now_epoch)}"
+            local payload="{\"key\":\"compete-${i}\",\"data\":\"compete-${i}\",\"timestamp\":$(now_epoch)}"
             if stream_publish "$STREAM_NAME" "$payload" > /dev/null 2>&1; then
                 success=$((success + 1))
             fi

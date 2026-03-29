@@ -33,11 +33,12 @@ test_publish_and_verify_count() {
     msg_count=$(echo "$info" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-# Try common field names for count
-for field in ['messageCount', 'count', 'size', 'totalMessages']:
-    if field in data:
-        print(data[field])
-        sys.exit(0)
+if 'streams' in data and data['streams']:
+    s = data['streams'][0]
+    for field in ['totalEvents', 'messageCount', 'count', 'size']:
+        if field in s:
+            print(s[field])
+            sys.exit(0)
 print('unknown')
 " 2>/dev/null)
 
@@ -57,10 +58,12 @@ test_stream_metadata() {
     name=$(echo "$info" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-for field in ['name', 'streamName', 'stream']:
-    if field in data:
-        print(data[field])
-        sys.exit(0)
+if 'streams' in data and data['streams']:
+    s = data['streams'][0]
+    for field in ['name', 'streamName']:
+        if field in s:
+            print(s[field])
+            sys.exit(0)
 print('')
 " 2>/dev/null)
     assert_ne "$name" "" "Stream name in metadata"

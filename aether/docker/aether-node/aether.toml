@@ -15,6 +15,7 @@ repositories = ["builtin"]
 
 [app-http]
 enabled = true
+api_keys = ["aether-integration-test-key"]
 
 [messaging.click-events]
 topic_name = "click-events"

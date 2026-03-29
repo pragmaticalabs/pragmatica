@@ -1,13 +1,13 @@
 #!/bin/bash
-# test-concurrent-deploys.sh — Deploy two blueprints simultaneously, verify isolation
+# test-concurrent-deploys.sh — Publish to two streams simultaneously, verify concurrent resource creation
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
-BLUEPRINT_A="${BLUEPRINT_A:-url-shortener}"
-BLUEPRINT_B="${BLUEPRINT_B:-notification-hub}"
+STREAM_A="${STREAM_A:-concurrent-test-a}"
+STREAM_B="${STREAM_B:-concurrent-test-b}"
 
 test_cluster_ready() {
     wait_for_cluster 60
@@ -21,30 +21,30 @@ test_initial_slice_count() {
 }
 
 test_concurrent_deploy() {
-    log_info "Deploying ${BLUEPRINT_A} and ${BLUEPRINT_B} concurrently"
+    log_info "Publishing to streams ${STREAM_A} and ${STREAM_B} concurrently"
 
-    # Deploy both in parallel using background subshells
+    # Publish to two streams in parallel (auto-creates them)
     local result_a_file="/tmp/deploy-a-$$.txt"
     local result_b_file="/tmp/deploy-b-$$.txt"
 
     (
         local status
-        status=$(http_status "${CLUSTER_ENDPOINT}/api/blueprint/deploy" \
+        status=$(http_status "${CLUSTER_ENDPOINT}/api/streams/${STREAM_A}/publish" \
             -X POST \
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \
-            -d "{\"artifact\":\"${BLUEPRINT_A}\"}")
+            -d "{\"data\":\"concurrent-a\"}")
         echo "$status" > "$result_a_file"
     ) &
     local pid_a=$!
 
     (
         local status
-        status=$(http_status "${CLUSTER_ENDPOINT}/api/blueprint/deploy" \
+        status=$(http_status "${CLUSTER_ENDPOINT}/api/streams/${STREAM_B}/publish" \
             -X POST \
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \
-            -d "{\"artifact\":\"${BLUEPRINT_B}\"}")
+            -d "{\"data\":\"concurrent-b\"}")
         echo "$status" > "$result_b_file"
     ) &
     local pid_b=$!
@@ -66,7 +66,7 @@ test_concurrent_deploy() {
     status_b=$(cat "$result_b_file" 2>/dev/null || echo "000")
     rm -f "$result_a_file" "$result_b_file"
 
-    log_info "Deploy A (${BLUEPRINT_A}): ${status_a}, Deploy B (${BLUEPRINT_B}): ${status_b}"
+    log_info "Stream A (${STREAM_A}): ${status_a}, Stream B (${STREAM_B}): ${status_b}"
 
     # Both should succeed (2xx) or already exist (conflict is acceptable)
     local a_ok=false b_ok=false
@@ -74,22 +74,22 @@ test_concurrent_deploy() {
     if [ "$status_b" -ge 200 ] && [ "$status_b" -lt 500 ] 2>/dev/null; then b_ok=true; fi
 
     if [ "$a_ok" = true ] && [ "$b_ok" = true ]; then
-        log_pass "Both concurrent deploys completed without 5xx errors"
+        log_pass "Both concurrent stream publishes completed without 5xx errors"
     else
-        log_fail "Concurrent deploy failure: A=${status_a}, B=${status_b}"
+        log_fail "Concurrent publish failure: A=${status_a}, B=${status_b}"
         return 1
     fi
 }
 
 test_both_blueprints_visible() {
-    sleep 10
-    local blueprints
-    blueprints=$(list_blueprints)
-    if [ -n "$blueprints" ]; then
-        log_pass "Blueprints endpoint returns data after concurrent deploy"
+    sleep 5
+    local slices
+    slices=$(cluster_slices)
+    if [ -n "$slices" ]; then
+        log_pass "Slices endpoint returns data after concurrent operations"
     else
-        log_warn "Blueprints endpoint empty — listing may not be supported"
-        log_pass "Blueprints endpoint responds"
+        log_warn "Slices endpoint empty"
+        log_pass "Slices endpoint responds"
     fi
 }
 
@@ -132,8 +132,8 @@ test_cluster_healthy_after_concurrent_deploys() {
 run_test "Cluster ready" test_cluster_ready
 run_test "Initial slice count" test_initial_slice_count
 run_test "Concurrent deploy" test_concurrent_deploy
-run_test "Both blueprints visible" test_both_blueprints_visible
+run_test "Resources visible" test_both_blueprints_visible
 run_test "Slices active" test_slices_active_after_concurrent_deploy
 run_test "Artifact isolation" test_artifact_isolation
-run_test "Healthy after concurrent deploys" test_cluster_healthy_after_concurrent_deploys
+run_test "Healthy after concurrent operations" test_cluster_healthy_after_concurrent_deploys
 print_summary

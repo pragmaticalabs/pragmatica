@@ -12,10 +12,11 @@ LB_PORT="${LB_PORT:-9090}"
 CLUSTER_ENDPOINT="${CLUSTER_ENDPOINT:-http://${TARGET_HOST}:${MGMT_PORT}}"
 APP_ENDPOINT="${APP_ENDPOINT:-http://${TARGET_HOST}:${APP_PORT}}"
 LB_ENDPOINT="${LB_ENDPOINT:-http://${TARGET_HOST}:${LB_PORT}}"
-API_KEY="${AETHER_API_KEY:-}"
+API_KEY="${AETHER_API_KEY:-aether-integration-test-key}"
 ADMIN_API_KEY="${AETHER_ADMIN_API_KEY:-${API_KEY}}"
 VIEWER_API_KEY="${AETHER_VIEWER_API_KEY:-}"
 OPERATOR_API_KEY="${AETHER_OPERATOR_API_KEY:-${API_KEY}}"
+export AETHER_API_KEY="${API_KEY}"
 
 # ---------------------------------------------------------------------------
 # Aether CLI
@@ -30,7 +31,7 @@ aether_failover() {
     for i in $(seq 0 $((NODE_COUNT - 1))); do
         local port=$((base_port + i))
         local result
-        result=$(aether -c "${TARGET_HOST}:${port}" "$@" 2>/dev/null) && { echo "$result"; return 0; }
+        result=$(aether -c "${TARGET_HOST}:${port}" --api-key "${API_KEY}" "$@" 2>/dev/null) && { echo "$result"; return 0; }
     done
     return 1
 }
@@ -96,7 +97,8 @@ app_get() {
 }
 
 app_post() {
-    local path="$1" body="${2:-{}}"
+    local path="$1"
+    local body="${2:-"{}"}"
     curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
         -d "$body" "${APP_ENDPOINT}${path}"
 }

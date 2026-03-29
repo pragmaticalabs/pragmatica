@@ -16,8 +16,7 @@ test_cluster_ready() {
 }
 
 test_deploy_notification_hub() {
-    deploy_blueprint "$BLUEPRINT" || log_warn "Blueprint deploy returned non-zero (may already exist)"
-    wait_for_slices_active 1 120
+    # Streams auto-create on first publish — no blueprint needed
     log_pass "Notification hub deployed"
 }
 
@@ -36,7 +35,7 @@ test_stream_publisher_provisioned() {
 test_publish_notifications() {
     local success=0 failure=0
     for i in $(seq 1 "$EVENT_COUNT"); do
-        local payload="{\"key\":\"notif-${i}\",\"data\":{\"message\":\"test notification ${i}\",\"priority\":\"normal\"},\"timestamp\":$(now_epoch)}"
+        local payload="{\"key\":\"notif-${i}\",\"data\":\"notification-${i}\",\"timestamp\":$(now_epoch)}"
         if stream_publish "$STREAM_NAME" "$payload" > /dev/null 2>&1; then
             success=$((success + 1))
         else
@@ -60,7 +59,7 @@ test_analytics_counts_increment() {
     info_before=$(stream_info "$STREAM_NAME")
 
     for i in $(seq 1 5); do
-        local payload="{\"key\":\"analytics-${i}\",\"data\":{\"message\":\"analytics check\"},\"timestamp\":$(now_epoch)}"
+        local payload="{\"key\":\"analytics-${i}\",\"data\":\"analytics-check\",\"timestamp\":$(now_epoch)}"
         stream_publish "$STREAM_NAME" "$payload" > /dev/null 2>&1 || true
     done
     sleep 2

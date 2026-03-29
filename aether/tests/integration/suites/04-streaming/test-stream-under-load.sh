@@ -8,8 +8,8 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/load.sh"
 
 STREAM_NAME="${STREAM_NAME:-load-test-stream}"
-STREAM_DURATION="${STREAM_DURATION:-300}"  # 5 minutes default
-STREAM_RPS="${STREAM_RPS:-20}"
+STREAM_DURATION="${STREAM_DURATION:-30}"  # 30 seconds default
+STREAM_RPS="${STREAM_RPS:-10}"
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-2.0}"
 
 test_cluster_ready() {

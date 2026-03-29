@@ -22,33 +22,50 @@ test_deploy_sql_app() {
 }
 
 test_create_short_url() {
-    local payload='{"url":"https://example.com/integration-test","slug":"int-test-001"}'
+    local payload='{"url":"https://example.com/integration-test"}'
     local result
-    result=$(app_post "/shorten" "$payload")
-    assert_ne "$result" "" "POST /shorten returns response"
+    result=$(app_post "/api/v1/urls/" "$payload")
+    assert_ne "$result" "" "POST /api/v1/urls/ returns response"
 }
 
 test_resolve_short_url() {
+    local payload='{"url":"https://example.com/resolve-test"}'
+    local create_result
+    create_result=$(app_post "/api/v1/urls/" "$payload")
+    local short_code
+    short_code=$(echo "$create_result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('shortCode',''))" 2>/dev/null)
+    if [ -z "$short_code" ]; then
+        log_fail "Could not extract shortCode from create response"
+        return 1
+    fi
     local status
-    status=$(http_status "${APP_ENDPOINT}/int-test-001" -H "X-API-Key: ${API_KEY}")
-    # Expect 200 or 301/302 redirect
+    status=$(http_status "${APP_ENDPOINT}/api/v1/urls/${short_code}" -H "X-API-Key: ${API_KEY}")
     if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
-        log_pass "GET /int-test-001 returns ${status} (success)"
+        log_pass "GET /api/v1/urls/${short_code} returns ${status} (success)"
         return 0
     fi
-    log_fail "GET /int-test-001 returns ${status} (expected 2xx or 3xx)"
+    log_fail "GET /api/v1/urls/${short_code} returns ${status} (expected 2xx or 3xx)"
     return 1
 }
 
 test_connection_pooling_rapid_requests() {
-    local result
-    result=$(burst_load "$POOL_BURST" "POST" "/shorten" \
-        '{"url":"https://example.com/pool-test","slug":"pool-@@COUNTER@@"}')
-    local success=${result%%:*}
-    local failure=${result##*:}
+    local success=0 failure=0
+    for i in $(seq 1 "$POOL_BURST"); do
+        local payload="{\"url\":\"https://example.com/pool-test-${i}\"}"
+        local status
+        status=$(http_status "${APP_ENDPOINT}/api/v1/urls/" \
+            -X POST \
+            -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$payload")
+        if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+            success=$((success + 1))
+        else
+            failure=$((failure + 1))
+        fi
+    done
     log_info "Pool burst: success=${success}, failure=${failure}"
     assert_gt "$success" "0" "At least some requests succeeded under pool burst"
-    # Allow small failure rate but no total meltdown
     local threshold=$((POOL_BURST / 2))
     assert_gt "$success" "$threshold" "Majority of ${POOL_BURST} requests succeeded (>${threshold})"
 }
