@@ -350,3 +350,45 @@ container_running() {
     local name="$1"
     remote_exec "docker ps --filter 'name=${name}' --filter 'status=running' -q" 2>/dev/null | grep -q .
 }
+
+# ---------------------------------------------------------------------------
+# Passive Load Balancer
+# ---------------------------------------------------------------------------
+LB_CONTAINER="${LB_CONTAINER:-aether-integration-lb}"
+LB_IMAGE="${LB_IMAGE:-aether-lb:local}"
+LB_CLUSTER_PORT="${LB_CLUSTER_PORT:-7000}"
+
+start_lb() {
+    local peers=""
+    for i in $(seq 1 "${NODE_COUNT}"); do
+        [ -n "$peers" ] && peers="${peers},"
+        peers="${peers}aether-integration-test-${i}:6000"
+    done
+
+    log_info "Starting passive LB: ${LB_CONTAINER}"
+    log_info "  Peers: ${peers}"
+    log_info "  HTTP port: ${LB_PORT} (mapped to host)"
+
+    remote_exec "docker rm -f ${LB_CONTAINER} 2>/dev/null; \
+        docker run -d \
+            --name ${LB_CONTAINER} \
+            --network aether-network \
+            -p ${LB_PORT}:8080 \
+            -e PEERS=${peers} \
+            -e CLUSTER_PORT=${LB_CLUSTER_PORT} \
+            ${LB_IMAGE}" 2>/dev/null
+}
+
+stop_lb() {
+    log_info "Stopping passive LB: ${LB_CONTAINER}"
+    remote_exec "docker rm -f ${LB_CONTAINER}" 2>/dev/null
+}
+
+wait_for_lb() {
+    local timeout="${1:-60}"
+    wait_for "LB healthy" "curl -sf ${LB_ENDPOINT}/health > /dev/null 2>&1" "$timeout"
+}
+
+is_lb_running() {
+    container_running "${LB_CONTAINER}"
+}
