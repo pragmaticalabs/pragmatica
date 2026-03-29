@@ -47,8 +47,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Stream auto-creation on publish** — `POST /api/streams/{name}/publish` auto-creates stream with default config if it doesn't exist; follows Kafka `auto.create.topics.enable` pattern
 - **Stream creation endpoint** — `POST /api/streams` for explicit stream creation with configurable partition count
 
+### Changed
+- **java-peglib 0.2.0** — PEG parser generator bumped from 0.1.8, Java25Parser regenerated (-2,940 lines net)
+
 ### Fixed
 - **CLI version** — was hardcoded at 0.19.2, now correctly shows 0.25.0
+- **`@CodecFor` annotation processor** — now generates codecs for external records and enums (was only registering them for runtime validation)
+- **Java 25 ambiguous method reference** — `ListenNotifyTest.subscribe()` lambda → method reference for stricter overload resolution
 - **Streaming API** — REST publish failed with "Stream not found" because streams were only created lazily by slice factories, not available via management API
 - **Stream publish payload** — changed from base64-only to raw UTF-8 string for simpler management API usage
 - **Stream memory allocation** — management API streams use 16MB default (was 1GB per stream, crashing containers)
