@@ -166,7 +166,7 @@ public interface DecisionTreeController extends ClusterController {
             }
             // Rule 2: Low CPU → scale down (if above minimum instances)
             if (avgCpu < currentConfig.cpuScaleDownThreshold() && blueprint.instances() > blueprint.minInstances()) {
-                log.info("Rule triggered: Low CPU ({} < {}), scaling down {}",
+                log.debug("Rule triggered: Low CPU ({} < {}), scaling down {}",
                          avgCpu,
                          currentConfig.cpuScaleDownThreshold(),
                          artifact);

@@ -118,10 +118,16 @@ slices_total_instances() {
 import sys, json
 try:
     data = json.load(sys.stdin)
-    if isinstance(data, list):
-        print(sum(len(s.get('instances', [])) for s in data))
-    elif isinstance(data, dict) and 'slices' in data:
-        print(sum(len(s.get('instances', [])) for s in data['slices']))
+    if isinstance(data, dict) and 'slices' in data:
+        sl = data['slices']
+        if sl and isinstance(sl[0], dict):
+            # Cluster-wide format: count running instances (LOADED or ACTIVE)
+            print(sum(len([i for i in s.get('instances', []) if i.get('state') in ('LOADED', 'ACTIVE')]) for s in sl))
+        else:
+            # Flat string list (per-node format)
+            print(len(sl))
+    elif isinstance(data, list):
+        print(len(data))
     else:
         print(0)
 except:

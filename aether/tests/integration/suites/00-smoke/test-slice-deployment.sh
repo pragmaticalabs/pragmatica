@@ -28,8 +28,17 @@ test_blueprint_listed() {
 }
 
 test_app_endpoint_reachable() {
-    wait_for "app endpoint ready" "curl -sf ${APP_ENDPOINT}/api/health > /dev/null 2>&1" 60
-    assert_http_status "${APP_ENDPOINT}/api/health" "200" "App health endpoint returns 200"
+    # App HTTP server doesn't have /api/health — that's on the management port.
+    # Check that the app port is accepting connections (any non-5xx response).
+    wait_for "app endpoint ready" "curl -s -o /dev/null -w '%{http_code}' ${APP_ENDPOINT}/ 2>/dev/null | grep -qv '^000'" 60
+    local status
+    status=$(http_status "${APP_ENDPOINT}/")
+    if [ "$status" -ge 200 ] && [ "$status" -lt 500 ] 2>/dev/null; then
+        log_pass "App HTTP server responding (status: ${status})"
+        return 0
+    fi
+    log_fail "App HTTP server not responding (status: ${status})"
+    return 1
 }
 
 test_app_request_succeeds() {

@@ -29,6 +29,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
+
+import java.util.HashMap;
+
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -65,11 +68,13 @@ public final class SliceRoutes implements RouteSource {
 
     @Override
     public Stream<Route<?>> routes() {
-        return Stream.of(Route.<SlicesResponse> get("/api/slices")
-                              .toJson(this::buildSlicesResponse),
+        return Stream.of(Route.<ClusterSlicesResponse> get("/api/slices")
+                              .toJson(this::buildClusterSlicesResponse),
+                         Route.<SlicesResponse> get("/api/node/slices")
+                              .toJson(this::buildNodeSlicesResponse),
                          Route.<SlicesStatusResponse> get("/api/slices/status")
                               .toJson(this::buildSlicesStatusResponse),
-                         Route.<RoutesResponse> get("/api/routes")
+                         Route.<RoutesResponse> get("/api/node/routes")
                               .toJson(this::buildRoutesResponse),
                          Route.<ScaleResponse> post("/api/scale")
                               .withBody(ScaleRequest.class)
@@ -486,7 +491,7 @@ public final class SliceRoutes implements RouteSource {
         return new TopologyResponse(nodes, edges);
     }
 
-    private SlicesResponse buildSlicesResponse() {
+    private SlicesResponse buildNodeSlicesResponse() {
         var node = nodeSupplier.get();
         var slices = node.sliceStore()
                          .loaded()
@@ -495,6 +500,44 @@ public final class SliceRoutes implements RouteSource {
                                             .asString())
                          .toList();
         return new SlicesResponse(slices);
+    }
+
+    private ClusterSlicesResponse buildClusterSlicesResponse() {
+        var node = nodeSupplier.get();
+        var targets = collectSliceTargets(node);
+        var slices = node.deploymentMap()
+                         .allDeployments()
+                         .stream()
+                         .map(info -> toClusterSliceInfo(info, targets))
+                         .toList();
+        return new ClusterSlicesResponse(slices);
+    }
+
+    private Map<String, SliceTargetValue> collectSliceTargets(AetherNode node) {
+        var targets = new HashMap<String, SliceTargetValue>();
+        node.kvStore()
+            .forEach(SliceTargetKey.class,
+                     SliceTargetValue.class,
+                     (key, value) -> targets.put(key.artifactBase().asString(), value));
+        return targets;
+    }
+
+    private static ClusterSliceInfo toClusterSliceInfo(DeploymentMap.SliceDeploymentInfo info,
+                                                       Map<String, SliceTargetValue> targets) {
+        var artifactStr = info.artifact();
+        var artifactBase = artifactStr.contains(":")
+                           ? artifactStr.substring(0, artifactStr.lastIndexOf(':'))
+                           : artifactStr;
+        var target = Option.option(targets.get(artifactBase));
+        var instances = info.instances()
+                            .stream()
+                            .map(i -> new ClusterSliceInstance(i.nodeId(), i.state().name(), ""))
+                            .toList();
+        return new ClusterSliceInfo(artifactStr,
+                                   target.map(SliceTargetValue::targetInstances).or(instances.size()),
+                                   target.map(SliceTargetValue::effectiveMinInstances).or(1),
+                                   target.map(t -> t.currentVersion().withQualifier()).or(""),
+                                   instances);
     }
 
     private RoutesResponse buildRoutesResponse() {

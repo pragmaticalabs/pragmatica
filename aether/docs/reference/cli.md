@@ -95,7 +95,7 @@ authorization_role = "VIEWER"
 |------|-----------|
 | **ADMIN** | All commands |
 | **OPERATOR** | Status, scaling, drain, deploy from artifact, schema, updates, backup, config, alerts |
-| **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `metrics`, `events`, `health` |
+| **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `node-slices`, `routes`, `node-routes`, `metrics`, `events`, `health` |
 
 When `authorization_role` is omitted, the key defaults to `ADMIN`. See [Management API - Authorization](management-api.md#authorization-rbac) for the full permission mapping.
 
@@ -135,7 +135,7 @@ Nodes:
 
 #### slices
 
-List deployed slices:
+Show all slices across the cluster with per-node instances, target counts, and version:
 
 ```bash
 aether slices
@@ -143,9 +143,59 @@ aether slices
 
 Output:
 ```
-Slices:
-  org.example:order-processor:1.0.0    3 instances  ACTIVE
-  org.example:inventory:1.0.0          2 instances  ACTIVE
+Slices (cluster-wide):
+  org.example:order-processor:1.0.0    target: 3  min: 1  version: 1.0.0
+    node-1  ACTIVE
+    node-2  ACTIVE
+    node-3  ACTIVE
+  org.example:inventory:1.0.0          target: 2  min: 1  version: 1.0.0
+    node-1  ACTIVE
+    node-2  ACTIVE
+```
+
+#### node-slices
+
+Show slices loaded on the connected node (flat list of artifact names):
+
+```bash
+aether node-slices
+```
+
+Output:
+```
+Slices (node):
+  org.example:order-processor:1.0.0
+  org.example:inventory:1.0.0
+```
+
+#### routes
+
+Show HTTP routes across the cluster:
+
+```bash
+aether routes
+```
+
+Output:
+```
+Routes (cluster-wide):
+  GET  /orders   [node-1, node-2]  security: none
+  POST /orders   [node-1, node-2]  security: api-key
+```
+
+#### node-routes
+
+Show HTTP routes on the connected node:
+
+```bash
+aether node-routes
+```
+
+Output:
+```
+Routes (node):
+  GET  /orders   [node-1, node-2]  security: none
+  POST /orders   [node-1, node-2]  security: api-key
 ```
 
 #### metrics

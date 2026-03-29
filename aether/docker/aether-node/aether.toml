@@ -12,3 +12,23 @@ tls = false
 # "builtin" resolves artifacts from the distributed DHT (quorum reads, replicated across nodes).
 # "local" falls back to ~/.m2/repository — useful for dev, not needed in production.
 repositories = ["builtin"]
+
+[app-http]
+enabled = true
+
+[messaging.click-events]
+topic_name = "click-events"
+
+[database]
+username = "forge"
+password = "forge"
+async_url = "postgresql://forge-postgres:5432/forge"
+
+[database.pool_config]
+min_connections = 20
+max_connections = 100
+idle_timeout = "10m"
+connection_timeout = "5s"
+max_lifetime = "30m"
+leak_detection_timeout = "0s"
+io_threads = 0

@@ -266,7 +266,30 @@ curl "http://localhost:8080/api/events?since=2024-01-15T10:30:00Z"
 
 ### GET /api/slices
 
-List all deployed slice artifact identifiers.
+Returns cluster-wide slice data including per-node instances, target counts, and version information.
+
+**Response:**
+```json
+{
+  "slices": [
+    {
+      "artifact": "org.example:my-slice:1.0.0",
+      "targetInstances": 3,
+      "minInstances": 1,
+      "version": "1.0.0",
+      "instances": [
+        {"nodeId": "node-1", "state": "ACTIVE", "failureReason": ""},
+        {"nodeId": "node-2", "state": "ACTIVE", "failureReason": ""},
+        {"nodeId": "node-3", "state": "ACTIVE", "failureReason": ""}
+      ]
+    }
+  ]
+}
+```
+
+### GET /api/node/slices
+
+Returns a flat list of slice artifact identifiers loaded on the connected node (the previous behavior of `GET /api/slices`).
 
 **Response:**
 ```json
@@ -298,9 +321,9 @@ Get detailed slice status including per-node state and health.
 }
 ```
 
-### GET /api/routes
+### GET /api/node/routes
 
-List all registered HTTP routes from deployed slices.
+List HTTP routes registered on the connected node.
 
 **Response:**
 ```json
@@ -309,7 +332,26 @@ List all registered HTTP routes from deployed slices.
     {
       "method": "GET",
       "path": "/orders",
-      "nodes": ["node-1", "node-2"]
+      "nodes": ["node-1", "node-2"],
+      "security": "none"
+    }
+  ]
+}
+```
+
+### GET /api/routes
+
+List HTTP routes across the cluster.
+
+**Response:**
+```json
+{
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/orders",
+      "nodes": ["node-1", "node-2"],
+      "security": "none"
     }
   ]
 }
@@ -2248,9 +2290,11 @@ Conclude the A/B test and promote the winning variant. Requires leader node.
 | GET | `/api/health` | Cluster Status |
 | GET | `/api/nodes` | Cluster Status |
 | GET | `/api/events` | Cluster Status |
-| GET | `/api/slices` | Slice Management |
+| GET | `/api/slices` | Slice Management (cluster-wide) |
+| GET | `/api/node/slices` | Slice Management (per-node) |
 | GET | `/api/slices/status` | Slice Management |
-| GET | `/api/routes` | Slice Management |
+| GET | `/api/node/routes` | Slice Management (per-node) |
+| GET | `/api/routes` | Slice Management (cluster-wide) |
 | POST | `/api/scale` | Slice Management |
 | POST | `/api/blueprint` | Blueprint Management |
 | GET | `/api/blueprints` | Blueprint Management |

@@ -63,7 +63,7 @@ import static org.pragmatica.lang.Option.some;
 /// ```
 @Command(name = "aether",
 mixinStandardHelpOptions = true,
-version = "Aether 0.19.2",
+version = "Aether 0.25.0",
 description = "Command-line interface for Aether cluster management",
 subcommands = {AetherCli.StatusCommand.class,
 AetherCli.NodesCommand.class,
@@ -94,6 +94,9 @@ AetherCli.BlueGreenCommand.class,
 AetherCli.AbTestCommand.class,
 AetherCli.StreamCommand.class,
 AetherCli.CertCommand.class,
+AetherCli.NodeSlicesCommand.class,
+AetherCli.RoutesCommand.class,
+AetherCli.NodeRoutesCommand.class,
 org.pragmatica.aether.cli.cluster.ClusterCommand.class,
 GenerateCompletion.class})
 @SuppressWarnings("JBCT-RET-01")
@@ -287,7 +290,7 @@ public class AetherCli implements Runnable {
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-UTIL-02"})
     private void runRepl(CommandLine cmd) {
-        System.out.println("Aether v0.19.2 - Connected to " + nodeAddress);
+        System.out.println("Aether v0.25.0 - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
         System.out.println();
         try (var reader = new BufferedReader(new InputStreamReader(System.in))) {
@@ -520,7 +523,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "slices", description = "List deployed slices")
+    @Command(name = "slices", description = "Show all slices across the cluster")
     static class SlicesCommand implements Callable<Integer> {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -528,6 +531,42 @@ public class AetherCli implements Runnable {
         @Override
         public Integer call() {
             var response = parent.fetchFromNode("/api/slices");
+            return OutputFormatter.printQuery(response, parent.outputOptions());
+        }
+    }
+
+    @Command(name = "node-slices", description = "Show slices loaded on the connected node")
+    static class NodeSlicesCommand implements Callable<Integer> {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public Integer call() {
+            var response = parent.fetchFromNode("/api/node/slices");
+            return OutputFormatter.printQuery(response, parent.outputOptions());
+        }
+    }
+
+    @Command(name = "node-routes", description = "Show HTTP routes on the connected node")
+    static class NodeRoutesCommand implements Callable<Integer> {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public Integer call() {
+            var response = parent.fetchFromNode("/api/node/routes");
+            return OutputFormatter.printQuery(response, parent.outputOptions());
+        }
+    }
+
+    @Command(name = "routes", description = "Show HTTP routes across the cluster")
+    static class RoutesCommand implements Callable<Integer> {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public Integer call() {
+            var response = parent.fetchFromNode("/api/routes");
             return OutputFormatter.printQuery(response, parent.outputOptions());
         }
     }

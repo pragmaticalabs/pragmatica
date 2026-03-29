@@ -70,6 +70,16 @@ public sealed interface ManagementApiResponses {
     // ===== Slice Routes =====
     record SlicesResponse(List<String> slices) {}
 
+    record ClusterSlicesResponse(List<ClusterSliceInfo> slices) {}
+
+    record ClusterSliceInfo(String artifact,
+                            int targetInstances,
+                            int minInstances,
+                            String version,
+                            List<ClusterSliceInstance> instances) {}
+
+    record ClusterSliceInstance(String nodeId, String state, String failureReason) {}
+
     record SlicesStatusResponse(List<SliceStatus> slices) {}
 
     record SliceStatus(String artifact,
