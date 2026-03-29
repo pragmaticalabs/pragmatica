@@ -76,14 +76,20 @@ public class CodecProcessor extends AbstractProcessor {
             var qualifiedName = typeElement.getQualifiedName().toString();
             generator.addKnownCodecType(qualifiedName);
 
-            var packageName = processingEnv.getElementUtils()
-                                            .getPackageOf(element)
-                                            .getQualifiedName()
-                                            .toString();
-            packageToRequiredTypes.computeIfAbsent(packageName, _ -> new java.util.LinkedHashSet<>())
-                                  .add(qualifiedName);
-            // No codec generation — @CodecFor types require manual codecs.
-            // Runtime validation (REQUIRED_TYPES) catches missing implementations at startup.
+            var externalKind = typeElement.getKind();
+
+            if (externalKind == javax.lang.model.element.ElementKind.RECORD) {
+                processRecord(typeElement, packageToCodecNames);
+            } else if (externalKind == javax.lang.model.element.ElementKind.ENUM) {
+                processEnum(typeElement, packageToCodecNames);
+            } else {
+                var packageName = processingEnv.getElementUtils()
+                                                .getPackageOf(element)
+                                                .getQualifiedName()
+                                                .toString();
+                packageToRequiredTypes.computeIfAbsent(packageName, _ -> new java.util.LinkedHashSet<>())
+                                      .add(qualifiedName);
+            }
         }
     }
 
