@@ -2813,6 +2813,33 @@ GET /api/streams/{name}/{partition}
 }
 ```
 
+### Create Stream
+
+```
+POST /api/streams
+```
+
+**Auth:** OPERATOR_AND_ABOVE
+
+Creates a stream with the given name and optional partition count. Idempotent — returns success if stream already exists.
+
+**Request:**
+```json
+{
+  "name": "my-stream",
+  "partitions": 4
+}
+```
+
+**Response:**
+```json
+{
+  "name": "my-stream",
+  "partitions": 4,
+  "status": "created"
+}
+```
+
 ### Publish Event
 
 ```
@@ -2821,10 +2848,12 @@ POST /api/streams/{name}/publish
 
 **Auth:** OPERATOR_AND_ABOVE
 
+Auto-creates the stream with default config if it does not exist.
+
 **Request:**
 ```json
 {
-  "data": "<base64-encoded-payload>"
+  "data": "<raw-string-payload>"
 }
 ```
 

@@ -43,8 +43,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Per-node route endpoint** — `/api/routes` moved to `/api/node/routes` for naming consistency
 - **CLI `slices` command** — now shows cluster-wide view; added `node-slices`, `routes`, `node-routes` commands
 
+### Added
+- **Stream auto-creation on publish** — `POST /api/streams/{name}/publish` auto-creates stream with default config if it doesn't exist; follows Kafka `auto.create.topics.enable` pattern
+- **Stream creation endpoint** — `POST /api/streams` for explicit stream creation with configurable partition count
+
 ### Fixed
 - **CLI version** — was hardcoded at 0.19.2, now correctly shows 0.25.0
+- **Streaming API** — REST publish failed with "Stream not found" because streams were only created lazily by slice factories, not available via management API
+- **Stream publish payload** — changed from base64-only to raw UTF-8 string for simpler management API usage
+- **Stream memory allocation** — management API streams use 16MB default (was 1GB per stream, crashing containers)
+- **Integration test `api_post`** — bash brace expansion bug `"${2:-{}}"` appended extra `}` to all POST bodies
 - **Autoscaler noisy log** — scale-down rule logged at INFO every 5s even when blocked by min-instances guard; changed to DEBUG
 - **Java 25 TLS compatibility** — RSA self-signed certs for dev mode, BouncyCastle PEMParser for EC key loading (preserves named curve encoding for BoringSSL), explicit BC KeyFactory in `SelfSignedCertificateProvider`
 - **Schema migration lock failover** — new leader scans for MIGRATING schemas with expired locks and resets to PENDING
