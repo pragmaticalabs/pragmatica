@@ -12,7 +12,8 @@ public sealed interface StreamError extends Cause {
         CONSUMER_ALREADY_SUBSCRIBED("Consumer group already subscribed to this partition"),
         CONSUMER_NOT_FOUND("Consumer group not found for this partition"),
         CONSUMER_STALLED("Consumer is stalled due to processing failure"),
-        CONSUMER_RUNTIME_CLOSED("Consumer runtime has been closed");
+        CONSUMER_RUNTIME_CLOSED("Consumer runtime has been closed"),
+        STREAM_MEMORY_EXCEEDED("Total off-heap memory limit exceeded");
         private final String message;
         General(String message) {
             this.message = message;
