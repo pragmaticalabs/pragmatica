@@ -1,6 +1,8 @@
 package org.pragmatica.aether.slice.repository.maven;
 
 import org.pragmatica.lang.Option;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 
 import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.File;
@@ -51,7 +53,7 @@ public sealed interface MavenSettingsCredentials {
         }
     }
 
-    private static Option<Credentials> findServer(String serverId, org.w3c.dom.NodeList servers) {
+    private static Option<Credentials> findServer(String serverId, NodeList servers) {
         for (int i = 0; i < servers.getLength(); i++) {
             var match = extractCredentials(serverId, servers.item(i));
             if (match.isPresent()) {
@@ -61,7 +63,7 @@ public sealed interface MavenSettingsCredentials {
         return Option.empty();
     }
 
-    private static Option<Credentials> extractCredentials(String serverId, org.w3c.dom.Node server) {
+    private static Option<Credentials> extractCredentials(String serverId, Node server) {
         var children = server.getChildNodes();
         String id = null;
         String username = null;

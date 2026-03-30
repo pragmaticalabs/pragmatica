@@ -1,6 +1,10 @@
 package org.pragmatica.aether.slice.kvstore;
 
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.ExecutionMode;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.*;
 import org.pragmatica.aether.slice.kvstore.AetherValue.*;
@@ -433,7 +437,7 @@ public final class KVStoreSerializer {
         var placement = parts.length >= 6 && !parts[5].isEmpty()
                         ? parts[5]
                         : "CORE_ONLY";
-        return org.pragmatica.aether.artifact.Version.version(parts[0])
+        return Version.version(parts[0])
                   .flatMap(ver -> parseOptionalBlueprintId(parts[3])
         .map(bp -> new SliceTargetValue(ver,
                                         Integer.parseInt(parts[1]),
@@ -443,11 +447,11 @@ public final class KVStoreSerializer {
                                         Long.parseLong(parts[4]))));
     }
 
-    private static Result<Option<org.pragmatica.aether.slice.blueprint.BlueprintId>> parseOptionalBlueprintId(String raw) {
+    private static Result<Option<BlueprintId>> parseOptionalBlueprintId(String raw) {
         if (raw.isEmpty()) {
             return success(Option.none());
         }
-        return org.pragmatica.aether.slice.blueprint.BlueprintId.blueprintId(raw)
+        return BlueprintId.blueprintId(raw)
                   .map(Option::some);
     }
 
@@ -457,12 +461,12 @@ public final class KVStoreSerializer {
             return parseFailure("slices value requires 3 fields, got " + parts.length);
         }
         return SliceNodeKey.sliceNodeKey("slices/" + identity)
-                           .flatMap(key -> org.pragmatica.aether.slice.SliceState.sliceState(parts[0])
+                           .flatMap(key -> SliceState.sliceState(parts[0])
                                               .map(state -> buildSliceNodeValue(state, parts))
                                               .map(val -> entry(key, val)));
     }
 
-    private static AetherValue buildSliceNodeValue(org.pragmatica.aether.slice.SliceState state, String[] parts) {
+    private static AetherValue buildSliceNodeValue(SliceState state, String[] parts) {
         var reason = parts[1].isEmpty()
                      ? Option.<String>none()
                      : Option.some(parts[1]);
@@ -471,7 +475,7 @@ public final class KVStoreSerializer {
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseEndpointEntry(String identity, String raw) {
         return EndpointKey.endpointKey("endpoints/" + identity)
-                          .flatMap(key -> org.pragmatica.consensus.NodeId.nodeId(raw)
+                          .flatMap(key -> NodeId.nodeId(raw)
                                              .map(EndpointValue::new)
                                              .map(val -> entry(key, val)));
     }
@@ -486,8 +490,8 @@ public final class KVStoreSerializer {
     }
 
     private static Result<AetherValue> buildVersionRoutingValue(String[] parts) {
-        return Result.all(org.pragmatica.aether.artifact.Version.version(parts[0]),
-                          org.pragmatica.aether.artifact.Version.version(parts[1]))
+        return Result.all(Version.version(parts[0]),
+                          Version.version(parts[1]))
                      .map((oldV, newV) -> new VersionRoutingValue(oldV,
                                                                   newV,
                                                                   Integer.parseInt(parts[2]),
@@ -505,9 +509,9 @@ public final class KVStoreSerializer {
     }
 
     private static Result<AetherValue> buildRollingUpdateValue(String[] parts) {
-        return Result.all(org.pragmatica.aether.artifact.ArtifactBase.artifactBase(parts[1]),
-                          org.pragmatica.aether.artifact.Version.version(parts[2]),
-                          org.pragmatica.aether.artifact.Version.version(parts[3]))
+        return Result.all(ArtifactBase.artifactBase(parts[1]),
+                          Version.version(parts[2]),
+                          Version.version(parts[3]))
                      .map((ab, oldV, newV) -> new RollingUpdateValue(parts[0],
                                                                      ab,
                                                                      oldV,
@@ -534,9 +538,9 @@ public final class KVStoreSerializer {
     }
 
     private static Result<AetherValue> buildCanaryDeploymentValue(String[] parts) {
-        return Result.all(org.pragmatica.aether.artifact.ArtifactBase.artifactBase(parts[1]),
-                          org.pragmatica.aether.artifact.Version.version(parts[2]),
-                          org.pragmatica.aether.artifact.Version.version(parts[3]))
+        return Result.all(ArtifactBase.artifactBase(parts[1]),
+                          Version.version(parts[2]),
+                          Version.version(parts[3]))
                      .map((ab, oldV, newV) -> new CanaryDeploymentValue(parts[0],
                                                                         ab,
                                                                         oldV,
@@ -571,9 +575,9 @@ public final class KVStoreSerializer {
     }
 
     private static Result<AetherValue> buildBlueGreenDeploymentValue(String[] parts) {
-        return Result.all(org.pragmatica.aether.artifact.ArtifactBase.artifactBase(parts[1]),
-                          org.pragmatica.aether.artifact.Version.version(parts[2]),
-                          org.pragmatica.aether.artifact.Version.version(parts[3]))
+        return Result.all(ArtifactBase.artifactBase(parts[1]),
+                          Version.version(parts[2]),
+                          Version.version(parts[3]))
                      .map((ab, blueV, greenV) -> BlueGreenDeploymentValue.blueGreenDeploymentValue(parts[0],
                                                                                                    ab,
                                                                                                    blueV,
@@ -605,9 +609,9 @@ public final class KVStoreSerializer {
     }
 
     private static Result<AetherValue> buildPreviousVersionValue(String[] parts) {
-        return Result.all(org.pragmatica.aether.artifact.ArtifactBase.artifactBase(parts[0]),
-                          org.pragmatica.aether.artifact.Version.version(parts[1]),
-                          org.pragmatica.aether.artifact.Version.version(parts[2]))
+        return Result.all(ArtifactBase.artifactBase(parts[0]),
+                          Version.version(parts[1]),
+                          Version.version(parts[2]))
                      .map((ab, prev, curr) -> new PreviousVersionValue(ab,
                                                                        prev,
                                                                        curr,
@@ -668,7 +672,7 @@ public final class KVStoreSerializer {
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseTopicSubEntry(String identity, String raw) {
         return TopicSubscriptionKey.topicSubscriptionKey("topic-sub/" + identity)
-                                   .flatMap(key -> org.pragmatica.consensus.NodeId.nodeId(raw)
+                                   .flatMap(key -> NodeId.nodeId(raw)
                                                       .map(TopicSubscriptionValue::new)
                                                       .map(val -> entry(key, val)));
     }
@@ -680,7 +684,7 @@ public final class KVStoreSerializer {
         }
         var paused = parts.length >= 5 && Boolean.parseBoolean(parts[4]);
         return ScheduledTaskKey.scheduledTaskKey("scheduled-task/" + identity)
-                               .flatMap(key -> org.pragmatica.consensus.NodeId.nodeId(parts[0])
+                               .flatMap(key -> NodeId.nodeId(parts[0])
                                                   .map(nodeId -> new ScheduledTaskValue(nodeId,
                                                                                         parts[1],
                                                                                         parts[2],
@@ -752,7 +756,7 @@ public final class KVStoreSerializer {
                              ? 4
                              : 3;
         return WorkerSliceDirectiveKey.workerSliceDirectiveKey("worker-directive/" + identity)
-                                      .flatMap(key -> org.pragmatica.aether.artifact.Artifact.artifact(parts[0])
+                                      .flatMap(key -> Artifact.artifact(parts[0])
                                                          .map(art -> new WorkerSliceDirectiveValue(art,
                                                                                                    Integer.parseInt(parts[1]),
                                                                                                    parts[2],
@@ -774,7 +778,7 @@ public final class KVStoreSerializer {
             return parseFailure("governor-announcement value requires 3 or 5 fields, got " + parts.length);
         }
         return GovernorAnnouncementKey.governorAnnouncementKey("governor-announcement/" + identity)
-                                      .flatMap(key -> org.pragmatica.consensus.NodeId.nodeId(parts[0])
+                                      .flatMap(key -> NodeId.nodeId(parts[0])
                                                          .map(nodeId -> buildGovernorAnnouncementValue(nodeId, parts))
                                                          .map(val -> entry(key, val)));
     }
@@ -807,12 +811,12 @@ public final class KVStoreSerializer {
             return parseFailure("node-artifact value requires 5 fields, got " + parts.length);
         }
         return NodeArtifactKey.nodeArtifactKey("node-artifact/" + identity)
-                              .flatMap(key -> org.pragmatica.aether.slice.SliceState.sliceState(parts[0])
+                              .flatMap(key -> SliceState.sliceState(parts[0])
                                                  .map(state -> buildNodeArtifactValue(state, parts))
                                                  .map(val -> entry(key, val)));
     }
 
-    private static AetherValue buildNodeArtifactValue(org.pragmatica.aether.slice.SliceState state, String[] parts) {
+    private static AetherValue buildNodeArtifactValue(SliceState state, String[] parts) {
         var reason = parts[1].isEmpty()
                      ? Option.<String>none()
                      : Option.some(parts[1]);
@@ -941,8 +945,8 @@ public final class KVStoreSerializer {
     }
 
     private static Result<AetherValue> buildAbTestValue(String[] parts) {
-        return Result.all(org.pragmatica.aether.artifact.ArtifactBase.artifactBase(parts[1]),
-                          org.pragmatica.aether.artifact.Version.version(parts[2]))
+        return Result.all(ArtifactBase.artifactBase(parts[1]),
+                          Version.version(parts[2]))
                      .map((ab, baseline) -> new AbTestValue(parts[0],
                                                             ab,
                                                             baseline,

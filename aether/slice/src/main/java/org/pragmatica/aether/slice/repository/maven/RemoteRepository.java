@@ -4,6 +4,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.http.HttpOperations;
+import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
@@ -13,6 +14,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -75,7 +77,7 @@ public interface RemoteRepository extends Repository {
                                                       Path targetPath,
                                                       Duration httpTimeout) {
         var httpOps = JdkHttpOperations.jdkHttpOperations(httpTimeout,
-                                                          java.net.http.HttpClient.Redirect.NORMAL,
+                                                          HttpClient.Redirect.NORMAL,
                                                           Option.none());
         var artifactPath = remotePath(artifact);
         var jarUrl = baseUrl + artifactPath;
@@ -100,7 +102,7 @@ public interface RemoteRepository extends Repository {
                       .flatMap(result -> handleJarResponse(result, jarUrl, artifact));
     }
 
-    private static Promise<byte[]> handleJarResponse(org.pragmatica.http.HttpResult<byte[]> result,
+    private static Promise<byte[]> handleJarResponse(HttpResult<byte[]> result,
                                                      String jarUrl,
                                                      Artifact artifact) {
         if (result.statusCode() != 200) {
@@ -126,7 +128,7 @@ public interface RemoteRepository extends Repository {
     }
 
     @SuppressWarnings("JBCT-SEQ-01")
-    private static Promise<byte[]> handleSha1Response(org.pragmatica.http.HttpResult<String> result,
+    private static Promise<byte[]> handleSha1Response(HttpResult<String> result,
                                                       byte[] jarBytes,
                                                       Artifact artifact) {
         if (result.statusCode() == 200) {
