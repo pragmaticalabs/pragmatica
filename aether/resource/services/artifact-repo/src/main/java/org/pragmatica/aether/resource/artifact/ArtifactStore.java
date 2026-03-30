@@ -1,36 +1,43 @@
 package org.pragmatica.aether.resource.artifact;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.ArtifactId;
+import org.pragmatica.aether.artifact.GroupId;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.storage.BlockId;
+import org.pragmatica.aether.storage.StorageInstance;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/// Artifact storage backed by DHT.
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Unit.unit;
+
+/// Artifact storage backed by DHT for metadata and StorageInstance for chunk data.
 /// Stores artifacts in chunks for efficient distribution.
 ///
 ///
 /// Key format:
 ///
-///   - Artifact content: `artifacts/{groupId`/{artifactId}/{version}/content/{chunkIndex}}
-///   - Artifact metadata: `artifacts/{groupId`/{artifactId}/{version}/meta}
-///   - Version list: `artifacts/{groupId`/{artifactId}/versions}
+///   - Artifact metadata: `artifacts/{groupId}/{artifactId}/{version}/meta`
+///   - Version list: `artifacts/{groupId}/{artifactId}/versions`
+///
+/// Chunk content is stored in the StorageInstance and referenced by BlockId in metadata.
 ///
 public interface ArtifactStore {
     /// Deploy an artifact.
@@ -80,28 +87,39 @@ public interface ArtifactStore {
                         String md5,
                         String sha1) {}
 
-    /// Artifact metadata.
+    /// Artifact metadata stored in DHT. BlockIds reference chunks in StorageInstance.
     record ArtifactMetadata(long size,
                             int chunkCount,
                             String md5,
                             String sha1,
-                            long deployedAt) {
+                            long deployedAt,
+                            List<String> blockIds) {
+
         public byte[] toBytes() {
-            var data = size + ":" + chunkCount + ":" + md5 + ":" + sha1 + ":" + deployedAt;
+            var data = size + ":" + chunkCount + ":" + md5 + ":" + sha1 + ":" + deployedAt
+                       + ":" + String.join(",", blockIds);
             return data.getBytes(StandardCharsets.UTF_8);
         }
 
         public static Option<ArtifactMetadata> fromBytes(byte[] bytes) {
-            try{
+            return parseMetadataBytes(bytes);
+        }
+
+        private static Option<ArtifactMetadata> parseMetadataBytes(byte[] bytes) {
+            try {
                 var parts = new String(bytes, StandardCharsets.UTF_8).split(":");
-                if (parts.length != 5) return Option.none();
-                return Option.some(new ArtifactMetadata(Long.parseLong(parts[0]),
-                                                        Integer.parseInt(parts[1]),
-                                                        parts[2],
-                                                        parts[3],
-                                                        Long.parseLong(parts[4])));
+                if (parts.length != 6) {
+                    return none();
+                }
+                var ids = List.of(parts[5].split(","));
+                return some(new ArtifactMetadata(Long.parseLong(parts[0]),
+                                                 Integer.parseInt(parts[1]),
+                                                 parts[2],
+                                                 parts[3],
+                                                 Long.parseLong(parts[4]),
+                                                 ids));
             } catch (Exception e) {
-                return Option.none();
+                return none();
             }
         }
     }
@@ -137,9 +155,9 @@ public interface ArtifactStore {
         }
     }
 
-    /// Create an artifact store backed by DHT.
-    static ArtifactStore artifactStore(DHTClient dht) {
-        return new ArtifactStoreImpl(dht);
+    /// Create an artifact store with DHT for metadata and StorageInstance for chunk storage.
+    static ArtifactStore artifactStore(DHTClient dht, StorageInstance storage) {
+        return new ArtifactStoreImpl(dht, storage);
     }
 }
 
@@ -147,15 +165,16 @@ class ArtifactStoreImpl implements ArtifactStore {
     private static final Logger log = LoggerFactory.getLogger(ArtifactStoreImpl.class);
     private static final int CHUNK_SIZE = 64 * 1024;
 
-    // 64KB chunks
     private final DHTClient dht;
+    private final StorageInstance storage;
 
     // Metrics tracking
-    private final java.util.concurrent.atomic.AtomicInteger artifactCount = new java.util.concurrent.atomic.AtomicInteger(0);
-    private final java.util.concurrent.atomic.AtomicInteger chunkCount = new java.util.concurrent.atomic.AtomicInteger(0);
+    private final AtomicInteger artifactCount = new AtomicInteger(0);
+    private final AtomicInteger chunkCount = new AtomicInteger(0);
 
-    ArtifactStoreImpl(DHTClient dht) {
+    ArtifactStoreImpl(DHTClient dht, StorageInstance storage) {
         this.dht = dht;
+        this.storage = storage;
     }
 
     @Override
@@ -169,26 +188,13 @@ class ArtifactStoreImpl implements ArtifactStore {
         var md5 = computeHash(content, "MD5");
         var sha1 = computeHash(content, "SHA-1");
         var chunks = splitIntoChunks(content);
-        // Store all chunks
-        var chunkPromises = new ArrayList<Promise<Unit>>();
-        for (int i = 0; i < chunks.size(); i++) {
-            var chunkKey = chunkKey(artifact, i);
-            chunkPromises.add(dht.put(chunkKey, chunks.get(i)));
-        }
-        // Store metadata after chunks
-        var metadata = new ArtifactMetadata(content.length, chunks.size(), md5, sha1, System.currentTimeMillis());
-        return Promise.allOf(chunkPromises)
-                      .flatMap(_ -> dht.put(metaKey(artifact),
-                                            metadata.toBytes()))
-                      .flatMap(_ -> updateVersionsList(artifact))
-                      .map(_ -> {
-                               artifactCount.incrementAndGet();
-                               chunkCount.addAndGet(chunks.size());
-                               log.info("Deployed artifact: {} ({} chunks)",
-                                        artifact.asString(),
-                                        chunks.size());
-                               return new DeployResult(artifact, content.length, md5, sha1);
-                           });
+        var blockIdPromises = chunks.stream()
+                                    .map(storage::put)
+                                    .toList();
+        return Promise.allOf(blockIdPromises)
+                      .map(results -> results.stream().map(Result::unwrap).toList())
+                      .flatMap(blockIds -> storeMetadataAndVersions(artifact, blockIds, chunks.size(),
+                                                                    md5, sha1, content.length));
     }
 
     @Override
@@ -202,35 +208,7 @@ class ArtifactStoreImpl implements ArtifactStore {
         return dht.get(metaKey(artifact))
                   .flatMap(metaOpt -> metaOpt.flatMap(ArtifactMetadata::fromBytes)
                                              .async(new ArtifactStoreError.NotFound(artifact))
-                                             .flatMap(meta -> resolveAndVerifyChunks(artifact, meta)));
-    }
-
-    private Promise<ResolvedArtifact> resolveAndVerifyChunks(Artifact artifact, ArtifactMetadata meta) {
-        var corruptedError = new ArtifactStoreError.CorruptedArtifact(artifact);
-        var chunkPromises = new ArrayList<Promise<byte[]>>();
-        for (int i = 0; i < meta.chunkCount(); i++) {
-            chunkPromises.add(dht.get(chunkKey(artifact, i))
-                                 .flatMap(opt -> opt.async(corruptedError)));
-        }
-        return Promise.allOf(chunkPromises)
-                      .map(results -> reassembleChunks(results.stream()
-                                                              .map(Result::unwrap)
-                                                              .toList(),
-                                                       (int) meta.size()))
-                      .flatMap(content -> verifyIntegrity(artifact, content, meta));
-    }
-
-    private Promise<ResolvedArtifact> verifyIntegrity(Artifact artifact, byte[] content, ArtifactMetadata meta) {
-        var computedSha1 = computeHash(content, "SHA-1");
-        if (!computedSha1.equals(meta.sha1())) {
-            log.error("Integrity verification failed for {}: expected SHA1={}, computed={}",
-                      artifact.asString(),
-                      meta.sha1(),
-                      computedSha1);
-            return new ArtifactStoreError.CorruptedArtifact(artifact).promise();
-        }
-        log.debug("Integrity verified for {}: SHA1={}", artifact.asString(), computedSha1);
-        return Promise.success(new ResolvedArtifact(content, meta));
+                                             .flatMap(meta -> resolveChunksFromStorage(artifact, meta)));
     }
 
     @Override
@@ -251,31 +229,72 @@ class ArtifactStoreImpl implements ArtifactStore {
         log.info("Deleting artifact: {}", artifact.asString());
         return dht.get(metaKey(artifact))
                   .flatMap(metaOpt -> metaOpt.flatMap(ArtifactMetadata::fromBytes)
-                                             .map(meta -> deleteChunksAndMeta(artifact, meta))
+                                             .map(meta -> deleteMetadata(artifact, meta))
                                              .or(Promise.unitPromise()));
     }
 
-    private Promise<Unit> deleteChunksAndMeta(Artifact artifact, ArtifactMetadata meta) {
-        var deletePromises = new ArrayList<Promise<Boolean>>();
-        for (int i = 0; i < meta.chunkCount(); i++) {
-            deletePromises.add(dht.remove(chunkKey(artifact, i)));
-        }
-        deletePromises.add(dht.remove(metaKey(artifact)));
-        return Promise.allOf(deletePromises)
-                      .map(_ -> {
-                               artifactCount.decrementAndGet();
-                               chunkCount.addAndGet(- meta.chunkCount());
-                               return org.pragmatica.lang.Unit.unit();
-                           });
+    // --- Deploy ---
+
+    private Promise<DeployResult> storeMetadataAndVersions(Artifact artifact, List<BlockId> blockIds,
+                                                           int chunkCount, String md5, String sha1,
+                                                           int contentLength) {
+        var hexIds = blockIds.stream()
+                             .map(BlockId::hexString)
+                             .toList();
+        var metadata = new ArtifactMetadata(contentLength, chunkCount, md5, sha1,
+                                            System.currentTimeMillis(), hexIds);
+        return dht.put(metaKey(artifact), metadata.toBytes())
+                  .flatMap(_ -> updateVersionsList(artifact))
+                  .map(_ -> recordDeployMetrics(artifact, contentLength, chunkCount, md5, sha1));
     }
+
+    // --- Resolve ---
+
+    private Promise<ResolvedArtifact> resolveChunksFromStorage(Artifact artifact, ArtifactMetadata meta) {
+        var corruptedError = new ArtifactStoreError.CorruptedArtifact(artifact);
+        var fetchPromises = meta.blockIds().stream()
+                                .map(hex -> fetchSingleBlock(hex, corruptedError))
+                                .toList();
+        return Promise.allOf(fetchPromises)
+                      .map(results -> reassembleChunks(results.stream().map(Result::unwrap).toList(),
+                                                       (int) meta.size()))
+                      .flatMap(content -> verifyIntegrity(artifact, content, meta));
+    }
+
+    private Promise<byte[]> fetchSingleBlock(String hex, ArtifactStoreError.CorruptedArtifact error) {
+        return BlockId.fromHex(hex)
+                      .async()
+                      .flatMap(storage::get)
+                      .flatMap(opt -> opt.async(error));
+    }
+
+    // --- Verify ---
+
+    private Promise<ResolvedArtifact> verifyIntegrity(Artifact artifact, byte[] content, ArtifactMetadata meta) {
+        var computedSha1 = computeHash(content, "SHA-1");
+        if (!computedSha1.equals(meta.sha1())) {
+            log.error("Integrity verification failed for {}: expected SHA1={}, computed={}",
+                      artifact.asString(), meta.sha1(), computedSha1);
+            return new ArtifactStoreError.CorruptedArtifact(artifact).promise();
+        }
+        log.debug("Integrity verified for {}: SHA1={}", artifact.asString(), computedSha1);
+        return Promise.success(new ResolvedArtifact(content, meta));
+    }
+
+    // --- Delete ---
+
+    private Promise<Unit> deleteMetadata(Artifact artifact, ArtifactMetadata meta) {
+        return dht.remove(metaKey(artifact))
+                  .map(_ -> recordDeleteMetrics(meta));
+    }
+
+    // --- Versions ---
 
     private Promise<Unit> updateVersionsList(Artifact artifact) {
         var versionsKey = versionsKey(artifact.groupId(), artifact.artifactId());
         return dht.get(versionsKey)
-                  .map(opt -> addVersionIfAbsent(opt,
-                                                 artifact.version()))
-                  .flatMap(versions -> dht.put(versionsKey,
-                                               serializeVersionsList(versions)));
+                  .map(opt -> addVersionIfAbsent(opt, artifact.version()))
+                  .flatMap(versions -> dht.put(versionsKey, serializeVersionsList(versions)));
     }
 
     private List<Version> addVersionIfAbsent(Option<byte[]> existingData, Version version) {
@@ -289,7 +308,9 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     private List<Version> parseVersionsList(byte[] data) {
         var str = new String(data, StandardCharsets.UTF_8);
-        if (str.isEmpty()) return new ArrayList<>();
+        if (str.isEmpty()) {
+            return new ArrayList<>();
+        }
         var versions = new ArrayList<Version>();
         for (var v : str.split(",")) {
             Version.version(v)
@@ -299,26 +320,35 @@ class ArtifactStoreImpl implements ArtifactStore {
     }
 
     private byte[] serializeVersionsList(List<Version> versions) {
-        var str = String.join(",",
-                              versions.stream()
-                                      .map(Version::withQualifier)
-                                      .toList());
+        var str = versions.stream()
+                          .map(Version::withQualifier)
+                          .collect(Collectors.joining(","));
         return str.getBytes(StandardCharsets.UTF_8);
     }
 
-    private byte[] metaKey(Artifact artifact) {
-        var key = "artifacts/" + artifact.groupId()
-                                         .id() + "/" + artifact.artifactId()
-                                                               .id() + "/" + artifact.version()
-                                                                                     .withQualifier() + "/meta";
-        return key.getBytes(StandardCharsets.UTF_8);
+    // --- Metrics ---
+
+    private DeployResult recordDeployMetrics(Artifact artifact, int contentLength, int chunks,
+                                             String md5, String sha1) {
+        artifactCount.incrementAndGet();
+        chunkCount.addAndGet(chunks);
+        log.info("Deployed artifact: {} ({} chunks)", artifact.asString(), chunks);
+        return new DeployResult(artifact, contentLength, md5, sha1);
     }
 
-    private byte[] chunkKey(Artifact artifact, int index) {
-        var key = "artifacts/" + artifact.groupId()
-                                         .id() + "/" + artifact.artifactId()
-                                                               .id() + "/" + artifact.version()
-                                                                                     .withQualifier() + "/content/" + index;
+    private Unit recordDeleteMetrics(ArtifactMetadata meta) {
+        artifactCount.decrementAndGet();
+        chunkCount.addAndGet(-meta.chunkCount());
+        return unit();
+    }
+
+    // --- Key construction ---
+
+    private byte[] metaKey(Artifact artifact) {
+        var key = "artifacts/" + artifact.groupId().id()
+                  + "/" + artifact.artifactId().id()
+                  + "/" + artifact.version().withQualifier()
+                  + "/meta";
         return key.getBytes(StandardCharsets.UTF_8);
     }
 
@@ -326,6 +356,8 @@ class ArtifactStoreImpl implements ArtifactStore {
         var key = "artifacts/" + groupId.id() + "/" + artifactId.id() + "/versions";
         return key.getBytes(StandardCharsets.UTF_8);
     }
+
+    // --- Chunking ---
 
     private List<byte[]> splitIntoChunks(byte[] content) {
         var chunks = new ArrayList<byte[]>();
@@ -350,12 +382,13 @@ class ArtifactStoreImpl implements ArtifactStore {
         return result;
     }
 
+    // --- Hashing ---
+
     private String computeHash(byte[] content, String algorithm) {
-        try{
+        try {
             var md = MessageDigest.getInstance(algorithm);
             var hash = md.digest(content);
-            return HexFormat.of()
-                            .formatHex(hash);
+            return HexFormat.of().formatHex(hash);
         } catch (Exception e) {
             return "";
         }

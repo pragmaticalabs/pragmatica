@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.resource.artifact.ArtifactStore.ArtifactStoreError;
+import org.pragmatica.aether.storage.MemoryTier;
+import org.pragmatica.aether.storage.StorageInstance;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.Partition;
 import org.pragmatica.lang.Option;
@@ -13,6 +15,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -20,13 +23,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ArtifactStoreTest {
     private static final int CHUNK_SIZE = 64 * 1024;
 
-    private ConcurrentHashMap<String, byte[]> storage;
+    private ConcurrentHashMap<String, byte[]> dhtStorage;
     private ArtifactStore store;
 
     @BeforeEach
     void setup() {
-        storage = new ConcurrentHashMap<>();
-        store = ArtifactStore.artifactStore(testDht());
+        dhtStorage = new ConcurrentHashMap<>();
+        var storageInstance = StorageInstance.storageInstance("test-artifacts",
+                                                             List.of(MemoryTier.memoryTier(64 * 1024 * 1024)));
+        store = ArtifactStore.artifactStore(testDht(), storageInstance);
     }
 
     @Nested
@@ -96,6 +101,26 @@ class ArtifactStoreTest {
                  .onFailureRun(Assertions::fail)
                  .onSuccess(resolved -> assertThat(resolved.metadata().chunkCount()).isEqualTo(2));
         }
+
+        @Test
+        void deploy_returnsBlockIdsInMetadata() {
+            var artifact = Artifact.artifact("org.example:blockid-test:1.0.0").unwrap();
+            var content = new byte[CHUNK_SIZE * 2 + 500];
+            fillWithPattern(content);
+
+            store.deploy(artifact, content)
+                 .await()
+                 .onFailureRun(Assertions::fail);
+
+            store.resolveWithMetadata(artifact)
+                 .await()
+                 .onFailureRun(Assertions::fail)
+                 .onSuccess(resolved -> {
+                     assertThat(resolved.metadata().blockIds()).hasSize(3);
+                     resolved.metadata().blockIds()
+                             .forEach(hex -> assertThat(hex).matches("[0-9a-f]{64}"));
+                 });
+        }
     }
 
     @Nested
@@ -154,7 +179,7 @@ class ArtifactStoreTest {
     @Nested
     class DeleteTests {
         @Test
-        void delete_deployedArtifact_removesAll() {
+        void delete_deployedArtifact_removesMetadata() {
             var artifact = Artifact.artifact("org.example:delete-test:1.0.0").unwrap();
             var content = "content to deploy and delete".getBytes(StandardCharsets.UTF_8);
 
@@ -215,23 +240,23 @@ class ArtifactStoreTest {
         return new DHTClient() {
             @Override
             public Promise<Unit> put(byte[] key, byte[] value) {
-                storage.put(new String(key, StandardCharsets.UTF_8), value);
+                dhtStorage.put(new String(key, StandardCharsets.UTF_8), value);
                 return Promise.unitPromise();
             }
 
             @Override
             public Promise<Option<byte[]>> get(byte[] key) {
-                return Promise.success(Option.option(storage.get(new String(key, StandardCharsets.UTF_8))));
+                return Promise.success(Option.option(dhtStorage.get(new String(key, StandardCharsets.UTF_8))));
             }
 
             @Override
             public Promise<Boolean> exists(byte[] key) {
-                return Promise.success(storage.containsKey(new String(key, StandardCharsets.UTF_8)));
+                return Promise.success(dhtStorage.containsKey(new String(key, StandardCharsets.UTF_8)));
             }
 
             @Override
             public Promise<Boolean> remove(byte[] key) {
-                return Promise.success(storage.remove(new String(key, StandardCharsets.UTF_8)) != null);
+                return Promise.success(dhtStorage.remove(new String(key, StandardCharsets.UTF_8)) != null);
             }
 
             @Override
