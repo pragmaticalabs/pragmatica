@@ -5,7 +5,7 @@ package org.pragmatica.aether.cli.cluster;
 sealed interface SystemdUnitTemplate {
     record unused() implements SystemdUnitTemplate {}
 
-    String DEFAULT_JAVA_OPTS = "-Xmx4g -XX:+UseZGC -XX:+ZGenerational";
+    String DEFAULT_JAVA_OPTS = "-Xmx4g -XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders";
     String DEFAULT_JAR_PATH = "/opt/aether/aether-node.jar";
     String DEFAULT_CONFIG_PATH = "/opt/aether/config/aether.toml";
     String DEFAULT_USER = "aether";

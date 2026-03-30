@@ -210,12 +210,12 @@ WRAPPER
 
     cat > "$INSTALL_DIR/bin/aether-node" << WRAPPER
 #!/bin/sh
-exec java -XX:+UseZGC -XX:+ZGenerational \${AETHER_JAVA_OPTS:-} -jar "$INSTALL_DIR/lib/aether-node.jar" "\$@"
+exec java -XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders \${AETHER_JAVA_OPTS:-} -jar "$INSTALL_DIR/lib/aether-node.jar" "\$@"
 WRAPPER
 
     cat > "$INSTALL_DIR/bin/aether-forge" << WRAPPER
 #!/bin/sh
-exec java -XX:+UseZGC -XX:+ZGenerational \${AETHER_JAVA_OPTS:-} -jar "$INSTALL_DIR/lib/aether-forge.jar" "\$@"
+exec java -XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders \${AETHER_JAVA_OPTS:-} -jar "$INSTALL_DIR/lib/aether-forge.jar" "\$@"
 WRAPPER
 
     chmod +x "$INSTALL_DIR/bin/aether"

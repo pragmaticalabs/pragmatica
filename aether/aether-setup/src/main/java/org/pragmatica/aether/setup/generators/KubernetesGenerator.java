@@ -171,7 +171,7 @@ public final class KubernetesGenerator implements Generator {
               CLUSTER_PEERS: "%s"
               MANAGEMENT_PORT: "%d"
               CLUSTER_PORT: "%d"
-              JAVA_OPTS: "-Xmx%s -XX:+Use%s"
+              JAVA_OPTS: "-Xmx%s -XX:+Use%s -XX:+UseCompactObjectHeaders"
             """,
                              namespace,
                              peerList,

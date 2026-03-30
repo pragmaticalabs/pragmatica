@@ -42,7 +42,7 @@ services:
       MANAGEMENT_PORT: "8080"
       CORE_MAX: "5"
       PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
-      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders"
     ports:
       - "8080:8080"
       - "8070:8070"
@@ -72,7 +72,7 @@ services:
       MANAGEMENT_PORT: "8080"
       CORE_MAX: "5"
       PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
-      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders"
     ports:
       - "8081:8080"
       - "8071:8070"
@@ -104,7 +104,7 @@ services:
       MANAGEMENT_PORT: "8080"
       CORE_MAX: "5"
       PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
-      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders"
     ports:
       - "8082:8080"
       - "8072:8070"
@@ -136,7 +136,7 @@ services:
       MANAGEMENT_PORT: "8080"
       CORE_MAX: "5"
       PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
-      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders"
     ports:
       - "8083:8080"
       - "8073:8070"
@@ -168,7 +168,7 @@ services:
       MANAGEMENT_PORT: "8080"
       CORE_MAX: "5"
       PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090,node-4:aether-node-4:8090,node-5:aether-node-5:8090"
-      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders"
     ports:
       - "8084:8080"
       - "8074:8070"

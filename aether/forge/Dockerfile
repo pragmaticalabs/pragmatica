@@ -23,7 +23,7 @@ ENV CLUSTER_SIZE=5
 ENV LOAD_RATE=1000
 
 # JVM options for container environment
-ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:+UseContainerSupport"
+ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:+UseCompactObjectHeaders -XX:+UseContainerSupport"
 
 # Health check
 HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 \

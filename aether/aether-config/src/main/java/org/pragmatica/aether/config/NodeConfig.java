@@ -65,7 +65,7 @@ public record NodeConfig(String heap,
             case "g1" -> "-XX:+UseG1GC";
             default -> "-XX:+UseZGC -XX:+ZGenerational";
         };
-        return "-Xmx" + heap + " " + gcOpt;
+        return "-Xmx" + heap + " " + gcOpt + " -XX:+UseCompactObjectHeaders";
     }
 
     private static Option<ResourcesConfig> resourcesFor(Environment env) {

@@ -24,7 +24,7 @@ COPY --chown=aether:aether ${JAR_PATH} /app/aether-lb.jar
 ENV HTTP_PORT="8080"
 ENV CLUSTER_PORT="7000"
 ENV PEERS=""
-ENV JAVA_OPTS="-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
+ENV JAVA_OPTS="-Xmx256m -XX:+UseZGC -XX:+ZGenerational -XX:+UseCompactObjectHeaders"
 
 EXPOSE 8080
 
