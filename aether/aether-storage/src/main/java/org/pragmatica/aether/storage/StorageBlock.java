@@ -12,6 +12,12 @@ public record StorageBlock(BlockId id, byte[] content, BlockMetadata metadata) {
         content = content.clone();
     }
 
+    /// Defensive copy — prevent external mutation of the internal content.
+    @Override
+    public byte[] content() {
+        return content.clone();
+    }
+
     public static StorageBlock storageBlock(BlockId id, byte[] content, BlockMetadata metadata) {
         return new StorageBlock(id, content, metadata);
     }

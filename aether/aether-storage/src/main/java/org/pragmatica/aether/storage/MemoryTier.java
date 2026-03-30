@@ -43,24 +43,21 @@ public final class MemoryTier implements StorageTier {
             updated = current + content.length;
 
             if (updated > maxBytes) {
-                return new StorageError.TierFull(TierLevel.MEMORY, current, maxBytes).promise();
+                return StorageError.TierFull.tierFull(TierLevel.MEMORY, current, maxBytes).promise();
             }
         } while (!usedBytes.compareAndSet(current, updated));
 
         // Now we have reserved space atomically. Perform the actual put.
-        var previous = store.put(id, content);
-
-        // If overwrite, return the over-reserved bytes for the old value.
-        if (previous != null) {
-            usedBytes.addAndGet(-previous.length);
-        }
+        option(store.put(id, content))
+            .onPresent(prev -> usedBytes.addAndGet(-prev.length));
 
         return Promise.success(unit());
     }
 
     @Override
     public Promise<Unit> delete(BlockId id) {
-        adjustUsedBytesOnRemoval(store.remove(id));
+        option(store.remove(id))
+            .onPresent(removed -> usedBytes.addAndGet(-removed.length));
         return Promise.success(unit());
     }
 
@@ -84,9 +81,4 @@ public final class MemoryTier implements StorageTier {
         return maxBytes;
     }
 
-    private void adjustUsedBytesOnRemoval(byte[] removed) {
-        if (removed != null) {
-            usedBytes.addAndGet(-removed.length);
-        }
-    }
 }

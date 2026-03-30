@@ -43,7 +43,11 @@ public interface StorageInstance {
     /// Tier utilization info.
     List<TierInfo> tierInfo();
 
-    record TierInfo(TierLevel level, long usedBytes, long maxBytes) {}
+    record TierInfo(TierLevel level, long usedBytes, long maxBytes) {
+        static TierInfo tierInfo(TierLevel level, long usedBytes, long maxBytes) {
+            return new TierInfo(level, usedBytes, maxBytes);
+        }
+    }
 
     /// Create a storage instance with an in-memory metadata store.
     static StorageInstance storageInstance(String name, List<StorageTier> tiers) {
@@ -130,13 +134,13 @@ final class DefaultStorageInstance implements StorageInstance {
     // --- Write flow ---
 
     private Promise<BlockId> handlePut(BlockId id, byte[] content) {
-        var sentinel = BlockLifecycle.blockLifecycle(id, tiers.getLast().level());
+        return metadataStore.claimBlock(id, sentinelFor(id))
+               ? writeThroughTiers(id, content)
+               : deduplicateBlock(id);
+    }
 
-        if (!metadataStore.claimBlock(id, sentinel)) {
-            return deduplicateBlock(id);
-        }
-
-        return writeThroughTiers(id, content);
+    private BlockLifecycle sentinelFor(BlockId id) {
+        return BlockLifecycle.blockLifecycle(id, tiers.getLast().level());
     }
 
     private Promise<BlockId> deduplicateBlock(BlockId id) {
@@ -215,7 +219,7 @@ final class DefaultStorageInstance implements StorageInstance {
     private Promise<Option<byte[]>> completeVerification(BlockId computedId, BlockId expectedId, byte[] content, StorageTier tier) {
         if (!computedId.equals(expectedId)) {
             log.warn("Integrity check failed in tier {} for block {}", tier.level(), expectedId);
-            return new StorageError.IntegrityError(expectedId, computedId).promise();
+            return StorageError.IntegrityError.integrityError(expectedId, computedId).promise();
         }
 
         recordTierPresence(expectedId, tier.level());
@@ -245,6 +249,6 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     private static TierInfo toTierInfo(StorageTier tier) {
-        return new TierInfo(tier.level(), tier.usedBytes(), tier.maxBytes());
+        return TierInfo.tierInfo(tier.level(), tier.usedBytes(), tier.maxBytes());
     }
 }

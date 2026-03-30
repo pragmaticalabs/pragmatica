@@ -20,21 +20,20 @@ public final class SingleFlightCache {
 
     /// Execute the loader only if no read is in flight for this block.
     /// Returns the shared Promise for all concurrent callers.
+    /// Uses computeIfAbsent for atomic single-flight guarantee.
+    /// Cleanup registration happens outside the map operation to avoid
+    /// recursive ConcurrentHashMap updates when promises resolve synchronously.
     public Promise<Option<byte[]>> deduplicate(BlockId id, Supplier<Promise<Option<byte[]>>> loader) {
-        var existing = inFlight.get(id);
+        boolean[] created = {false};
+        var promise = inFlight.computeIfAbsent(id, _ -> {
+            created[0] = true;
+            return loader.get();
+        });
 
-        if (existing != null) {
-            return existing;
+        if (created[0]) {
+            promise.onResultRun(() -> inFlight.remove(id));
         }
 
-        var promise = loader.get();
-        var previous = inFlight.putIfAbsent(id, promise);
-
-        if (previous != null) {
-            return previous;
-        }
-
-        promise.onResultRun(() -> inFlight.remove(id));
         return promise;
     }
 }

@@ -16,9 +16,22 @@ public record BlockLifecycle(BlockId blockId,
                              long lastAccessedAt,
                              long createdAt) {
 
+    /// Defensive copy — ensure immutability of the tier set.
+    public BlockLifecycle {
+        presentIn = presentIn.isEmpty()
+                    ? EnumSet.noneOf(TierLevel.class)
+                    : EnumSet.copyOf(presentIn);
+    }
+
     public static BlockLifecycle blockLifecycle(BlockId blockId, TierLevel initialTier) {
         var now = System.currentTimeMillis();
         return new BlockLifecycle(blockId, EnumSet.of(initialTier), 1, now, now);
+    }
+
+    /// Reconstruction factory for deserialization from KV-Store.
+    public static BlockLifecycle blockLifecycle(BlockId blockId, Set<TierLevel> presentIn,
+                                                int refCount, long lastAccessedAt, long createdAt) {
+        return new BlockLifecycle(blockId, presentIn, refCount, lastAccessedAt, createdAt);
     }
 
     public BlockLifecycle withTierAdded(TierLevel tier) {

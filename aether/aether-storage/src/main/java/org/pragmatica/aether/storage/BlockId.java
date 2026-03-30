@@ -29,6 +29,12 @@ public record BlockId(byte[] hash) {
                      .map(BlockId::new);
     }
 
+    /// Defensive copy — prevent external mutation of the internal hash.
+    @Override
+    public byte[] hash() {
+        return hash.clone();
+    }
+
     /// Hex string representation.
     public String hexString() {
         return HEX.formatHex(hash);

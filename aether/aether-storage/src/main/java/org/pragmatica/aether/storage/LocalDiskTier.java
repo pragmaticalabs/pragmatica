@@ -23,8 +23,8 @@ import static org.pragmatica.lang.Unit.unit;
 /// Uses Promise.lift for non-blocking I/O on virtual threads.
 public final class LocalDiskTier implements StorageTier {
     private static final Logger log = LoggerFactory.getLogger(LocalDiskTier.class);
-    private static final Fn1<Cause, Throwable> READ_ERROR = t -> new StorageError.ReadError(t.getMessage());
-    private static final Fn1<Cause, Throwable> WRITE_ERROR = t -> new StorageError.WriteError(t.getMessage());
+    private static final Fn1<Cause, Throwable> READ_ERROR = t -> StorageError.ReadError.readError(t.getMessage());
+    private static final Fn1<Cause, Throwable> WRITE_ERROR = t -> StorageError.WriteError.writeError(t.getMessage());
 
     private final Path basePath;
     private final AtomicLong usedBytes = new AtomicLong(0);
@@ -48,11 +48,28 @@ public final class LocalDiskTier implements StorageTier {
 
     @Override
     public Promise<Unit> put(BlockId id, byte[] content) {
-        if (usedBytes.get() + content.length > maxBytes) {
-            return new StorageError.TierFull(TierLevel.LOCAL_DISK, usedBytes.get(), maxBytes).promise();
+        if (!reserveCapacity(content.length)) {
+            return StorageError.TierFull.tierFull(TierLevel.LOCAL_DISK, usedBytes.get(), maxBytes).promise();
         }
 
         return Promise.lift(WRITE_ERROR, () -> writeBlock(id, content));
+    }
+
+    /// Atomic CAS capacity reservation — prevents TOCTOU race.
+    private boolean reserveCapacity(int contentLength) {
+        long current;
+        long updated;
+
+        do {
+            current = usedBytes.get();
+            updated = current + contentLength;
+
+            if (updated > maxBytes) {
+                return false;
+            }
+        } while (!usedBytes.compareAndSet(current, updated));
+
+        return true;
     }
 
     @Override
@@ -94,7 +111,11 @@ public final class LocalDiskTier implements StorageTier {
 
         var previousSize = Files.exists(path) ? Files.size(path) : 0;
         Files.write(path, content);
-        usedBytes.addAndGet(content.length - previousSize);
+
+        // Capacity was pre-reserved for content.length. Correct for overwrites.
+        if (previousSize > 0) {
+            usedBytes.addAndGet(-previousSize);
+        }
 
         return unit();
     }

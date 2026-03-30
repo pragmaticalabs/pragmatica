@@ -17,7 +17,8 @@ import static org.pragmatica.aether.slice.kvstore.AetherKey.StorageBlockKey.stor
 import static org.pragmatica.aether.slice.kvstore.AetherKey.StorageRefKey.storageRefKey;
 import static org.pragmatica.aether.slice.kvstore.AetherValue.StorageBlockValue.storageBlockValue;
 import static org.pragmatica.aether.slice.kvstore.AetherValue.StorageRefValue.storageRefValue;
-import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 /// KV-Store backed implementation of MetadataStore.
 /// Uses consensus KV-Store for cluster-wide block lifecycle and reference metadata.
@@ -136,14 +137,14 @@ final class KVStoreMetadataStore implements MetadataStore {
                          .map(TierLevel::valueOf)
                          .collect(Collectors.toCollection(() -> EnumSet.noneOf(TierLevel.class)));
 
-        return new BlockLifecycle(blockId, tiers, value.refCount(), value.lastAccessedAt(), value.createdAt());
+        return BlockLifecycle.blockLifecycle(blockId, tiers, value.refCount(), value.lastAccessedAt(), value.createdAt());
     }
 
     private static Option<StorageBlockValue> toBlockValue(AetherValue value) {
-        return option(value instanceof StorageBlockValue bv ? bv : null);
+        return value instanceof StorageBlockValue bv ? some(bv) : none();
     }
 
     private static Option<StorageRefValue> toRefValue(AetherValue value) {
-        return option(value instanceof StorageRefValue rv ? rv : null);
+        return value instanceof StorageRefValue rv ? some(rv) : none();
     }
 }

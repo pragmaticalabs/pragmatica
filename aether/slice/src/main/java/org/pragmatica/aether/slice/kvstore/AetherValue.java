@@ -14,6 +14,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -1219,7 +1220,7 @@ public sealed interface AetherValue {
         }
 
         public StorageBlockValue withTierAdded(String tier) {
-            var tiers = new java.util.HashSet<>(presentIn);
+            var tiers = new HashSet<>(presentIn);
             tiers.add(tier);
             return new StorageBlockValue(blockIdHex, Set.copyOf(tiers), refCount, lastAccessedAt, createdAt);
         }
