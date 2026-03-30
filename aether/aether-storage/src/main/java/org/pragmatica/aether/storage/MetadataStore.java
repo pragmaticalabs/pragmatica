@@ -1,5 +1,7 @@
 package org.pragmatica.aether.storage;
 
+import java.util.List;
+import java.util.Map;
 import java.util.function.UnaryOperator;
 
 import org.pragmatica.lang.Option;
@@ -39,4 +41,19 @@ public interface MetadataStore {
 
     /// The name of the storage instance this metadata store belongs to.
     String instanceName();
+
+    /// List all block lifecycle entries (for snapshotting).
+    List<BlockLifecycle> listAllLifecycles();
+
+    /// List all named reference mappings (for snapshotting).
+    Map<String, BlockId> listAllRefs();
+
+    /// Current mutation epoch (monotonically increasing).
+    long currentEpoch();
+
+    /// Restore lifecycle entries from a snapshot (bulk load).
+    void restoreLifecycles(List<BlockLifecycle> entries);
+
+    /// Restore named references from a snapshot (bulk load).
+    void restoreRefs(Map<String, BlockId> refs);
 }
