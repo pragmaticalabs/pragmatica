@@ -99,9 +99,7 @@ class StorageReadinessGateTest {
         void awaitReadReady_afterSnapshotLoaded_resolves() {
             gate.snapshotLoaded();
 
-            var result = gate.awaitReadReady().await();
-
-            assertThat(result.isSuccess()).isTrue();
+            gate.awaitReadReady().await().unwrap();
         }
 
         @Test
@@ -109,9 +107,19 @@ class StorageReadinessGateTest {
             gate.snapshotLoaded();
             gate.consensusSynced();
 
-            var result = gate.awaitWriteReady().await();
+            gate.awaitWriteReady().await().unwrap();
+        }
+    }
 
-            assertThat(result.isSuccess()).isTrue();
+    @Nested
+    class OutOfOrderTests {
+
+        @Test
+        void consensusSynced_beforeSnapshotLoaded_staysLoadingSnapshot() {
+            gate.consensusSynced();
+
+            assertThat(gate.state()).isEqualTo(ReadinessState.LOADING_SNAPSHOT);
+            assertThat(gate.isWriteReady()).isFalse();
         }
     }
 }
