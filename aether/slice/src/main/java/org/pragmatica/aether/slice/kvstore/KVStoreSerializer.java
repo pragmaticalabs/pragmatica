@@ -1096,9 +1096,9 @@ public final class KVStoreSerializer {
 
     private static StorageStatusValue.TierStatus parseSingleTierStatus(String entry) {
         var fields = entry.split(",", 3);
-        return new StorageStatusValue.TierStatus(fields[0],
-                                                  Long.parseLong(fields[1]),
-                                                  Long.parseLong(fields[2]));
+        return StorageStatusValue.TierStatus.tierStatus(fields[0],
+                                                       Long.parseLong(fields[1]),
+                                                       Long.parseLong(fields[2]));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseStorageBlockEntry(String identity, String raw) {

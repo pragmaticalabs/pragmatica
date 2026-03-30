@@ -157,13 +157,13 @@ public final class StorageRoutes implements RouteSource {
     @SuppressWarnings("unchecked")
     private static List<KVCommand<AetherKey>> buildPublishCommands(AetherNode node) {
         var nodeId = node.self();
-        var commands = new ArrayList<KVCommand<AetherKey>>();
-        node.storageSetups()
-            .forEach((name, setup) -> commands.add(
-                (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(
-                    StorageStatusKey.storageStatusKey(nodeId, name),
-                    buildStatusValue(setup))));
-        return commands;
+        return node.storageSetups()
+                   .entrySet()
+                   .stream()
+                   .map(e -> (KVCommand<AetherKey>) (KVCommand<?>) new KVCommand.Put<>(
+                       StorageStatusKey.storageStatusKey(nodeId, e.getKey()),
+                       buildStatusValue(e.getValue())))
+                   .toList();
     }
 
     private static StorageStatusValue buildStatusValue(StorageSetup setup) {
@@ -183,7 +183,7 @@ public final class StorageRoutes implements RouteSource {
     }
 
     private static TierStatus toTierStatus(TierInfo info) {
-        return new TierStatus(info.level().name(), info.usedBytes(), info.maxBytes());
+        return TierStatus.tierStatus(info.level().name(), info.usedBytes(), info.maxBytes());
     }
 
     private static ClusterStorageListResponse collectClusterListResponse(AetherNode node) {
@@ -199,18 +199,17 @@ public final class StorageRoutes implements RouteSource {
             Map.Entry<String, List<Map.Entry<StorageStatusKey, StorageStatusValue>>> entry) {
         var name = entry.getKey();
         var entries = entry.getValue();
-        var nodes = entries.stream()
-                           .map(StorageRoutes::toNodeStorageSummary)
-                           .toList();
-        var totalUsed = entries.stream()
-                               .flatMap(e -> e.getValue().tiers().stream())
-                               .mapToLong(TierStatus::usedBytes)
-                               .sum();
-        var totalMax = entries.stream()
-                              .flatMap(e -> e.getValue().tiers().stream())
-                              .mapToLong(TierStatus::maxBytes)
-                              .sum();
-        return new ClusterStorageInstanceSummary(name, nodes.size(), totalUsed, totalMax, nodes);
+        var nodes = entries.stream().map(StorageRoutes::toNodeStorageSummary).toList();
+        return new ClusterStorageInstanceSummary(name, nodes.size(),
+                                                totalUsedBytes(entries), totalMaxBytes(entries), nodes);
+    }
+
+    private static long totalUsedBytes(List<Map.Entry<StorageStatusKey, StorageStatusValue>> entries) {
+        return entries.stream().flatMap(e -> e.getValue().tiers().stream()).mapToLong(TierStatus::usedBytes).sum();
+    }
+
+    private static long totalMaxBytes(List<Map.Entry<StorageStatusKey, StorageStatusValue>> entries) {
+        return entries.stream().flatMap(e -> e.getValue().tiers().stream()).mapToLong(TierStatus::maxBytes).sum();
     }
 
     private static NodeStorageSummary toNodeStorageSummary(
@@ -227,23 +226,19 @@ public final class StorageRoutes implements RouteSource {
     private static Promise<ClusterStorageDetailResponse> buildClusterDetailResponse(AetherNode node,
                                                                                      String name) {
         var grouped = collectStatusesByInstance(node);
-        var entries = grouped.get(name);
-        if (entries == null || entries.isEmpty()) {
-            return CLUSTER_INSTANCE_NOT_FOUND.promise();
-        }
-        var nodes = entries.stream()
-                           .map(StorageRoutes::toNodeStorageDetail)
-                           .toList();
-        var totalUsed = entries.stream()
-                               .flatMap(e -> e.getValue().tiers().stream())
-                               .mapToLong(TierStatus::usedBytes)
-                               .sum();
-        var totalMax = entries.stream()
-                              .flatMap(e -> e.getValue().tiers().stream())
-                              .mapToLong(TierStatus::maxBytes)
-                              .sum();
-        return Promise.success(
-            new ClusterStorageDetailResponse(name, nodes.size(), totalUsed, totalMax, nodes));
+        return Option.option(grouped.get(name))
+                     .filter(entries -> !entries.isEmpty())
+                     .map(entries -> assembleClusterDetail(name, entries))
+                     .toResult(CLUSTER_INSTANCE_NOT_FOUND)
+                     .async();
+    }
+
+    private static ClusterStorageDetailResponse assembleClusterDetail(
+            String name,
+            List<Map.Entry<StorageStatusKey, StorageStatusValue>> entries) {
+        var nodes = entries.stream().map(StorageRoutes::toNodeStorageDetail).toList();
+        return new ClusterStorageDetailResponse(name, nodes.size(),
+                                                totalUsedBytes(entries), totalMaxBytes(entries), nodes);
     }
 
     private static NodeStorageDetail toNodeStorageDetail(

@@ -1274,7 +1274,11 @@ public sealed interface AetherValue {
         /// @param level tier level name
         /// @param usedBytes bytes currently used
         /// @param maxBytes maximum capacity in bytes
-        public record TierStatus(String level, long usedBytes, long maxBytes) {}
+        public record TierStatus(String level, long usedBytes, long maxBytes) {
+            public static TierStatus tierStatus(String level, long usedBytes, long maxBytes) {
+                return new TierStatus(level, usedBytes, maxBytes);
+            }
+        }
 
         /// Creates a storage status value with current timestamp.
         public static StorageStatusValue storageStatusValue(String instanceName,
