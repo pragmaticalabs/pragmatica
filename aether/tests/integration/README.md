@@ -29,6 +29,8 @@ deployment strategies, and cluster management.
 | `APP_PORT` | No | 8070 | App HTTP port |
 | `SKIP_BOOTSTRAP` | No | false | Skip cluster bootstrap (assume running) |
 | `SKIP_CLEANUP` | No | false | Skip cluster teardown after tests |
+| `COLLECT_METRICS` | No | false | Collect thread/heap/RSS metrics per test |
+| `METRICS_DIR` | No | `/tmp/aether-test-metrics` | Directory for metrics output files |
 
 ## Quick Start
 
@@ -74,6 +76,21 @@ Stability tests (`01-stability`) are long-running. Override duration with enviro
 ```bash
 SOAK_DURATION=300 STREAM_DURATION=300 ./scripts/run-suite.sh 01-stability
 ```
+
+## Metrics Collection
+
+Enable per-test thread count, RSS, and Java heap metrics with `COLLECT_METRICS=true`:
+
+```bash
+COLLECT_METRICS=true ./scripts/run-suite.sh 00-smoke
+```
+
+Each test produces before/after snapshots in `$METRICS_DIR` (default `/tmp/aether-test-metrics`).
+The test runner prints a delta summary (threads, RSS) after each test completes.
+
+Metrics files are named `<timestamp>_before-<test>.txt` and `<timestamp>_after-<test>.txt`.
+Each file contains per-node `/proc/1/status` fields (Threads, VmRSS, VmSize, VmPeak) and
+`jcmd 1 GC.heap_info` output.
 
 ## Adding New Tests
 

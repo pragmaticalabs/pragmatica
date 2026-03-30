@@ -219,6 +219,70 @@ remote_exec() {
 }
 
 # ---------------------------------------------------------------------------
+# Node metrics collection (opt-in via COLLECT_METRICS=true)
+# ---------------------------------------------------------------------------
+METRICS_DIR="${METRICS_DIR:-/tmp/aether-test-metrics}"
+
+# Collect thread count, RSS, heap info from all running nodes
+collect_node_metrics() {
+    local label="$1"
+    local timestamp
+    timestamp=$(date +%Y%m%d_%H%M%S)
+    local outfile="${METRICS_DIR}/${timestamp}_${label}.txt"
+
+    mkdir -p "$METRICS_DIR"
+
+    echo "=== Node Metrics: ${label} (${timestamp}) ===" > "$outfile"
+
+    for i in $(seq 1 "$NODE_COUNT"); do
+        local container="aether-integration-test-$i"
+        echo "" >> "$outfile"
+        echo "--- ${container} ---" >> "$outfile"
+
+        # Thread count + RSS + VmSize
+        remote_exec "docker exec ${container} sh -c 'cat /proc/1/status 2>/dev/null | grep -E \"Threads|VmRSS|VmSize|VmPeak\"'" >> "$outfile" 2>/dev/null || true
+
+        # Java heap info (ZGC)
+        remote_exec "docker exec ${container} jcmd 1 GC.heap_info" >> "$outfile" 2>/dev/null || true
+
+        echo "" >> "$outfile"
+    done
+
+    log_info "Metrics saved: $outfile"
+}
+
+# Wrapper: collect before test
+collect_metrics_before() {
+    local test_name="$1"
+    collect_node_metrics "before-${test_name}"
+}
+
+# Wrapper: collect after test
+collect_metrics_after() {
+    local test_name="$1"
+    collect_node_metrics "after-${test_name}"
+}
+
+# Print summary of metrics diff (before vs after)
+print_metrics_summary() {
+    local test_name="$1"
+    local before_file after_file
+    before_file=$(ls -t "${METRICS_DIR}"/*_before-"${test_name}".txt 2>/dev/null | head -1)
+    after_file=$(ls -t "${METRICS_DIR}"/*_after-"${test_name}".txt 2>/dev/null | head -1)
+
+    if [[ -f "$before_file" && -f "$after_file" ]]; then
+        echo -e "${BLUE}=== Metrics Delta: ${test_name} ===${NC}"
+        echo "Before: $before_file"
+        echo "After:  $after_file"
+        # Show side-by-side thread counts
+        paste <(grep "Threads:" "$before_file") <(grep "Threads:" "$after_file") | \
+            awk '{printf "  Threads: %s -> %s\n", $2, $4}'
+        paste <(grep "VmRSS:" "$before_file") <(grep "VmRSS:" "$after_file") | \
+            awk '{printf "  RSS: %s kB -> %s kB\n", $2, $4}'
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Test runner
 # ---------------------------------------------------------------------------
 TESTS_PASSED=0
@@ -227,12 +291,24 @@ TESTS_SKIPPED=0
 
 run_test() {
     local name="$1" fn="$2"
+    local sanitized_name
+    sanitized_name=$(echo "$name" | tr ' /' '_' | tr -cd '[:alnum:]_-')
     echo ""
     log_step "=== TEST: ${name} ==="
+
+    if [[ "${COLLECT_METRICS:-false}" == "true" ]]; then
+        collect_metrics_before "$sanitized_name"
+    fi
+
     if "$fn"; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
         TESTS_FAILED=$((TESTS_FAILED + 1))
+    fi
+
+    if [[ "${COLLECT_METRICS:-false}" == "true" ]]; then
+        collect_metrics_after "$sanitized_name"
+        print_metrics_summary "$sanitized_name"
     fi
 }
 
@@ -250,6 +326,11 @@ print_summary() {
     echo "  FAILED:  ${TESTS_FAILED}"
     echo "  SKIPPED: ${TESTS_SKIPPED}"
     echo "========================================"
+
+    if [[ "${COLLECT_METRICS:-false}" == "true" ]]; then
+        echo "  METRICS: ${METRICS_DIR}"
+    fi
+
     [ "$TESTS_FAILED" -eq 0 ]
 }
 
