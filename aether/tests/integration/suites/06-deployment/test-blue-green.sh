@@ -7,19 +7,40 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/load.sh"
 
-BG_ARTIFACT="${BG_ARTIFACT:-url-shortener}"
+ARTIFACT_VERSION="${ARTIFACT_VERSION:-0.25.0}"
+NEW_VERSION="${NEW_VERSION:-0.25.1}"
+ARTIFACT_BASE="org.pragmatica.aether.example:url-shortener-url-shortener"
 LOAD_RPS="${LOAD_RPS:-5}"
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-3.0}"
 
 DEPLOYMENT_ID=""
 
+setup_v2_artifacts() {
+    log_info "Uploading v${NEW_VERSION} artifacts for deployment strategy test"
+
+    local project_root
+    project_root="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+
+    local analytics_jar="${project_root}/examples/url-shortener/target/url-shortener-analytics-${ARTIFACT_VERSION}.jar"
+    local shortener_jar="${project_root}/examples/url-shortener/target/url-shortener-url-shortener-${ARTIFACT_VERSION}.jar"
+    local blueprint_jar="${project_root}/examples/url-shortener/target/url-shortener-${ARTIFACT_VERSION}-blueprint.jar"
+
+    aether_failover artifact deploy -g org.pragmatica.aether.example -a url-shortener-analytics -v "${NEW_VERSION}" "$analytics_jar" > /dev/null 2>&1
+    aether_failover artifact deploy -g org.pragmatica.aether.example -a url-shortener-url-shortener -v "${NEW_VERSION}" "$shortener_jar" > /dev/null 2>&1
+    aether_failover artifact deploy -g org.pragmatica.examples -a url-shortener -v "${NEW_VERSION}" "$blueprint_jar" > /dev/null 2>&1
+
+    sleep 10
+    log_info "v${NEW_VERSION} artifacts uploaded"
+}
+
 test_cluster_ready() {
     wait_for_cluster 60
-    assert_eq "$(cluster_node_count)" "5" "5 nodes ready"
+    wait_for_node_count 5 30
 }
 
 test_start_blue_green() {
-    local body="{\"artifact\":\"${BG_ARTIFACT}\"}"
+    setup_v2_artifacts
+    local body="{\"artifactBase\":\"${ARTIFACT_BASE}\",\"version\":\"${NEW_VERSION}\",\"instances\":3}"
     local result
     result=$(blue_green_deploy "$body")
     assert_ne "$result" "" "Blue-green deployment started"
@@ -52,8 +73,8 @@ test_switch_under_load() {
         return 1
     fi
 
-    # Start load during switch
-    start_load "$LOAD_RPS" 60 "GET" "/api/health"
+    # Start load during switch (management endpoint)
+    start_mgmt_load "$LOAD_RPS" 60 "/api/health"
     sleep 5
 
     log_info "Switching traffic to green"
@@ -95,9 +116,7 @@ test_complete_deployment() {
 }
 
 test_cluster_stable() {
-    local count
-    count=$(cluster_node_count)
-    assert_eq "$count" "5" "5 nodes after blue-green"
+    wait_for_node_count 5 30
 }
 
 run_test "Cluster ready" test_cluster_ready

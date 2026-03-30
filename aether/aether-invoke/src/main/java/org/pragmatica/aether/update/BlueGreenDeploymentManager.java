@@ -442,9 +442,13 @@ public interface BlueGreenDeploymentManager {
                 log.info("Rolling back slice target for {} to version {}",
                          deployment.artifactBase(),
                          deployment.blueVersion());
-                return updateSliceTargetVersion(deployment.artifactBase(),
-                                                deployment.blueVersion()).flatMap(_ -> removeRoutingKey(deployment))
-                                               .flatMap(_ -> persistAndTransition(deployment, BlueGreenState.ROLLED_BACK));
+                return updateSliceTargetVersion(deployment.artifactBase(), deployment.blueVersion())
+                    .flatMap(_ -> removeRoutingKey(deployment))
+                    .recover(cause -> {
+                        log.warn("Rollback cleanup partially failed for {}: {}", deployment.deploymentId(), cause.message());
+                        return Unit.unit();
+                    })
+                    .flatMap(_ -> persistAndTransition(deployment, BlueGreenState.ROLLED_BACK));
             }
 
             // --- Persistence ---

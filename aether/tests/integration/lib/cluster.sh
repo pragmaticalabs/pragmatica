@@ -137,13 +137,13 @@ except:
 
 deploy_blueprint() {
     local artifact="$1"
-    log_info "Deploying blueprint: ${artifact}"
+    log_info "Deploying blueprint: ${artifact}" >&2
     api_post "/api/blueprint/deploy" "{\"artifact\":\"${artifact}\"}"
 }
 
 deploy_blueprint_file() {
     local filepath="$1"
-    log_info "Deploying blueprint file: ${filepath}"
+    log_info "Deploying blueprint file: ${filepath}" >&2
     local content
     content=$(cat "$filepath")
     curl -sf -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/toml" \
@@ -227,9 +227,29 @@ config_get_key() {
 # ---------------------------------------------------------------------------
 # Deployment strategies
 # ---------------------------------------------------------------------------
+rolling_update_cleanup() {
+    local updates
+    updates=$(api_get "/api/rolling-updates" 2>/dev/null)
+    echo "$updates" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for u in data.get('updates', []):
+        uid = u.get('updateId', '')
+        state = u.get('state', '')
+        if uid and state not in ('COMPLETED',):
+            print(uid)
+except: pass
+" 2>/dev/null | while read -r uid; do
+        api_post "/api/rolling-update/${uid}/complete" "{}" > /dev/null 2>&1 || \
+        api_post "/api/rolling-update/${uid}/rollback" "{}" > /dev/null 2>&1 || true
+    done
+}
+
 rolling_update_start() {
     local body="$1"
-    log_info "Starting rolling update"
+    rolling_update_cleanup
+    log_info "Starting rolling update" >&2
     api_post "/api/rolling-update/start" "$body"
 }
 
@@ -248,9 +268,29 @@ rolling_update_rollback() {
     api_post "/api/rolling-update/${update_id}/rollback" "{}"
 }
 
+canary_cleanup() {
+    local canaries
+    canaries=$(api_get "/api/canaries" 2>/dev/null)
+    echo "$canaries" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for c in data.get('canaries', []):
+        cid = c.get('canaryId', '')
+        state = c.get('state', '')
+        if cid and state not in ('COMPLETED',):
+            print(cid)
+except: pass
+" 2>/dev/null | while read -r cid; do
+        api_post "/api/canary/${cid}/rollback" "{}" > /dev/null 2>&1 || \
+        api_post "/api/canary/${cid}/complete" "{}" > /dev/null 2>&1 || true
+    done
+}
+
 canary_start() {
     local body="$1"
-    log_info "Starting canary deployment"
+    canary_cleanup
+    log_info "Starting canary deployment" >&2
     api_post "/api/canary/start" "$body"
 }
 
@@ -274,9 +314,47 @@ canary_rollback() {
     api_post "/api/canary/${canary_id}/rollback" "{}"
 }
 
+blue_green_cleanup() {
+    # Wait for any ROLLING_BACK deployments to finish, then clean up
+    local retries=5
+    while [ $retries -gt 0 ]; do
+        local active_count
+        active_count=$(api_get "/api/blue-green-deployments" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    count = sum(1 for d in data.get('deployments', []) if d.get('state','') not in ('COMPLETED','ROLLED_BACK','FAILED'))
+    print(count)
+except: print(0)
+" 2>/dev/null)
+        [ "${active_count:-0}" -eq 0 ] && return 0
+        # Try to complete/rollback active deployments
+        api_get "/api/blue-green-deployments" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for d in data.get('deployments', []):
+        did = d.get('deploymentId', '')
+        state = d.get('state', '')
+        if did and state not in ('COMPLETED','ROLLED_BACK','FAILED'):
+            print(did + ' ' + state)
+except: pass
+" 2>/dev/null | while read -r did state; do
+            case "$state" in
+                SWITCHED)     api_post "/api/blue-green/${did}/complete" "{}" > /dev/null 2>&1 || true ;;
+                ROLLING_BACK) sleep 3 ;; # Wait for auto-transition to ROLLED_BACK
+                *)            api_post "/api/blue-green/${did}/rollback" "{}" > /dev/null 2>&1 || true ;;
+            esac
+        done
+        retries=$((retries - 1))
+        sleep 2
+    done
+}
+
 blue_green_deploy() {
     local body="$1"
-    log_info "Starting blue-green deployment"
+    blue_green_cleanup
+    log_info "Starting blue-green deployment" >&2
     api_post "/api/blue-green/deploy" "$body"
 }
 

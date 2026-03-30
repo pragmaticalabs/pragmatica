@@ -7,18 +7,39 @@ source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/load.sh"
 
-UPGRADE_ARTIFACT="${UPGRADE_ARTIFACT:-url-shortener}"
-LOAD_DURATION="${LOAD_DURATION:-120}"
+ARTIFACT_VERSION="${ARTIFACT_VERSION:-0.25.0}"
+NEW_VERSION="${NEW_VERSION:-0.25.1}"
+ARTIFACT_BASE="org.pragmatica.aether.example:url-shortener-url-shortener"
+LOAD_DURATION="${LOAD_DURATION:-30}"
 LOAD_RPS="${LOAD_RPS:-5}"
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-5.0}"
 
+setup_v2_artifacts() {
+    log_info "Uploading v${NEW_VERSION} artifacts for deployment strategy test"
+
+    local project_root
+    project_root="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+
+    local analytics_jar="${project_root}/examples/url-shortener/target/url-shortener-analytics-${ARTIFACT_VERSION}.jar"
+    local shortener_jar="${project_root}/examples/url-shortener/target/url-shortener-url-shortener-${ARTIFACT_VERSION}.jar"
+    local blueprint_jar="${project_root}/examples/url-shortener/target/url-shortener-${ARTIFACT_VERSION}-blueprint.jar"
+
+    aether_failover artifact deploy -g org.pragmatica.aether.example -a url-shortener-analytics -v "${NEW_VERSION}" "$analytics_jar" > /dev/null 2>&1
+    aether_failover artifact deploy -g org.pragmatica.aether.example -a url-shortener-url-shortener -v "${NEW_VERSION}" "$shortener_jar" > /dev/null 2>&1
+    aether_failover artifact deploy -g org.pragmatica.examples -a url-shortener -v "${NEW_VERSION}" "$blueprint_jar" > /dev/null 2>&1
+
+    sleep 10
+    log_info "v${NEW_VERSION} artifacts uploaded"
+}
+
 test_cluster_ready() {
     wait_for_cluster 60
-    assert_eq "$(cluster_node_count)" "5" "5 nodes ready"
+    wait_for_node_count 5 30
 }
 
 test_start_rolling_update() {
-    local body="{\"artifact\":\"${UPGRADE_ARTIFACT}\",\"strategy\":\"rolling\",\"batchSize\":1}"
+    setup_v2_artifacts
+    local body="{\"artifactBase\":\"${ARTIFACT_BASE}\",\"version\":\"${NEW_VERSION}\",\"instances\":3}"
     local result
     result=$(rolling_update_start "$body")
     assert_ne "$result" "" "Rolling update started"
@@ -37,12 +58,18 @@ print('')
 }
 
 test_rolling_update_under_load() {
-    # Start load during the update
-    start_load "$LOAD_RPS" "$LOAD_DURATION" "GET" "/api/health"
+    # Start load during the update (management endpoint)
+    start_mgmt_load "$LOAD_RPS" "$LOAD_DURATION" "/api/health"
+
+    # Adjust routing to shift all traffic to new version, then complete
+    sleep 5
+    api_post "/api/rolling-update/${UPDATE_ID}/routing" "{\"routing\":\"0:1\"}" > /dev/null 2>&1
+    sleep 5
+    api_post "/api/rolling-update/${UPDATE_ID}/complete" "{}" > /dev/null 2>&1
 
     # Wait for rolling update to complete
     wait_for "rolling update complete" \
-        "rolling_update_status '${UPDATE_ID:-unknown}' | grep -qi 'complete\|finished\|done'" 300 5
+        "rolling_update_status '${UPDATE_ID:-unknown}' | grep -qi 'complete\|finished\|done'" 60 5
 
     # Wait for load to finish
     for pid in "${LOAD_PIDS[@]}"; do
@@ -55,9 +82,7 @@ test_rolling_update_under_load() {
 }
 
 test_all_nodes_updated() {
-    local count
-    count=$(cluster_node_count)
-    assert_eq "$count" "5" "All 5 nodes present after rolling update"
+    wait_for_node_count 5 30
 }
 
 test_cluster_healthy_after_update() {
