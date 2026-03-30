@@ -100,6 +100,7 @@ public final class ConfigLoader {
         populateBackupConfig(doc, builder);
         populateDhtReplicationConfig(doc, builder);
         populateTimeoutsConfig(doc, builder);
+        populateStorageConfig(doc, builder);
         populateCloudConfig(doc, builder);
         populateEndpointsConfig(doc, builder);
         return builder;
@@ -393,6 +394,36 @@ public final class ConfigLoader {
     }
 
     @SuppressWarnings("JBCT-PAT-01")
+    private static void populateStorageConfig(TomlDocument doc, AetherConfig.Builder builder) {
+        var instances = new HashMap<String, StorageConfig>();
+        for (var sectionName : doc.sectionNames()) {
+            if (sectionName.startsWith("storage.")) {
+                var instanceName = sectionName.substring("storage.".length());
+                if (!instanceName.isEmpty()) {
+                    instances.put(instanceName, storageFromSection(doc, sectionName));
+                }
+            }
+        }
+        if (!instances.isEmpty()) {
+            builder.storage(Map.copyOf(instances));
+        }
+    }
+
+    private static StorageConfig storageFromSection(TomlDocument doc, String sectionName) {
+        var memoryMaxBytes = parseLong(doc, sectionName, "memory_max_bytes", 256 * 1024 * 1024);
+        var diskMaxBytes = parseLong(doc, sectionName, "disk_max_bytes", 10L * 1024 * 1024 * 1024);
+        var diskPath = doc.getString(sectionName, "disk_path")
+                          .or("/data/aether/storage");
+        var snapshotPath = doc.getString(sectionName, "snapshot_path")
+                              .or("/data/aether/metadata-snapshots");
+        var mutationThreshold = parseInt(doc, sectionName, "snapshot_mutation_threshold", 1000);
+        var snapshotInterval = doc.getString(sectionName, "snapshot_max_interval")
+                                  .or("60s");
+        var retentionCount = parseInt(doc, sectionName, "snapshot_retention_count", 5);
+        return StorageConfig.storageConfig(memoryMaxBytes, diskMaxBytes, diskPath, snapshotPath,
+                                           mutationThreshold, snapshotInterval, retentionCount);
+    }
+
     private static void populateEndpointsConfig(TomlDocument doc, AetherConfig.Builder builder) {
         var endpoints = new HashMap<String, EndpointConfig>();
         for (var sectionName : doc.sectionNames()) {
