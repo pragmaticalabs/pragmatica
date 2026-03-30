@@ -34,5 +34,6 @@
         <module>hlc</module>
         <module>email-http</module>
         <module>xml</module>
+        <module>storage</module>
     </modules>
 </project>

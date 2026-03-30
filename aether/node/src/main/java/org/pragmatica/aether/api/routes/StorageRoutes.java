@@ -2,9 +2,9 @@ package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.StorageFactory.StorageSetup;
-import org.pragmatica.aether.storage.ReadinessState;
-import org.pragmatica.aether.storage.StorageInstance.TierInfo;
-import org.pragmatica.aether.storage.TierLevel;
+import org.pragmatica.storage.ReadinessState;
+import org.pragmatica.storage.StorageInstance.TierInfo;
+import org.pragmatica.storage.TierLevel;
 import org.pragmatica.http.routing.PathParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;

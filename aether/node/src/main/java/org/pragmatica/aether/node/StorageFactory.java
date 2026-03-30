@@ -1,15 +1,15 @@
 package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.config.StorageConfig;
-import org.pragmatica.aether.storage.LocalDiskTier;
-import org.pragmatica.aether.storage.MemoryTier;
-import org.pragmatica.aether.storage.MetadataSnapshot;
-import org.pragmatica.aether.storage.MetadataStore;
-import org.pragmatica.aether.storage.SnapshotConfig;
-import org.pragmatica.aether.storage.SnapshotManager;
-import org.pragmatica.aether.storage.StorageInstance;
-import org.pragmatica.aether.storage.StorageReadinessGate;
-import org.pragmatica.aether.storage.StorageTier;
+import org.pragmatica.storage.LocalDiskTier;
+import org.pragmatica.storage.MemoryTier;
+import org.pragmatica.storage.MetadataSnapshot;
+import org.pragmatica.storage.MetadataStore;
+import org.pragmatica.storage.SnapshotConfig;
+import org.pragmatica.storage.SnapshotManager;
+import org.pragmatica.storage.StorageInstance;
+import org.pragmatica.storage.StorageReadinessGate;
+import org.pragmatica.storage.StorageTier;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.TimeSpan;
