@@ -395,9 +395,9 @@ public interface AetherNode {
         // Create scoped DHT client for cache operations (lower replication, single-replica default)
         var cacheDhtClient = dhtClient.scoped(config.cache());
         var storageSetups = StorageFactory.createAll(config.storageConfig(), config.self().id());
-        var artifactStorage = storageSetups.containsKey("artifacts")
-                              ? storageSetups.get("artifacts").instance()
-                              : StorageFactory.defaultArtifactStorage();
+        var artifactStorage = Option.option(storageSetups.get("artifacts"))
+                                     .map(StorageFactory.StorageSetup::instance)
+                                     .or(StorageFactory.defaultArtifactStorage());
         var artifactStore = ArtifactStore.artifactStore(dhtClient, artifactStorage);
         // Create repositories from SliceConfig using RepositoryFactory
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);

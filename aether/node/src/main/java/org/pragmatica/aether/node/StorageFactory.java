@@ -33,9 +33,15 @@ public final class StorageFactory {
 
     /// Created storage infrastructure for a named instance.
     public record StorageSetup(String name,
-                        StorageInstance instance,
-                        SnapshotManager snapshotManager,
-                        StorageReadinessGate readinessGate) {}
+                               StorageInstance instance,
+                               SnapshotManager snapshotManager,
+                               StorageReadinessGate readinessGate) {
+        public static StorageSetup storageSetup(String name, StorageInstance instance,
+                                                SnapshotManager snapshotManager,
+                                                StorageReadinessGate readinessGate) {
+            return StorageSetup.storageSetup(name, instance, snapshotManager, readinessGate);
+        }
+    }
 
     /// Create StorageSetup instances for all configured storage entries.
     static Map<String, StorageSetup> createAll(Map<String, StorageConfig> configs, String nodeId) {
@@ -88,7 +94,7 @@ public final class StorageFactory {
         log.info("Storage '{}' created: {} tier(s), snapshot path={}",
                  name, tiers.size(), config.snapshotPath());
 
-        return new StorageSetup(name, instance, snapshotManager, readinessGate);
+        return StorageSetup.storageSetup(name, instance, snapshotManager, readinessGate);
     }
 
     private static SnapshotConfig buildSnapshotConfig(StorageConfig config, String nodeId) {

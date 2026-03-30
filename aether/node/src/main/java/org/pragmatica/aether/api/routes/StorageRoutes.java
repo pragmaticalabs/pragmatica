@@ -33,7 +33,7 @@ public final class StorageRoutes implements RouteSource {
 
     // --- Response records ---
     record TierDetail(TierLevel level, long usedBytes, long maxBytes, double utilizationPct) {
-        static TierDetail fromTierInfo(TierInfo info) {
+        static TierDetail tierDetail(TierInfo info) {
             return new TierDetail(info.level(),
                                   info.usedBytes(),
                                   info.maxBytes(),
@@ -125,7 +125,7 @@ public final class StorageRoutes implements RouteSource {
         return setup.instance()
                     .tierInfo()
                     .stream()
-                    .map(TierDetail::fromTierInfo)
+                    .map(TierDetail::tierDetail)
                     .toList();
     }
 

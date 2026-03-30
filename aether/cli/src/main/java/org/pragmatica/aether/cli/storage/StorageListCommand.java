@@ -1,9 +1,8 @@
 package org.pragmatica.aether.cli.storage;
 
-import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.aether.cli.cluster.ClusterHttpClient;
-import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 
 import java.util.concurrent.Callable;
 
@@ -25,20 +24,12 @@ class StorageListCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
-        var path = nodeId != null
-                   ? "/api/storage"
-                   : "/api/cluster/storage";
+        var path = Option.option(nodeId)
+                         .fold(() -> "/api/cluster/storage",
+                               _ -> "/api/storage");
 
         return ClusterHttpClient.fetchFromCluster(path)
-                                .fold(StorageListCommand::onFailure, this::onSuccess);
-    }
-
-    private int onSuccess(String json) {
-        return OutputFormatter.printQuery(json, parent.outputOptions());
-    }
-
-    private static int onFailure(Cause cause) {
-        System.err.println("Error: " + cause.message());
-        return ExitCode.ERROR;
+                                .fold(StorageCliHelper::onFailure,
+                                      json -> OutputFormatter.printQuery(json, parent.outputOptions()));
     }
 }
