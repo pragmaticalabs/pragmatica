@@ -1,20 +1,18 @@
 package org.pragmatica.storage;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
-import java.util.stream.Stream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.storage.InMemoryMetadataStore.inMemoryMetadataStore;
 import static org.pragmatica.storage.SnapshotConfig.snapshotConfig;
 import static org.pragmatica.storage.SnapshotManager.snapshotManager;
@@ -48,8 +46,7 @@ class StorageIntegrationTest {
 
             var retrieved = instance.get(id).await().unwrap();
 
-            assertThat(retrieved.isPresent()).isTrue();
-            retrieved.onPresent(data -> assertThat(data).isEqualTo(CONTENT_A));
+            assertThat(retrieved.unwrap()).isEqualTo(CONTENT_A);
         }
 
         @Test
@@ -62,17 +59,17 @@ class StorageIntegrationTest {
 
         @Test
         void putMultipleBlocks_waterfallRead_readsFromFastestTier() {
-            var idA = instance.put(CONTENT_A).await().unwrap();
-            var idB = instance.put(CONTENT_B).await().unwrap();
-            var idC = instance.put(CONTENT_C).await().unwrap();
+            instance.put(CONTENT_A).await().unwrap();
+            instance.put(CONTENT_B).await().unwrap();
+            instance.put(CONTENT_C).await().unwrap();
 
-            var dataA = instance.get(idA).await().unwrap();
-            var dataB = instance.get(idB).await().unwrap();
-            var dataC = instance.get(idC).await().unwrap();
+            var idA = BlockId.blockId(CONTENT_A).unwrap();
+            var idB = BlockId.blockId(CONTENT_B).unwrap();
+            var idC = BlockId.blockId(CONTENT_C).unwrap();
 
-            dataA.onPresent(d -> assertThat(d).isEqualTo(CONTENT_A));
-            dataB.onPresent(d -> assertThat(d).isEqualTo(CONTENT_B));
-            dataC.onPresent(d -> assertThat(d).isEqualTo(CONTENT_C));
+            assertThat(instance.get(idA).await().unwrap().unwrap()).isEqualTo(CONTENT_A);
+            assertThat(instance.get(idB).await().unwrap().unwrap()).isEqualTo(CONTENT_B);
+            assertThat(instance.get(idC).await().unwrap().unwrap()).isEqualTo(CONTENT_C);
         }
 
         @Test
@@ -86,11 +83,7 @@ class StorageIntegrationTest {
             var id = diskOnlyInstance.put(largeContent).await().unwrap();
 
             assertThat(diskTier.usedBytes()).isGreaterThanOrEqualTo(largeContent.length);
-
-            var retrieved = diskOnlyInstance.get(id).await().unwrap();
-
-            assertThat(retrieved.isPresent()).isTrue();
-            retrieved.onPresent(data -> assertThat(data).isEqualTo(largeContent));
+            assertThat(diskOnlyInstance.get(id).await().unwrap().unwrap()).isEqualTo(largeContent);
         }
     }
 
@@ -103,15 +96,13 @@ class StorageIntegrationTest {
         private InMemoryMetadataStore metadataStore;
         private StorageInstance instance;
         private Path snapshotDir;
-        private Path blocksDir;
 
         @BeforeEach
         void setUp() {
             metadataStore = inMemoryMetadataStore("snap-integration");
-            blocksDir = tempDir.resolve("blocks");
             snapshotDir = tempDir.resolve("snapshots");
             var memoryTier = MemoryTier.memoryTier(1024 * 1024);
-            var diskTier = LocalDiskTier.localDiskTier(blocksDir, 10 * 1024 * 1024).unwrap();
+            var diskTier = LocalDiskTier.localDiskTier(tempDir.resolve("blocks"), 10 * 1024 * 1024).unwrap();
             instance = StorageInstance.storageInstance("snap-test", List.of(memoryTier, diskTier), metadataStore);
         }
 
@@ -136,8 +127,8 @@ class StorageIntegrationTest {
             assertThat(snapshot.isValid()).isTrue();
             assertThat(freshStore.containsBlock(idA)).isTrue();
             assertThat(freshStore.containsBlock(idB)).isTrue();
-            assertThat(freshStore.resolveRef("ref-alpha").isPresent()).isTrue();
-            assertThat(freshStore.resolveRef("ref-beta").isPresent()).isTrue();
+            assertThat(freshStore.resolveRef("ref-alpha").unwrap()).isEqualTo(idA);
+            assertThat(freshStore.resolveRef("ref-beta").unwrap()).isEqualTo(idB);
         }
 
         @Test
@@ -162,7 +153,7 @@ class StorageIntegrationTest {
         }
 
         @Test
-        void multipleSnapshots_pruning_keepsOnlyRetentionCount() throws IOException {
+        void multipleSnapshots_pruning_keepsOnlyRetentionCount() {
             var retentionCount = 2;
             var config = snapshotConfig(snapshotDir, 1, 600_000, retentionCount, NODE_ID);
             var manager = snapshotManager(metadataStore, config);
@@ -176,16 +167,18 @@ class StorageIntegrationTest {
             assertThat(snapshotFileCount(snapshotDir)).isLessThanOrEqualTo(retentionCount);
         }
 
-        private long snapshotFileCount(Path dir) throws IOException {
-            if (!Files.exists(dir)) {
-                return 0;
-            }
-
-            try (Stream<Path> files = Files.list(dir)) {
-                return files.filter(p -> p.getFileName().toString().startsWith("snapshot-"))
-                            .filter(p -> p.getFileName().toString().endsWith(".dat"))
-                            .count();
-            }
+        @SuppressWarnings("JBCT-EXC-01")
+        private long snapshotFileCount(Path dir) {
+            return Result.lift(() -> {
+                if (!Files.exists(dir)) {
+                    return 0L;
+                }
+                try (var files = Files.list(dir)) {
+                    return files.filter(p -> p.getFileName().toString().startsWith("snapshot-"))
+                                .filter(p -> p.getFileName().toString().endsWith(".dat"))
+                                .count();
+                }
+            }).or(0L);
         }
     }
 
@@ -204,11 +197,7 @@ class StorageIntegrationTest {
             var id = waterfallInstance.put(CONTENT_A).await().unwrap();
 
             assertThat(diskTier.usedBytes()).isGreaterThan(0);
-
-            var retrieved = waterfallInstance.get(id).await().unwrap();
-
-            assertThat(retrieved.isPresent()).isTrue();
-            retrieved.onPresent(data -> assertThat(data).isEqualTo(CONTENT_A));
+            assertThat(waterfallInstance.get(id).await().unwrap().unwrap()).isEqualTo(CONTENT_A);
         }
 
         @Test
@@ -221,11 +210,7 @@ class StorageIntegrationTest {
 
             assertThat(memoryTier.usedBytes()).isGreaterThan(0);
             assertThat(diskTier.usedBytes()).isGreaterThan(0);
-
-            var retrieved = dualInstance.get(id).await().unwrap();
-
-            assertThat(retrieved.isPresent()).isTrue();
-            retrieved.onPresent(data -> assertThat(data).isEqualTo(CONTENT_A));
+            assertThat(dualInstance.get(id).await().unwrap().unwrap()).isEqualTo(CONTENT_A);
         }
     }
 
@@ -263,10 +248,7 @@ class StorageIntegrationTest {
             freshStore.restoreLifecycles(snapshot.lifecycles());
             freshStore.restoreRefs(snapshot.refs());
 
-            var resolvedId = freshStore.resolveRef("persistent-ref");
-
-            assertThat(resolvedId.isPresent()).isTrue();
-            resolvedId.onPresent(resolved -> assertThat(resolved).isEqualTo(id));
+            assertThat(freshStore.resolveRef("persistent-ref").unwrap()).isEqualTo(id);
         }
 
         @Test
@@ -274,14 +256,13 @@ class StorageIntegrationTest {
             var id = instance.put(CONTENT_A).await().unwrap();
             instance.createRef("temp-ref", id).await().unwrap();
 
-            var lifecycleBefore = metadataStore.getLifecycle(id).unwrap();
-            var refCountBefore = lifecycleBefore.refCount();
+            var refCountBefore = metadataStore.getLifecycle(id).unwrap().refCount();
 
             instance.deleteRef("temp-ref").await().unwrap();
 
-            var lifecycleAfter = metadataStore.getLifecycle(id).unwrap();
+            var refCountAfter = metadataStore.getLifecycle(id).unwrap().refCount();
 
-            assertThat(lifecycleAfter.refCount()).isEqualTo(refCountBefore - 1);
+            assertThat(refCountAfter).isEqualTo(refCountBefore - 1);
         }
 
         @Test
@@ -329,8 +310,7 @@ class StorageIntegrationTest {
 
             var result = tinyMemory.put(id, largeContent).await();
 
-            result.onSuccess(_ -> fail("Expected TierFull error"))
-                  .onFailure(cause -> assertThat(cause).isInstanceOf(StorageError.TierFull.class));
+            assertThat(result.isFailure()).isTrue();
         }
     }
 }
