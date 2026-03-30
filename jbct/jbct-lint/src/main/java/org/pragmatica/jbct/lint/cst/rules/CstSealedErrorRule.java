@@ -6,6 +6,8 @@ import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
@@ -36,25 +38,38 @@ public class CstSealedErrorRule implements CstLintRule {
     }
 
     private boolean hasInterfaceDecl(CstNode typeDecl) {
-        return childByRule(typeDecl, RuleId.InterfaceDecl.class).isPresent();
+        return childByRule(typeDecl, RuleId.TypeKind.class)
+                          .filter(tk -> hasChildOfRule(tk, RuleId.InterfaceKW.class))
+                          .isPresent();
     }
 
     private CstNode getInterfaceDecl(CstNode typeDecl) {
-        return childByRule(typeDecl, RuleId.InterfaceDecl.class).or(typeDecl);
+        return childByRule(typeDecl, RuleId.TypeKind.class)
+                          .filter(tk -> hasChildOfRule(tk, RuleId.InterfaceKW.class))
+                          .or(typeDecl);
     }
 
     private boolean extendsCause(CstNode typeDecl, String source) {
-        // Check if interface extends Cause by examining the InterfaceDecl text
-        return childByRule(typeDecl, RuleId.InterfaceDecl.class).map(iface -> text(iface, source))
+        // Check if interface extends Cause by examining the TypeKind text
+        return childByRule(typeDecl, RuleId.TypeKind.class)
+                          .filter(tk -> hasChildOfRule(tk, RuleId.InterfaceKW.class))
+                          .map(iface -> text(iface, source))
                           .map(ifaceText -> ifaceText.contains("extends Cause") || ifaceText.contains("extends ") && ifaceText.contains("Cause"))
                           .or(false);
     }
 
     private boolean isSealed(CstNode typeDecl, String source) {
-        // Check for 'sealed' modifier in Modifier children of TypeDecl
-        return childrenByRule(typeDecl, RuleId.Modifier.class).stream()
+        // Modifiers may be direct children or in a direct TypeDecl grouping child
+        return findOwnModifiers(typeDecl).stream()
                              .anyMatch(mod -> text(mod, source).trim()
                                                   .equals("sealed"));
+    }
+
+    private List<CstNode> findOwnModifiers(CstNode typeDecl) {
+        var modifiers = new ArrayList<>(childrenByRule(typeDecl, RuleId.Modifier.class));
+        childrenByRule(typeDecl, RuleId.TypeDecl.class)
+        .forEach(child -> modifiers.addAll(childrenByRule(child, RuleId.Modifier.class)));
+        return modifiers;
     }
 
     private String getInterfaceName(CstNode iface, String source) {

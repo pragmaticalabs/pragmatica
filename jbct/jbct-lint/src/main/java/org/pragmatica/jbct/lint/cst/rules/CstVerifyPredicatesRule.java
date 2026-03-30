@@ -75,7 +75,7 @@ public class CstVerifyPredicatesRule implements CstLintRule {
             return Stream.empty();
         }
         // Find if statements with validation patterns
-        return findAll(root, RuleId.Stmt.class).stream()
+        return findAllStatements(root).stream()
                       .filter(stmt -> isIfStatement(stmt, source))
                       .flatMap(stmt -> findValidationPatterns(stmt, source, ctx));
     }

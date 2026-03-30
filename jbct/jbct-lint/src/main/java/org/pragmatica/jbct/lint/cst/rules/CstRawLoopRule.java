@@ -31,7 +31,7 @@ public class CstRawLoopRule implements CstLintRule {
             return Stream.empty();
         }
         // Find all loop statements
-        return findAll(root, RuleId.Stmt.class).stream()
+        return findAllStatements(root).stream()
                       .filter(stmt -> isLoopStatement(stmt, source))
                       .map(stmt -> createDiagnostic(stmt, source, ctx));
     }

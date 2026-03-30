@@ -28,7 +28,7 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
         if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
-        return findAll(root, RuleId.MethodDecl.class).stream()
+        return findAllMethods(root).stream()
                       .filter(method -> returnsResult(method, source))
                       .filter(method -> alwaysReturnsSuccess(method, source))
                       .map(method -> createDiagnostic(method, source, ctx));

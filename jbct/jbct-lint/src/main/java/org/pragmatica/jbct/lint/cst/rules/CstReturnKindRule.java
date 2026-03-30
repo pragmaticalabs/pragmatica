@@ -37,7 +37,7 @@ public class CstReturnKindRule implements CstLintRule {
         if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
-        return findAll(root, RuleId.MethodDecl.class).stream()
+        return findAllMethods(root).stream()
                       .filter(method -> !isPrivateMethod(method, root, source))
                       .flatMap(method -> checkMethod(method, source, ctx));
     }

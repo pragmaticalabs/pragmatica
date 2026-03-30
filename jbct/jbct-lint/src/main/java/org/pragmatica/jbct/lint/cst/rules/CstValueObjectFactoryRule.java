@@ -3,6 +3,7 @@ package org.pragmatica.jbct.lint.cst.rules;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
+import org.pragmatica.jbct.parser.CstNodes;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
@@ -33,7 +34,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         }
         var sealedInterfaceNames = collectSealedInterfaceNames(root, source);
         // Check records
-        return findAll(root, RuleId.RecordDecl.class).stream()
+        return findAllRecords(root).stream()
                       .filter(record -> needsFactoryMethod(root, record, source, sealedInterfaceNames))
                       .map(record -> createDiagnostic(record, source, ctx));
     }
@@ -72,7 +73,8 @@ public class CstValueObjectFactoryRule implements CstLintRule {
                                           .or(Set.of());
         if (implementedNames.isEmpty()) return false;
         // Find the nearest enclosing InterfaceDecl
-        return findAncestor(root, record, RuleId.InterfaceDecl.class)
+        return findAncestor(root, record, RuleId.TypeKind.class)
+                          .filter(tk -> hasChildOfRule(tk, RuleId.InterfaceKW.class))
                           .flatMap(iface -> childByRule(iface, RuleId.Identifier.class))
                           .map(id -> text(id, source))
                           .map(implementedNames::contains)
@@ -80,7 +82,9 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     }
 
     private boolean isLocalRecord(CstNode root, CstNode record) {
-        return findAncestor(root, record, RuleId.MethodDecl.class).isPresent();
+        return findAncestor(root, record, RuleId.Member.class)
+                          .filter(CstNodes::isMethodMember)
+                          .isPresent();
     }
 
     private boolean hasNoComponents(CstNode record) {
@@ -90,7 +94,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     }
 
     private boolean hasBuilderMethods(CstNode record, String recordName, String source) {
-        return findAll(record, RuleId.MethodDecl.class).stream()
+        return findAllMethods(record).stream()
                       .anyMatch(method -> isWithMethodReturningSelf(method, recordName, source));
     }
 
@@ -124,19 +128,25 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         var fromClassMembers = findAll(root, RuleId.ClassMember.class).stream()
                                       .filter(node -> hasSealedModifier(node, source));
         return Stream.concat(fromTypeDecls, fromClassMembers)
-                     .filter(node -> contains(node, RuleId.InterfaceDecl.class))
+                     .filter(node -> containsInterface(node))
                      .map(node -> extractInterfaceName(node, source))
                      .flatMap(Optional::stream)
                      .collect(Collectors.toSet());
     }
 
     private boolean hasSealedModifier(CstNode node, String source) {
-        return childrenByRule(node, RuleId.Modifier.class).stream()
+        // Check direct Modifier children and those in a direct TypeDecl grouping child
+        var modifiers = new java.util.ArrayList<>(childrenByRule(node, RuleId.Modifier.class));
+        childrenByRule(node, RuleId.TypeDecl.class)
+        .forEach(child -> modifiers.addAll(childrenByRule(child, RuleId.Modifier.class)));
+        childrenByRule(node, RuleId.ClassMember.class)
+        .forEach(child -> modifiers.addAll(childrenByRule(child, RuleId.Modifier.class)));
+        return modifiers.stream()
                             .anyMatch(mod -> "sealed".equals(text(mod, source).trim()));
     }
 
     private Optional<String> extractInterfaceName(CstNode node, String source) {
-        return findFirst(node, RuleId.InterfaceDecl.class)
+        return findFirstInterface(node)
                           .flatMap(iface -> childByRule(iface, RuleId.Identifier.class))
                           .map(id -> text(id, source))
                           .toOptional();

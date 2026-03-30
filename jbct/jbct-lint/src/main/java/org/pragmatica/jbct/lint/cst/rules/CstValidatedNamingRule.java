@@ -29,10 +29,10 @@ public class CstValidatedNamingRule implements CstLintRule {
             return Stream.empty();
         }
         // Check classes and records for Validated prefix
-        var classDiagnostics = findAll(root, RuleId.ClassDecl.class).stream()
+        var classDiagnostics = findAllClasses(root).stream()
                                       .filter(cls -> hasValidatedName(cls, source))
                                       .map(cls -> createDiagnostic(cls, source, ctx));
-        var recordDiagnostics = findAll(root, RuleId.RecordDecl.class).stream()
+        var recordDiagnostics = findAllRecords(root).stream()
                                        .filter(rec -> hasValidatedName(rec, source))
                                        .map(rec -> createDiagnostic(rec, source, ctx));
         return Stream.concat(classDiagnostics, recordDiagnostics);

@@ -75,7 +75,7 @@ public class CstZoneMixingRule implements CstLintRule {
             return Stream.empty();
         }
         // Find methods with monadic chains
-        return findAll(root, RuleId.MethodDecl.class).stream()
+        return findAllMethods(root).stream()
                       .filter(method -> hasMonadicChain(method, source))
                       .flatMap(method -> checkChainForZoneMixing(method, source, ctx));
     }

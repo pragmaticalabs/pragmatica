@@ -6,6 +6,8 @@ import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
@@ -35,11 +37,11 @@ public class CstUtilityClassRule implements CstLintRule {
         // TypeDecl contains: Annotation* Modifier* TypeKind (where TypeKind is ClassDecl/InterfaceDecl/etc.)
         // So we need to look at TypeDecl to get modifiers like 'final' or 'sealed'
         var utilityClassDiagnostics = findAll(root, RuleId.TypeDecl.class).stream()
-                                             .filter(td -> contains(td, RuleId.ClassDecl.class))
+                                             .filter(td -> containsClass(td))
                                              .filter(td -> isUtilityClass(td, source))
                                              .map(td -> createUtilityClassDiagnostic(td, source, ctx));
         var missingUnusedDiagnostics = findAll(root, RuleId.TypeDecl.class).stream()
-                                              .filter(td -> contains(td, RuleId.InterfaceDecl.class))
+                                              .filter(td -> containsInterface(td))
                                               .filter(td -> isSealedUtilityInterface(td, source))
                                               .filter(td -> !hasUnusedRecord(td, source))
                                               .map(td -> createMissingUnusedDiagnostic(td, source, ctx));
@@ -99,13 +101,22 @@ public class CstUtilityClassRule implements CstLintRule {
     }
 
     private boolean isSealedUtilityInterface(CstNode typeDecl, String source) {
-        // Structural check: THIS TypeDecl must have "sealed" modifier (not inherited from nested types)
-        var hasSealedModifier = childrenByRule(typeDecl, RuleId.Modifier.class).stream()
+        // Modifiers may be in a direct TypeDecl child (java-peglib 0.2.1 repetition grouping)
+        var hasSealedModifier = findOwnModifiers(typeDecl).stream()
                                              .anyMatch(mod -> "sealed".equals(text(mod, source).trim()));
         if (!hasSealedModifier) return false;
         // Must have static methods (utility interface pattern)
         var ifaceText = text(typeDecl, source);
         return ifaceText.contains("static ") && ifaceText.contains("(");
+    }
+
+    /// Find modifiers that belong to this TypeDecl (not deeply nested types).
+    /// Modifiers may be direct children or inside a direct TypeDecl grouping child.
+    private List<CstNode> findOwnModifiers(CstNode typeDecl) {
+        var modifiers = new ArrayList<>(childrenByRule(typeDecl, RuleId.Modifier.class));
+        childrenByRule(typeDecl, RuleId.TypeDecl.class)
+        .forEach(child -> modifiers.addAll(childrenByRule(child, RuleId.Modifier.class)));
+        return modifiers;
     }
 
     private boolean hasUnusedRecord(CstNode iface, String source) {
@@ -115,8 +126,7 @@ public class CstUtilityClassRule implements CstLintRule {
     }
 
     private Diagnostic createUtilityClassDiagnostic(CstNode typeDecl, String source, LintContext ctx) {
-        var className = findFirst(typeDecl, RuleId.ClassDecl.class).flatMap(cls -> childByRule(cls,
-                                                                                               RuleId.Identifier.class))
+        var className = findFirstClass(typeDecl).flatMap(cls -> childByRule(cls, RuleId.Identifier.class))
                                  .map(id -> text(id, source))
                                  .or("UtilityClass");
         return Diagnostic.diagnostic(RULE_ID,
@@ -142,8 +152,7 @@ public class CstUtilityClassRule implements CstLintRule {
     }
 
     private Diagnostic createMissingUnusedDiagnostic(CstNode typeDecl, String source, LintContext ctx) {
-        var ifaceName = findFirst(typeDecl, RuleId.InterfaceDecl.class).flatMap(iface -> childByRule(iface,
-                                                                                                     RuleId.Identifier.class))
+        var ifaceName = findFirstInterface(typeDecl).flatMap(iface -> childByRule(iface, RuleId.Identifier.class))
                                  .map(id -> text(id, source))
                                  .or("UtilityInterface");
         return Diagnostic.diagnostic(RULE_ID,

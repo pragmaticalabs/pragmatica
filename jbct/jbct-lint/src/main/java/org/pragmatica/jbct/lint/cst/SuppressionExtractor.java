@@ -122,19 +122,14 @@ public final class SuppressionExtractor {
         for (int i = path.size() - 1; i >= 0; i--) {
             var node = path.get(i);
             var rule = node.rule();
-            // Type declarations
+            // Type declarations (TypeKind wraps ClassDecl/InterfaceDecl/EnumDecl/RecordDecl)
             if (rule instanceof RuleId.TypeDecl ||
-            rule instanceof RuleId.ClassDecl ||
-            rule instanceof RuleId.InterfaceDecl ||
-            rule instanceof RuleId.EnumDecl ||
-            rule instanceof RuleId.RecordDecl) {
+            rule instanceof RuleId.TypeKind) {
                 return Option.some(node);
             }
-            // Class members
+            // Class members (Member wraps MethodDecl/FieldDecl/ConstructorDecl)
             if (rule instanceof RuleId.ClassMember ||
-            rule instanceof RuleId.MethodDecl ||
-            rule instanceof RuleId.FieldDecl ||
-            rule instanceof RuleId.ConstructorDecl) {
+            rule instanceof RuleId.Member) {
                 return Option.some(node);
             }
             // Local declarations

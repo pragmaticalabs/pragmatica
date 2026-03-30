@@ -86,7 +86,7 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
             return Stream.empty();
         }
         // Find private methods that look like leaf functions
-        return findAll(root, RuleId.MethodDecl.class).stream()
+        return findAllMethods(root).stream()
                       .filter(method -> isLeafFunction(method, root, source))
                       .flatMap(method -> checkMethodName(method, source, ctx));
     }

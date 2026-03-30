@@ -30,7 +30,7 @@ public class CstChainLengthRule implements CstLintRule {
             return Stream.empty();
         }
         // Find statements with long method chains
-        return findAll(root, RuleId.Stmt.class).stream()
+        return findAllStatements(root).stream()
                       .filter(stmt -> countChainedCalls(stmt, source) > MAX_CHAIN_LENGTH)
                       .map(stmt -> createDiagnostic(stmt, source, ctx));
     }

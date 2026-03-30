@@ -29,7 +29,7 @@ public class CstConditionalLoggingRule implements CstLintRule {
             return Stream.empty();
         }
         // Find if statements wrapping log calls
-        return findAll(root, RuleId.Stmt.class).stream()
+        return findAllStatements(root).stream()
                       .filter(stmt -> isConditionalLogging(stmt, source))
                       .map(stmt -> createDiagnostic(stmt, ctx));
     }

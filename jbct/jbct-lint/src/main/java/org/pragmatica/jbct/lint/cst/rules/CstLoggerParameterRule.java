@@ -28,7 +28,7 @@ public class CstLoggerParameterRule implements CstLintRule {
         if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
-        return findAll(root, RuleId.MethodDecl.class).stream()
+        return findAllMethods(root).stream()
                       .filter(method -> hasLoggerParameter(method, source))
                       .map(method -> createDiagnostic(method, source, ctx));
     }

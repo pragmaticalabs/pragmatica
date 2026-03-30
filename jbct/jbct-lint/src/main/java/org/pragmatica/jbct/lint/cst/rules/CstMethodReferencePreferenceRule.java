@@ -48,7 +48,7 @@ public class CstMethodReferencePreferenceRule implements CstLintRule {
         if (!ctx.shouldLint(packageName)) {
             return Stream.empty();
         }
-        return findAll(root, RuleId.Lambda.class).stream()
+        return findAllLambdas(root).stream()
                       .map(lambda -> checkLambda(lambda, source, ctx))
                       .flatMap(Option::stream);
     }

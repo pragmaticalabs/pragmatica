@@ -33,7 +33,7 @@ public class CstPatternMixingRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         // Find all Lambda expressions (not method references - those are just transformations)
-        return findAll(root, RuleId.Lambda.class).stream()
+        return findAllLambdas(root).stream()
                       .filter(lambda -> isInsideFlatMap(lambda, root, source))
                       .filter(lambda -> containsForkJoinWithLogic(lambda, source))
                       .map(lambda -> createDiagnostic(lambda, source, ctx));
