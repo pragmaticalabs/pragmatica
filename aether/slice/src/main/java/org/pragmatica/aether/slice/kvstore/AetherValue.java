@@ -1249,6 +1249,52 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Per-node storage instance status — tier utilization, readiness, snapshot epoch.
+    /// Each node publishes this for each storage instance; cluster routes aggregate across nodes.
+    ///
+    /// @param instanceName storage instance name
+    /// @param tiers tier utilization details
+    /// @param readinessState current readiness state name
+    /// @param isReadReady whether reads are available
+    /// @param isWriteReady whether writes are available
+    /// @param lastSnapshotEpoch epoch number of the last snapshot
+    /// @param lastSnapshotTimestamp epoch millis of the last snapshot
+    /// @param updatedAt timestamp of last update
+    record StorageStatusValue(String instanceName,
+                              List<TierStatus> tiers,
+                              String readinessState,
+                              boolean isReadReady,
+                              boolean isWriteReady,
+                              long lastSnapshotEpoch,
+                              long lastSnapshotTimestamp,
+                              long updatedAt) implements AetherValue {
+
+        /// Tier utilization detail within a storage status.
+        ///
+        /// @param level tier level name
+        /// @param usedBytes bytes currently used
+        /// @param maxBytes maximum capacity in bytes
+        public record TierStatus(String level, long usedBytes, long maxBytes) {}
+
+        /// Creates a storage status value with current timestamp.
+        public static StorageStatusValue storageStatusValue(String instanceName,
+                                                            List<TierStatus> tiers,
+                                                            String readinessState,
+                                                            boolean isReadReady,
+                                                            boolean isWriteReady,
+                                                            long lastSnapshotEpoch,
+                                                            long lastSnapshotTimestamp) {
+            return new StorageStatusValue(instanceName,
+                                          List.copyOf(tiers),
+                                          readinessState,
+                                          isReadReady,
+                                          isWriteReady,
+                                          lastSnapshotEpoch,
+                                          lastSnapshotTimestamp,
+                                          System.currentTimeMillis());
+        }
+    }
+
     record ClusterConfigValue(String tomlContent,
                               String clusterName,
                               String version,

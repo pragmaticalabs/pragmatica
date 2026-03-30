@@ -1255,6 +1255,7 @@ public sealed interface AetherKey extends StructuredKey {
     // Storage key format errors
     Fn1<Cause, String> STORAGE_BLOCK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-block key format: %s");
     Fn1<Cause, String> STORAGE_REF_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-ref key format: %s");
+    Fn1<Cause, String> STORAGE_STATUS_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-status key format: %s");
 
     // Stream key format errors
     Fn1<Cause, String> STREAM_METADATA_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-meta key format: %s");
@@ -1531,6 +1532,52 @@ public sealed interface AetherKey extends StructuredKey {
             }
             return success(new StorageRefKey(content.substring(0, slashIndex),
                                              content.substring(slashIndex + 1)));
+        }
+    }
+
+    /// Per-node storage instance status key format:
+    /// ```
+    /// storage-status/{nodeId}/{instanceName}
+    /// ```
+    /// Each node publishes its storage instance status to KV-Store.
+    /// Other nodes read all entries to build cluster-wide storage views.
+    record StorageStatusKey(NodeId nodeId, String instanceName) implements AetherKey {
+        private static final String PREFIX = "storage-status/";
+
+        public boolean isForNode(NodeId nodeId) {
+            return this.nodeId.equals(nodeId);
+        }
+
+        @Override
+        public String asString() {
+            return PREFIX + nodeId.id() + "/" + instanceName;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static StorageStatusKey storageStatusKey(NodeId nodeId, String instanceName) {
+            return new StorageStatusKey(nodeId, instanceName);
+        }
+
+        public static Result<StorageStatusKey> storageStatusKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return STORAGE_STATUS_KEY_FORMAT_ERROR.apply(key)
+                                                      .result();
+            }
+            var content = key.substring(PREFIX.length());
+            var slashIndex = content.indexOf('/');
+            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return STORAGE_STATUS_KEY_FORMAT_ERROR.apply(key)
+                                                      .result();
+            }
+            var nodeIdPart = content.substring(0, slashIndex);
+            var instanceNamePart = content.substring(slashIndex + 1);
+            return NodeId.nodeId(nodeIdPart)
+                         .map(nid -> new StorageStatusKey(nid, instanceNamePart));
         }
     }
 

@@ -172,6 +172,7 @@ public final class KVStoreSerializer {
             case StreamCursorCheckpointKey _ -> "stream-cursor";
             case StreamRegistrationKey _ -> "stream-reg";
             case ClusterConfigKey _ -> "cluster-config";
+            case StorageStatusKey _ -> "storage-status";
             case StorageBlockKey _ -> "storage-block";
             case StorageRefKey _ -> "storage-ref";
         };
@@ -233,6 +234,7 @@ public final class KVStoreSerializer {
             case StreamCursorCheckpointValue v -> serializeStreamCursorCheckpoint(v);
             case StreamRegistrationValue v -> serializeStreamRegistration(v);
             case ClusterConfigValue v -> serializeClusterConfig(v);
+            case StorageStatusValue v -> serializeStorageStatus(v);
             case StorageBlockValue v -> serializeStorageBlock(v);
             case StorageRefValue v -> serializeStorageRef(v);
         };
@@ -364,6 +366,18 @@ public final class KVStoreSerializer {
                                                                                                                                                                                                                       "\\|");
     }
 
+    private static String serializeStorageStatus(StorageStatusValue v) {
+        var tiersStr = v.tiers()
+                        .stream()
+                        .map(KVStoreSerializer::serializeTierStatus)
+                        .collect(Collectors.joining(";"));
+        return v.instanceName() + PIPE + tiersStr + PIPE + v.readinessState() + PIPE + v.isReadReady() + PIPE + v.isWriteReady() + PIPE + v.lastSnapshotEpoch() + PIPE + v.lastSnapshotTimestamp() + PIPE + v.updatedAt();
+    }
+
+    private static String serializeTierStatus(StorageStatusValue.TierStatus t) {
+        return t.level() + "," + t.usedBytes() + "," + t.maxBytes();
+    }
+
     private static String serializeStorageBlock(StorageBlockValue v) {
         return v.blockIdHex() + PIPE + String.join(",", v.presentIn()) + PIPE + v.refCount() + PIPE + v.lastAccessedAt() + PIPE + v.createdAt();
     }
@@ -418,6 +432,7 @@ public final class KVStoreSerializer {
             case "ab-test" -> parseAbTestEntry(identity, rawValue);
             case "ab-test-routing" -> parseAbTestRoutingEntry(identity, rawValue);
             case "cluster-config" -> parseClusterConfigEntry(identity, rawValue);
+            case "storage-status" -> parseStorageStatusEntry(identity, rawValue);
             case "storage-block" -> parseStorageBlockEntry(identity, rawValue);
             case "storage-ref" -> parseStorageRefEntry(identity, rawValue);
             default -> new SerializationError.UnknownKeyType(section).result();
@@ -1051,6 +1066,39 @@ public final class KVStoreSerializer {
                                                                         parts[5],
                                                                         Long.parseLong(parts[6]),
                                                                         Long.parseLong(parts[7]))));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseStorageStatusEntry(String identity, String raw) {
+        var parts = raw.split("(?<!\\\\)\\|", -1);
+        if (parts.length != 8) {
+            return parseFailure("storage-status value requires 8 fields, got " + parts.length);
+        }
+        return StorageStatusKey.storageStatusKey("storage-status/" + identity)
+                               .map(key -> entry(key,
+                                                 new StorageStatusValue(parts[0],
+                                                                        parseTierStatuses(parts[1]),
+                                                                        parts[2],
+                                                                        Boolean.parseBoolean(parts[3]),
+                                                                        Boolean.parseBoolean(parts[4]),
+                                                                        Long.parseLong(parts[5]),
+                                                                        Long.parseLong(parts[6]),
+                                                                        Long.parseLong(parts[7]))));
+    }
+
+    private static List<StorageStatusValue.TierStatus> parseTierStatuses(String raw) {
+        if (raw.isEmpty()) {
+            return List.of();
+        }
+        return Arrays.stream(raw.split(";"))
+                     .map(KVStoreSerializer::parseSingleTierStatus)
+                     .toList();
+    }
+
+    private static StorageStatusValue.TierStatus parseSingleTierStatus(String entry) {
+        var fields = entry.split(",", 3);
+        return new StorageStatusValue.TierStatus(fields[0],
+                                                  Long.parseLong(fields[1]),
+                                                  Long.parseLong(fields[2]));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseStorageBlockEntry(String identity, String raw) {
