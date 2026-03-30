@@ -32,11 +32,29 @@ public final class MemoryTier implements StorageTier {
 
     @Override
     public Promise<Unit> put(BlockId id, byte[] content) {
-        if (usedBytes.get() + content.length > maxBytes) {
-            return new StorageError.TierFull(TierLevel.MEMORY, usedBytes.get(), maxBytes).promise();
+        // Atomic capacity reservation using CAS loop to prevent TOCTOU race.
+        long current;
+        long updated;
+
+        do {
+            current = usedBytes.get();
+            // For overwrites, we don't know old size yet — reserve full content.length.
+            // Overcount is corrected after the actual put.
+            updated = current + content.length;
+
+            if (updated > maxBytes) {
+                return new StorageError.TierFull(TierLevel.MEMORY, current, maxBytes).promise();
+            }
+        } while (!usedBytes.compareAndSet(current, updated));
+
+        // Now we have reserved space atomically. Perform the actual put.
+        var previous = store.put(id, content);
+
+        // If overwrite, return the over-reserved bytes for the old value.
+        if (previous != null) {
+            usedBytes.addAndGet(-previous.length);
         }
 
-        adjustUsedBytes(store.put(id, content), content.length);
         return Promise.success(unit());
     }
 
@@ -64,13 +82,6 @@ public final class MemoryTier implements StorageTier {
     @Override
     public long maxBytes() {
         return maxBytes;
-    }
-
-    private void adjustUsedBytes(byte[] previous, int newSize) {
-        var delta = previous != null
-                    ? newSize - previous.length
-                    : newSize;
-        usedBytes.addAndGet(delta);
     }
 
     private void adjustUsedBytesOnRemoval(byte[] removed) {

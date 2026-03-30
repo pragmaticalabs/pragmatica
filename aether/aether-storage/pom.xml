@@ -23,6 +23,12 @@
             <artifactId>core</artifactId>
         </dependency>
 
+        <!-- Aether Slice (AetherKey/AetherValue, KVStore access) -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>slice</artifactId>
+        </dependency>
+
         <!-- Testing -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

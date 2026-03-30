@@ -1252,6 +1252,10 @@ public sealed interface AetherKey extends StructuredKey {
 
     Fn1<Cause, String> CLUSTER_CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-config key format: %s");
 
+    // Storage key format errors
+    Fn1<Cause, String> STORAGE_BLOCK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-block key format: %s");
+    Fn1<Cause, String> STORAGE_REF_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid storage-ref key format: %s");
+
     // Stream key format errors
     Fn1<Cause, String> STREAM_METADATA_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-meta key format: %s");
     Fn1<Cause, String> STREAM_PARTITION_ASSIGNMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-assign key format: %s");
@@ -1456,6 +1460,80 @@ public sealed interface AetherKey extends StructuredKey {
     /// ```
     /// Stores cluster-wide configuration in consensus.
     /// Version 0 is the "current" (active) config; versioned keys are historical snapshots.
+    /// Storage block lifecycle key format:
+    /// ```
+    /// storage-block/{instanceName}/{blockIdHex}
+    /// ```
+    /// Maps a block ID to its lifecycle metadata (tier presence, ref count, timestamps).
+    record StorageBlockKey(String instanceName, String blockIdHex) implements AetherKey {
+        private static final String PREFIX = "storage-block/";
+
+        @Override
+        public String asString() {
+            return PREFIX + instanceName + "/" + blockIdHex;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static StorageBlockKey storageBlockKey(String instanceName, String blockIdHex) {
+            return new StorageBlockKey(instanceName, blockIdHex);
+        }
+
+        public static Result<StorageBlockKey> storageBlockKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return STORAGE_BLOCK_KEY_FORMAT_ERROR.apply(key).result();
+            }
+            var content = key.substring(PREFIX.length());
+            var slashIndex = content.indexOf('/');
+            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return STORAGE_BLOCK_KEY_FORMAT_ERROR.apply(key).result();
+            }
+            return success(new StorageBlockKey(content.substring(0, slashIndex),
+                                               content.substring(slashIndex + 1)));
+        }
+    }
+
+    /// Storage named reference key format:
+    /// ```
+    /// storage-ref/{instanceName}/{referenceName}
+    /// ```
+    /// Maps a named reference (e.g., artifact coordinate) to a block ID.
+    record StorageRefKey(String instanceName, String referenceName) implements AetherKey {
+        private static final String PREFIX = "storage-ref/";
+
+        @Override
+        public String asString() {
+            return PREFIX + instanceName + "/" + referenceName;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static StorageRefKey storageRefKey(String instanceName, String referenceName) {
+            return new StorageRefKey(instanceName, referenceName);
+        }
+
+        public static Result<StorageRefKey> storageRefKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return STORAGE_REF_KEY_FORMAT_ERROR.apply(key).result();
+            }
+            var content = key.substring(PREFIX.length());
+            var slashIndex = content.indexOf('/');
+            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return STORAGE_REF_KEY_FORMAT_ERROR.apply(key).result();
+            }
+            return success(new StorageRefKey(content.substring(0, slashIndex),
+                                             content.substring(slashIndex + 1)));
+        }
+    }
+
     record ClusterConfigKey(long configVersion) implements AetherKey {
         private static final String PREFIX = "cluster-config/";
 

@@ -17,6 +17,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.pragmatica.lang.Result.success;
@@ -167,6 +168,8 @@ public final class KVStoreSerializer {
             case StreamCursorCheckpointKey _ -> "stream-cursor";
             case StreamRegistrationKey _ -> "stream-reg";
             case ClusterConfigKey _ -> "cluster-config";
+            case StorageBlockKey _ -> "storage-block";
+            case StorageRefKey _ -> "storage-ref";
         };
     }
 
@@ -226,6 +229,8 @@ public final class KVStoreSerializer {
             case StreamCursorCheckpointValue v -> serializeStreamCursorCheckpoint(v);
             case StreamRegistrationValue v -> serializeStreamRegistration(v);
             case ClusterConfigValue v -> serializeClusterConfig(v);
+            case StorageBlockValue v -> serializeStorageBlock(v);
+            case StorageRefValue v -> serializeStorageRef(v);
         };
     }
 
@@ -355,6 +360,14 @@ public final class KVStoreSerializer {
                                                                                                                                                                                                                       "\\|");
     }
 
+    private static String serializeStorageBlock(StorageBlockValue v) {
+        return v.blockIdHex() + PIPE + String.join(",", v.presentIn()) + PIPE + v.refCount() + PIPE + v.lastAccessedAt() + PIPE + v.createdAt();
+    }
+
+    private static String serializeStorageRef(StorageRefValue v) {
+        return v.blockIdHex() + PIPE + v.updatedAt();
+    }
+
     // --- Deserialization helpers ---
     private static Result<Map.Entry<AetherKey, AetherValue>> parseEntry(String section, String line) {
         var eqIndex = line.indexOf(" = ");
@@ -401,6 +414,8 @@ public final class KVStoreSerializer {
             case "ab-test" -> parseAbTestEntry(identity, rawValue);
             case "ab-test-routing" -> parseAbTestRoutingEntry(identity, rawValue);
             case "cluster-config" -> parseClusterConfigEntry(identity, rawValue);
+            case "storage-block" -> parseStorageBlockEntry(identity, rawValue);
+            case "storage-ref" -> parseStorageRefEntry(identity, rawValue);
             default -> new SerializationError.UnknownKeyType(section).result();
         };
     }
@@ -1032,6 +1047,29 @@ public final class KVStoreSerializer {
                                                                         parts[5],
                                                                         Long.parseLong(parts[6]),
                                                                         Long.parseLong(parts[7]))));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseStorageBlockEntry(String identity, String raw) {
+        var parts = raw.split("(?<!\\\\)\\|", -1);
+        if (parts.length != 5) {
+            return parseFailure("storage-block value requires 5 fields, got " + parts.length);
+        }
+        return StorageBlockKey.storageBlockKey("storage-block/" + identity)
+                              .map(key -> entry(key,
+                                                StorageBlockValue.storageBlockValue(parts[0],
+                                                                                   Set.of(parts[1].split(",")),
+                                                                                   Integer.parseInt(parts[2]),
+                                                                                   Long.parseLong(parts[3]),
+                                                                                   Long.parseLong(parts[4]))));
+    }
+
+    private static Result<Map.Entry<AetherKey, AetherValue>> parseStorageRefEntry(String identity, String raw) {
+        var parts = raw.split("(?<!\\\\)\\|", -1);
+        if (parts.length != 2) {
+            return parseFailure("storage-ref value requires 2 fields, got " + parts.length);
+        }
+        return StorageRefKey.storageRefKey("storage-ref/" + identity)
+                            .map(key -> entry(key, new StorageRefValue(parts[0], Long.parseLong(parts[1]))));
     }
 
     private static <T> Result<T> parseFailure(String detail) {

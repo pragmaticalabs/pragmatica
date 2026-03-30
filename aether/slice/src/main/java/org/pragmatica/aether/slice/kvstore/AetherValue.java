@@ -1196,6 +1196,58 @@ public sealed interface AetherValue {
     /// @param deploymentType extracted from [deployment].type
     /// @param configVersion monotonically increasing version for optimistic concurrency
     /// @param updatedAt epoch millis
+    /// Storage block lifecycle value — tracks tier presence, reference count, and access timestamps.
+    /// Tier names are stored as strings to avoid coupling to the storage module's TierLevel enum.
+    ///
+    /// @param blockIdHex hex-encoded SHA-256 block ID
+    /// @param presentIn tier level names where the block is stored (e.g., "MEMORY", "LOCAL_DISK")
+    /// @param refCount number of named references pointing to this block
+    /// @param lastAccessedAt timestamp of last read access
+    /// @param createdAt timestamp when first stored
+    record StorageBlockValue(String blockIdHex,
+                             Set<String> presentIn,
+                             int refCount,
+                             long lastAccessedAt,
+                             long createdAt) implements AetherValue {
+
+        public static StorageBlockValue storageBlockValue(String blockIdHex,
+                                                          Set<String> presentIn,
+                                                          int refCount,
+                                                          long lastAccessedAt,
+                                                          long createdAt) {
+            return new StorageBlockValue(blockIdHex, Set.copyOf(presentIn), refCount, lastAccessedAt, createdAt);
+        }
+
+        public StorageBlockValue withTierAdded(String tier) {
+            var tiers = new java.util.HashSet<>(presentIn);
+            tiers.add(tier);
+            return new StorageBlockValue(blockIdHex, Set.copyOf(tiers), refCount, lastAccessedAt, createdAt);
+        }
+
+        public StorageBlockValue withRefCountIncremented() {
+            return new StorageBlockValue(blockIdHex, presentIn, refCount + 1, lastAccessedAt, createdAt);
+        }
+
+        public StorageBlockValue withRefCountDecremented() {
+            return new StorageBlockValue(blockIdHex, presentIn, Math.max(0, refCount - 1), lastAccessedAt, createdAt);
+        }
+
+        public StorageBlockValue withAccessTimestamp() {
+            return new StorageBlockValue(blockIdHex, presentIn, refCount, System.currentTimeMillis(), createdAt);
+        }
+    }
+
+    /// Storage named reference value — maps a reference name to a block ID.
+    ///
+    /// @param blockIdHex hex-encoded SHA-256 block ID this reference points to
+    /// @param updatedAt timestamp of last update
+    record StorageRefValue(String blockIdHex, long updatedAt) implements AetherValue {
+
+        public static StorageRefValue storageRefValue(String blockIdHex) {
+            return new StorageRefValue(blockIdHex, System.currentTimeMillis());
+        }
+    }
+
     record ClusterConfigValue(String tomlContent,
                               String clusterName,
                               String version,

@@ -1,7 +1,6 @@
 package org.pragmatica.aether.storage;
 
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -10,7 +9,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.none;
-import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
 
@@ -47,9 +45,14 @@ public interface StorageInstance {
 
     record TierInfo(TierLevel level, long usedBytes, long maxBytes) {}
 
-    /// Create a storage instance with the given tiers (ordered by latency -- fastest first).
+    /// Create a storage instance with an in-memory metadata store.
     static StorageInstance storageInstance(String name, List<StorageTier> tiers) {
-        return new DefaultStorageInstance(name, tiers);
+        return storageInstance(name, tiers, InMemoryMetadataStore.inMemoryMetadataStore(name));
+    }
+
+    /// Create a storage instance with a custom metadata store.
+    static StorageInstance storageInstance(String name, List<StorageTier> tiers, MetadataStore metadataStore) {
+        return new DefaultStorageInstance(name, tiers, metadataStore);
     }
 }
 
@@ -58,13 +61,13 @@ final class DefaultStorageInstance implements StorageInstance {
 
     private final String name;
     private final List<StorageTier> tiers;
-    private final ConcurrentHashMap<BlockId, BlockLifecycle> lifecycle = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, BlockId> refs = new ConcurrentHashMap<>();
+    private final MetadataStore metadataStore;
     private final SingleFlightCache readCache = SingleFlightCache.singleFlightCache();
 
-    DefaultStorageInstance(String name, List<StorageTier> tiers) {
+    DefaultStorageInstance(String name, List<StorageTier> tiers, MetadataStore metadataStore) {
         this.name = name;
         this.tiers = List.copyOf(tiers);
+        this.metadataStore = metadataStore;
         log.info("Storage instance '{}' created with {} tier(s)", name, tiers.size());
     }
 
@@ -88,27 +91,27 @@ final class DefaultStorageInstance implements StorageInstance {
 
     @Override
     public Promise<Boolean> exists(BlockId id) {
-        return lifecycle.containsKey(id)
+        return metadataStore.containsBlock(id)
                ? Promise.success(true)
                : checkTiersForExistence(id, 0);
     }
 
     @Override
     public Promise<Unit> createRef(String refName, BlockId id) {
-        refs.put(refName, id);
-        lifecycle.computeIfPresent(id, (_, lc) -> lc.withRefCountIncremented());
+        metadataStore.putRef(refName, id);
+        metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountIncremented);
         return Promise.success(unit());
     }
 
     @Override
     public Option<BlockId> resolveRef(String refName) {
-        return option(refs.get(refName));
+        return metadataStore.resolveRef(refName);
     }
 
     @Override
     public Promise<Unit> deleteRef(String refName) {
-        var removed = option(refs.remove(refName));
-        removed.onPresent(id -> lifecycle.computeIfPresent(id, (_, lc) -> lc.withRefCountDecremented()));
+        metadataStore.removeRef(refName)
+                     .onPresent(id -> metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountDecremented));
         return Promise.success(unit());
     }
 
@@ -127,13 +130,17 @@ final class DefaultStorageInstance implements StorageInstance {
     // --- Write flow ---
 
     private Promise<BlockId> handlePut(BlockId id, byte[] content) {
-        return option(lifecycle.get(id))
-            .fold(() -> writeThroughTiers(id, content),
-                  existing -> deduplicateBlock(id, existing));
+        var sentinel = BlockLifecycle.blockLifecycle(id, tiers.getLast().level());
+
+        if (!metadataStore.claimBlock(id, sentinel)) {
+            return deduplicateBlock(id);
+        }
+
+        return writeThroughTiers(id, content);
     }
 
-    private Promise<BlockId> deduplicateBlock(BlockId id, BlockLifecycle existing) {
-        lifecycle.put(id, existing.withRefCountIncremented());
+    private Promise<BlockId> deduplicateBlock(BlockId id) {
+        metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountIncremented);
         log.debug("Block {} already stored, incremented refCount", id);
         return Promise.success(id);
     }
@@ -172,7 +179,7 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     private BlockId trackNewBlock(BlockId id, TierLevel initialTier) {
-        lifecycle.put(id, BlockLifecycle.blockLifecycle(id, initialTier));
+        metadataStore.createLifecycle(BlockLifecycle.blockLifecycle(id, initialTier));
         log.debug("Block {} stored in tier {}", id, initialTier);
         return id;
     }
@@ -230,11 +237,11 @@ final class DefaultStorageInstance implements StorageInstance {
     // --- Lifecycle helpers ---
 
     private void recordAccess(BlockId id) {
-        lifecycle.computeIfPresent(id, (_, lc) -> lc.withAccessTimestamp());
+        metadataStore.computeLifecycle(id, BlockLifecycle::withAccessTimestamp);
     }
 
     private void recordTierPresence(BlockId id, TierLevel tier) {
-        lifecycle.computeIfPresent(id, (_, lc) -> lc.withTierAdded(tier));
+        metadataStore.computeLifecycle(id, lc -> lc.withTierAdded(tier));
     }
 
     private static TierInfo toTierInfo(StorageTier tier) {

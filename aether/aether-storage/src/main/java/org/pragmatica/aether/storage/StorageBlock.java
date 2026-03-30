@@ -7,6 +7,11 @@ package org.pragmatica.aether.storage;
 /// @param metadata block properties
 public record StorageBlock(BlockId id, byte[] content, BlockMetadata metadata) {
 
+    /// Defensive copy of mutable byte array.
+    public StorageBlock {
+        content = content.clone();
+    }
+
     public static StorageBlock storageBlock(BlockId id, byte[] content, BlockMetadata metadata) {
         return new StorageBlock(id, content, metadata);
     }

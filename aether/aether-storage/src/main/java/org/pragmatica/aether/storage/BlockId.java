@@ -11,6 +11,11 @@ import java.util.HexFormat;
 public record BlockId(byte[] hash) {
     private static final HexFormat HEX = HexFormat.of();
 
+    /// Defensive copy of mutable byte array.
+    public BlockId {
+        hash = hash.clone();
+    }
+
     /// Create a BlockId from raw content by computing SHA-256.
     public static Result<BlockId> blockId(byte[] content) {
         return Result.lift(() -> MessageDigest.getInstance("SHA-256"))
