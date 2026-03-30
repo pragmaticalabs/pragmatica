@@ -76,7 +76,8 @@ public record Main(String[] args) {
         var withAppHttp = wireAppHttpIfConfigured(withConfig, aetherConfig);
         var withMgmtProtocol = wireManagementHttpProtocol(withAppHttp, aetherConfig);
         var withTls = wireTlsIfEnabled(withMgmtProtocol, aetherConfig);
-        var finalConfig = wireCloudIfConfigured(withTls, aetherConfig);
+        var withStorage = wireStorageIfConfigured(withTls, aetherConfig);
+        var finalConfig = wireCloudIfConfigured(withStorage, aetherConfig);
         var node = AetherNode.aetherNode(finalConfig)
                              .unwrap();
         registerShutdownHook(node);
@@ -123,6 +124,14 @@ public record Main(String[] args) {
                                           .ports()
                                           .managementHttpProtocol())
                            .map(config::withManagementHttpProtocol)
+                           .or(config);
+    }
+
+    private static AetherNodeConfig wireStorageIfConfigured(AetherNodeConfig config,
+                                                              Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(AetherConfig::storage)
+                           .filter(m -> !m.isEmpty())
+                           .map(config::withStorage)
                            .or(config);
     }
 

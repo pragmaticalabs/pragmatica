@@ -10,6 +10,11 @@ import org.pragmatica.lang.Option;
 /// Implementations may use in-memory maps, databases, or distributed stores.
 public interface MetadataStore {
 
+    /// Create an in-memory metadata store suitable for testing and single-node deployments.
+    static MetadataStore inMemoryMetadataStore(String instanceName) {
+        return InMemoryMetadataStore.inMemoryMetadataStore(instanceName);
+    }
+
     /// Retrieve lifecycle metadata for a block.
     Option<BlockLifecycle> getLifecycle(BlockId blockId);
 

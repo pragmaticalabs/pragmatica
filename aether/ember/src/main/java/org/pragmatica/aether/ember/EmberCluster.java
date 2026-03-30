@@ -667,7 +667,8 @@ public final class EmberCluster {
                                           Option.empty(),
                                           Option.empty(),
                                           AetherNodeConfig.DeploymentDefaults.DEFAULT,
-                                          org.pragmatica.aether.config.HttpProtocol.H1);
+                                          org.pragmatica.aether.config.HttpProtocol.H1,
+                                          java.util.Map.of());
         return AetherNode.aetherNode(config)
                          .unwrap();
     }

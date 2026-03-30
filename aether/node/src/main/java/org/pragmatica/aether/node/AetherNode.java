@@ -40,8 +40,6 @@ import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.resource.SpiResourceProvider;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
-import org.pragmatica.aether.storage.MemoryTier;
-import org.pragmatica.aether.storage.StorageInstance;
 import org.pragmatica.aether.api.ObservabilityDepthRegistry;
 import org.pragmatica.aether.invoke.AdaptiveSampler;
 import org.pragmatica.aether.invoke.InvocationHandler;
@@ -393,8 +391,10 @@ public interface AetherNode {
         var aetherMaps = AetherMaps.aetherMaps(dhtClient.scoped(DHTConfig.FULL));
         // Create scoped DHT client for cache operations (lower replication, single-replica default)
         var cacheDhtClient = dhtClient.scoped(config.cache());
-        var artifactStorage = StorageInstance.storageInstance("artifacts",
-                                                              List.of(MemoryTier.memoryTier(256 * 1024 * 1024)));
+        var storageSetups = StorageFactory.createAll(config.storageConfig(), config.self().id());
+        var artifactStorage = storageSetups.containsKey("artifacts")
+                              ? storageSetups.get("artifacts").instance()
+                              : StorageFactory.defaultArtifactStorage();
         var artifactStore = ArtifactStore.artifactStore(dhtClient, artifactStorage);
         // Create repositories from SliceConfig using RepositoryFactory
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
