@@ -63,6 +63,7 @@
         <!-- Split node modules - ordered by dependency -->
         <module>aether-metrics</module>
         <module>aether-dht</module>
+        <module>aether-storage</module>
         <module>aether-invoke</module>
         <module>aether-deployment</module>
         <module>aether-control</module>
