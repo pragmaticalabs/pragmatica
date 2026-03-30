@@ -15,7 +15,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.storage.InMemoryMetadataStore.inMemoryMetadataStore;
 import static org.pragmatica.aether.storage.MetadataSnapshot.metadataSnapshot;
 import static org.pragmatica.aether.storage.SnapshotConfig.snapshotConfig;
@@ -29,9 +28,7 @@ class SnapshotManagerTest {
     private static final String NODE_ID = "node-test-1";
 
     private static BlockId blockIdOf(byte[] content) {
-        return BlockId.blockId(content)
-                      .fold(_ -> { fail("BlockId creation failed"); return null; },
-                            id -> id);
+        return BlockId.blockId(content).unwrap();
     }
 
     @Nested
@@ -247,12 +244,10 @@ class SnapshotManagerTest {
 
             var restored = manager.restoreFromLatest();
 
-            assertThat(restored.isPresent()).isTrue();
-            restored.onPresent(snap -> {
-                assertThat(snap.lifecycles()).hasSize(1);
-                assertThat(snap.refs()).containsKey("my-ref");
-                assertThat(snap.isValid()).isTrue();
-            });
+            var snap = restored.unwrap();
+            assertThat(snap.lifecycles()).hasSize(1);
+            assertThat(snap.refs()).containsKey("my-ref");
+            assertThat(snap.isValid()).isTrue();
         }
 
         @Test
@@ -317,23 +312,21 @@ class SnapshotManagerTest {
 
             var restored = freshManager.restoreFromLatest();
 
-            assertThat(restored.isPresent()).isTrue();
-            restored.onPresent(snap -> {
-                assertThat(snap.lifecycles()).hasSize(3);
-                assertThat(snap.refs()).hasSize(2);
-                assertThat(snap.refs()).containsKey("alpha");
-                assertThat(snap.refs()).containsKey("beta");
-                assertThat(snap.isValid()).isTrue();
+            var snap = restored.unwrap();
+            assertThat(snap.lifecycles()).hasSize(3);
+            assertThat(snap.refs()).hasSize(2);
+            assertThat(snap.refs()).containsKey("alpha");
+            assertThat(snap.refs()).containsKey("beta");
+            assertThat(snap.isValid()).isTrue();
 
-                freshStore.restoreLifecycles(snap.lifecycles());
-                freshStore.restoreRefs(snap.refs());
+            freshStore.restoreLifecycles(snap.lifecycles());
+            freshStore.restoreRefs(snap.refs());
 
-                assertThat(freshStore.containsBlock(idA)).isTrue();
-                assertThat(freshStore.containsBlock(idB)).isTrue();
-                assertThat(freshStore.containsBlock(idC)).isTrue();
-                assertThat(freshStore.resolveRef("alpha").isPresent()).isTrue();
-                assertThat(freshStore.resolveRef("beta").isPresent()).isTrue();
-            });
+            assertThat(freshStore.containsBlock(idA)).isTrue();
+            assertThat(freshStore.containsBlock(idB)).isTrue();
+            assertThat(freshStore.containsBlock(idC)).isTrue();
+            assertThat(freshStore.resolveRef("alpha").isPresent()).isTrue();
+            assertThat(freshStore.resolveRef("beta").isPresent()).isTrue();
         }
 
         private long snapshotFileCount(Path dir) throws IOException {

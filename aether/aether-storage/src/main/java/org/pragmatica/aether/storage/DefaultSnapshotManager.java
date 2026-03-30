@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
@@ -34,6 +35,7 @@ final class DefaultSnapshotManager implements SnapshotManager {
     private final MetadataStore metadataStore;
     private final SnapshotConfig config;
     private final AtomicLong lastSnapshotEpoch = new AtomicLong();
+    private final AtomicBoolean snapshotInProgress = new AtomicBoolean();
     private volatile long lastSnapshotTimestamp;
 
     DefaultSnapshotManager(MetadataStore metadataStore, SnapshotConfig config) {
@@ -44,8 +46,12 @@ final class DefaultSnapshotManager implements SnapshotManager {
 
     @Override
     public void maybeSnapshot() {
-        if (shouldSnapshot()) {
-            forceSnapshot();
+        if (shouldSnapshot() && snapshotInProgress.compareAndSet(false, true)) {
+            try {
+                forceSnapshot();
+            } finally {
+                snapshotInProgress.set(false);
+            }
         }
     }
 

@@ -47,21 +47,22 @@ public record MetadataSnapshot(long epoch,
         return Arrays.equals(contentHash, computeHash(lifecycles, refs));
     }
 
+    @SuppressWarnings("JBCT-EXC-01") // Static initializer — SHA-256 is JVM-guaranteed
+    private static MessageDigest createSha256() {
+        try { return MessageDigest.getInstance("SHA-256"); }
+        catch (NoSuchAlgorithmException e) { throw new ExceptionInInitializerError(e); }
+    }
+
     private static byte[] computeHash(List<BlockLifecycle> lifecycles, Map<String, BlockId> refs) {
-        try {
-            var digest = MessageDigest.getInstance("SHA-256");
-            lifecycles.stream()
-                      .map(BlockLifecycle::blockId)
-                      .map(BlockId::hexString)
-                      .sorted()
-                      .forEach(hex -> digest.update(hex.getBytes(StandardCharsets.UTF_8)));
-            refs.keySet().stream()
-                .sorted()
-                .forEach(key -> digest.update(key.getBytes(StandardCharsets.UTF_8)));
-            return digest.digest();
-        } catch (NoSuchAlgorithmException e) {
-            // SHA-256 is guaranteed to exist in every JVM
-            throw new IllegalStateException("SHA-256 not available", e);
-        }
+        var digest = createSha256();
+        lifecycles.stream()
+                  .map(BlockLifecycle::blockId)
+                  .map(BlockId::hexString)
+                  .sorted()
+                  .forEach(hex -> digest.update(hex.getBytes(StandardCharsets.UTF_8)));
+        refs.keySet().stream()
+            .sorted()
+            .forEach(key -> digest.update(key.getBytes(StandardCharsets.UTF_8)));
+        return digest.digest();
     }
 }
