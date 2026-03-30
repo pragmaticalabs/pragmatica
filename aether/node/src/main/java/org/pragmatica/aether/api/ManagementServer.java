@@ -24,6 +24,7 @@ import org.pragmatica.aether.api.routes.ScheduledTaskRoutes;
 import org.pragmatica.aether.api.routes.SchemaRoutes;
 import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.api.routes.StatusRoutes;
+import org.pragmatica.aether.api.routes.StorageRoutes;
 import org.pragmatica.aether.api.routes.StreamRoutes;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.RoleEnforcer;
@@ -248,6 +249,7 @@ class ManagementServerImpl implements ManagementServer {
                                                    nodeSupplier));
         routeSources.add(SchemaRoutes.schemaRoutes(nodeSupplier));
         routeSources.add(StreamRoutes.streamRoutes(nodeSupplier));
+        routeSources.add(StorageRoutes.storageRoutes(nodeSupplier));
         dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm, nodeSupplier)));
         this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
         // Legacy routes using RouteHandler for dynamic content types

@@ -20,6 +20,9 @@ public interface SnapshotManager {
     /// Current snapshot epoch.
     long lastSnapshotEpoch();
 
+    /// Timestamp of the last snapshot in milliseconds since epoch.
+    long lastSnapshotTimestamp();
+
     /// Factory method.
     static SnapshotManager snapshotManager(MetadataStore metadataStore, SnapshotConfig config) {
         return new DefaultSnapshotManager(metadataStore, config);

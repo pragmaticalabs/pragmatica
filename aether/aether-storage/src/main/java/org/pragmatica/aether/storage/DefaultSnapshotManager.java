@@ -74,6 +74,11 @@ final class DefaultSnapshotManager implements SnapshotManager {
         return lastSnapshotEpoch.get();
     }
 
+    @Override
+    public long lastSnapshotTimestamp() {
+        return lastSnapshotTimestamp;
+    }
+
     // --- Trigger logic ---
 
     private boolean shouldSnapshot() {

@@ -13,7 +13,7 @@ import java.net.http.HttpRequest;
 import static org.pragmatica.lang.Option.option;
 
 /// Shared HTTP client for cluster CLI commands that call the management API.
-sealed interface ClusterHttpClient {
+public sealed interface ClusterHttpClient {
     record unused() implements ClusterHttpClient {}
 
     HttpOperations HTTP_OPS = JdkHttpOperations.jdkHttpOperations();

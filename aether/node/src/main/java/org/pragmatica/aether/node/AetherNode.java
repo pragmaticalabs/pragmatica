@@ -262,6 +262,9 @@ public interface AetherNode {
     /// Get the stream partition manager for local stream operations.
     StreamPartitionManager streamPartitionManager();
 
+    /// Get the storage setups map for hierarchical storage management.
+    Map<String, StorageFactory.StorageSetup> storageSetups();
+
     /// Get the certificate renewal scheduler for observability.
     Option<CertificateRenewalScheduler> certRenewalScheduler();
 
@@ -468,6 +471,7 @@ public interface AetherNode {
                           ClusterEventAggregator eventAggregator,
                           BackupService backupService,
                           StreamPartitionManager streamPartitionManager,
+                          Map<String, StorageFactory.StorageSetup> storageSetups,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
                           Option<ManagementServer> managementServer,
@@ -1220,6 +1224,7 @@ public interface AetherNode {
                                   eventAggregator,
                                   BackupService.disabled(),
                                   streamPartitionManager,
+                                  storageSetups,
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
                                   Option.empty(),
@@ -1300,6 +1305,7 @@ public interface AetherNode {
                                                            eventAggregator,
                                                            BackupService.disabled(),
                                                            streamPartitionManager,
+                                                           storageSetups,
                                                            eventLoopMetricsCollector,
                                                            swimHealthDetector,
                                                            Option.some(managementServer),

@@ -98,6 +98,7 @@ AetherCli.NodeSlicesCommand.class,
 AetherCli.RoutesCommand.class,
 AetherCli.NodeRoutesCommand.class,
 org.pragmatica.aether.cli.cluster.ClusterCommand.class,
+org.pragmatica.aether.cli.storage.StorageCommand.class,
 GenerateCompletion.class})
 @SuppressWarnings("JBCT-RET-01")
 public class AetherCli implements Runnable {

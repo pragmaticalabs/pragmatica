@@ -25,14 +25,14 @@ import org.slf4j.LoggerFactory;
 /// Factory for creating hierarchical storage infrastructure from configuration.
 /// Each named config entry produces a StorageSetup containing the storage instance,
 /// snapshot manager, and readiness gate.
-final class StorageFactory {
+public final class StorageFactory {
     private static final Logger log = LoggerFactory.getLogger(StorageFactory.class);
     private static final long DEFAULT_MEMORY_BYTES = 256L * 1024 * 1024;
 
     private StorageFactory() {}
 
     /// Created storage infrastructure for a named instance.
-    record StorageSetup(String name,
+    public record StorageSetup(String name,
                         StorageInstance instance,
                         SnapshotManager snapshotManager,
                         StorageReadinessGate readinessGate) {}
