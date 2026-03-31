@@ -1,6 +1,7 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -27,25 +28,34 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final AtomicLong totalAllocatedBytes = new AtomicLong(0);
     private final long maxTotalBytes;
     private final EvictionListener evictionListener;
+    private final ReplicationManager replicationManager;
 
-    private StreamPartitionManager(long maxTotalBytes, EvictionListener evictionListener) {
+    private StreamPartitionManager(long maxTotalBytes, EvictionListener evictionListener,
+                                   ReplicationManager replicationManager) {
         this.maxTotalBytes = maxTotalBytes;
         this.evictionListener = evictionListener;
+        this.replicationManager = replicationManager;
     }
 
     /// Create a new StreamPartitionManager with the default 128MB memory cap and no eviction listener.
     public static StreamPartitionManager streamPartitionManager() {
-        return new StreamPartitionManager(DEFAULT_MAX_TOTAL_BYTES, EvictionListener.NOOP);
+        return new StreamPartitionManager(DEFAULT_MAX_TOTAL_BYTES, EvictionListener.NOOP, ReplicationManager.NONE);
     }
 
     /// Create a new StreamPartitionManager with a custom memory cap and no eviction listener.
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes) {
-        return new StreamPartitionManager(maxTotalBytes, EvictionListener.NOOP);
+        return new StreamPartitionManager(maxTotalBytes, EvictionListener.NOOP, ReplicationManager.NONE);
     }
 
     /// Create a new StreamPartitionManager with a custom memory cap and eviction listener.
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes, EvictionListener evictionListener) {
-        return new StreamPartitionManager(maxTotalBytes, evictionListener);
+        return new StreamPartitionManager(maxTotalBytes, evictionListener, ReplicationManager.NONE);
+    }
+
+    /// Create a new StreamPartitionManager with a custom memory cap, eviction listener, and replication manager.
+    public static StreamPartitionManager streamPartitionManager(long maxTotalBytes, EvictionListener evictionListener,
+                                                                 ReplicationManager replicationManager) {
+        return new StreamPartitionManager(maxTotalBytes, evictionListener, replicationManager);
     }
 
     /// Total off-heap bytes currently allocated across all streams.
@@ -92,7 +102,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
         return resolveStreamEntry(streamName).flatMap(entry -> checkEventSize(entry, payload))
                                  .flatMap(_ -> resolvePartitionBuffer(streamName, partition))
-                                 .flatMap(buffer -> buffer.append(payload, timestamp));
+                                 .flatMap(buffer -> buffer.append(payload, timestamp))
+                                 .onSuccess(offset -> replicationManager.replicateEvent(streamName, partition, offset, payload, timestamp));
     }
 
     /// Read events from a locally-owned partition.
