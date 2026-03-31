@@ -48,7 +48,7 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
     }
 
     private int deleteBlock(BlockId blockId) {
-        instance.delete(blockId).await();
-        return 1;
+        return instance.delete(blockId).await()
+                       .fold(_ -> 0, _ -> 1);
     }
 }

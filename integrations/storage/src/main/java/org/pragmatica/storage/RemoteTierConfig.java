@@ -5,6 +5,21 @@ import org.pragmatica.cloud.aws.s3.S3Config;
 /// Configuration for S3-backed remote storage tier.
 public record RemoteTierConfig(S3Config s3Config, String prefix, long maxBytes) {
 
+    /// Validate configuration parameters on construction.
+    public RemoteTierConfig {
+        if (s3Config == null) {
+            throw new IllegalArgumentException("s3Config must not be null");
+        }
+
+        if (prefix == null || prefix.isBlank()) {
+            throw new IllegalArgumentException("prefix must not be null or blank");
+        }
+
+        if (maxBytes <= 0) {
+            throw new IllegalArgumentException("maxBytes must be positive, got: " + maxBytes);
+        }
+    }
+
     /// Creates a remote tier configuration with the given S3 config, key prefix, and capacity limit.
     public static RemoteTierConfig remoteTierConfig(S3Config s3Config, String prefix, long maxBytes) {
         return new RemoteTierConfig(s3Config, prefix, maxBytes);

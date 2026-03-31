@@ -110,12 +110,17 @@ class ReplicaRegistryTest {
             registry.updateWatermark(STREAM, PARTITION, NODE_A, 100L);
             registry.updateWatermark(STREAM, PARTITION, NODE_B, 50L);
 
-            assertThat(registry.minConfirmedOffset(STREAM, PARTITION)).isEqualTo(50L);
+            var result = registry.minConfirmedOffset(STREAM, PARTITION);
+
+            assertThat(result.isPresent()).isTrue();
+            result.onPresent(offset -> assertThat(offset).isEqualTo(50L));
         }
 
         @Test
-        void minConfirmedOffset_noReplicas_returnsNegativeOne() {
-            assertThat(registry.minConfirmedOffset(STREAM, PARTITION)).isEqualTo(-1L);
+        void minConfirmedOffset_noReplicas_returnsNone() {
+            var result = registry.minConfirmedOffset(STREAM, PARTITION);
+
+            assertThat(result.isEmpty()).isTrue();
         }
     }
 }

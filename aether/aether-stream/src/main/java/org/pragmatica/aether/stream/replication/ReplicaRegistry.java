@@ -1,10 +1,12 @@
 package org.pragmatica.aether.stream.replication;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.aether.stream.replication.PartitionKey.partitionKey;
 import static org.pragmatica.aether.stream.replication.ReplicaDescriptor.replicaDescriptor;
 
@@ -33,52 +35,43 @@ public final class ReplicaRegistry {
     /// Unregister a node as a replica for the given stream partition.
     public void unregisterReplica(String streamName, int partition, NodeId nodeId) {
         var key = partitionKey(streamName, partition);
-        var nodeMap = replicas.get(key);
 
-        if (nodeMap != null) {
-            nodeMap.remove(nodeId);
-        }
+        option(replicas.get(key))
+            .onPresent(nodeMap -> nodeMap.remove(nodeId));
     }
 
     /// Get all replica descriptors for a given stream partition.
     /// Returns an empty list if no replicas are registered.
     public List<ReplicaDescriptor> replicasFor(String streamName, int partition) {
         var key = partitionKey(streamName, partition);
-        var nodeMap = replicas.get(key);
 
-        if (nodeMap == null) {
-            return List.of();
-        }
-
-        return List.copyOf(nodeMap.values());
+        return option(replicas.get(key))
+            .map(nodeMap -> List.copyOf(nodeMap.values()))
+            .or(List.of());
     }
 
     /// Update the confirmed watermark for a specific replica.
     /// Also transitions state to CAUGHT_UP if the replica reaches the expected offset.
     public void updateWatermark(String streamName, int partition, NodeId nodeId, long confirmedOffset) {
         var key = partitionKey(streamName, partition);
-        var nodeMap = replicas.get(key);
 
-        if (nodeMap == null) {
-            return;
-        }
-
-        nodeMap.computeIfPresent(nodeId, (_, current) ->
-            replicaDescriptor(nodeId, streamName, partition, confirmedOffset, ReplicationState.CAUGHT_UP));
+        option(replicas.get(key))
+            .onPresent(nodeMap -> nodeMap.computeIfPresent(nodeId, (_, _) ->
+                replicaDescriptor(nodeId, streamName, partition, confirmedOffset, ReplicationState.CAUGHT_UP)));
     }
 
     /// Compute the minimum confirmed offset across all replicas for a partition.
-    /// Returns -1 if no replicas are registered.
-    public long minConfirmedOffset(String streamName, int partition) {
+    /// Returns `Option.none()` if no replicas are registered.
+    public Option<Long> minConfirmedOffset(String streamName, int partition) {
         var descriptors = replicasFor(streamName, partition);
 
         if (descriptors.isEmpty()) {
-            return -1L;
+            return Option.none();
         }
 
-        return descriptors.stream()
-                          .mapToLong(ReplicaDescriptor::confirmedOffset)
-                          .min()
-                          .orElse(-1L);
+        return Option.some(descriptors.stream()
+                                      .mapToLong(ReplicaDescriptor::confirmedOffset)
+                                      .min()
+                                      .getAsLong());
     }
 }
