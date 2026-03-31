@@ -1,6 +1,7 @@
 package org.pragmatica.storage;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -126,5 +127,27 @@ final class WriteBehindQueue {
                                       entry.id(), entry.tier().level(), c.message()));
     }
 
-    private record PendingWrite(BlockId id, byte[] content, StorageTier tier) {}
+    private record PendingWrite(BlockId id, byte[] content, StorageTier tier) {
+        PendingWrite {
+            content = content.clone();
+        }
+
+        @Override
+        public byte[] content() {
+            return content.clone();
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof PendingWrite other
+                   && id.equals(other.id)
+                   && Arrays.equals(content, other.content)
+                   && tier.equals(other.tier);
+        }
+
+        @Override
+        public int hashCode() {
+            return 31 * (31 * id.hashCode() + Arrays.hashCode(content)) + tier.hashCode();
+        }
+    }
 }

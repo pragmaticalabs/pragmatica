@@ -16,6 +16,7 @@ import org.pragmatica.lang.Unit;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -51,7 +52,28 @@ public interface ArtifactStore {
     Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact);
 
     /// Resolved artifact with content and metadata.
-    record ResolvedArtifact(byte[] content, ArtifactMetadata metadata) {}
+    record ResolvedArtifact(byte[] content, ArtifactMetadata metadata) {
+        public ResolvedArtifact {
+            content = content.clone();
+        }
+
+        @Override
+        public byte[] content() {
+            return content.clone();
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof ResolvedArtifact other
+                   && Arrays.equals(content, other.content)
+                   && metadata.equals(other.metadata);
+        }
+
+        @Override
+        public int hashCode() {
+            return 31 * Arrays.hashCode(content) + metadata.hashCode();
+        }
+    }
 
     /// Check if an artifact exists.
     Promise<Boolean> exists(Artifact artifact);

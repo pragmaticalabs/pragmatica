@@ -14,6 +14,7 @@ import org.pragmatica.lang.type.TypeToken;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.function.Consumer;
 
 import static org.pragmatica.http.routing.Route.get;
@@ -35,7 +36,34 @@ public sealed interface DeploymentRoutes {
 
     // ========== Request Records ==========
     /// Request body for repository PUT operation.
-    record RepositoryPutRequest(String groupId, String artifactId, String version, byte[] content) {}
+    record RepositoryPutRequest(String groupId, String artifactId, String version, byte[] content) {
+        public RepositoryPutRequest {
+            content = content.clone();
+        }
+
+        @Override
+        public byte[] content() {
+            return content.clone();
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof RepositoryPutRequest other
+                   && groupId.equals(other.groupId)
+                   && artifactId.equals(other.artifactId)
+                   && version.equals(other.version)
+                   && Arrays.equals(content, other.content);
+        }
+
+        @Override
+        public int hashCode() {
+            int result = groupId.hashCode();
+            result = 31 * result + artifactId.hashCode();
+            result = 31 * result + version.hashCode();
+            result = 31 * result + Arrays.hashCode(content);
+            return result;
+        }
+    }
 
     // ========== Response Records ==========
     /// Generic proxy response wrapper.
