@@ -52,14 +52,28 @@ public interface StorageInstance {
         }
     }
 
-    /// Create a storage instance with an in-memory metadata store.
+    /// Graceful shutdown — drains pending writes (write-behind) and releases resources.
+    void shutdown();
+
+    /// Create a storage instance with write-through policy and in-memory metadata store.
     static StorageInstance storageInstance(String name, List<StorageTier> tiers) {
-        return storageInstance(name, tiers, InMemoryMetadataStore.inMemoryMetadataStore(name));
+        return storageInstance(name, tiers, WritePolicy.WRITE_THROUGH);
     }
 
-    /// Create a storage instance with a custom metadata store.
+    /// Create a storage instance with specified write policy and in-memory metadata store.
+    static StorageInstance storageInstance(String name, List<StorageTier> tiers, WritePolicy writePolicy) {
+        return storageInstance(name, tiers, InMemoryMetadataStore.inMemoryMetadataStore(name), writePolicy);
+    }
+
+    /// Create a storage instance with a custom metadata store and write-through policy.
     static StorageInstance storageInstance(String name, List<StorageTier> tiers, MetadataStore metadataStore) {
-        return new DefaultStorageInstance(name, tiers, metadataStore);
+        return storageInstance(name, tiers, metadataStore, WritePolicy.WRITE_THROUGH);
+    }
+
+    /// Create a storage instance with a custom metadata store and write policy.
+    static StorageInstance storageInstance(String name, List<StorageTier> tiers, MetadataStore metadataStore,
+                                          WritePolicy writePolicy) {
+        return new DefaultStorageInstance(name, tiers, metadataStore, writePolicy);
     }
 }
 
@@ -69,13 +83,19 @@ final class DefaultStorageInstance implements StorageInstance {
     private final String name;
     private final List<StorageTier> tiers;
     private final MetadataStore metadataStore;
+    private final WritePolicy writePolicy;
+    private final Option<WriteBehindQueue> writeBehindQueue;
     private final SingleFlightCache readCache = SingleFlightCache.singleFlightCache();
 
-    DefaultStorageInstance(String name, List<StorageTier> tiers, MetadataStore metadataStore) {
+    DefaultStorageInstance(String name, List<StorageTier> tiers, MetadataStore metadataStore, WritePolicy writePolicy) {
         this.name = name;
         this.tiers = List.copyOf(tiers);
         this.metadataStore = metadataStore;
-        log.info("Storage instance '{}' created with {} tier(s)", name, tiers.size());
+        this.writePolicy = writePolicy;
+        this.writeBehindQueue = writePolicy == WritePolicy.WRITE_BEHIND
+                                ? some(WriteBehindQueue.writeBehindQueue())
+                                : none();
+        log.info("Storage instance '{}' created with {} tier(s), policy={}", name, tiers.size(), writePolicy);
     }
 
     @Override
@@ -129,6 +149,12 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     @Override
+    public void shutdown() {
+        writeBehindQueue.onPresent(WriteBehindQueue::shutdown);
+        log.info("Storage instance '{}' shut down", name);
+    }
+
+    @Override
     public String name() {
         return name;
     }
@@ -159,11 +185,46 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     private Promise<BlockId> writeThroughTiers(BlockId id, byte[] content) {
+        return writePolicy == WritePolicy.WRITE_BEHIND
+               ? writeBehindToTiers(id, content)
+               : writeToAllTiers(id, content);
+    }
+
+    private Promise<BlockId> writeToAllTiers(BlockId id, byte[] content) {
         var durableTier = tiers.getLast();
 
         return durableTier.put(id, content)
                           .flatMap(_ -> promoteToCacheTiers(id, content, durableTier))
                           .map(_ -> trackNewBlock(id, durableTier.level()));
+    }
+
+    private Promise<BlockId> writeBehindToTiers(BlockId id, byte[] content) {
+        var fastTier = tiers.getFirst();
+
+        return fastTier.put(id, content)
+                       .flatMap(_ -> enqueueRemainingTiers(id, content, fastTier))
+                       .map(_ -> trackNewBlock(id, fastTier.level()));
+    }
+
+    private Promise<Unit> enqueueRemainingTiers(BlockId id, byte[] content, StorageTier fastTier) {
+        var remaining = tiers.stream()
+                             .filter(t -> t != fastTier)
+                             .toList();
+
+        return writeBehindQueue.fold(
+            () -> Promise.success(unit()),
+            queue -> enqueueNextTier(queue, id, content, remaining, 0)
+        );
+    }
+
+    private Promise<Unit> enqueueNextTier(WriteBehindQueue queue, BlockId id, byte[] content,
+                                          List<StorageTier> remaining, int index) {
+        if (index >= remaining.size()) {
+            return Promise.success(unit());
+        }
+
+        return queue.enqueue(id, content, remaining.get(index))
+                    .flatMap(_ -> enqueueNextTier(queue, id, content, remaining, index + 1));
     }
 
     private Promise<Unit> promoteToCacheTiers(BlockId id, byte[] content, StorageTier durableTier) {
