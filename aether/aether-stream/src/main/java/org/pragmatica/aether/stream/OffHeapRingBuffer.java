@@ -1,6 +1,7 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.TierAwareRetention;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 
@@ -65,6 +66,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private final int partition;
     private final EvictionListener listener;
     private final AtomicBoolean closed = new AtomicBoolean(false);
+    private volatile long lastSealedOffset = -1;
 
     private OffHeapRingBuffer(Arena arena, MemorySegment segment, long capacity, long dataRegionSize,
                               String streamName, int partition, EvictionListener listener) {
@@ -181,11 +183,26 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     /// Apply retention policy, evicting events that exceed any limit.
+    /// When tier-aware retention is configured and events have been sealed, applies
+    /// more aggressive post-seal limits for sealed events before normal retention.
     @Contract
     public void applyRetention(RetentionPolicy policy) {
-        evictByCount(policy.maxCount());
-        evictBySize(policy.maxBytes());
-        evictByAge(policy.maxAgeMs());
+        policy.tierAwareRetention()
+              .filter(_ -> lastSealedOffset >= 0)
+              .onPresent(this::applyTierAwareRetention);
+        applyNormalRetention(policy);
+    }
+
+    /// Update the last sealed offset after a segment has been successfully sealed.
+    /// Called by SegmentSealer to inform the buffer about persisted data boundaries.
+    @Contract
+    public void updateLastSealedOffset(long sealedOffset) {
+        lastSealedOffset = sealedOffset;
+    }
+
+    /// Current last sealed offset, or -1 if no segments have been sealed.
+    public long lastSealedOffset() {
+        return lastSealedOffset;
     }
 
     /// Evict events older than the retention duration.
@@ -205,6 +222,57 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     // --- Private helpers ---
+    @SuppressWarnings("JBCT-ZONE-02")
+    private void applyNormalRetention(RetentionPolicy policy) {
+        evictByCount(policy.maxCount());
+        evictBySize(policy.maxBytes());
+        evictByAge(policy.maxAgeMs());
+    }
+
+    @SuppressWarnings("JBCT-ZONE-02")
+    private void applyTierAwareRetention(TierAwareRetention tierAware) {
+        var sealedCount = countSealedEvents();
+        var sealedExcess = sealedCount - tierAware.postSealMaxCount();
+
+        if (sealedExcess > 0) {
+            notifyAndEvict(sealedExcess);
+        }
+
+        evictSealedByAge(tierAware.postSealBufferMs());
+    }
+
+    private long countSealedEvents() {
+        var tail = tailOffset();
+        var sealed = lastSealedOffset;
+
+        if (sealed < tail) {
+            return 0;
+        }
+
+        return sealed - tail + 1;
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private void evictSealedByAge(long postSealBufferMs) {
+        var cutoff = System.currentTimeMillis() - postSealBufferMs;
+        var tail = tailOffset();
+        var sealed = lastSealedOffset;
+        var count = 0L;
+
+        while (tail + count <= sealed) {
+            var slotIndex = Math.floorMod(tail + count, capacity);
+            var timestamp = readTimestamp(slotIndex);
+
+            if (timestamp >= cutoff) {
+                break;
+            }
+
+            count++;
+        }
+
+        notifyAndEvict(count);
+    }
+
     private long dataWritePos() {
         return segment.get(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS);
     }
@@ -346,10 +414,23 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         if (listener != EvictionListener.NOOP) {
             var events = collectEvictedEvents(count);
             listener.onEviction(streamName, partition, events);
+            updateSealedOffsetFromEvents(events);
         }
 
         for (long i = 0; i < count; i++) {
             evictOldest();
+        }
+    }
+
+    private void updateSealedOffsetFromEvents(List<RawEvent> events) {
+        if (events.isEmpty()) {
+            return;
+        }
+
+        var sealedTo = events.getLast().offset();
+
+        if (sealedTo > lastSealedOffset) {
+            lastSealedOffset = sealedTo;
         }
     }
 
