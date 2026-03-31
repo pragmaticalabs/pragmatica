@@ -21,8 +21,8 @@ public interface FailoverRecovery {
             return new RecoveryResult(partitionsRecovered, eventsReplayed, recoveryMs);
         }
 
-        /// Empty result for when no recovery was needed.
-        public static RecoveryResult empty(long recoveryMs) {
+        /// Result for when no recovery was needed.
+        public static RecoveryResult recoveryResult(long recoveryMs) {
             return new RecoveryResult(0, 0L, recoveryMs);
         }
     }

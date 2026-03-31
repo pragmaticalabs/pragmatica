@@ -61,7 +61,7 @@ class FailoverRecoveryTest {
     private RecoveryResult awaitSuccess(Promise<RecoveryResult> promise) {
         return promise.await()
                       .onFailure(_ -> Assertions.fail("Expected success"))
-                      .or(RecoveryResult.empty(0));
+                      .or(RecoveryResult.recoveryResult(0));
     }
 
     @Nested
@@ -136,7 +136,7 @@ class FailoverRecoveryTest {
 
         @Test
         void recoveryResult_empty_hasZeroStats() {
-            var empty = RecoveryResult.empty(50L);
+            var empty = RecoveryResult.recoveryResult(50L);
 
             assertThat(empty.partitionsRecovered()).isZero();
             assertThat(empty.eventsReplayed()).isZero();

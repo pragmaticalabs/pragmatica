@@ -2,8 +2,6 @@ package org.pragmatica.aether.stream.replication;
 
 import java.util.Comparator;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Option;
@@ -11,7 +9,6 @@ import org.pragmatica.lang.Promise;
 
 import static org.pragmatica.aether.stream.replication.FailoverRecovery.RecoveryResult.recoveryResult;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRequest.catchupRequest;
-import static org.pragmatica.lang.Option.option;
 
 /// Default implementation of governor failover recovery.
 /// Iterates partitions sequentially, requesting catch-up from the most advanced replica.
@@ -31,23 +28,21 @@ final class DefaultFailoverRecovery implements FailoverRecovery {
     @Override
     public Promise<RecoveryResult> recover(String streamName, int partitionCount) {
         var startMs = System.currentTimeMillis();
-        var partitionsRecovered = new AtomicInteger(0);
-        var eventsReplayed = new AtomicLong(0);
         var partitionIndices = IntStream.range(0, partitionCount).boxed().toList();
 
-        return recoverPartitions(streamName, partitionIndices, 0, partitionsRecovered, eventsReplayed)
-            .map(_ -> buildResult(startMs, partitionsRecovered, eventsReplayed));
+        return recoverPartitions(streamName, partitionIndices, 0, RecoveryProgress.EMPTY)
+            .map(progress -> progress.toResult(startMs));
     }
 
-    private Promise<RecoveryResult> recoverPartitions(String streamName, List<Integer> partitions, int index,
-                                                       AtomicInteger partitionsRecovered, AtomicLong eventsReplayed) {
+    private Promise<RecoveryProgress> recoverPartitions(String streamName, List<Integer> partitions,
+                                                         int index, RecoveryProgress progress) {
         if (index >= partitions.size()) {
-            return Promise.success(recoveryResult(partitionsRecovered.get(), eventsReplayed.get(), 0));
+            return Promise.success(progress);
         }
 
         return recoverSinglePartition(streamName, partitions.get(index))
-            .map(events -> accumulateStats(partitionsRecovered, eventsReplayed, events))
-            .flatMap(_ -> recoverPartitions(streamName, partitions, index + 1, partitionsRecovered, eventsReplayed));
+            .map(progress::withEvents)
+            .flatMap(updated -> recoverPartitions(streamName, partitions, index + 1, updated));
     }
 
     private Promise<Long> recoverSinglePartition(String streamName, int partition) {
@@ -72,30 +67,29 @@ final class DefaultFailoverRecovery implements FailoverRecovery {
         var timestamps = response.timestamps();
         var count = Math.min(payloads.size(), timestamps.size());
 
-        for (int i = 0; i < count; i++) {
-            partitionRecovery.appendRecoveredEvent(streamName, partition, payloads.get(i), timestamps.get(i));
-        }
+        IntStream.range(0, count)
+                 .forEach(i -> partitionRecovery.appendRecoveredEvent(streamName, partition, payloads.get(i), timestamps.get(i)));
 
         return count;
     }
 
     private static Option<ReplicaDescriptor> findBestReplica(List<ReplicaDescriptor> replicas) {
-        return option(replicas.stream()
-                              .max(Comparator.comparingLong(ReplicaDescriptor::confirmedOffset))
-                              .orElse(null));
+        return Option.from(replicas.stream()
+                                   .max(Comparator.comparingLong(ReplicaDescriptor::confirmedOffset)));
     }
 
-    private static long accumulateStats(AtomicInteger partitionsRecovered, AtomicLong eventsReplayed, long events) {
-        if (events > 0) {
-            partitionsRecovered.incrementAndGet();
+    /// Immutable accumulator for recovery statistics, threaded through the flatMap chain.
+    record RecoveryProgress(int partitionsRecovered, long eventsReplayed) {
+        static final RecoveryProgress EMPTY = new RecoveryProgress(0, 0L);
+
+        RecoveryProgress withEvents(long events) {
+            return events > 0
+                   ? new RecoveryProgress(partitionsRecovered + 1, eventsReplayed + events)
+                   : this;
         }
 
-        eventsReplayed.addAndGet(events);
-        return events;
-    }
-
-    private static RecoveryResult buildResult(long startMs, AtomicInteger partitionsRecovered,
-                                               AtomicLong eventsReplayed) {
-        return recoveryResult(partitionsRecovered.get(), eventsReplayed.get(), System.currentTimeMillis() - startMs);
+        RecoveryResult toResult(long startMs) {
+            return recoveryResult(partitionsRecovered, eventsReplayed, System.currentTimeMillis() - startMs);
+        }
     }
 }

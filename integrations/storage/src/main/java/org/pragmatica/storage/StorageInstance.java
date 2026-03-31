@@ -95,6 +95,7 @@ final class DefaultStorageInstance implements StorageInstance {
         this.writeBehindQueue = writePolicy == WritePolicy.WRITE_BEHIND
                                 ? some(WriteBehindQueue.writeBehindQueue())
                                 : none();
+        writeBehindQueue.onPresent(WriteBehindQueue::activate);
         log.info("Storage instance '{}' created with {} tier(s), policy={}", name, tiers.size(), writePolicy);
     }
 
@@ -150,7 +151,7 @@ final class DefaultStorageInstance implements StorageInstance {
 
     @Override
     public void shutdown() {
-        writeBehindQueue.onPresent(WriteBehindQueue::shutdown);
+        writeBehindQueue.onPresent(WriteBehindQueue::deactivate);
         log.info("Storage instance '{}' shut down", name);
     }
 
