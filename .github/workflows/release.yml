@@ -62,7 +62,6 @@ jobs:
             aether/forge/forge-core/target/aether-forge.jar
             aether/dist/output/*.tar.gz
             aether/dist/output/*.zip
-            aether/dist/output/SHA256SUMS
             SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
