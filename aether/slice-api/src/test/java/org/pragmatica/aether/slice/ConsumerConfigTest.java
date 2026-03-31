@@ -32,6 +32,11 @@ class ConsumerConfigTest {
         void errorStrategy_defaultsToRetry() {
             assertThat(consumerConfig("analytics").errorStrategy()).isEqualTo(ErrorStrategy.RETRY);
         }
+
+        @Test
+        void readPreference_defaultsToLeader() {
+            assertThat(consumerConfig("analytics").readPreference()).isEqualTo(ReadPreference.LEADER);
+        }
     }
 
     @Nested
@@ -52,7 +57,7 @@ class ConsumerConfigTest {
     class BackwardCompatibility {
 
         @Test
-        void fourFieldFactory_usesDefaults_forCheckpointRetryDlq() {
+        void fourFieldFactory_usesDefaults_forCheckpointRetryDlqReadPreference() {
             var config = consumerConfig("compat", 50, ProcessingMode.PARALLEL, ErrorStrategy.SKIP);
 
             assertThat(config.groupId()).isEqualTo("compat");
@@ -62,6 +67,35 @@ class ConsumerConfigTest {
             assertThat(config.checkpointIntervalMs()).isEqualTo(1000L);
             assertThat(config.maxRetries()).isEqualTo(3);
             assertThat(config.deadLetterStream()).isEmpty();
+            assertThat(config.readPreference()).isEqualTo(ReadPreference.LEADER);
+        }
+
+        @Test
+        void sevenFieldFactory_defaultsToLeader_forReadPreference() {
+            var config = consumerConfig("compat", 50, ProcessingMode.PARALLEL, ErrorStrategy.SKIP,
+                                        2000L, 5, "dead-letters");
+
+            assertThat(config.readPreference()).isEqualTo(ReadPreference.LEADER);
+        }
+    }
+
+    @Nested
+    class ReadPreferenceTests {
+
+        @Test
+        void readPreference_nearest_isPreserved() {
+            var config = consumerConfig("group", 10, ProcessingMode.ORDERED, ErrorStrategy.RETRY,
+                                        1000L, 3, "", ReadPreference.NEAREST);
+
+            assertThat(config.readPreference()).isEqualTo(ReadPreference.NEAREST);
+        }
+
+        @Test
+        void readPreference_followerOnly_isPreserved() {
+            var config = consumerConfig("group", 10, ProcessingMode.ORDERED, ErrorStrategy.RETRY,
+                                        1000L, 3, "", ReadPreference.FOLLOWER_ONLY);
+
+            assertThat(config.readPreference()).isEqualTo(ReadPreference.FOLLOWER_ONLY);
         }
     }
 
@@ -76,6 +110,12 @@ class ConsumerConfigTest {
         @Test
         void errorStrategy_hasThreeValues() {
             assertThat(ErrorStrategy.values()).containsExactly(ErrorStrategy.RETRY, ErrorStrategy.SKIP, ErrorStrategy.STALL);
+        }
+
+        @Test
+        void readPreference_hasThreeValues() {
+            assertThat(ReadPreference.values()).containsExactly(
+                ReadPreference.LEADER, ReadPreference.NEAREST, ReadPreference.FOLLOWER_ONLY);
         }
     }
 }

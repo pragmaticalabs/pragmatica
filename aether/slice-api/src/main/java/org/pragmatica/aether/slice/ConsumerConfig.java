@@ -1,15 +1,17 @@
 package org.pragmatica.aether.slice;
+
 /// Configuration for a stream consumer group.
 ///
 /// Controls batch size, processing mode (ordered vs parallel), error handling strategy,
-/// checkpoint interval, max retries, and dead-letter stream routing.
+/// checkpoint interval, max retries, dead-letter stream routing, and read preference.
 public record ConsumerConfig(String groupId,
                              int maxBatchSize,
                              ProcessingMode processingMode,
                              ErrorStrategy errorStrategy,
                              long checkpointIntervalMs,
                              int maxRetries,
-                             String deadLetterStream) {
+                             String deadLetterStream,
+                             ReadPreference readPreference) {
     /// Controls whether events within a partition are processed sequentially or in parallel.
     public enum ProcessingMode {
         ORDERED,
@@ -28,7 +30,7 @@ public record ConsumerConfig(String groupId,
     private static final int DEFAULT_MAX_RETRIES = 3;
     private static final String DEFAULT_DEAD_LETTER_STREAM = "";
 
-    /// Create a consumer configuration with defaults (batch size 1, ordered, retry on failure).
+    /// Create a consumer configuration with defaults (batch size 1, ordered, retry on failure, leader read preference).
     public static ConsumerConfig consumerConfig(String groupId) {
         return new ConsumerConfig(groupId,
                                   DEFAULT_BATCH_SIZE,
@@ -36,10 +38,11 @@ public record ConsumerConfig(String groupId,
                                   ErrorStrategy.RETRY,
                                   DEFAULT_CHECKPOINT_INTERVAL_MS,
                                   DEFAULT_MAX_RETRIES,
-                                  DEFAULT_DEAD_LETTER_STREAM);
+                                  DEFAULT_DEAD_LETTER_STREAM,
+                                  ReadPreference.LEADER);
     }
 
-    /// Create a consumer configuration with core values (uses defaults for checkpoint/retry/DLQ).
+    /// Create a consumer configuration with core values (uses defaults for checkpoint/retry/DLQ/read preference).
     public static ConsumerConfig consumerConfig(String groupId,
                                                 int maxBatchSize,
                                                 ProcessingMode processingMode,
@@ -50,10 +53,11 @@ public record ConsumerConfig(String groupId,
                                   errorStrategy,
                                   DEFAULT_CHECKPOINT_INTERVAL_MS,
                                   DEFAULT_MAX_RETRIES,
-                                  DEFAULT_DEAD_LETTER_STREAM);
+                                  DEFAULT_DEAD_LETTER_STREAM,
+                                  ReadPreference.LEADER);
     }
 
-    /// Create a consumer configuration with all values.
+    /// Create a consumer configuration with all values except read preference (defaults to LEADER).
     public static ConsumerConfig consumerConfig(String groupId,
                                                 int maxBatchSize,
                                                 ProcessingMode processingMode,
@@ -67,6 +71,26 @@ public record ConsumerConfig(String groupId,
                                   errorStrategy,
                                   checkpointIntervalMs,
                                   maxRetries,
-                                  deadLetterStream);
+                                  deadLetterStream,
+                                  ReadPreference.LEADER);
+    }
+
+    /// Create a consumer configuration with all values including read preference.
+    public static ConsumerConfig consumerConfig(String groupId,
+                                                int maxBatchSize,
+                                                ProcessingMode processingMode,
+                                                ErrorStrategy errorStrategy,
+                                                long checkpointIntervalMs,
+                                                int maxRetries,
+                                                String deadLetterStream,
+                                                ReadPreference readPreference) {
+        return new ConsumerConfig(groupId,
+                                  maxBatchSize,
+                                  processingMode,
+                                  errorStrategy,
+                                  checkpointIntervalMs,
+                                  maxRetries,
+                                  deadLetterStream,
+                                  readPreference);
     }
 }

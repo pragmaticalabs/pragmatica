@@ -4,6 +4,7 @@ import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.slice.ConsumerConfig.ProcessingMode;
+import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.config.toml.TomlDocument;
@@ -138,13 +139,17 @@ public interface StreamConfigParser {
                             .or(3);
         var deadLetterStream = doc.getString(section, "dead-letter")
                                   .or("");
+        var readPreference = doc.getString(section, "read-preference")
+                                .map(StreamConfigParser::parseReadPreference)
+                                .or(ReadPreference.LEADER);
         return ConsumerConfig.consumerConfig(groupName,
                                              batchSize,
                                              processing,
                                              onFailure,
                                              checkpointIntervalMs,
                                              maxRetries,
-                                             deadLetterStream);
+                                             deadLetterStream,
+                                             readPreference);
     }
 
     private static ProcessingMode parseProcessingMode(String value) {
@@ -158,6 +163,14 @@ public interface StreamConfigParser {
         return switch (value.toLowerCase()) {
             case "strong" -> ConsistencyMode.STRONG;
             default -> ConsistencyMode.EVENTUAL;
+        };
+    }
+
+    private static ReadPreference parseReadPreference(String value) {
+        return switch (value.toLowerCase()) {
+            case "nearest", "any" -> ReadPreference.NEAREST;
+            case "follower-only", "follower_only", "follower" -> ReadPreference.FOLLOWER_ONLY;
+            default -> ReadPreference.LEADER;
         };
     }
 
