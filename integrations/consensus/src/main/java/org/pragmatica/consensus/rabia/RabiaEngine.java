@@ -367,6 +367,11 @@ public class RabiaEngine<C extends Command> {
             return ConsensusError.nodeInactive(self)
                                  .result();
         }
+        var pending = pendingBatches.size();
+        if (pending >= config.maxPendingBatches()) {
+            return ConsensusError.backpressureExceeded(pending, config.maxPendingBatches())
+                                 .result();
+        }
         return Result.success(commands);
     }
 

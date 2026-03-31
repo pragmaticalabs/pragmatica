@@ -8,12 +8,16 @@ import org.pragmatica.aether.metrics.MetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
@@ -112,6 +116,7 @@ public interface ControlLoop {
                                    MetricsCollector metricsCollector,
                                    Option<InvocationMetricsCollector> invocationMetricsCollector,
                                    ClusterNode<KVCommand<AetherKey>> cluster,
+                                   KVStore<AetherKey, AetherValue> kvStore,
                                    TimeSpan interval,
                                    ControllerConfig config,
                                    Consumer<ScalingEvent> eventPublisher) {
@@ -120,6 +125,7 @@ public interface ControlLoop {
                            MetricsCollector metricsCollector,
                            Option<InvocationMetricsCollector> invocationMetricsCollector,
                            ClusterNode<KVCommand<AetherKey>> cluster,
+                           KVStore<AetherKey, AetherValue> kvStore,
                            TimeSpan interval,
                            AtomicReference<ControllerConfig> configRef,
                            CompositeLoadFactor compositeLoadFactor,
@@ -134,6 +140,7 @@ public interface ControlLoop {
                            ConcurrentHashMap<String, CommunityMetricsSnapshot> communitySnapshotStore,
                            ConcurrentHashMap<String, Long> communityScalingCooldowns) implements ControlLoop {
             private static final Logger log = LoggerFactory.getLogger(ControlLoop.class);
+            private static final String COOLDOWN_KEY_PREFIX = "scaling-cooldown/";
 
             @Override
             public void onLeaderChange(LeaderChange leaderChange) {
@@ -321,7 +328,9 @@ public interface ControlLoop {
                                new ClusterController.Blueprint(request.artifact(),
                                                                newInstances,
                                                                blueprint.minInstances()));
-                communityScalingCooldowns.put(artifactKey, System.currentTimeMillis());
+                var cooldownTimestamp = System.currentTimeMillis();
+                communityScalingCooldowns.put(artifactKey, cooldownTimestamp);
+                persistCooldown(artifactKey, cooldownTimestamp);
                 var key = SliceTargetKey.sliceTargetKey(request.artifact()
                                                                .base());
                 var value = SliceTargetValue.sliceTargetValue(request.artifact()
@@ -646,7 +655,49 @@ public interface ControlLoop {
                 activationTime.set(System.currentTimeMillis());
                 sliceStates.clear();
                 sliceActivationTimes.clear();
+                restoreCooldownsFromKVStore();
                 log.debug("Protection state reset, warm-up period started");
+            }
+
+            private void persistCooldown(String artifactKey, long timestamp) {
+                var configKey = ConfigKey.forKey(COOLDOWN_KEY_PREFIX + artifactKey);
+                var configValue = ConfigValue.configValue(COOLDOWN_KEY_PREFIX + artifactKey,
+                                                          Long.toString(timestamp));
+                cluster.apply(List.of(new KVCommand.Put<>(configKey, configValue)))
+                       .onFailure(cause -> log.warn("Failed to persist cooldown for {}: {}",
+                                                     artifactKey,
+                                                     cause.message()));
+            }
+
+            private void restoreCooldownsFromKVStore() {
+                kvStore.forEach(ConfigKey.class, ConfigValue.class, this::restoreCooldownEntry);
+            }
+
+            @SuppressWarnings("JBCT-RET-01") // BiConsumer callback
+            private void restoreCooldownEntry(ConfigKey key, ConfigValue value) {
+                if (!key.key().startsWith(COOLDOWN_KEY_PREFIX)) {
+                    return;
+                }
+                var artifactKey = key.key().substring(COOLDOWN_KEY_PREFIX.length());
+                var timestamp = parseCooldownTimestamp(value.value());
+                if (timestamp <= 0) {
+                    return;
+                }
+                var now = System.currentTimeMillis();
+                if ((now - timestamp) < configRef.get().sliceCooldownMs()) {
+                    communityScalingCooldowns.put(artifactKey, timestamp);
+                    log.debug("Restored cooldown for {} ({}ms remaining)",
+                              artifactKey,
+                              configRef.get().sliceCooldownMs() - (now - timestamp));
+                }
+            }
+
+            private static long parseCooldownTimestamp(String value) {
+                try {
+                    return Long.parseLong(value);
+                } catch (NumberFormatException _) {
+                    return -1;
+                }
             }
 
             private void clearProtectionState() {
@@ -658,7 +709,9 @@ public interface ControlLoop {
             private void handleSliceStateChange(SliceNodeKey sliceNodeKey, SliceState newState) {
                 var previousState = sliceStates.put(sliceNodeKey, newState);
                 if (newState == SliceState.ACTIVE && previousState != SliceState.ACTIVE) {
-                    sliceActivationTimes.put(sliceNodeKey.artifact(), System.currentTimeMillis());
+                    var cooldownTimestamp = System.currentTimeMillis();
+                    sliceActivationTimes.put(sliceNodeKey.artifact(), cooldownTimestamp);
+                    persistCooldown(sliceNodeKey.artifact().asString(), cooldownTimestamp);
                     log.debug("Slice {} reached ACTIVE, cooldown started", sliceNodeKey.artifact());
                 }
                 if (newState.isInProgress()) {
@@ -671,6 +724,7 @@ public interface ControlLoop {
                                metricsCollector,
                                invocationMetricsCollector,
                                cluster,
+                               kvStore,
                                interval,
                                new AtomicReference<>(config),
                                CompositeLoadFactor.compositeLoadFactor(config.scalingConfig()),

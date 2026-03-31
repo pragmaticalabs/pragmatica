@@ -28,17 +28,21 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param cleanupInterval      Interval for cleaning up old phase data
 /// @param syncRetryInterval    Interval for retrying synchronization attempts
 /// @param removeOlderThanPhases Number of phases to retain before cleanup
+/// @param maxPendingBatches    Maximum number of pending batches before rejecting proposals
 public record ProtocolConfig(TimeSpan cleanupInterval,
                              TimeSpan syncRetryInterval,
-                             long removeOlderThanPhases) {
+                             long removeOlderThanPhases,
+                             int maxPendingBatches) {
     /// Validates and creates a ProtocolConfig.
     public static Result<ProtocolConfig> protocolConfig(TimeSpan cleanupInterval,
                                                         TimeSpan syncRetryInterval,
-                                                        long removeOlderThanPhases) {
+                                                        long removeOlderThanPhases,
+                                                        int maxPendingBatches) {
         return Result.all(validatePositive(cleanupInterval, "cleanupInterval"),
                           validatePositive(syncRetryInterval, "syncRetryInterval"),
-                          validatePositive(removeOlderThanPhases, "removeOlderThanPhases"))
-                     .map((cleanup, sync, phases) -> new ProtocolConfig(cleanup, sync, phases));
+                          validatePositive(removeOlderThanPhases, "removeOlderThanPhases"),
+                          validatePositive(maxPendingBatches, "maxPendingBatches"))
+                     .map((cleanup, sync, phases, maxPending) -> new ProtocolConfig(cleanup, sync, phases, maxPending.intValue()));
     }
 
     private static Result<TimeSpan> validatePositive(TimeSpan value, String name) {
@@ -63,23 +67,26 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
     /// Default number of phases to retain.
     public static final long DEFAULT_REMOVE_OLDER_THAN_PHASES = 100;
 
+    /// Default maximum pending batches before backpressure kicks in.
+    public static final int DEFAULT_MAX_PENDING_BATCHES = 1000;
+
     /// Creates a default (production) configuration.
     /// Supports `SYNC_RETRY_INTERVAL_MS` environment variable override for E2E testing.
     public static ProtocolConfig defaultConfig() {
         var syncRetryMs = System.getenv("SYNC_RETRY_INTERVAL_MS");
         var syncRetry = syncRetryMs != null ? timeSpan(Long.parseLong(syncRetryMs)).millis() : DEFAULT_SYNC_RETRY_INTERVAL;
-        return new ProtocolConfig(DEFAULT_CLEANUP_INTERVAL, syncRetry, DEFAULT_REMOVE_OLDER_THAN_PHASES);
+        return new ProtocolConfig(DEFAULT_CLEANUP_INTERVAL, syncRetry, DEFAULT_REMOVE_OLDER_THAN_PHASES, DEFAULT_MAX_PENDING_BATCHES);
     }
 
     /// Creates a configuration from explicit values, with defaults for unspecified parameters.
     /// Intended for wiring from external configuration (e.g., TOML).
     public static ProtocolConfig consensusConfig(TimeSpan cleanupInterval, TimeSpan syncRetryInterval) {
-        return new ProtocolConfig(cleanupInterval, syncRetryInterval, DEFAULT_REMOVE_OLDER_THAN_PHASES);
+        return new ProtocolConfig(cleanupInterval, syncRetryInterval, DEFAULT_REMOVE_OLDER_THAN_PHASES, DEFAULT_MAX_PENDING_BATCHES);
     }
 
     /// Creates a test configuration with faster intervals.
     public static ProtocolConfig testConfig() {
-        return new ProtocolConfig(timeSpan(60).seconds(), timeSpan(100).millis(), 100);
+        return new ProtocolConfig(timeSpan(60).seconds(), timeSpan(100).millis(), 100, DEFAULT_MAX_PENDING_BATCHES);
     }
 
     /// Configuration validation errors.
