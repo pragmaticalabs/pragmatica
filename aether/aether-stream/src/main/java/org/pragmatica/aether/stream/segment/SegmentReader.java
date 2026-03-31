@@ -10,6 +10,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 
 /// Reads events from sealed segments stored in AHSE.
 /// Used as fallback when the ring buffer no longer holds the requested offset.
@@ -48,14 +49,14 @@ public final class SegmentReader {
     private Promise<List<RawEvent>> readFromSegmentRefs(String streamName, int partition,
                                                         List<SegmentIndex.SegmentRef> refs,
                                                         long fromOffset, int maxEvents) {
-        return readNextSegment(streamName, partition, refs, 0, fromOffset, maxEvents, new ArrayList<>());
+        return readNextSegment(streamName, partition, refs, 0, fromOffset, maxEvents, List.of());
     }
 
     private Promise<List<RawEvent>> readNextSegment(String streamName, int partition,
                                                     List<SegmentIndex.SegmentRef> refs, int refIndex,
                                                     long fromOffset, int remaining, List<RawEvent> accumulated) {
         if (refIndex >= refs.size() || remaining <= 0) {
-            return Promise.success(List.copyOf(accumulated));
+            return Promise.success(accumulated);
         }
 
         var ref = refs.get(refIndex);
@@ -66,18 +67,19 @@ public final class SegmentReader {
                       .flatMap(storage::get)
                       .flatMap(opt -> opt.async(SegmentError.General.SEGMENT_DATA_NOT_FOUND))
                       .map(bytes -> deserializeAndFilter(bytes, fromOffset, remaining))
-                      .flatMap(events -> continueReading(streamName, partition, refs, refIndex,
-                                                         fromOffset, remaining, accumulated, events));
+                      .flatMap(events -> continueWithImmutableAccumulation(streamName, partition, refs,
+                                                                           refIndex, fromOffset, remaining,
+                                                                           accumulated, events));
     }
 
-    private Promise<List<RawEvent>> continueReading(String streamName, int partition,
-                                                    List<SegmentIndex.SegmentRef> refs, int refIndex,
-                                                    long fromOffset, int remaining,
-                                                    List<RawEvent> accumulated, List<RawEvent> events) {
-        accumulated.addAll(events);
+    private Promise<List<RawEvent>> continueWithImmutableAccumulation(String streamName, int partition,
+                                                                      List<SegmentIndex.SegmentRef> refs, int refIndex,
+                                                                      long fromOffset, int remaining,
+                                                                      List<RawEvent> accumulated, List<RawEvent> events) {
+        var combined = List.copyOf(Stream.concat(accumulated.stream(), events.stream()).toList());
         var newRemaining = remaining - events.size();
 
-        return readNextSegment(streamName, partition, refs, refIndex + 1, fromOffset, newRemaining, accumulated);
+        return readNextSegment(streamName, partition, refs, refIndex + 1, fromOffset, newRemaining, combined);
     }
 
     private static String buildRefName(String streamName, int partition, SegmentIndex.SegmentRef ref) {

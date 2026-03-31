@@ -177,6 +177,13 @@ final class KVStoreMetadataStore implements MetadataStore {
 
     // --- Domain-to-KV conversion ---
 
+    @Override
+    public List<BlockLifecycle> listBlocksByTier(TierLevel tier) {
+        return listAllLifecycles().stream()
+                                  .filter(lc -> lc.presentIn().contains(tier))
+                                  .toList();
+    }
+
     private static StorageBlockValue toStorageValue(BlockLifecycle lifecycle) {
         var tierNames = lifecycle.presentIn().stream()
                                 .map(TierLevel::name)
@@ -187,7 +194,8 @@ final class KVStoreMetadataStore implements MetadataStore {
             tierNames,
             lifecycle.refCount(),
             lifecycle.lastAccessedAt(),
-            lifecycle.createdAt()
+            lifecycle.createdAt(),
+            lifecycle.accessCount()
         );
     }
 
@@ -198,7 +206,8 @@ final class KVStoreMetadataStore implements MetadataStore {
                          .map(TierLevel::valueOf)
                          .collect(Collectors.toCollection(() -> EnumSet.noneOf(TierLevel.class)));
 
-        return BlockLifecycle.blockLifecycle(blockId, tiers, value.refCount(), value.lastAccessedAt(), value.createdAt());
+        return BlockLifecycle.blockLifecycle(blockId, tiers, value.refCount(), value.lastAccessedAt(),
+                                             value.createdAt(), value.accessCount());
     }
 
     private static Option<StorageBlockValue> toBlockValue(AetherValue value) {

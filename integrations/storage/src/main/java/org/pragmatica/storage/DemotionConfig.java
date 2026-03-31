@@ -11,19 +11,11 @@ public record DemotionConfig(DemotionStrategy strategy,
                              double lowWatermark,
                              int batchSize) {
 
-    /// Validate configuration parameters on construction.
+    /// Clamp configuration parameters to valid ranges on construction.
     public DemotionConfig {
-        if (highWatermark <= 0.0 || highWatermark > 1.0) {
-            throw new IllegalArgumentException("highWatermark must be in (0.0, 1.0], got: " + highWatermark);
-        }
-
-        if (lowWatermark < 0.0 || lowWatermark >= highWatermark) {
-            throw new IllegalArgumentException("lowWatermark must be in [0.0, highWatermark), got: " + lowWatermark);
-        }
-
-        if (batchSize <= 0) {
-            throw new IllegalArgumentException("batchSize must be positive, got: " + batchSize);
-        }
+        highWatermark = Math.clamp(highWatermark, 0.01, 1.0);
+        lowWatermark = Math.clamp(lowWatermark, 0.0, highWatermark - 0.01);
+        batchSize = Math.max(batchSize, 1);
     }
 
     /// Default configuration: LRU strategy, 90% high / 70% low watermarks, 100-block batches.

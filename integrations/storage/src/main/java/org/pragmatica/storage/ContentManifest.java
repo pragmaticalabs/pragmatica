@@ -5,6 +5,8 @@ import java.util.Arrays;
 import java.util.List;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.parse.Number;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -59,10 +61,16 @@ public record ContentManifest(String name, long totalSize, int chunkCount, List<
         }
 
         var name = parts[0];
-        var totalSize = Long.parseLong(parts[1]);
-        var chunkCount = Integer.parseInt(parts[2]);
         var chunkIds = Arrays.asList(parts).subList(3, parts.length);
 
+        return Result.all(Number.parseLong(parts[1]), Number.parseInt(parts[2]))
+                     .map((totalSize, chunkCount) -> validateAndBuild(name, totalSize, chunkCount, chunkIds))
+                     .option()
+                     .flatMap(opt -> opt);
+    }
+
+    private static Option<ContentManifest> validateAndBuild(String name, long totalSize, int chunkCount,
+                                                             List<String> chunkIds) {
         if (chunkIds.size() != chunkCount) {
             return none();
         }

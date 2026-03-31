@@ -32,6 +32,7 @@ class StorageGarbageCollectorTest {
         metadataStore = MetadataStore.inMemoryMetadataStore("gc-test");
         instance = StorageInstance.storageInstance("gc-test", List.of(memoryTier), metadataStore);
         gc = storageGarbageCollector(instance, metadataStore, garbageCollectorConfig(GRACE_PERIOD_MS, BATCH_SIZE));
+        gc.activate();
     }
 
     private BlockId storeBlock(byte[] content) {
@@ -106,6 +107,7 @@ class StorageGarbageCollectorTest {
             makeOrphanedPastGrace(id3);
 
             var smallBatchGc = storageGarbageCollector(instance, metadataStore, garbageCollectorConfig(GRACE_PERIOD_MS, 2));
+            smallBatchGc.activate();
             var collected = smallBatchGc.collectGarbage();
 
             assertThat(collected).isEqualTo(2);

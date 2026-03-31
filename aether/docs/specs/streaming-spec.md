@@ -50,7 +50,9 @@ Aether already has a pub/sub resource (`Publisher<T>` / `Subscriber`) for fire-a
 
 **Phase 1 (this spec):** In-memory ring buffer, standard consistency (governor-local sequencing), consumer groups, partition assignment via consensus, annotation processor integration, CDC adapter.
 
-**Phase 2+:** Replication (governor-push), persistent backend (PostgreSQL), strong consistency (Rabia path), log compaction, transactional cursor commits. These are explicitly out of scope for Phase 1 but the Phase 1 design must not preclude them (see Section 17 of the exploratory spec for constraints).
+**Phase 2:** Replication (governor-push), persistent storage via AHSE (sealed segments → local disk → S3), strong consistency (Rabia path), log compaction. These are explicitly out of scope for Phase 1 but the Phase 1 design must not preclude them (see Section 17 of the exploratory spec and [AHSE spec](hierarchical-storage-spec.md) §8.1 for constraints).
+
+**Phase 3:** Transactional cursor commits (PostgreSQL), exactly-once consumer semantics, compound retention policies.
 
 ---
 
@@ -387,6 +389,8 @@ on-failure = "stall"             # Stall on failure — manual intervention requ
 | `retention-value` | string/int | `"5m"` | Value interpreted by retention mode. Time: duration string. Count: integer. Size: byte size string. |
 | `max-event-size` | string | `"1MB"` | Maximum serialized event size. Events exceeding this are rejected at publish. |
 | `backpressure` | string | `"drop-oldest"` | Behavior when ring buffer is full: `"block"`, `"drop-oldest"`, `"reject"`. |
+| `storage` | string | `"memory"` | Storage mode: `"memory"` (Phase 1, in-memory only) or `"persistent"` (AHSE-backed, Phase 2+). |
+| `storage-instance` | string | auto | AHSE storage instance name. Default: `storage.{streamName}`. Only applies when `storage = "persistent"`. See [AHSE spec](hierarchical-storage-spec.md). |
 
 #### Consumer-Level Properties
 
@@ -1056,6 +1060,18 @@ private void evictOldest() {
 }
 ```
 
+### 6.6a Segment Sealing (Phase 2 — AHSE Integration Point)
+
+Phase 1 eviction discards events. Phase 2 introduces segment sealing: before eviction, the evicted range is packaged as an immutable `SealedSegment` and written to the AHSE storage instance.
+
+The ring buffer interface must support a `sealAndEvict` operation that:
+1. Reads events from `tailOffset` to `tailOffset + segmentSize`
+2. Serializes them into a `SealedSegment` block
+3. Writes the block to AHSE via `StorageInstance.put()`
+4. Only then advances `tailOffset`
+
+This is a Phase 2 concern, but the Phase 1 eviction path must be replaceable (interface, not hardcoded) to enable this swap. See: [hierarchical-storage-spec.md](hierarchical-storage-spec.md) §8.1
+
 ### 6.7 Time-Based Retention
 
 For time-based retention, a periodic sweep runs on the governor thread:
@@ -1431,6 +1447,8 @@ When a governor fails and a new governor takes over:
 
 **Phase 1 limitation:** Ring buffer data is lost on governor failure (no replication). Consumers resume from checkpoint offset but events between checkpoint and failure are gone. Consumers receive `CURSOR_EXPIRED` if the new governor's buffer does not contain the checkpointed offset, and fall back to `auto-offset-reset` policy.
 
+**Phase 2 improvement (AHSE):** With hierarchical storage, sealed segments are persisted to AHSE local disk tier. On governor failover, the new governor loads sealed segments from AHSE — only the current unsealed segment (events since last seal) requires replica recovery. Data loss is bounded to one segment rather than the entire partition.
+
 ---
 
 ## 11. CDM Integration
@@ -1691,13 +1709,15 @@ aether-stream (runtime implementation)
 - Governor failover recovery from replicas
 - Strong consistency (Rabia produce path)
 - Consumer read-preference (leader vs replica)
+- AHSE integration: sealed ring buffer segments stored as content-addressed blocks through `storage.stream-events` instance (ring buffer becomes read cache)
+- Tier-aware retention: memory + disk + S3 retention configured independently per AHSE storage instance
 
 ### Phase 3 (8-10 weeks)
 
-- PostgreSQL persistent backend
-- Transactional cursor commits (exactly-once consumer semantics)
-- Log compaction
+- Transactional cursor commits via PostgreSQL (exactly-once consumer semantics)
+- Log compaction (AHSE-native: compact blocks per key, store result as new block)
 - Compound retention policies
+- Cold-tier replay: consumers reading historical data served from AHSE disk/S3 tiers transparently (same API, higher latency)
 
 ### Total Effort Estimate
 
@@ -1762,6 +1782,7 @@ aether-stream (runtime implementation)
 
 ### Internal
 - [In-Memory Streams Exploratory Spec](in-memory-streams-spec.md) -- full design exploration and decision rationale
+- [Hierarchical Storage Engine (AHSE) Spec](hierarchical-storage-spec.md) -- tiered storage for streaming persistence, content store, and artifact storage
 - [Passive Worker Pools Spec](passive-worker-pools-spec.md) -- two-layer topology, governor protocol, hash ring
 - [KV-Store Scalability Analysis](../internal/kv-store-scalability.md) -- consensus data budget
 - [Slice API Reference](../reference/slice-api.md) -- `@ResourceQualifier`, manifest format, factory generation

@@ -6,15 +6,10 @@ package org.pragmatica.storage;
 /// @param batchSize maximum number of blocks to collect per GC cycle
 public record GarbageCollectorConfig(long gracePeriodMs, int batchSize) {
 
-    /// Validate configuration parameters on construction.
+    /// Clamp configuration parameters to valid ranges on construction.
     public GarbageCollectorConfig {
-        if (gracePeriodMs <= 0) {
-            throw new IllegalArgumentException("gracePeriodMs must be positive, got: " + gracePeriodMs);
-        }
-
-        if (batchSize <= 0) {
-            throw new IllegalArgumentException("batchSize must be positive, got: " + batchSize);
-        }
+        gracePeriodMs = Math.max(gracePeriodMs, 1);
+        batchSize = Math.max(batchSize, 1);
     }
 
     /// Default configuration: 1-hour grace period, 500-block batch size.

@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.utils.Causes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -18,7 +19,9 @@ final class DefaultDemotionManager implements DemotionManager {
     private final List<StorageTier> tiers;
     private final MetadataStore metadataStore;
     private final DemotionConfig config;
+    private static final Cause BLOCK_MISSING = Causes.cause("Block not present in source tier");
     private final AtomicReference<DemotionStats> stats = new AtomicReference<>(DemotionStats.empty());
+    private volatile boolean active = false;
 
     DefaultDemotionManager(List<StorageTier> tiers,
                            MetadataStore metadataStore,
@@ -29,8 +32,46 @@ final class DefaultDemotionManager implements DemotionManager {
     }
 
     @Override
+    public void activate() {
+        active = true;
+    }
+
+    @Override
+    public void deactivate() {
+        active = false;
+    }
+
+    @Override
+    public boolean isActive() {
+        return active;
+    }
+
+    @Override
     public int demote() {
+        if (!active) {
+            return 0;
+        }
+
+        return timedDemotion();
+    }
+
+    @Override
+    public DemotionStats stats() {
+        return stats.get();
+    }
+
+    private int timedDemotion() {
         var startMs = System.currentTimeMillis();
+        var result = demoteAllTiers();
+        var endMs = System.currentTimeMillis();
+
+        stats.updateAndGet(s -> s.withDemoted(result.count(), result.bytes(), endMs));
+        log.debug("Demotion cycle completed: {} block(s) demoted, {} bytes moved in {}ms",
+                  result.count(), result.bytes(), endMs - startMs);
+        return result.count();
+    }
+
+    private DemotionResult demoteAllTiers() {
         var totalDemoted = 0;
         var totalBytes = 0L;
 
@@ -40,18 +81,7 @@ final class DefaultDemotionManager implements DemotionManager {
             totalBytes += result.bytes();
         }
 
-        var endMs = System.currentTimeMillis();
-        var demoted = totalDemoted;
-        var bytes = totalBytes;
-        stats.updateAndGet(s -> s.withDemoted(demoted, bytes, endMs));
-        log.debug("Demotion cycle completed: {} block(s) demoted, {} bytes moved in {}ms",
-                  totalDemoted, totalBytes, endMs - startMs);
-        return totalDemoted;
-    }
-
-    @Override
-    public DemotionStats stats() {
-        return stats.get();
+        return new DemotionResult(totalDemoted, totalBytes);
     }
 
     private DemotionResult demoteTier(StorageTier sourceTier, StorageTier targetTier) {
@@ -59,6 +89,10 @@ final class DefaultDemotionManager implements DemotionManager {
             return DemotionResult.NONE;
         }
 
+        return demoteCandidates(sourceTier, targetTier);
+    }
+
+    private DemotionResult demoteCandidates(StorageTier sourceTier, StorageTier targetTier) {
         var candidates = selectCandidates(sourceTier.level());
         var demotedCount = 0;
         var demotedBytes = 0L;
@@ -97,26 +131,20 @@ final class DefaultDemotionManager implements DemotionManager {
         };
     }
 
+    /// Synchronous block demotion. Uses .await() because demotion runs on a dedicated
+    /// background thread, not on the hot path. Blocking here is intentional.
     private long demoteBlock(BlockId blockId, StorageTier sourceTier, StorageTier targetTier) {
-        var readResult = sourceTier.get(blockId).await();
-
-        return readResult.fold(
-            _ -> 0L,
-            opt -> opt.fold(
-                () -> 0L,
-                content -> writeThenDelete(blockId, content, sourceTier, targetTier)
-            )
-        );
+        return sourceTier.get(blockId).await()
+                         .flatMap(opt -> opt.toResult(BLOCK_MISSING))
+                         .fold(_ -> 0L, content -> writeThenDelete(blockId, content, sourceTier, targetTier));
     }
 
+    /// Synchronous write-then-delete. Uses .await() on a dedicated background thread.
     private long writeThenDelete(BlockId blockId, byte[] content,
                                  StorageTier sourceTier, StorageTier targetTier) {
-        var writeResult = targetTier.put(blockId, content).await();
-
-        return writeResult.fold(
-            cause -> logWriteFailure(blockId, targetTier, cause),
-            _ -> completeBlockDemotion(blockId, content.length, sourceTier, targetTier)
-        );
+        return targetTier.put(blockId, content).await()
+                         .fold(cause -> logWriteFailure(blockId, targetTier, cause),
+                               _ -> completeBlockDemotion(blockId, content.length, sourceTier, targetTier));
     }
 
     private long logWriteFailure(BlockId blockId, StorageTier targetTier, Cause cause) {
@@ -125,6 +153,7 @@ final class DefaultDemotionManager implements DemotionManager {
         return 0L;
     }
 
+    /// Synchronous deletion. Uses .await() on a dedicated background thread.
     private long completeBlockDemotion(BlockId blockId, int contentLength,
                                        StorageTier sourceTier, StorageTier targetTier) {
         sourceTier.delete(blockId).await();

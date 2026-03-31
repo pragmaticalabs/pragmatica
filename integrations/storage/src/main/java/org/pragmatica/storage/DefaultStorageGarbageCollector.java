@@ -15,6 +15,7 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
     private final MetadataStore metadataStore;
     private final GarbageCollectorConfig config;
     private final AtomicReference<GCStats> stats = new AtomicReference<>(GCStats.empty());
+    private volatile boolean active = false;
 
     DefaultStorageGarbageCollector(StorageInstance instance,
                                    MetadataStore metadataStore,
@@ -25,7 +26,26 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
     }
 
     @Override
+    public void activate() {
+        active = true;
+    }
+
+    @Override
+    public void deactivate() {
+        active = false;
+    }
+
+    @Override
+    public boolean isActive() {
+        return active;
+    }
+
+    @Override
     public int collectGarbage() {
+        if (!active) {
+            return 0;
+        }
+
         var now = System.currentTimeMillis();
         var cutoff = now - config.gracePeriodMs();
 
@@ -47,6 +67,8 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
         return stats.get();
     }
 
+    /// Synchronous block deletion. Uses .await() because GC runs on a dedicated
+    /// background thread, not on the hot path. Blocking here is intentional.
     private int deleteBlock(BlockId blockId) {
         return instance.delete(blockId).await()
                        .fold(_ -> 0, _ -> 1);

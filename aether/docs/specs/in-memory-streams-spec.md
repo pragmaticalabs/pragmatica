@@ -75,7 +75,7 @@ This covers a large class of use cases:
 - Sensor/telemetry ingestion with downstream processors
 - Stream processing (map/filter/join/window operations)
 
-Use cases requiring unbounded retention, log compaction, or durable replay from epoch zero are out of scope. Those workloads justify a dedicated external system (Kafka, Pulsar).
+Use cases requiring unbounded retention, log compaction, or durable replay from epoch zero are out of scope **for Phase 1**. Phase 2 adds these capabilities via AHSE integration (see §18 and [hierarchical-storage-spec.md](hierarchical-storage-spec.md)), eliminating the need for external streaming infrastructure.
 
 ---
 
@@ -96,6 +96,8 @@ The two-layer DHT already assigns governors to positions on the hash ring. Strea
 ### 2.4 Bounded and Ephemeral
 
 Streams are bounded ring buffers. Retention is by time, by entry count, or by memory size. There is no unbounded growth, no disk spill, no compaction. This keeps the implementation simple and memory behavior predictable.
+
+Phase 2 lifts the "bounded" constraint via AHSE integration: sealed segments spill to disk and S3, enabling unbounded retention with the ring buffer serving as a read cache. See [AHSE spec](hierarchical-storage-spec.md) §8.1.
 
 ---
 
@@ -578,6 +580,8 @@ Duration: 2-5 seconds
 Data loss: None (replicated) or bounded (unreplicated)
 ```
 
+**Phase 2 (AHSE) improvement:** Sealed segments are persisted to AHSE local disk tier. New governor loads sealed segments from disk — only the current unsealed segment requires replica recovery. Dramatically reduces data loss window.
+
 ### 12.2 Worker Failure (Replica or Consumer Lost)
 
 ```
@@ -805,7 +809,7 @@ consumer.commit();
 
 | Feature | Aether Streams (proposed) | Kafka | Redpanda | NATS JetStream | Pulsar |
 |---------|--------------------------|-------|----------|----------------|--------|
-| **Storage** | In-memory ring buffer | Disk (page cache) | Disk (direct I/O) | File/memory | Disk (BookKeeper) |
+| **Storage** | In-memory ring buffer (Phase 1); AHSE tiered: memory → disk → S3 (Phase 2) | Disk (page cache); tiered: disk → S3 (KIP-405) | Disk (direct I/O) | File/memory | Disk (BookKeeper) |
 | **Ordering** | Per-partition | Per-partition | Per-partition | Per-subject | Per-partition |
 | **Total ordering option** | Yes (`strong` via Rabia) | No | No | No | No |
 | **Partition ownership** | Governor (DHT ring) | Broker (controller-assigned) | Broker (Raft leader) | Meta server | Broker (ZK/Raft) |
@@ -1004,28 +1008,31 @@ Dashboard shows stream topology changes in the events timeline. `/api/streams/{n
 
 ### 17.1 Transparent Storage Upgrade
 
-The in-memory ring buffer is a deliberate Phase 1 scope constraint, not an architectural limitation. The governor already owns the partition, sequences events, and manages replication. Adding a persistent backend behind the ring buffer is a configuration change, not an architecture change.
+The in-memory ring buffer is a deliberate Phase 1 scope constraint, not an architectural limitation. The governor already owns the partition, sequences events, and manages replication. Adding AHSE (Aether Hierarchical Storage Engine) behind the ring buffer is a configuration change, not an architecture change.
 
 ```toml
 [streams.order-events]
 partitions = 6
 retention = "time"
 retention-value = "7d"
-storage = "persistent"       # ring buffer backed by persistent storage
-buffer-size = 100000         # in-memory read cache (most recent events)
+storage = "persistent"                # ring buffer backed by AHSE
+storage-instance = "stream-events"    # AHSE instance name (references [storage.stream-events])
+buffer-size = 100000                  # in-memory read cache (ring buffer)
 ```
 
 In this model:
-- The governor writes to persistent storage after sequencing (append-only, sequential writes).
-- The ring buffer becomes a **read cache** in front of the persistent log.
-- Consumers reading recent events hit memory. Consumers replaying from earlier offsets fall back to storage.
+- The governor writes sealed segments to AHSE after eviction from the ring buffer. AHSE handles tiering (memory → local disk → S3), replication, and durability automatically.
+- The ring buffer becomes a **read cache** (the hot tier) in front of the AHSE-managed persistent hierarchy.
+- Consumers reading recent events hit the ring buffer. Consumers replaying from earlier offsets fall back to AHSE (local disk, then S3).
 - The slice API does not change. Producer and consumer code is identical for in-memory and persistent streams.
 
-### 17.2 PostgreSQL as Persistent Backend
+### 17.2 AHSE as Persistent Backend
 
-Aether already has an async PostgreSQL driver with built-in pipelining. Stream partitions map naturally to database tables (one table per partition, append-only inserts). The pipelining driver makes sequential appends efficient — multiple partition writes in flight over a single connection.
+Aether's Hierarchical Storage Engine (AHSE) provides tiered, content-addressable block storage. Stream partitions map naturally to AHSE storage instances — sealed ring buffer segments become immutable blocks stored through the tiered hierarchy (memory → local disk → S3). See [hierarchical-storage-spec.md](hierarchical-storage-spec.md) for the full AHSE specification.
 
-This opens a critical capability: **transactional cursor commits alongside application state mutations**.
+The governor writes sealed segments to AHSE after eviction. AHSE handles replication (per-tier RF), demotion (age-based for streaming), and durability (local disk + S3). No external database is needed for the stream data path.
+
+PostgreSQL remains the backend for **transactional cursor commits only** (Phase 3). This enables exactly-once consumer semantics by committing cursor position and application side effect in one database transaction:
 
 ```
 Consumer Slice                  PostgreSQL
@@ -1039,6 +1046,8 @@ Consumer Slice                  PostgreSQL
 
 Consumer offset and business side effect in one transaction. If the transaction fails, both roll back. If it commits, both are durable. This is **exactly-once consumer semantics** without requiring application-level idempotency — the hardest problem in stream processing, solved by the database's existing ACID guarantees.
 
+The stream data itself does NOT go through PostgreSQL — AHSE provides the durable data path, PostgreSQL provides the transactional cursor path. These are orthogonal concerns.
+
 ### 17.3 Infrastructure Elimination Progression
 
 Each phase eliminates external infrastructure for a broader class of streaming use cases:
@@ -1046,17 +1055,17 @@ Each phase eliminates external infrastructure for a broader class of streaming u
 | Phase | Capability | Eliminates |
 |-------|-----------|------------|
 | **Phase 1: In-memory** | Real-time windowed processing, analytics pipelines, async communication | Kafka for non-durable use cases, Redis Streams |
-| **Phase 2: Persistent** | Durable event sourcing, unbounded replay, long-retention audit logs | Kafka for durable streaming, Pulsar |
+| **Phase 2: Persistent (AHSE)** | Durable event sourcing, tiered retention (hot/warm/cold), unbounded replay, long-retention audit logs | Kafka for durable streaming, Pulsar, S3-backed Kafka tiered storage (KIP-405) |
 | **Phase 3: Transactional** | Exactly-once processing, transactional outbox, CDC | Kafka + Debezium + Kafka Connect, transactional outbox libraries |
 
-At the end of this progression, the entire event-driven architecture stack — Kafka, ZooKeeper/KRaft, Schema Registry, Kafka Connect, Debezium, consumer frameworks — collapses into Aether + PostgreSQL.
+At the end of this progression, the entire event-driven architecture stack — Kafka, ZooKeeper/KRaft, Schema Registry, Kafka Connect, Debezium, consumer frameworks — collapses into Aether + PostgreSQL (for transactional cursors only).
 
 ### 17.4 Design Constraints for Phase 1
 
 The in-memory Phase 1 design must not preclude the persistence path. Key constraints to preserve:
 
 1. **Governor sequencing is authoritative.** Offsets are assigned by the governor before any storage write. Persistent storage is append-only — it never assigns offsets.
-2. **Ring buffer interface is abstract.** The ring buffer implementation must be swappable. Phase 1 uses `InMemoryRingBuffer`. Phase 2 introduces `PersistentRingBuffer` that writes through to storage and uses the in-memory buffer as a read cache.
+2. **Ring buffer interface is abstract.** The ring buffer implementation must be swappable. Phase 1 uses `InMemoryRingBuffer`. Phase 2 introduces `AhseBackedRingBuffer` that writes sealed segments to AHSE and uses the in-memory buffer as a read cache.
 3. **Cursor commit is a separate operation.** Cursor storage (consensus KV-Store in Phase 1) must be replaceable with database-transactional commits in Phase 3 without changing the consumer API.
 4. **Event serialization is opaque bytes.** The ring buffer stores `byte[]` payloads. Persistent storage writes the same bytes. No format coupling between the buffer layer and the storage layer.
 5. **Retention policy is storage-aware.** Time/count/size retention applies regardless of backend. Persistent storage adds a `compact` retention mode (keep latest per key) — log compaction, Phase 2+.
@@ -1067,6 +1076,7 @@ The in-memory Phase 1 design must not preclude the persistence path. Key constra
 
 ### Internal
 - [Passive Worker Pools Spec](passive-worker-pools-spec.md) — Two-layer topology, governor protocol, SWIM integration, KV-Store split
+- [Hierarchical Storage Engine (AHSE) Spec](hierarchical-storage-spec.md) — Tiered storage for streaming persistence, content store, and artifact storage
 - [KV-Store Scalability Analysis](../internal/kv-store-scalability.md) — Consensus data budget analysis
 
 ### External

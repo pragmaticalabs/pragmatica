@@ -92,7 +92,7 @@ class StorageKeyValueTest {
 
         @Test
         void storageBlockValue_withTierAdded_addsNewTier() {
-            var value = storageBlockValue(BLOCK_HEX, Set.of("MEMORY"), 1, NOW, NOW);
+            var value = storageBlockValue(BLOCK_HEX, Set.of("MEMORY"), 1, NOW, NOW, 0);
 
             var updated = value.withTierAdded("LOCAL_DISK");
 
@@ -102,7 +102,7 @@ class StorageKeyValueTest {
 
         @Test
         void storageBlockValue_withRefCountIncremented_incrementsCount() {
-            var value = storageBlockValue(BLOCK_HEX, Set.of("MEMORY"), 1, NOW, NOW);
+            var value = storageBlockValue(BLOCK_HEX, Set.of("MEMORY"), 1, NOW, NOW, 0);
 
             var updated = value.withRefCountIncremented();
 
@@ -111,7 +111,7 @@ class StorageKeyValueTest {
 
         @Test
         void storageBlockValue_withRefCountDecremented_decrementsCount() {
-            var value = storageBlockValue(BLOCK_HEX, Set.of("MEMORY"), 3, NOW, NOW);
+            var value = storageBlockValue(BLOCK_HEX, Set.of("MEMORY"), 3, NOW, NOW, 0);
 
             var updated = value.withRefCountDecremented();
 
@@ -120,7 +120,7 @@ class StorageKeyValueTest {
 
         @Test
         void storageBlockValue_withRefCountDecremented_floorsAtZero() {
-            var value = storageBlockValue(BLOCK_HEX, Set.of("MEMORY"), 0, NOW, NOW);
+            var value = storageBlockValue(BLOCK_HEX, Set.of("MEMORY"), 0, NOW, NOW, 0);
 
             var updated = value.withRefCountDecremented();
 

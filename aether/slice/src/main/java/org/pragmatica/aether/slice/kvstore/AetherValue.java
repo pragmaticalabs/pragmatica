@@ -1205,36 +1205,39 @@ public sealed interface AetherValue {
     /// @param refCount number of named references pointing to this block
     /// @param lastAccessedAt timestamp of last read access
     /// @param createdAt timestamp when first stored
+    /// @param accessCount total number of read accesses (for frequency-based eviction)
     record StorageBlockValue(String blockIdHex,
                              Set<String> presentIn,
                              int refCount,
                              long lastAccessedAt,
-                             long createdAt) implements AetherValue {
+                             long createdAt,
+                             int accessCount) implements AetherValue {
 
         public static StorageBlockValue storageBlockValue(String blockIdHex,
                                                           Set<String> presentIn,
                                                           int refCount,
                                                           long lastAccessedAt,
-                                                          long createdAt) {
-            return new StorageBlockValue(blockIdHex, Set.copyOf(presentIn), refCount, lastAccessedAt, createdAt);
+                                                          long createdAt,
+                                                          int accessCount) {
+            return new StorageBlockValue(blockIdHex, Set.copyOf(presentIn), refCount, lastAccessedAt, createdAt, accessCount);
         }
 
         public StorageBlockValue withTierAdded(String tier) {
             var tiers = new HashSet<>(presentIn);
             tiers.add(tier);
-            return new StorageBlockValue(blockIdHex, Set.copyOf(tiers), refCount, lastAccessedAt, createdAt);
+            return new StorageBlockValue(blockIdHex, Set.copyOf(tiers), refCount, lastAccessedAt, createdAt, accessCount);
         }
 
         public StorageBlockValue withRefCountIncremented() {
-            return new StorageBlockValue(blockIdHex, presentIn, refCount + 1, lastAccessedAt, createdAt);
+            return new StorageBlockValue(blockIdHex, presentIn, refCount + 1, lastAccessedAt, createdAt, accessCount);
         }
 
         public StorageBlockValue withRefCountDecremented() {
-            return new StorageBlockValue(blockIdHex, presentIn, Math.max(0, refCount - 1), lastAccessedAt, createdAt);
+            return new StorageBlockValue(blockIdHex, presentIn, Math.max(0, refCount - 1), lastAccessedAt, createdAt, accessCount);
         }
 
         public StorageBlockValue withAccessTimestamp() {
-            return new StorageBlockValue(blockIdHex, presentIn, refCount, System.currentTimeMillis(), createdAt);
+            return new StorageBlockValue(blockIdHex, presentIn, refCount, System.currentTimeMillis(), createdAt, accessCount + 1);
         }
     }
 

@@ -55,6 +55,7 @@ class DemotionManagerTest {
             // Memory tier has data. Set high watermark very low to trigger demotion.
             var config = demotionConfig(DemotionStrategy.LRU, 0.1, 0.05, 100);
             var dm = demotionManager(List.of(memoryTier, diskTier), metadataStore, config);
+            dm.activate();
 
             var demoted = dm.demote();
 
@@ -69,6 +70,7 @@ class DemotionManagerTest {
             // High watermark 90% — with small data in 200-byte tier, utilization is well below.
             var config = demotionConfig(DemotionStrategy.LRU, 0.9, 0.7, 100);
             var dm = demotionManager(List.of(memoryTier, diskTier), metadataStore, config);
+            dm.activate();
 
             var demoted = dm.demote();
 
@@ -93,6 +95,7 @@ class DemotionManagerTest {
             // Batch size 1 so only the oldest is demoted.
             var config = demotionConfig(DemotionStrategy.AGE, 0.01, 0.009, 1);
             var dm = demotionManager(List.of(memoryTier, diskTier), metadataStore, config);
+            dm.activate();
 
             dm.demote();
 
@@ -112,6 +115,7 @@ class DemotionManagerTest {
 
             var config = demotionConfig(DemotionStrategy.LFU, 0.01, 0.009, 1);
             var dm = demotionManager(List.of(memoryTier, diskTier), metadataStore, config);
+            dm.activate();
 
             dm.demote();
 
@@ -137,6 +141,7 @@ class DemotionManagerTest {
 
             var config = demotionConfig(DemotionStrategy.LRU, 0.01, 0.009, 1);
             var dm = demotionManager(List.of(memoryTier, diskTier), metadataStore, config);
+            dm.activate();
 
             dm.demote();
 
@@ -159,6 +164,7 @@ class DemotionManagerTest {
             // Low high watermark to trigger, batch size 2
             var config = demotionConfig(DemotionStrategy.LRU, 0.01, 0.001, 2);
             var dm = demotionManager(List.of(memoryTier, diskTier), metadataStore, config);
+            dm.activate();
 
             var demoted = dm.demote();
 
@@ -178,6 +184,7 @@ class DemotionManagerTest {
 
             var config = demotionConfig(DemotionStrategy.LRU, 0.01, 0.005, 100);
             var dm = demotionManager(List.of(singleTier), singleMeta, config);
+            dm.activate();
 
             var demoted = dm.demote();
 
@@ -207,6 +214,7 @@ class DemotionManagerTest {
 
             var config = demotionConfig(DemotionStrategy.LRU, 0.01, 0.005, 100);
             var dm = demotionManager(List.of(memoryTier, diskTier), metadataStore, config);
+            dm.activate();
 
             dm.demote();
 

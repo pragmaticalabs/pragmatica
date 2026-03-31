@@ -1,11 +1,13 @@
 package org.pragmatica.aether.stream.segment;
 
-import org.pragmatica.lang.Option;
-
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.parse.Number;
+import org.pragmatica.storage.MetadataStore;
 
 import static org.pragmatica.lang.Option.option;
 
@@ -64,6 +66,43 @@ public final class SegmentIndex {
                   .filter(ref -> ref.endOffset >= fromOffset && ref.startOffset <= toOffset)
                   .toList();
     }
+
+    /// Rebuild the index from metadata store refs matching `streams/` prefix.
+    /// Ref naming convention: `streams/{streamName}/{partition}/{startOffset}-{endOffset}`
+    public void rebuildFromRefs(MetadataStore metadataStore) {
+        partitions.clear();
+        metadataStore.listAllRefs()
+                     .keySet()
+                     .stream()
+                     .filter(ref -> ref.startsWith(STREAMS_PREFIX))
+                     .forEach(this::parseAndAddRef);
+    }
+
+    private void parseAndAddRef(String refName) {
+        var parts = refName.substring(STREAMS_PREFIX.length()).split("/");
+
+        if (parts.length != 3) {
+            return;
+        }
+
+        var streamName = parts[0];
+        Number.parseInt(parts[1])
+              .onSuccess(partition -> parseOffsetRange(streamName, partition, parts[2]));
+    }
+
+    private void parseOffsetRange(String streamName, int partition, String range) {
+        var dash = range.indexOf('-');
+
+        if (dash < 0) {
+            return;
+        }
+
+        Number.parseLong(range.substring(0, dash))
+              .onSuccess(start -> Number.parseLong(range.substring(dash + 1))
+                                        .onSuccess(end -> addSegment(streamName, partition, start, end)));
+    }
+
+    private static final String STREAMS_PREFIX = "streams/";
 
     private record PartitionKey(String streamName, int partition) {
 

@@ -379,7 +379,7 @@ public final class KVStoreSerializer {
     }
 
     private static String serializeStorageBlock(StorageBlockValue v) {
-        return v.blockIdHex() + PIPE + String.join(",", v.presentIn()) + PIPE + v.refCount() + PIPE + v.lastAccessedAt() + PIPE + v.createdAt();
+        return v.blockIdHex() + PIPE + String.join(",", v.presentIn()) + PIPE + v.refCount() + PIPE + v.lastAccessedAt() + PIPE + v.createdAt() + PIPE + v.accessCount();
     }
 
     private static String serializeStorageRef(StorageRefValue v) {
@@ -1103,8 +1103,8 @@ public final class KVStoreSerializer {
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseStorageBlockEntry(String identity, String raw) {
         var parts = raw.split("(?<!\\\\)\\|", -1);
-        if (parts.length != 5) {
-            return parseFailure("storage-block value requires 5 fields, got " + parts.length);
+        if (parts.length != 6) {
+            return parseFailure("storage-block value requires 6 fields, got " + parts.length);
         }
         return StorageBlockKey.storageBlockKey("storage-block/" + identity)
                               .map(key -> entry(key,
@@ -1112,7 +1112,8 @@ public final class KVStoreSerializer {
                                                                                    Set.of(parts[1].split(",")),
                                                                                    Integer.parseInt(parts[2]),
                                                                                    Long.parseLong(parts[3]),
-                                                                                   Long.parseLong(parts[4]))));
+                                                                                   Long.parseLong(parts[4]),
+                                                                                   Integer.parseInt(parts[5]))));
     }
 
     private static Result<Map.Entry<AetherKey, AetherValue>> parseStorageRefEntry(String identity, String raw) {
