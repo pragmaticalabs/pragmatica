@@ -1,5 +1,6 @@
 package org.pragmatica.aether.slice.blueprint;
 
+import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.slice.ConsumerConfig.ProcessingMode;
@@ -86,7 +87,10 @@ public interface StreamConfigParser {
         var maxEventSizeBytes = doc.getString(section, "max-event-size")
                                    .map(StreamConfigParser::parseSizeBytes)
                                    .or(1_048_576L);
-        return StreamConfig.streamConfig(streamName, partitions, retention, autoOffsetReset, maxEventSizeBytes);
+        var consistencyMode = doc.getString(section, "consistency")
+                                 .map(StreamConfigParser::parseConsistencyMode)
+                                 .or(ConsistencyMode.EVENTUAL);
+        return StreamConfig.streamConfig(streamName, partitions, retention, autoOffsetReset, maxEventSizeBytes, consistencyMode);
     }
 
     private static RetentionPolicy parseRetention(TomlDocument doc, String section) {
@@ -147,6 +151,13 @@ public interface StreamConfigParser {
         return switch (value.toLowerCase()) {
             case "parallel" -> ProcessingMode.PARALLEL;
             default -> ProcessingMode.ORDERED;
+        };
+    }
+
+    private static ConsistencyMode parseConsistencyMode(String value) {
+        return switch (value.toLowerCase()) {
+            case "strong" -> ConsistencyMode.STRONG;
+            default -> ConsistencyMode.EVENTUAL;
         };
     }
 

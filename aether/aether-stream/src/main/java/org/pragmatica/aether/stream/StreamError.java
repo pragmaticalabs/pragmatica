@@ -13,7 +13,8 @@ public sealed interface StreamError extends Cause {
         CONSUMER_NOT_FOUND("Consumer group not found for this partition"),
         CONSUMER_STALLED("Consumer is stalled due to processing failure"),
         CONSUMER_RUNTIME_CLOSED("Consumer runtime has been closed"),
-        STREAM_MEMORY_EXCEEDED("Total off-heap memory limit exceeded");
+        STREAM_MEMORY_EXCEEDED("Total off-heap memory limit exceeded"),
+        CONSENSUS_PATH_UNAVAILABLE("Consensus publish path not configured for STRONG consistency stream");
         private final String message;
         General(String message) {
             this.message = message;
