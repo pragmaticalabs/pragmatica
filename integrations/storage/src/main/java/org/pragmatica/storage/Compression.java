@@ -4,5 +4,14 @@ package org.pragmatica.storage;
 public enum Compression {
     NONE,
     LZ4,
-    ZSTD
+    ZSTD;
+
+    /// Returns the codec implementation for this compression algorithm.
+    public CompressionCodec codec() {
+        return switch (this) {
+            case NONE -> CompressionCodec.NONE;
+            case LZ4 -> Lz4Codec.INSTANCE;
+            case ZSTD -> ZstdCodec.INSTANCE;
+        };
+    }
 }
