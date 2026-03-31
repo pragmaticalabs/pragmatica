@@ -29,6 +29,12 @@
             <artifactId>storage</artifactId>
         </dependency>
 
+        <!-- DHT Client (for DhtStorageTier) -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>dht</artifactId>
+        </dependency>
+
         <!-- Aether Slice (AetherKey/AetherValue, KVStore access) -->
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>

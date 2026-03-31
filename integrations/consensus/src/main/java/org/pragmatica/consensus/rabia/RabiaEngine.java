@@ -737,11 +737,9 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// Handles a Propose message from another node.
+    /// NOTE: All nodes MUST process proposals regardless of active/dormant state.
+    /// Rabia is leaderless — every node participates in every round.
     private void handlePropose(Propose<C> propose) {
-        if (!engineState.get().isActive()) {
-            log.warn("Node {} ignores proposal {}. Node is dormant", self, propose);
-            return;
-        }
         log.trace("Node {} received proposal from {} for phase {}", self, propose.sender(), propose.phase());
         var currentPhaseValue = currentPhase.get();
         if (isPastPhase(propose.phase(), currentPhaseValue)) {
@@ -842,10 +840,6 @@ public class RabiaEngine<C extends Command> {
 
     /// Handles a round 1 vote from another node.
     private void handleVoteRound1(VoteRound1 vote) {
-        if (!engineState.get().isActive()) {
-            log.warn("Node {} ignores vote1 {}. Node is dormant", self, vote);
-            return;
-        }
         log.trace("Node {} received round 1 vote from {} for phase {} with value {}",
                   self,
                   vote.sender(),
@@ -918,10 +912,6 @@ public class RabiaEngine<C extends Command> {
 
     /// Handles a round 2 vote from another node.
     private void handleVoteRound2(VoteRound2 vote) {
-        if (!engineState.get().isActive()) {
-            log.warn("Node {} ignores vote2 {}. Node is dormant", self, vote);
-            return;
-        }
         log.trace("Node {} received round 2 vote from {} for phase {} with value {}",
                   self,
                   vote.sender(),
@@ -1002,11 +992,6 @@ public class RabiaEngine<C extends Command> {
     /// Handles a decision message from another node.
     /// Observers also process decisions to keep their state machine in sync.
     private void handleDecision(Decision<C> decision) {
-        var state = engineState.get();
-        if (!state.isActive() && !state.isObserving()) {
-            log.warn("Node {} ignores decision {}. Node is dormant", self, decision);
-            return;
-        }
         log.trace("Node {} received decision {}", self, decision);
         commitDecision(getOrCreatePhaseData(decision.phase()), decision);
     }
