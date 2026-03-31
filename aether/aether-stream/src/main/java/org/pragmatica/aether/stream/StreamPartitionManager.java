@@ -26,19 +26,26 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final ConcurrentHashMap<String, StreamEntry> streams = new ConcurrentHashMap<>();
     private final AtomicLong totalAllocatedBytes = new AtomicLong(0);
     private final long maxTotalBytes;
+    private final EvictionListener evictionListener;
 
-    private StreamPartitionManager(long maxTotalBytes) {
+    private StreamPartitionManager(long maxTotalBytes, EvictionListener evictionListener) {
         this.maxTotalBytes = maxTotalBytes;
+        this.evictionListener = evictionListener;
     }
 
-    /// Create a new StreamPartitionManager with the default 128MB memory cap.
+    /// Create a new StreamPartitionManager with the default 128MB memory cap and no eviction listener.
     public static StreamPartitionManager streamPartitionManager() {
-        return new StreamPartitionManager(DEFAULT_MAX_TOTAL_BYTES);
+        return new StreamPartitionManager(DEFAULT_MAX_TOTAL_BYTES, EvictionListener.NOOP);
     }
 
-    /// Create a new StreamPartitionManager with a custom memory cap.
+    /// Create a new StreamPartitionManager with a custom memory cap and no eviction listener.
     public static StreamPartitionManager streamPartitionManager(long maxTotalBytes) {
-        return new StreamPartitionManager(maxTotalBytes);
+        return new StreamPartitionManager(maxTotalBytes, EvictionListener.NOOP);
+    }
+
+    /// Create a new StreamPartitionManager with a custom memory cap and eviction listener.
+    public static StreamPartitionManager streamPartitionManager(long maxTotalBytes, EvictionListener evictionListener) {
+        return new StreamPartitionManager(maxTotalBytes, evictionListener);
     }
 
     /// Total off-heap bytes currently allocated across all streams.
@@ -59,7 +66,7 @@ public final class StreamPartitionManager implements AutoCloseable {
             return StreamError.General.STREAM_MEMORY_EXCEEDED.result();
         }
 
-        var entry = StreamEntry.fromConfig(config);
+        var entry = StreamEntry.fromConfig(config, evictionListener);
         var previous = streams.putIfAbsent(config.name(), entry);
 
         if (previous != null) {
@@ -230,11 +237,13 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// Internal entry holding config, partition buffers, and creation timestamp for a single stream.
     record StreamEntry(StreamConfig config, OffHeapRingBuffer[] partitions, long createdAt) implements AutoCloseable {
-        static StreamEntry fromConfig(StreamConfig config) {
+        static StreamEntry fromConfig(StreamConfig config, EvictionListener listener) {
             var retention = config.retention();
             var buffers = new OffHeapRingBuffer[config.partitions()];
             for (int i = 0; i < config.partitions(); i++) {
-                buffers[i] = OffHeapRingBuffer.offHeapRingBuffer(retention.maxCount(), retention.maxBytes());
+                buffers[i] = OffHeapRingBuffer.offHeapRingBuffer(config.name(), i,
+                                                                  retention.maxCount(), retention.maxBytes(),
+                                                                  listener);
             }
             return new StreamEntry(config, buffers, System.currentTimeMillis());
         }

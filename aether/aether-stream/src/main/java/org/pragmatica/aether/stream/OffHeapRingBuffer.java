@@ -60,33 +60,53 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     private final long dataRegionSize;
     private final long indexStart;
     private final long dataStart;
+    private final String streamName;
+    private final int partition;
+    private final EvictionListener listener;
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
-    private OffHeapRingBuffer(Arena arena, MemorySegment segment, long capacity, long dataRegionSize) {
+    private OffHeapRingBuffer(Arena arena, MemorySegment segment, long capacity, long dataRegionSize,
+                              String streamName, int partition, EvictionListener listener) {
         this.arena = arena;
         this.segment = segment;
         this.capacity = capacity;
         this.dataRegionSize = dataRegionSize;
         this.indexStart = HEADER_SIZE;
         this.dataStart = HEADER_SIZE + INDEX_ENTRY_SIZE * capacity;
+        this.streamName = streamName;
+        this.partition = partition;
+        this.listener = listener;
     }
 
-    /// Create a new off-heap ring buffer.
+    /// Create a new off-heap ring buffer with no eviction listener (Phase 1 behavior).
     ///
     /// @param capacity maximum number of events (index slot count)
     /// @param dataRegionSize size of the data region in bytes
     public static OffHeapRingBuffer offHeapRingBuffer(long capacity, long dataRegionSize) {
+        return offHeapRingBuffer("", 0, capacity, dataRegionSize, EvictionListener.NOOP);
+    }
+
+    /// Create a new off-heap ring buffer with an eviction listener.
+    ///
+    /// @param streamName stream name for listener context
+    /// @param partition partition index for listener context
+    /// @param capacity maximum number of events (index slot count)
+    /// @param dataRegionSize size of the data region in bytes
+    /// @param listener callback invoked before events are evicted
+    public static OffHeapRingBuffer offHeapRingBuffer(String streamName, int partition,
+                                                      long capacity, long dataRegionSize,
+                                                      EvictionListener listener) {
         var arena = Arena.ofShared();
         var indexSize = INDEX_ENTRY_SIZE * capacity;
         var totalSize = HEADER_SIZE + indexSize + dataRegionSize;
         var segment = arena.allocate(totalSize, 64);
-        segment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, - 1L);
+        segment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, -1L);
         segment.set(ValueLayout.JAVA_LONG, HEADER_TAIL_OFFSET, 0L);
         segment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, 0L);
         segment.set(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS, 0L);
         segment.set(ValueLayout.JAVA_LONG, HEADER_DATA_SIZE, dataRegionSize);
         segment.set(ValueLayout.JAVA_LONG, HEADER_CAPACITY, capacity);
-        return new OffHeapRingBuffer(arena, segment, capacity, dataRegionSize);
+        return new OffHeapRingBuffer(arena, segment, capacity, dataRegionSize, streamName, partition, listener);
     }
 
     /// Append a serialized event to the buffer.
@@ -171,14 +191,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     @Contract
     public void evictByAge(long maxAgeMs) {
         var cutoff = System.currentTimeMillis() - maxAgeMs;
-        while (eventCount() > 0) {
-            var tailSlot = Math.floorMod(tailOffset(), capacity);
-            var timestamp = readTimestamp(tailSlot);
-            if (timestamp >= cutoff) {
-                break;
-            }
-            evictOldest();
-        }
+        var countToEvict = countEvictionsByAge(cutoff);
+        notifyAndEvict(countToEvict);
     }
 
     @Contract
@@ -255,25 +269,38 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     private void evictForSpace(int payloadLength) {
-        while (eventCount() >= capacity) {
-            evictOldest();
-        }
-        while (needsDataEviction(payloadLength) && eventCount() > 0) {
-            evictOldest();
-        }
+        var countToEvict = countEvictionsForSpace(payloadLength);
+        notifyAndEvict(countToEvict);
     }
 
-    private boolean needsDataEviction(int payloadLength) {
-        return usedDataBytes() + payloadLength > dataRegionSize;
+    private long countEvictionsForSpace(int payloadLength) {
+        var count = 0L;
+        var simulatedTail = tailOffset();
+        var simulatedCount = eventCount();
+
+        while (simulatedCount >= capacity) {
+            simulatedTail++;
+            simulatedCount--;
+            count++;
+        }
+
+        while (simulatedCount > 0 && wouldNeedDataEviction(payloadLength, simulatedTail)) {
+            simulatedTail++;
+            simulatedCount--;
+            count++;
+        }
+
+        return count;
     }
 
-    private long usedDataBytes() {
-        if (eventCount() == 0) {
-            return 0;
-        }
-        var tail = tailOffset();
+    private boolean wouldNeedDataEviction(int payloadLength, long simulatedTail) {
         var head = headOffset();
-        var tailSlot = Math.floorMod(tail, capacity);
+
+        if (simulatedTail > head) {
+            return false;
+        }
+
+        var tailSlot = Math.floorMod(simulatedTail, capacity);
         var headSlot = Math.floorMod(head, capacity);
         var tailDataPos = segment.get(ValueLayout.JAVA_LONG,
                                       indexStart + tailSlot * INDEX_ENTRY_SIZE + INDEX_DATA_OFFSET);
@@ -281,9 +308,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                       indexStart + headSlot * INDEX_ENTRY_SIZE + INDEX_DATA_OFFSET);
         var headDataLen = segment.get(ValueLayout.JAVA_INT, indexStart + headSlot * INDEX_ENTRY_SIZE + INDEX_DATA_LENGTH);
         var headEnd = headDataPos + headDataLen;
-        return (headEnd >= tailDataPos)
-               ? headEnd - tailDataPos
-               : (dataRegionSize - tailDataPos) + headEnd;
+        var used = (headEnd >= tailDataPos)
+                   ? headEnd - tailDataPos
+                   : (dataRegionSize - tailDataPos) + headEnd;
+
+        return used + payloadLength > dataRegionSize;
     }
 
     private void evictOldest() {
@@ -296,15 +325,88 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     private void evictByCount(long maxCount) {
-        while (eventCount() > maxCount) {
-            evictOldest();
+        var excess = eventCount() - maxCount;
+
+        if (excess > 0) {
+            notifyAndEvict(excess);
         }
     }
 
     private void evictBySize(long maxBytes) {
-        while (eventCount() > 0 && usedDataBytes() > maxBytes) {
+        var countToEvict = countEvictionsBySize(maxBytes);
+        notifyAndEvict(countToEvict);
+    }
+
+    private void notifyAndEvict(long count) {
+        if (count <= 0) {
+            return;
+        }
+
+        if (listener != EvictionListener.NOOP) {
+            var events = collectEvictedEvents(count);
+            listener.onEviction(streamName, partition, events);
+        }
+
+        for (long i = 0; i < count; i++) {
             evictOldest();
         }
+    }
+
+    private List<OffHeapRingBuffer.RawEvent> collectEvictedEvents(long count) {
+        var tail = tailOffset();
+        var events = new ArrayList<RawEvent>((int) count);
+
+        for (long i = 0; i < count; i++) {
+            events.add(readSingleEvent(tail + i));
+        }
+
+        return List.copyOf(events);
+    }
+
+    private long countEvictionsByAge(long cutoff) {
+        var count = 0L;
+        var tail = tailOffset();
+
+        while (count < eventCount()) {
+            var slotIndex = Math.floorMod(tail + count, capacity);
+            var timestamp = readTimestamp(slotIndex);
+
+            if (timestamp >= cutoff) {
+                break;
+            }
+
+            count++;
+        }
+
+        return count;
+    }
+
+    private long countEvictionsBySize(long maxBytes) {
+        var count = 0L;
+        var simulatedTail = tailOffset();
+        var head = headOffset();
+
+        while (simulatedTail + count <= head) {
+            var tailSlot = Math.floorMod(simulatedTail + count, capacity);
+            var headSlot = Math.floorMod(head, capacity);
+            var tailDataPos = segment.get(ValueLayout.JAVA_LONG,
+                                          indexStart + tailSlot * INDEX_ENTRY_SIZE + INDEX_DATA_OFFSET);
+            var headDataPos = segment.get(ValueLayout.JAVA_LONG,
+                                          indexStart + headSlot * INDEX_ENTRY_SIZE + INDEX_DATA_OFFSET);
+            var headDataLen = segment.get(ValueLayout.JAVA_INT, indexStart + headSlot * INDEX_ENTRY_SIZE + INDEX_DATA_LENGTH);
+            var headEnd = headDataPos + headDataLen;
+            var used = (headEnd >= tailDataPos)
+                       ? headEnd - tailDataPos
+                       : (dataRegionSize - tailDataPos) + headEnd;
+
+            if (used <= maxBytes) {
+                break;
+            }
+
+            count++;
+        }
+
+        return count;
     }
 
     /// A raw event read from the ring buffer.
