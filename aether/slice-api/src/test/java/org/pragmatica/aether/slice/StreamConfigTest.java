@@ -32,6 +32,11 @@ class StreamConfigTest {
         void autoOffsetReset_defaultsToLatest() {
             assertThat(streamConfig("orders").autoOffsetReset()).isEqualTo("latest");
         }
+
+        @Test
+        void consistencyMode_defaultsToEventual() {
+            assertThat(streamConfig("orders").consistencyMode()).isEqualTo(ConsistencyMode.EVENTUAL);
+        }
     }
 
     @Nested
@@ -47,6 +52,15 @@ class StreamConfigTest {
             assertThat(config.retention()).isSameAs(retention);
             assertThat(config.autoOffsetReset()).isEqualTo("earliest");
             assertThat(config.maxEventSizeBytes()).isEqualTo(1_048_576L);
+            assertThat(config.consistencyMode()).isEqualTo(ConsistencyMode.EVENTUAL);
+        }
+
+        @Test
+        void fiveFieldFactory_usesDefaults_forConsistencyMode() {
+            var retention = RetentionPolicy.retentionPolicy(50, 1024L, 5000L);
+            var config = streamConfig("compat", 8, retention, "earliest", 2_000_000L);
+
+            assertThat(config.consistencyMode()).isEqualTo(ConsistencyMode.EVENTUAL);
         }
     }
 
@@ -62,6 +76,14 @@ class StreamConfigTest {
             assertThat(config.partitions()).isEqualTo(8);
             assertThat(config.retention()).isSameAs(retention);
             assertThat(config.autoOffsetReset()).isEqualTo("earliest");
+        }
+
+        @Test
+        void strongConsistency_isPreserved() {
+            var retention = RetentionPolicy.retentionPolicy(50, 1024L, 5000L);
+            var config = streamConfig("events", 8, retention, "earliest", 1_048_576L, ConsistencyMode.STRONG);
+
+            assertThat(config.consistencyMode()).isEqualTo(ConsistencyMode.STRONG);
         }
     }
 }

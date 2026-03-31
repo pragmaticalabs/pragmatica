@@ -12,56 +12,36 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.pragmatica.aether.example.notification.analytics.AnalyticsResponse.analyticsResponse;
+@Slice public interface AnalyticsService{
+    @Codec record StatsRequest(){}
 
-/// Analytics slice - counts notifications per sender.
-///
-/// Subscribes to the notification event stream and maintains
-/// per-sender counters in memory.
-@Slice
-public interface AnalyticsService {
-    // === Requests ===
-    @Codec
-    record StatsRequest() {}
-
-    // === Operations ===
-    /// Stream consumer - counts notifications per sender.
-    @NotificationConsumer
-    Promise<Unit> processNotification(NotificationEvent event);
-
-    /// Get analytics (public).
+    @NotificationConsumer Promise<Unit> processNotification(NotificationEvent event);
     Promise<AnalyticsResponse> stats(StatsRequest request);
 
-    // === Factory ===
-    /// Factory method.
-    static AnalyticsService analyticsService() {
+    static AnalyticsService analyticsService(){
         return new analyticsService(new ConcurrentHashMap<>());
     }
 
-    record analyticsService(ConcurrentHashMap<String, AtomicLong> senderCounts) implements AnalyticsService {
-        @Override
-        public Promise<Unit> processNotification(NotificationEvent event) {
-            senderCounts.computeIfAbsent(event.senderId(),
-                                         _ -> new AtomicLong())
-                        .incrementAndGet();
+    record analyticsService(ConcurrentHashMap<String, AtomicLong> senderCounts) implements AnalyticsService{
+        @Override public Promise<Unit> processNotification(NotificationEvent event){
+            senderCounts.computeIfAbsent(event.senderId(), _ -> new AtomicLong()).incrementAndGet();
             return Promise.success(Unit.unit());
         }
 
-        @Override
-        public Promise<AnalyticsResponse> stats(StatsRequest request) {
+        @Override public Promise<AnalyticsResponse> stats(StatsRequest request){
             return Promise.success(analyticsResponse(buildCountSnapshot(), computeTotal()));
         }
 
-        private Map<String, Long> buildCountSnapshot() {
+        private Map<String, Long> buildCountSnapshot(){
             Map<String, Long> snapshot = new HashMap<>();
             senderCounts.forEach((key, counter) -> snapshot.put(key, counter.get()));
             return Map.copyOf(snapshot);
         }
 
-        private long computeTotal() {
-            return senderCounts.values()
-                               .stream()
-                               .mapToLong(AtomicLong::get)
-                               .sum();
+        private long computeTotal(){
+            return senderCounts.values().stream()
+                                      .mapToLong(AtomicLong::get)
+                                      .sum();
         }
     }
 }

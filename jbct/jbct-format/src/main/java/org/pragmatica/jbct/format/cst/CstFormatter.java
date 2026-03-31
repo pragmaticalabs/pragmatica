@@ -8,6 +8,7 @@ import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /// CST-based JBCT code formatter.
@@ -76,7 +77,44 @@ public class CstFormatter {
     }
 
     private String formatCst(CstNode root, String source) {
+        var flattened = flattenZomWrappers(root);
         var printer = new CstPrinter(config, source);
-        return printer.print(root);
+        return printer.print(flattened);
+    }
+
+    /// Flatten nested zero-or-more (zom) wrapper nodes in the CST.
+    ///
+    /// The PEG parser wraps 2+ matches of a zero-or-more production in a nested
+    /// NonTerminal with the same rule as the parent. This breaks the printer which
+    /// expects members/statements as direct children. This pass inlines such nested
+    /// containers to produce a flat child list.
+    private static CstNode flattenZomWrappers(CstNode node) {
+        return switch (node) {
+            case CstNode.NonTerminal nt -> {
+                var flatChildren = new ArrayList<CstNode>();
+                var changed = false;
+                for (var child : nt.children()) {
+                    var flattened = flattenZomWrappers(child);
+                    if (flattened != child) {
+                        changed = true;
+                    }
+                    // Inline children of nested NonTerminals with the same rule
+                    if (flattened instanceof CstNode.NonTerminal nested
+                        && nested.rule() != null
+                        && nt.rule() != null
+                        && nested.rule().getClass() == nt.rule().getClass()) {
+                        flatChildren.addAll(nested.children());
+                        changed = true;
+                    } else {
+                        flatChildren.add(flattened);
+                    }
+                }
+                yield changed
+                      ? new CstNode.NonTerminal(nt.span(), nt.rule(), flatChildren,
+                                                nt.leadingTrivia(), nt.trailingTrivia())
+                      : nt;
+            }
+            default -> node;
+        };
     }
 }

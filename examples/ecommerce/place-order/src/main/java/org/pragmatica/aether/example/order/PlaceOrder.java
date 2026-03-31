@@ -36,51 +36,36 @@ import org.pragmatica.lang.Result;
 
 import java.time.Instant;
 import java.util.List;
-
-/// Place Order - Lean Slice orchestrating the complete order flow.
-///
-/// This demonstrates:
-///
-///   - Inter-slice dependencies (Inventory, Pricing, Payment, Fulfillment)
-///   - Complex multi-step orchestration using sequencer pattern
-///   - Fork-join for parallel operations (pricing + shipping quote)
-///   - Error handling with compensation (release stock on payment failure)
-///   - Parse-don't-validate pattern for request validation
-///
-@Slice
-public interface PlaceOrder {
-    // === Request ===
+@Slice public interface PlaceOrder{
     record PlaceOrderRequest(String customerId,
                              List<LineItem.RawLineItem> items,
                              RawAddress shippingAddress,
                              RawPaymentMethod paymentMethod,
                              ShippingOption shippingOption,
-                             Option<String> discountCode) {
-        public record RawAddress(String street, String city, String state, String postalCode, String country) {}
+                             Option<String> discountCode){
+        public record RawAddress(String street, String city, String state, String postalCode, String country){}
 
         public record RawPaymentMethod(String cardNumber,
                                        String expiryMonth,
                                        String expiryYear,
                                        String cvv,
-                                       String cardholderName) {}
+                                       String cardholderName){}
 
         public static PlaceOrderRequest placeOrderRequest(String customerId,
                                                           List<LineItem.RawLineItem> items,
                                                           RawAddress address,
                                                           RawPaymentMethod payment,
                                                           ShippingOption shipping,
-                                                          String discountCode) {
+                                                          String discountCode){
             return new PlaceOrderRequest(customerId,
                                          items,
                                          address,
                                          payment,
                                          shipping,
-                                         Option.option(discountCode)
-                                               .filter(s -> !s.isBlank()));
+                                         Option.option(discountCode).filter(s -> !s.isBlank()));
         }
     }
 
-    // === Response ===
     record OrderConfirmation(OrderId orderId,
                              CustomerId customerId,
                              List<LineItem> items,
@@ -88,8 +73,8 @@ public interface PlaceOrder {
                              PaymentResult payment,
                              Shipment shipment,
                              OrderStatus status,
-                             Instant createdAt) {
-        public enum OrderStatus {
+                             Instant createdAt){
+        public enum OrderStatus{
             CONFIRMED,
             PROCESSING,
             SHIPPED,
@@ -100,7 +85,7 @@ public interface PlaceOrder {
         public static OrderConfirmation confirmed(ValidOrder order,
                                                   PriceBreakdown pricing,
                                                   PaymentResult payment,
-                                                  Shipment shipment) {
+                                                  Shipment shipment){
             return new OrderConfirmation(order.orderId(),
                                          order.customerId(),
                                          order.items(),
@@ -111,11 +96,11 @@ public interface PlaceOrder {
                                          Instant.now());
         }
 
-        public Money total() {
+        public Money total(){
             return pricing.total();
         }
 
-        public String summary() {
+        public String summary(){
             return String.format("Order %s confirmed. Total: %s. Tracking: %s. Estimated delivery: %s",
                                  orderId.value(),
                                  pricing.total(),
@@ -124,33 +109,31 @@ public interface PlaceOrder {
         }
     }
 
-    // === Validated Input ===
     record ValidOrder(OrderId orderId,
                       CustomerId customerId,
                       List<LineItem> items,
                       Address shippingAddress,
                       PaymentMethod paymentMethod,
                       ShippingOption shippingOption,
-                      Option<String> discountCode) {
-        public static Result<ValidOrder> validOrder(PlaceOrderRequest raw) {
+                      Option<String> discountCode){
+        public static Result<ValidOrder> validOrder(PlaceOrderRequest raw){
             return Result.all(CustomerId.customerId(raw.customerId()),
                               LineItem.lineItems(raw.items()),
                               validateAddress(raw.shippingAddress()),
-                              validatePayment(raw.paymentMethod()))
-                         .map((customerId, items, address, payment) -> new ValidOrder(OrderId.generate(),
-                                                                                      customerId,
-                                                                                      items,
-                                                                                      address,
-                                                                                      payment,
-                                                                                      raw.shippingOption(),
-                                                                                      raw.discountCode()));
+                              validatePayment(raw.paymentMethod())).map((customerId, items, address, payment) -> new ValidOrder(OrderId.generate(),
+                                                                                                                                customerId,
+                                                                                                                                items,
+                                                                                                                                address,
+                                                                                                                                payment,
+                                                                                                                                raw.shippingOption(),
+                                                                                                                                raw.discountCode()));
         }
 
-        private static Result<Address> validateAddress(PlaceOrderRequest.RawAddress raw) {
+        private static Result<Address> validateAddress(PlaceOrderRequest.RawAddress raw){
             return Address.address(raw.street(), raw.city(), raw.state(), raw.postalCode(), raw.country());
         }
 
-        private static Result<PaymentMethod> validatePayment(PlaceOrderRequest.RawPaymentMethod raw) {
+        private static Result<PaymentMethod> validatePayment(PlaceOrderRequest.RawPaymentMethod raw){
             return PaymentMethod.paymentMethod(raw.cardNumber(),
                                                raw.expiryMonth(),
                                                raw.expiryYear(),
@@ -159,206 +142,176 @@ public interface PlaceOrder {
         }
     }
 
-    // === Errors ===
-    sealed interface OrderError extends Cause {
-        record ValidationFailed(List<String> errors) implements OrderError {
-            @Override
-            public String message() {
+    sealed interface OrderError extends Cause{
+        record ValidationFailed(List<String> errors) implements OrderError{
+            @Override public String message(){
                 return "Order validation failed: " + String.join(", ", errors);
             }
         }
 
-        record OutOfStock(List<ProductId> products) implements OrderError {
-            @Override
-            public String message() {
-                return "Items out of stock: " + products.stream()
-                                                       .map(ProductId::value)
-                                                       .toList();
+        record OutOfStock(List<ProductId> products) implements OrderError{
+            @Override public String message(){
+                return "Items out of stock: " + products.stream().map(ProductId::value)
+                                                               .toList();
             }
         }
 
-        record PaymentDeclined(String reason) implements OrderError {
-            @Override
-            public String message() {
+        record PaymentDeclined(String reason) implements OrderError{
+            @Override public String message(){
                 return "Payment declined: " + reason;
             }
         }
 
-        record FulfillmentFailed(String reason) implements OrderError {
-            @Override
-            public String message() {
+        record FulfillmentFailed(String reason) implements OrderError{
+            @Override public String message(){
                 return "Cannot fulfill order: " + reason;
             }
         }
 
-        record ProcessingFailed(Throwable cause) implements OrderError {
-            @Override
-            public String message() {
+        record ProcessingFailed(Throwable cause) implements OrderError{
+            @Override public String message(){
                 return "Order processing failed: " + cause.getMessage();
             }
         }
     }
 
-    // === Context Records for Pipeline ===
-    record OrderWithPricing(ValidOrder order, PriceBreakdown pricing, ShippingQuote shippingQuote) {}
+    record OrderWithPricing(ValidOrder order, PriceBreakdown pricing, ShippingQuote shippingQuote){}
 
-    record OrderWithReservation(OrderWithPricing context, StockReservation reservation) {}
+    record OrderWithReservation(OrderWithPricing context, StockReservation reservation){}
 
-    record OrderWithPayment(OrderWithReservation reservation, PaymentResult payment) {}
+    record OrderWithPayment(OrderWithReservation reservation, PaymentResult payment){}
 
-    record OrderComplete(OrderWithPayment payment, Shipment shipment) {}
+    record OrderComplete(OrderWithPayment payment, Shipment shipment){}
 
-    // === Operation ===
     Promise<OrderConfirmation> execute(PlaceOrderRequest request);
 
-    // === Factory ===
     static PlaceOrder placeOrder(InventoryService inventory,
                                  PricingService pricing,
                                  PaymentService payment,
-                                 FulfillmentService fulfillment) {
+                                 FulfillmentService fulfillment){
         record placeOrder(InventoryService inventory,
                           PricingService pricing,
                           PaymentService payment,
-                          FulfillmentService fulfillment) implements PlaceOrder {
-            @Override
-            public Promise<OrderConfirmation> execute(PlaceOrderRequest request) {
-                return ValidOrder.validOrder(request)
-                                 .async()
-                                 .flatMap(this::checkStockAvailability)
-                                 .flatMap(this::calculateFullPricing)
-                                 .flatMap(this::reserveStock)
-                                 .flatMap(this::processPayment)
-                                 .flatMap(this::createShipment)
-                                 .map(this::buildConfirmation);
+                          FulfillmentService fulfillment) implements PlaceOrder{
+            @Override public Promise<OrderConfirmation> execute(PlaceOrderRequest request){
+                return ValidOrder.validOrder(request).async()
+                                            .flatMap(this::checkStockAvailability)
+                                            .flatMap(this::calculateFullPricing)
+                                            .flatMap(this::reserveStock)
+                                            .flatMap(this::processPayment)
+                                            .flatMap(this::createShipment)
+                                            .map(this::buildConfirmation);
             }
 
-            private Promise<ValidOrder> checkStockAvailability(ValidOrder order) {
+            private Promise<ValidOrder> checkStockAvailability(ValidOrder order){
                 var checkRequest = CheckStockRequest.checkStockRequest(order.items());
-                return inventory.checkStock(checkRequest)
-                                .flatMap(availability -> availability.isFullyAvailable()
-                                                         ? Promise.success(order)
-                                                         : new OrderError.OutOfStock(availability.unavailableItems()).promise());
+                return inventory.checkStock(checkRequest).flatMap(availability -> availability.isFullyAvailable()
+                                                                                 ? Promise.success(order)
+                                                                                 : new OrderError.OutOfStock(availability.unavailableItems()).promise());
             }
 
-            private Promise<OrderWithPricing> calculateFullPricing(ValidOrder order) {
+            private Promise<OrderWithPricing> calculateFullPricing(ValidOrder order){
                 var pricePromise = pricing.calculatePrice(CalculatePriceRequest.calculatePriceRequest(order.customerId(),
                                                                                                       order.items()));
                 var shippingPromise = fulfillment.calculateShipping(CalculateShippingRequest.calculateShippingRequest(order.items(),
                                                                                                                       order.shippingAddress()));
-                return Promise.all(pricePromise, shippingPromise)
-                              .flatMap((priceBreakdown, shippingQuote) -> applyDiscount(order,
-                                                                                        priceBreakdown,
-                                                                                        shippingQuote));
+                return Promise.all(pricePromise, shippingPromise).flatMap((priceBreakdown, shippingQuote) -> applyDiscount(order,
+                                                                                                                           priceBreakdown,
+                                                                                                                           shippingQuote));
             }
 
             private Promise<OrderWithPricing> applyDiscount(ValidOrder order,
                                                             PriceBreakdown basePrice,
-                                                            ShippingQuote shippingQuote) {
-                var discountRequest = order.discountCode()
-                                           .map(code -> ApplyDiscountRequest.applyDiscountRequest(order.customerId(),
-                                                                                                  basePrice.subtotal(),
-                                                                                                  code))
-                                           .or(() -> ApplyDiscountRequest.withoutCode(order.customerId(),
-                                                                                      basePrice.subtotal()));
-                return pricing.applyDiscount(discountRequest)
-                              .flatMap(discount -> calculateTaxAndBuildPrice(order, basePrice, shippingQuote, discount));
+                                                            ShippingQuote shippingQuote){
+                var discountRequest = order.discountCode().map(code -> ApplyDiscountRequest.applyDiscountRequest(order.customerId(),
+                                                                                                                 basePrice.subtotal(),
+                                                                                                                 code))
+                                                        .or(() -> ApplyDiscountRequest.withoutCode(order.customerId(),
+                                                                                                   basePrice.subtotal()));
+                return pricing.applyDiscount(discountRequest).flatMap(discount -> calculateTaxAndBuildPrice(order,
+                                                                                                            basePrice,
+                                                                                                            shippingQuote,
+                                                                                                            discount));
             }
 
             private Promise<OrderWithPricing> calculateTaxAndBuildPrice(ValidOrder order,
                                                                         PriceBreakdown basePrice,
                                                                         ShippingQuote shippingQuote,
-                                                                        DiscountResult discount) {
-                return basePrice.subtotal()
-                                .subtract(discount.discountAmount())
-                                .map(subtotalAfterDiscount -> CalculateTaxRequest.calculateTaxRequest(subtotalAfterDiscount,
-                                                                                                      order.shippingAddress()))
-                                .async()
-                                .flatMap(pricing::calculateTax)
-                                .flatMap(tax -> buildFinalPrice(basePrice, shippingQuote, order, discount, tax))
-                                .map(finalPrice -> new OrderWithPricing(order, finalPrice, shippingQuote));
+                                                                        DiscountResult discount){
+                return basePrice.subtotal().subtract(discount.discountAmount())
+                                         .map(subtotalAfterDiscount -> CalculateTaxRequest.calculateTaxRequest(subtotalAfterDiscount,
+                                                                                                               order.shippingAddress()))
+                                         .async()
+                                         .flatMap(pricing::calculateTax)
+                                         .flatMap(tax -> buildFinalPrice(basePrice, shippingQuote, order, discount, tax))
+                                         .map(finalPrice -> new OrderWithPricing(order, finalPrice, shippingQuote));
             }
 
             private Promise<PriceBreakdown> buildFinalPrice(PriceBreakdown basePrice,
                                                             ShippingQuote shippingQuote,
                                                             ValidOrder order,
                                                             DiscountResult discount,
-                                                            TaxResult tax) {
+                                                            TaxResult tax){
                 var shippingCost = findShippingCost(shippingQuote, order);
-                return PriceBreakdown.builder()
-                                     .linePrices(basePrice.linePrices())
-                                     .subtotal(basePrice.subtotal())
-                                     .discountAmount(discount.discountAmount())
-                                     .taxAmount(tax.taxAmount())
-                                     .shippingCost(shippingCost)
-                                     .build()
-                                     .async();
+                return PriceBreakdown.builder().linePrices(basePrice.linePrices())
+                                             .subtotal(basePrice.subtotal())
+                                             .discountAmount(discount.discountAmount())
+                                             .taxAmount(tax.taxAmount())
+                                             .shippingCost(shippingCost)
+                                             .build()
+                                             .async();
             }
 
-            private Money findShippingCost(ShippingQuote quote, ValidOrder order) {
-                return Option.from(quote.options()
-                                        .stream()
-                                        .filter(opt -> opt.option() == order.shippingOption())
-                                        .findFirst())
-                             .map(ShippingQuote.ShippingOptionQuote::cost)
-                             .or(Money.ZERO_USD);
+            private Money findShippingCost(ShippingQuote quote, ValidOrder order){
+                return Option.from(quote.options().stream()
+                                                .filter(opt -> opt.option() == order.shippingOption())
+                                                .findFirst()).map(ShippingQuote.ShippingOptionQuote::cost)
+                                  .or(Money.ZERO_USD);
             }
 
-            private Promise<OrderWithReservation> reserveStock(OrderWithPricing context) {
-                var reserveRequest = ReserveStockRequest.reserveStockRequest(context.order()
-                                                                                    .orderId(),
-                                                                             context.order()
-                                                                                    .items());
-                return inventory.reserveStock(reserveRequest)
-                                .map(reservation -> new OrderWithReservation(context, reservation));
+            private Promise<OrderWithReservation> reserveStock(OrderWithPricing context){
+                var reserveRequest = ReserveStockRequest.reserveStockRequest(context.order().orderId(),
+                                                                             context.order().items());
+                return inventory.reserveStock(reserveRequest).map(reservation -> new OrderWithReservation(context,
+                                                                                                          reservation));
             }
 
-            private Promise<OrderWithPayment> processPayment(OrderWithReservation context) {
-                var paymentRequest = ProcessPaymentRequest.processPaymentRequest(context.context()
-                                                                                        .order()
-                                                                                        .orderId(),
-                                                                                 context.context()
-                                                                                        .order()
-                                                                                        .customerId(),
-                                                                                 context.context()
-                                                                                        .pricing()
-                                                                                        .total(),
-                                                                                 context.context()
-                                                                                        .order()
-                                                                                        .paymentMethod());
-                return payment.processPayment(paymentRequest)
-                              .map(result -> new OrderWithPayment(context, result))
-                              .onFailure(cause -> releaseStockOnFailure(context));
+            private Promise<OrderWithPayment> processPayment(OrderWithReservation context){
+                var paymentRequest = ProcessPaymentRequest.processPaymentRequest(context.context().order()
+                                                                                                .orderId(),
+                                                                                 context.context().order()
+                                                                                                .customerId(),
+                                                                                 context.context().pricing()
+                                                                                                .total(),
+                                                                                 context.context().order()
+                                                                                                .paymentMethod());
+                return payment.processPayment(paymentRequest).map(result -> new OrderWithPayment(context, result))
+                                             .onFailure(cause -> releaseStockOnFailure(context));
             }
 
-            private void releaseStockOnFailure(OrderWithReservation context) {
-                var releaseRequest = ReleaseStockRequest.releaseStockRequest(context.reservation()
-                                                                                    .reservationId());
+            private void releaseStockOnFailure(OrderWithReservation context){
+                var releaseRequest = ReleaseStockRequest.releaseStockRequest(context.reservation().reservationId());
                 inventory.releaseStock(releaseRequest);
             }
 
-            private Promise<OrderComplete> createShipment(OrderWithPayment context) {
-                var order = context.reservation()
-                                   .context()
-                                   .order();
+            private Promise<OrderComplete> createShipment(OrderWithPayment context){
+                var order = context.reservation().context()
+                                               .order();
                 var shipmentRequest = CreateShipmentRequest.createShipmentRequest(order.orderId(),
                                                                                   order.items(),
                                                                                   order.shippingAddress(),
                                                                                   order.shippingOption());
-                return fulfillment.createShipment(shipmentRequest)
-                                  .map(shipment -> new OrderComplete(context, shipment));
+                return fulfillment.createShipment(shipmentRequest).map(shipment -> new OrderComplete(context, shipment));
             }
 
-            private OrderConfirmation buildConfirmation(OrderComplete complete) {
-                return OrderConfirmation.confirmed(complete.payment()
-                                                           .reservation()
-                                                           .context()
-                                                           .order(),
-                                                   complete.payment()
-                                                           .reservation()
-                                                           .context()
-                                                           .pricing(),
-                                                   complete.payment()
-                                                           .payment(),
+            private OrderConfirmation buildConfirmation(OrderComplete complete){
+                return OrderConfirmation.confirmed(complete.payment().reservation()
+                                                                   .context()
+                                                                   .order(),
+                                                   complete.payment().reservation()
+                                                                   .context()
+                                                                   .pricing(),
+                                                   complete.payment().payment(),
                                                    complete.shipment());
             }
         }

@@ -7,9 +7,4 @@ import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
-
-/// Subscription qualifier for high-value order events.
-@ResourceQualifier(type = Subscriber.class, config = "messaging.high-value-orders")
-@Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.METHOD)
-public @interface HighValueOrderSubscription {}
+@ResourceQualifier(type = Subscriber.class, config = "messaging.high-value-orders") @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.METHOD) public@interface HighValueOrderSubscription{}

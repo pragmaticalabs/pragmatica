@@ -7,9 +7,4 @@ import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
-
-/// Subscription qualifier for click events.
-@ResourceQualifier(type = Subscriber.class, config = "messaging.click-events")
-@Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.METHOD)
-public @interface ClickEventSubscription {}
+@ResourceQualifier(type = Subscriber.class, config = "messaging.click-events") @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.METHOD) public@interface ClickEventSubscription{}
