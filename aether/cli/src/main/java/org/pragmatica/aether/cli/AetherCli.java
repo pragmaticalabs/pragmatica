@@ -2,11 +2,15 @@ package org.pragmatica.aether.cli;
 
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ConfigLoader;
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -23,7 +27,9 @@ import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.jar.JarFile;
 
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
@@ -767,13 +773,16 @@ public class AetherCli implements Runnable {
             }
         }
 
-        @Command(name = "push", description = "Push artifact from local Maven repository to cluster")
+        @Command(name = "push", description = "Push blueprint and its slices from local Maven repository to cluster")
         static class PushArtifactCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private ArtifactCommand artifactParent;
 
-            @Parameters(index = "0", description = "Artifact coordinates (group:artifact:version)")
+            @Parameters(index = "0", description = "Blueprint coordinates (group:artifact:version)")
             private String coordinates;
+
+            /// Artifact descriptor for push operations.
+            private record ArtifactDescriptor(String groupId, String artifactId, String version, String label, Path localPath) {}
 
             @Override
             @SuppressWarnings("JBCT-SEQ-01")
@@ -786,15 +795,133 @@ public class AetherCli implements Runnable {
                 var groupId = parts[0];
                 var artifactId = parts[1];
                 var version = parts[2];
-                var localPath = findLocalMavenArtifact(groupId, artifactId, version);
-                if (!Files.exists(localPath)) {
-                    System.err.println("Artifact not found in local Maven repository: " + localPath);
+                var blueprintPath = findBlueprintJar(groupId, artifactId, version);
+                if (!Files.exists(blueprintPath)) {
+                    System.err.println("Blueprint JAR not found in local Maven repository: " + blueprintPath);
                     return ExitCode.ERROR;
                 }
-                return pushArtifactToCluster(groupId, artifactId, version, localPath);
+                return pushBlueprintWithSlices(groupId, artifactId, version, blueprintPath);
             }
 
-            private static Path findLocalMavenArtifact(String groupId, String artifactId, String version) {
+            @SuppressWarnings("JBCT-SEQ-01")
+            private Integer pushBlueprintWithSlices(String groupId, String artifactId, String version, Path blueprintPath) {
+                var sliceDescriptors = readSliceDescriptors(blueprintPath);
+                if (sliceDescriptors == null) {
+                    return ExitCode.ERROR;
+                }
+                var allArtifacts = buildArtifactList(groupId, artifactId, version, blueprintPath, sliceDescriptors);
+                return pushAllArtifacts(artifactId, allArtifacts);
+            }
+
+            private List<ArtifactDescriptor> readSliceDescriptors(Path blueprintPath) {
+                return readBlueprintToml(blueprintPath)
+                    .flatMap(PushArtifactCommand::parseSliceCoordinates)
+                    .fold(cause -> reportParseError(cause), descriptors -> descriptors);
+            }
+
+            @SuppressWarnings("JBCT-SEQ-01")
+            private List<ArtifactDescriptor> buildArtifactList(String groupId, String artifactId, String version,
+                                                               Path blueprintPath, List<ArtifactDescriptor> sliceDescriptors) {
+                var all = new ArrayList<ArtifactDescriptor>();
+                var blueprintLabel = groupId + ":" + artifactId + ":" + version + ":blueprint";
+                all.add(new ArtifactDescriptor(groupId, artifactId, version, blueprintLabel, blueprintPath));
+                all.addAll(sliceDescriptors);
+                return List.copyOf(all);
+            }
+
+            @SuppressWarnings({"JBCT-SEQ-01", "JBCT-PAT-01"})
+            private Integer pushAllArtifacts(String artifactId, List<ArtifactDescriptor> artifacts) {
+                System.out.println("Pushing " + artifactId + " blueprint (" + artifacts.size() + " artifacts):");
+                for (var artifact : artifacts) {
+                    var result = pushSingleArtifact(artifact);
+                    if (result != ExitCode.SUCCESS) {
+                        return result;
+                    }
+                }
+                System.out.println("All artifacts pushed successfully.");
+                return ExitCode.SUCCESS;
+            }
+
+            @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"})
+            private Integer pushSingleArtifact(ArtifactDescriptor descriptor) {
+                if (!Files.exists(descriptor.localPath())) {
+                    System.err.println("  x " + descriptor.label() + " (not found: " + descriptor.localPath() + ")");
+                    return ExitCode.ERROR;
+                }
+                try {
+                    var content = Files.readAllBytes(descriptor.localPath());
+                    var repoPath = buildRepoPath(descriptor);
+                    var response = artifactParent.parent.putToNode(repoPath, content, "application/java-archive");
+                    var errorCode = OutputFormatter.checkResponseError(response, artifactParent.parent.outputOptions(), "Failed to push");
+                    if (errorCode >= 0) {
+                        return errorCode;
+                    }
+                    var sizeKb = content.length / 1024;
+                    System.out.println("  + " + descriptor.label() + " (" + sizeKb + "KB)");
+                    return ExitCode.SUCCESS;
+                } catch (IOException e) {
+                    System.err.println("  x " + descriptor.label() + " (error: " + e.getMessage() + ")");
+                    return ExitCode.ERROR;
+                }
+            }
+
+            private static String buildRepoPath(ArtifactDescriptor descriptor) {
+                return buildArtifactPath(descriptor.groupId(), descriptor.artifactId(), descriptor.version());
+            }
+
+            @SuppressWarnings("JBCT-SEQ-01")
+            private static Result<String> readBlueprintToml(Path jarPath) {
+                try (var jar = new JarFile(jarPath.toFile())) {
+                    var entry = jar.getEntry("META-INF/blueprint.toml");
+                    if (entry == null) {
+                        return MISSING_BLUEPRINT_TOML.result();
+                    }
+                    return Result.success(new String(jar.getInputStream(entry).readAllBytes()));
+                } catch (IOException e) {
+                    return new ReadBlueprintFailed(e.getMessage()).result();
+                }
+            }
+
+            private static Result<List<ArtifactDescriptor>> parseSliceCoordinates(String tomlContent) {
+                return TomlParser.parse(tomlContent)
+                                .flatMap(PushArtifactCommand::extractSliceDescriptors);
+            }
+
+            private static Result<List<ArtifactDescriptor>> extractSliceDescriptors(TomlDocument doc) {
+                return doc.getTableArray("slices")
+                          .toResult(MISSING_SLICES_SECTION)
+                          .map(PushArtifactCommand::mapSliceTables);
+            }
+
+            @SuppressWarnings("JBCT-PAT-01")
+            private static List<ArtifactDescriptor> mapSliceTables(List<Map<String, Object>> tables) {
+                var descriptors = new ArrayList<ArtifactDescriptor>();
+                for (var table : tables) {
+                    var artifact = String.valueOf(table.getOrDefault("artifact", ""));
+                    var sliceParts = artifact.split(":");
+                    if (sliceParts.length == 3) {
+                        var path = findSliceJar(sliceParts[0], sliceParts[1], sliceParts[2]);
+                        descriptors.add(new ArtifactDescriptor(sliceParts[0], sliceParts[1], sliceParts[2], artifact, path));
+                    }
+                }
+                return List.copyOf(descriptors);
+            }
+
+            private static List<ArtifactDescriptor> reportParseError(Cause cause) {
+                System.err.println("Failed to read blueprint: " + cause.message());
+                return null;
+            }
+
+            private static Path findBlueprintJar(String groupId, String artifactId, String version) {
+                var m2Home = System.getProperty("user.home") + "/.m2/repository";
+                return Path.of(m2Home,
+                               groupId.replace('.', '/'),
+                               artifactId,
+                               version,
+                               artifactId + "-" + version + "-blueprint.jar");
+            }
+
+            private static Path findSliceJar(String groupId, String artifactId, String version) {
                 var m2Home = System.getProperty("user.home") + "/.m2/repository";
                 return Path.of(m2Home,
                                groupId.replace('.', '/'),
@@ -803,21 +930,15 @@ public class AetherCli implements Runnable {
                                artifactId + "-" + version + ".jar");
             }
 
-            @SuppressWarnings({"JBCT-UTIL-02", "JBCT-SEQ-01"})
-            private Integer pushArtifactToCluster(String groupId, String artifactId, String version, Path localPath) {
-                try{
-                    byte[] content = Files.readAllBytes(localPath);
-                    var repoPath = buildArtifactPath(groupId, artifactId, version);
-                    var response = artifactParent.parent.putToNode(repoPath, content, "application/java-archive");
-                    var errorCode = OutputFormatter.checkResponseError(response, artifactParent.parent.outputOptions(), "Failed to push");
-                    if (errorCode >= 0) {
-                        return errorCode;
-                    }
-                    var message = "Pushed " + coordinates + "\n  From: " + localPath + "\n  Size: " + content.length + " bytes";
-                    return OutputFormatter.printAction(response, artifactParent.parent.outputOptions(), message);
-                } catch (IOException e) {
-                    System.err.println("Error reading file: " + e.getMessage());
-                    return ExitCode.ERROR;
+            private static final Cause MISSING_BLUEPRINT_TOML = Causes.cause(
+                "META-INF/blueprint.toml not found in JAR");
+            private static final Cause MISSING_SLICES_SECTION = Causes.cause(
+                "No [[slices]] section found in blueprint.toml");
+
+            record ReadBlueprintFailed(String detail) implements Cause {
+                @Override
+                public String message() {
+                    return "Failed to read blueprint JAR: " + detail;
                 }
             }
         }

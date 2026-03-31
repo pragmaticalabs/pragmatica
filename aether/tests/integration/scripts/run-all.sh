@@ -28,9 +28,12 @@ fi
 log_step "Waiting for cluster to become ready"
 wait_for_cluster 180
 
+log_step "Pushing test artifacts to cluster"
+push_blueprint "org.pragmatica.aether.example:url-shortener:0.25.0" || log_warn "url-shortener push returned non-zero"
+
 log_step "Deploying test blueprints"
-deploy_blueprint "url-shortener" || log_warn "url-shortener deploy returned non-zero (may already exist)"
-sleep 5
+deploy_blueprint "org.pragmatica.aether.example:url-shortener:0.25.0:blueprint" || log_warn "url-shortener deploy returned non-zero (may already exist)"
+sleep 10
 
 # ---------------------------------------------------------------------------
 # Run suites in order

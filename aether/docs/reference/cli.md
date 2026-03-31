@@ -282,7 +282,7 @@ Artifact repository operations:
 # Deploy JAR to repository
 aether artifact deploy <jar-path> -g <groupId> -a <artifactId> -v <version>
 
-# Push artifact from local Maven repository to cluster
+# Push blueprint and all its slices from local Maven repository to cluster
 aether artifact push <group:artifact:version>
 
 # List artifacts
@@ -301,13 +301,25 @@ aether artifact delete <group:artifact:version>
 aether artifact metrics
 ```
 
+The `push` command takes blueprint coordinates and automatically pushes the blueprint JAR
+along with all referenced slice JARs. It reads `META-INF/blueprint.toml` from the blueprint
+JAR (located at `~/.m2/repository/{group}/{artifact}/{version}/{artifact}-{version}-blueprint.jar`)
+to discover slice references, then pushes each artifact to the cluster repository.
+
 Examples:
 ```bash
 # Deploy a JAR file directly
 aether artifact deploy target/my-slice.jar -g com.example -a my-slice -v 1.0.0
 
-# Push from local Maven repository (~/.m2/repository)
-aether artifact push com.example:my-slice:1.0.0
+# Push blueprint + all slices from local Maven repository
+aether artifact push org.pragmatica.aether.example:url-shortener:0.25.0
+
+# Example output:
+# Pushing url-shortener blueprint (3 artifacts):
+#   + org.pragmatica.aether.example:url-shortener:0.25.0:blueprint (65KB)
+#   + org.pragmatica.aether.example:url-shortener-url-shortener:0.25.0 (34KB)
+#   + org.pragmatica.aether.example:url-shortener-analytics:0.25.0 (32KB)
+# All artifacts pushed successfully.
 
 # View artifact details
 aether artifact info com.example:my-slice:1.0.0

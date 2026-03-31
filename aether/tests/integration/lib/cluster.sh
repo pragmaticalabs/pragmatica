@@ -135,6 +135,12 @@ except:
 " 2>/dev/null
 }
 
+push_blueprint() {
+    local coords="$1"
+    log_info "Pushing blueprint artifacts: ${coords}" >&2
+    aether_failover artifact push "$coords" 2>/dev/null
+}
+
 deploy_blueprint() {
     local artifact="$1"
     log_info "Deploying blueprint: ${artifact}" >&2
