@@ -18,6 +18,7 @@
     <modules>
         <module>pragmatica-lite</module>
         <module>url-shortener</module>
+        <module>url-shortener-v2</module>
         <module>ecommerce</module>
         <module>banking</module>
         <module>pricing-engine</module>
