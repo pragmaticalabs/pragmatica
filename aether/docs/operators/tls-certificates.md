@@ -61,15 +61,14 @@ auto_generate = true
 cluster_secret = "${env:AETHER_CLUSTER_SECRET}"
 ```
 
-If no `cluster_secret` is configured and no `AETHER_CLUSTER_SECRET` environment variable is set,
-Aether falls back to a built-in development secret (`aether-dev-cluster-secret`). This is
-convenient for local development but must not be used in production.
+A `cluster_secret` **must** be configured when TLS is enabled. If no secret is found,
+the node will fail to start with a clear error message. There is no fallback secret.
 
 ### Secret Resolution Order
 
 1. `cluster_secret` value from `[tls]` section in `aether.toml`
 2. `AETHER_CLUSTER_SECRET` environment variable
-3. Built-in development secret (development only)
+3. Startup failure with error message (no fallback)
 
 ## Manual Certificate Files (Production)
 

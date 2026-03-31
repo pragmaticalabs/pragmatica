@@ -87,6 +87,7 @@ import org.pragmatica.aether.worker.group.GroupMembershipTracker;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.CommunityScalingRequest;
 import org.pragmatica.aether.worker.mutation.MutationForwarder;
+import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.MetricsMessage;
@@ -152,7 +153,9 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -347,6 +350,7 @@ public interface AetherNode {
         var nodeConfig = NodeConfig.nodeConfig(config.protocol(), config.topology(), config.activationGated());
         var rabiaMetricsCollector = RabiaMetricsCollector.rabiaMetricsCollector();
         var networkMetricsHandler = NetworkMetricsHandler.networkMetricsHandler();
+        var persistence = resolvePersistence(config);
         // Assemble all components and collect routes
         // Use consensus-based leader election to prevent flapping when nodes see different topologies
         return RabiaNode.rabiaNode(nodeConfig,
@@ -356,7 +360,7 @@ public interface AetherNode {
                                    deserializer,
                                    rabiaMetricsCollector,
                                    true,
-                                   RabiaPersistence.inMemory(),
+                                   persistence,
                                    config.tls())
                         .flatMap(clusterNode -> assembleNode(config,
                                                              delegateRouter,
@@ -370,6 +374,31 @@ public interface AetherNode {
                                                              deserializer,
                                                              nodeCodec,
                                                              dhtNode));
+    }
+
+    private static RabiaPersistence<KVCommand<AetherKey>> resolvePersistence(AetherNodeConfig config) {
+        return config.backupConfig()
+                     .filter(b -> !b.path().isBlank())
+                     .map(AetherNode::createGitBackedPersistence)
+                     .or(RabiaPersistence::inMemory);
+    }
+
+    private static RabiaPersistence<KVCommand<AetherKey>> createGitBackedPersistence(BackupConfig backup) {
+        var backupDir = Path.of(backup.path());
+        var remote = Option.option(backup.remote()).filter(s -> !s.isBlank());
+        LoggerFactory.getLogger(AetherNode.class).info("Consensus persistence: git-backed at {}", backupDir);
+        return RabiaPersistence.gitBacked(backupDir, remote,
+                                          AetherNode::snapshotToBase64,
+                                          AetherNode::base64ToSnapshot);
+    }
+
+    private static Result<String> snapshotToBase64(byte[] snapshot) {
+        return Result.success(Base64.getEncoder().encodeToString(snapshot));
+    }
+
+    private static Result<byte[]> base64ToSnapshot(String encoded) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> Base64.getDecoder().decode(encoded.trim()));
     }
 
     private static Result<AetherNode> assembleNode(AetherNodeConfig config,
@@ -943,6 +972,7 @@ public interface AetherNode {
                                                   metricsCollector,
                                                   Option.some(invocationMetrics),
                                                   clusterNode,
+                                                  kvStore,
                                                   TimeSpan.timeSpan(config.controllerConfig()
                                                                           .scalingConfig()
                                                                           .evaluationIntervalMs())

@@ -2,6 +2,7 @@ package org.pragmatica.aether;
 
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.Environment;
@@ -11,8 +12,10 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.security.CertificateProvider;
 import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
 
@@ -72,10 +75,12 @@ public record Main(String[] args) {
                                                        managementPort,
                                                        dhtConfig,
                                                        coreMax);
-        var withConfig = wireConfigProvider(config);
+        var withBackup = wireBackupIfConfigured(config, aetherConfig);
+        var withConfig = wireConfigProvider(withBackup);
         var withAppHttp = wireAppHttpIfConfigured(withConfig, aetherConfig);
         var withMgmtProtocol = wireManagementHttpProtocol(withAppHttp, aetherConfig);
         var withTls = wireTlsIfEnabled(withMgmtProtocol, aetherConfig);
+        warnInsecureTlsInNonLocal(withTls, aetherConfig);
         var withStorage = wireStorageIfConfigured(withTls, aetherConfig);
         var finalConfig = wireCloudIfConfigured(withStorage, aetherConfig);
         var node = AetherNode.aetherNode(finalConfig)
@@ -91,6 +96,15 @@ public record Main(String[] args) {
                                                                                                               cause.message()))
                                                                                 .option())
                            .map(config::withEnvironment)
+                           .or(config);
+    }
+
+    private static AetherNodeConfig wireBackupIfConfigured(AetherNodeConfig config,
+                                                              Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(AetherConfig::backup)
+                           .filter(BackupConfig::enabled)
+                           .filter(b -> !b.path().isBlank())
+                           .map(config::withBackupConfig)
                            .or(config);
     }
 
@@ -135,6 +149,18 @@ public record Main(String[] args) {
                            .or(config);
     }
 
+    private void warnInsecureTlsInNonLocal(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
+        var isNonLocal = aetherConfig.map(AetherConfig::environment)
+                                     .filter(env -> env != Environment.LOCAL)
+                                     .isPresent();
+
+        if (isNonLocal && config.tls().isEmpty()) {
+            log.warn("*** SECURITY WARNING: Running without TLS in non-LOCAL environment. "
+                     + "Cluster transport will use insecure self-signed certificates with no mutual authentication. "
+                     + "Configure TLS via [tls] section in aether.toml for production deployments. ***");
+        }
+    }
+
     private AetherNodeConfig wireTlsIfEnabled(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
         return aetherConfig.filter(AetherConfig::tlsEnabled)
                            .flatMap(AetherConfig::tls)
@@ -143,23 +169,29 @@ public record Main(String[] args) {
                            .or(config);
     }
 
-    private AetherNodeConfig wireAutoTls(AetherNodeConfig config, org.pragmatica.aether.config.TlsConfig tlsCfg) {
-        var secret = resolveClusterSecret(tlsCfg);
-        return SelfSignedCertificateProvider.selfSignedCertificateProvider(secret)
-                                            .flatMap(provider -> wireProviderToConfig(config, provider))
-                                            .onFailure(cause -> log.error("Failed to setup TLS: {}",
-                                                                          cause.message()))
-                                            .or(config);
+    private AetherNodeConfig wireAutoTls(AetherNodeConfig config,
+                                         org.pragmatica.aether.config.TlsConfig tlsCfg) {
+        return resolveClusterSecret(tlsCfg)
+            .flatMap(SelfSignedCertificateProvider::selfSignedCertificateProvider)
+            .flatMap(provider -> wireProviderToConfig(config, provider))
+            .onFailure(cause -> log.error("Failed to setup TLS: {}", cause.message()))
+            .or(config);
     }
 
-    private static byte[] resolveClusterSecret(org.pragmatica.aether.config.TlsConfig tlsCfg) {
+    private static Result<byte[]> resolveClusterSecret(org.pragmatica.aether.config.TlsConfig tlsCfg) {
         return Option.option(tlsCfg.clusterSecret())
                      .filter(s -> !s.isBlank())
                      .orElse(Option.option(System.getenv("AETHER_CLUSTER_SECRET"))
                                    .filter(s -> !s.isBlank()))
                      .map(s -> s.getBytes(StandardCharsets.UTF_8))
-                     .or("aether-dev-cluster-secret".getBytes(StandardCharsets.UTF_8));
+                     .toResult(MISSING_CLUSTER_SECRET);
     }
+
+    private static final Cause MISSING_CLUSTER_SECRET = Causes.cause(
+        "No cluster secret configured. Set 'cluster_secret' in [tls] section " +
+        "or AETHER_CLUSTER_SECRET environment variable. " +
+        "A cluster secret is required for TLS certificate generation.");
+
 
     private static Result<AetherNodeConfig> wireProviderToConfig(AetherNodeConfig config,
                                                                  CertificateProvider provider) {
