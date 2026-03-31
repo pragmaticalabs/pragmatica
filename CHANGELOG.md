@@ -24,6 +24,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Integration test suite** — 14 suites, 56 Docker-based test scripts (smoke, stability, chaos, scaling, streaming, security, deployment, cluster-mgmt, resources, artifacts, database, observability, network, edge-cases)
 - **Installation binaries** — jlink custom JRE + shaded JAR bundles for node/cli/forge, multi-platform archives (linux-amd64, linux-arm64, darwin), platform-aware install.sh/upgrade.sh
 
+- **Streaming Phase 2** — Governor-push replication (fire-and-forget with watermark tracking), strong consistency (Rabia consensus produce path for total ordering), sealed segment pipeline (EvictionListener → SegmentSealer → StorageSegmentSink → SegmentReader), consumer read-preference (LEADER/NEAREST/FOLLOWER_ONLY), governor failover recovery (watermark-based replica catch-up), tier-aware retention (aggressive post-seal eviction)
+- **AHSE Phase 2** — RemoteTier (S3-backed StorageTier with SigV4 REST client), ContentStore (auto-chunking API with manifest blocks, compression integration), DemotionManager (4 eviction strategies: AGE/LFU/LRU/SIZE_PRESSURE, dormant/active lifecycle), StorageGarbageCollector (orphan collection with grace period, dormant/active), PromotionManager (frequency-based cold-to-hot promotion), write-behind policy (async slow-tier writes with bounded queue), cross-node prefetching (SWIM-piggybacked access hints)
+- **AHSE Phase 3** — LZ4/ZSTD compression pipeline, AES-256-GCM block encryption, StorageBackedPersistence (ContentStore-backed RabiaPersistence)
+- **S3 REST client** — SigV4-signed S3-compatible client in `integrations/cloud/aws/s3` (PutObject/GetObject/DeleteObject/HeadObject/ListObjectsV2, path-style MinIO support)
+- **Architectural compliance** — dormant/active lifecycle on all background workers, KV-Store persistence abstractions (WatermarkStore, ReplicaAssignmentStore, TombstoneStore), SegmentIndex rebuild from storage refs, control-plane delegation investigation updated
 - **Compact object headers** — enabled `-XX:+UseCompactObjectHeaders` (Project Lilliput) across all JVM configurations: Docker, systemd, K8s, cloud, install scripts
 - **Integration test metrics** — opt-in thread/heap/RSS collection before+after each test (`COLLECT_METRICS=true`)
 
