@@ -37,6 +37,9 @@ public interface StorageInstance {
     /// Delete a named reference.
     Promise<Unit> deleteRef(String name);
 
+    /// Delete a block from all tiers and remove its lifecycle metadata. Used by GC.
+    Promise<Unit> delete(BlockId id);
+
     /// Instance name.
     String name();
 
@@ -117,6 +120,12 @@ final class DefaultStorageInstance implements StorageInstance {
         metadataStore.removeRef(refName)
                      .onPresent(id -> metadataStore.computeLifecycle(id, BlockLifecycle::withRefCountDecremented));
         return Promise.success(unit());
+    }
+
+    @Override
+    public Promise<Unit> delete(BlockId id) {
+        return deleteFromAllTiers(id, 0)
+            .onSuccess(_ -> removeLifecycleMetadata(id));
     }
 
     @Override
@@ -250,5 +259,22 @@ final class DefaultStorageInstance implements StorageInstance {
 
     private static TierInfo toTierInfo(StorageTier tier) {
         return TierInfo.tierInfo(tier.level(), tier.usedBytes(), tier.maxBytes());
+    }
+
+    // --- Delete flow ---
+
+    private Promise<Unit> deleteFromAllTiers(BlockId id, int tierIndex) {
+        if (tierIndex >= tiers.size()) {
+            return Promise.success(unit());
+        }
+
+        return tiers.get(tierIndex)
+                    .delete(id)
+                    .flatMap(_ -> deleteFromAllTiers(id, tierIndex + 1));
+    }
+
+    private void removeLifecycleMetadata(BlockId id) {
+        metadataStore.removeLifecycle(id);
+        log.debug("Block {} deleted from all tiers", id);
     }
 }
