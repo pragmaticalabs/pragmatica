@@ -71,21 +71,19 @@ final class SpacingRules {
             return false;
         }
         // Check rules that add spaces
-        return checkCommaRule(ctx) || checkClosingBraceKeywordRule(ctx, text) || checkKeywordBeforeLiteralRule(ctx,
-                                                                                                               firstChar) || checkParenthesesRules(ctx,
-                                                                                                                                                   text,
-                                                                                                                                                   firstChar) || checkBracketRules(ctx,
-                                                                                                                                                                                   firstChar) || checkDotRules(ctx,
-                                                                                                                                                                                                               text,
-                                                                                                                                                                                                               firstChar) || checkAnnotationRules(ctx,
-                                                                                                                                                                                                                                                  firstChar) || checkAngleBracketRules(ctx,
-                                                                                                                                                                                                                                                                                       text,
-                                                                                                                                                                                                                                                                                       firstChar) || checkBinaryOperatorRules(ctx,
-                                                                                                                                                                                                                                                                                                                              text,
-                                                                                                                                                                                                                                                                                                                              firstChar) || checkAlphanumericRule(ctx,
-                                                                                                                                                                                                                                                                                                                                                                  firstChar) || checkClosingParenRule(ctx,
-                                                                                                                                                                                                                                                                                                                                                                                                      firstChar) || checkGenericClosingRule(ctx,
-                                                                                                                                                                                                                                                                                                                                                                                                                                            firstChar);
+        return checkCommaRule(ctx)
+               || checkClosingBraceKeywordRule(ctx, text)
+               || checkOpeningBraceRule(ctx, firstChar)
+               || checkKeywordBeforeLiteralRule(ctx, firstChar)
+               || checkParenthesesRules(ctx, text, firstChar)
+               || checkBracketRules(ctx, firstChar)
+               || checkDotRules(ctx, text, firstChar)
+               || checkAnnotationRules(ctx, firstChar)
+               || checkAngleBracketRules(ctx, text, firstChar)
+               || checkBinaryOperatorRules(ctx, text, firstChar)
+               || checkAlphanumericRule(ctx, firstChar)
+               || checkClosingParenRule(ctx, firstChar)
+               || checkGenericClosingRule(ctx, firstChar);
     }
 
     /// Veto rules that prevent spaces regardless of other rules.
@@ -150,6 +148,16 @@ final class SpacingRules {
     private static boolean checkClosingBraceKeywordRule(SpacingContext ctx, String text) {
         // Space between } and keywords like else, catch, finally, while (do-while)
         return ctx.lastChar() == '}' && SPACE_AFTER_BRACE_KEYWORDS.contains(text);
+    }
+
+    private static boolean checkOpeningBraceRule(SpacingContext ctx, char firstChar) {
+        // Space before '{' in class/method/block declarations
+        // e.g., "class Foo {", "void bar() {", ") {"
+        if (firstChar != '{') {
+            return false;
+        }
+        // Space before { when preceded by ), >, identifier, or other closing tokens
+        return ctx.lastChar() == ')' || ctx.lastChar() == '>' || Character.isLetterOrDigit(ctx.lastChar());
     }
 
     private static boolean checkKeywordBeforeLiteralRule(SpacingContext ctx, char firstChar) {

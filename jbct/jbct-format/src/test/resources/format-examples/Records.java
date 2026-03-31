@@ -5,40 +5,38 @@ import org.pragmatica.lang.Result;
 
 public class Records {
     // Simple record - single line
-    record Point(int x, int y) {}
+    record Point(int x, int y){}
 
     // Record with longer component names
-    record UserCredentials(String username, String password) {}
+    record UserCredentials(String username, String password){}
 
     // Record with generic type
-    record Pair<A, B>(A first, B second) {}
+    record Pair<A, B>(A first, B second){}
 
     // Record with Option
-    record UserProfile(String name, Option<String> bio) {}
+    record UserProfile(String name, Option<String> bio){}
 
     // Record with many components - wraps
-    record DetailedUser(String id, String email, String firstName, String lastName, Option<String> phone) {}
+    record DetailedUser(String id, String email, String firstName, String lastName, Option<String> phone){}
 
     // Record with annotation
-    @SuppressWarnings("unused") record AnnotatedRecord(String value) {}
+    @SuppressWarnings("unused") record AnnotatedRecord(String value){}
 
     // Record with annotated components
-    record AnnotatedComponents(@SuppressWarnings("unused") String first, @Deprecated String second) {}
+    record AnnotatedComponents(@SuppressWarnings("unused") String first, @Deprecated String second){}
 
     // Record with compact constructor
     record Email(String value) {
         public Email {
-            value = value.trim()
-                         .toLowerCase();
+            value = value.trim().toLowerCase();
         }
     }
 
     // Record with custom constructor
     record Password(String value) {
         public Password {
-            if (value.length() < 8) {
-                throw new IllegalArgumentException("Password too short");
-            }
+            if ( value.length() < 8) {
+            throw new IllegalArgumentException("Password too short");}
         }
     }
 
@@ -47,8 +45,7 @@ public class Records {
         public static Result<ValidatedEmail> validatedEmail(String raw) {
             return raw == null || raw.isBlank()
                    ? Result.failure(null)
-                   : Result.success(new ValidatedEmail(raw.trim()
-                                                          .toLowerCase()));
+                   : Result.success(new ValidatedEmail(raw.trim().toLowerCase()));
         }
     }
 
@@ -68,11 +65,11 @@ public class Records {
         String id();
     }
 
-    record Entity(String id, String name) implements Identifiable {}
+    record Entity(String id, String name) implements Identifiable{}
 
     // Nested record
     record Outer(String value, Inner inner) {
-        record Inner(int x, int y) {}
+        record Inner(int x, int y){}
     }
 
     // Record with static fields
@@ -91,43 +88,41 @@ public class Records {
     }
 
     record Circle(double radius) implements Shape {
-        @Override
-        public double area() {
+        @Override public double area() {
             return Math.PI * radius * radius;
         }
     }
 
     record Rectangle(double width, double height) implements Shape {
-        @Override
-        public double area() {
+        @Override public double area() {
             return width * height;
         }
     }
 
     // Record with long generic signature
-    record TypedResult<T, E extends Exception>(T value, Option<E> error, long timestamp) {}
+    record TypedResult<T, E extends Exception>(T value, Option<E> error, long timestamp){}
 
     // Multiline record - parameters aligned to opening paren (like methods)
     record MultilineRecord(String firstParameter,
                            String secondParameter,
                            String thirdParameter,
-                           String fourthParameter) {}
+                           String fourthParameter){}
 
     // Multiline record with annotations
     record MultilineAnnotated(@NotNull String required,
                               @Nullable String optional,
-                              @Valid String validated) {}
+                              @Valid String validated){}
 
     // Multiline record with generics
     record MultilineGeneric<T, E extends Exception>(Result<T> value,
                                                     Option<E> error,
                                                     String message,
-                                                    long timestamp) {}
+                                                    long timestamp){}
 
     // Multiline record implementing interface
     record MultilineWithInterface(String id,
                                   String name,
-                                  String description) implements Identifiable {}
+                                  String description) implements Identifiable{}
 
     @interface NotNull {}
 

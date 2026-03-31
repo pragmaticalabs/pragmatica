@@ -4,6 +4,7 @@ import org.pragmatica.jbct.format.FormatterConfig;
 import org.pragmatica.jbct.format.FormattingError;
 import org.pragmatica.jbct.parser.Java25Parser;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -98,11 +99,16 @@ public class CstFormatter {
                     if (flattened != child) {
                         changed = true;
                     }
-                    // Inline children of nested NonTerminals with the same rule
+                    // Inline children of nested NonTerminals with the same rule,
+                    // or OrdinaryUnit children inside CompilationUnit
+                    // (CompilationUnit unwraps OrdinaryUnit via wrapWithRuleName,
+                    //  but zom wrappers inside OrdinaryUnit keep the OrdinaryUnit rule)
                     if (flattened instanceof CstNode.NonTerminal nested
                         && nested.rule() != null
                         && nt.rule() != null
-                        && nested.rule().getClass() == nt.rule().getClass()) {
+                        && (nested.rule().getClass() == nt.rule().getClass()
+                            || (nt.rule() instanceof RuleId.CompilationUnit
+                                && nested.rule() instanceof RuleId.OrdinaryUnit))) {
                         flatChildren.addAll(nested.children());
                         changed = true;
                     } else {

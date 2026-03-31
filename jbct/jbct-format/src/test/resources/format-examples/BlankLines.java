@@ -48,9 +48,8 @@ public class BlankLines {
 
     // Blank line between logical sections in method
     public Result<String> methodWithSections() {
-        if (name == null) {
-            return Result.failure(Causes.cause("Inline error example"));
-        }
+        if ( name == null) {
+        return Result.failure(Causes.cause("Inline error example"));}
         var trimmed = name.trim();
         var upper = trimmed.toUpperCase();
         return Result.success(upper);
@@ -88,7 +87,7 @@ public class BlankLines {
     }
 
     // Blank line before nested record
-    record NestedRecord(String value) {}
+    record NestedRecord(String value){}
 
     private String process(String input) {
         return input.trim();

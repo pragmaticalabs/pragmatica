@@ -23,8 +23,7 @@ public class MultilineArguments {
 
     // Nested method calls as arguments
     Result<String> nestedCallArgs() {
-        return Result.all(user.map(User::id)
-                              .map(String::trim),
+        return Result.all(user.map(User::id).map(String::trim),
                           account.map(Account::status),
                           profile.flatMap(Profile::validate));
     }
@@ -53,9 +52,8 @@ public class MultilineArguments {
     Result<String> chainedWithArgs() {
         return Result.all(first(),
                           second(),
-                          third())
-                     .flatMap(this::process)
-                     .map(String::trim);
+                          third()).flatMap(this::process)
+                         .map(String::trim);
     }
 
     // Lambda as argument

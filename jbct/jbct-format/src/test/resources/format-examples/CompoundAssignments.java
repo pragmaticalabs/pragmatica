@@ -1,6 +1,4 @@
 package format.examples;
-/// Golden example for compound assignment operators.
-/// Tests all compound assignment operators are preserved correctly.
 public class CompoundAssignments {
     void allCompoundAssignments() {
         int x = 0;
@@ -24,13 +22,11 @@ public class CompoundAssignments {
         int a = 0;
         int b = 0;
         // Compound in conditional
-        if ((a += 1) > 0) {
-            b -= 1;
-        }
+        if ( (a += 1) > 0) {
+        b -= 1;}
         // Compound in loop
-        for (int i = 0; i < 10; i += 2) {
-            a *= 2;
-        }
+        for ( int i = 0; i < 10; i += 2) {
+        a *= 2;}
         // Compound with method call result
         int[] arr = {1, 2, 3};
         arr[0] += getValue();

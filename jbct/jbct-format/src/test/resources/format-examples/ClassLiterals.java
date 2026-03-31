@@ -5,7 +5,7 @@ import java.util.List;
 
 /// Test class literals for various types including primitive arrays.
 public interface ClassLiterals {
-    static void configure(java.util.function.Consumer<Class< ?>> consumer) {
+    static void configure(java.util.function.Consumer<Class<?>> consumer) {
         // Primitive class literals
         consumer.accept(int.class);
         consumer.accept(byte.class);
@@ -20,11 +20,8 @@ public interface ClassLiterals {
         consumer.accept(String[].class);
         consumer.accept(Object[][].class);
         // Chained getClass() calls
-        consumer.accept(List.of()
-                            .getClass());
-        consumer.accept(List.of(1)
-                            .getClass());
-        consumer.accept(List.of(1, 2, 3)
-                            .getClass());
+        consumer.accept(List.of().getClass());
+        consumer.accept(List.of(1).getClass());
+        consumer.accept(List.of(1, 2, 3).getClass());
     }
 }

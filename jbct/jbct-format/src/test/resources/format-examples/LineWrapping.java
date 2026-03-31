@@ -11,8 +11,7 @@ public class LineWrapping {
     private static final String LONG_MESSAGE = "This is a very long message that exceeds the maximum line length and needs to be wrapped";
 
     // Long string concatenation
-    private static final String CONCATENATED = "First part of the message" + " second part of the message"
-                                              + " third part of the message";
+    private static final String CONCATENATED = "First part of the message" + " second part of the message" + " third part of the message";
 
     // Long generic type
     private Map<String, List<Result<Option<String>>>> complexMap;
@@ -35,12 +34,11 @@ public class LineWrapping {
 
     // Long chain - each call on new line
     public Result<String> longChain(Result<String> input) {
-        return input.map(String::trim)
-                    .map(String::toLowerCase)
-                    .flatMap(this::validate)
-                    .map(String::toUpperCase)
-                    .onSuccess(this::log)
-                    .onFailure(this::logError);
+        return input.map(String::trim).map(String::toLowerCase)
+                        .flatMap(this::validate)
+                        .map(String::toUpperCase)
+                        .onSuccess(this::log)
+                        .onFailure(this::logError);
     }
 
     // Long boolean expression
@@ -50,7 +48,7 @@ public class LineWrapping {
 
     // Long arithmetic expression
     public double longCalculation(double a, double b, double c, double d) {
-        return ( a * b + c * d) / (a + b + c + d) * Math.PI + Math.E;
+        return (a * b + c * d) / (a + b + c + d) * Math.PI + Math.E;
     }
 
     // Long ternary
@@ -89,15 +87,14 @@ public class LineWrapping {
 
     // Long stream pipeline
     public List<String> longStreamPipeline(List<String> input) {
-        return input.stream()
-                    .filter(s -> s != null && !s.isEmpty())
-                    .map(String::trim)
-                    .map(String::toLowerCase)
-                    .filter(s -> s.length() > 3)
-                    .distinct()
-                    .sorted()
-                    .limit(100)
-                    .toList();
+        return input.stream().filter(s -> s != null && !s.isEmpty())
+                           .map(String::trim)
+                           .map(String::toLowerCase)
+                           .filter(s -> s.length() > 3)
+                           .distinct()
+                           .sorted()
+                           .limit(100)
+                           .toList();
     }
 
     // Stub types and methods
