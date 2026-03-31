@@ -22,6 +22,7 @@ import org.pragmatica.swim.SwimProtocol;
 import org.pragmatica.swim.SwimTransport;
 
 import java.net.InetSocketAddress;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.channel.EventLoopGroup;
@@ -62,6 +63,9 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private volatile GossipEncryptor encryptor;
     private final AtomicReference<Option<SwimProtocol>> swimProtocol = new AtomicReference<>(none());
     private final AtomicReference<Option<SwimTransport>> swimTransport = new AtomicReference<>(none());
+    private final AtomicInteger faultyCountInWindow = new AtomicInteger();
+    private volatile long faultyWindowStart;
+    private volatile boolean locallyDisconnected;
 
     private CoreSwimHealthDetector(MessageRouter router,
                                    TopologyConfig topologyConfig,
@@ -122,11 +126,13 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
     /// Notify SWIM that a TCP connection was established to a peer.
     /// Resets FAULTY/SUSPECT state so SWIM can detect future departures.
+    /// If the member was removed from SWIM during a mass-faulty event, re-adds it as a seed.
     /// A completed TCP Hello handshake is proof the node is alive.
     @SuppressWarnings("JBCT-RET-01") // Event callback — void inherent
     public void onNodeConnected(NodeId nodeId) {
         swimProtocol.get()
-                    .onPresent(protocol -> protocol.markAlive(nodeId));
+                    .onPresent(protocol -> readdOrMarkAlive(protocol, nodeId));
+        clearLocalDisconnectFlag();
     }
 
     // ---- SwimMembershipListener (void callbacks required by interface) ----
@@ -134,6 +140,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     @SuppressWarnings("JBCT-RET-01")
     public void onMemberJoined(SwimMember member) {
         log.info("SWIM member joined: {}", member.nodeId());
+        clearLocalDisconnectFlag();
     }
 
     @Override
@@ -145,6 +152,9 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onMemberFaulty(SwimMember member) {
+        if (isLocalDisconnect(member)) {
+            return;
+        }
         log.error("SWIM member faulty: {}, routing DisconnectNode and RemoveNode", member.nodeId());
         router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(member.nodeId()));
         router.routeAsync(() -> new TopologyManagementMessage.RemoveNode(member.nodeId()));
@@ -155,6 +165,76 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     public void onMemberLeft(NodeId leftNodeId) {
         log.warn("SWIM member left: {}, routing DisconnectNode", leftNodeId);
         router.routeAsync(() -> new NetworkServiceMessage.DisconnectNode(leftNodeId));
+    }
+
+    /// Whether SWIM detected a local network disconnect (>50% peers FAULTY in one window).
+    /// Exposed for testing and diagnostics.
+    public boolean isLocallyDisconnected() {
+        return locallyDisconnected;
+    }
+
+    // ---- Mass-faulty detection ----
+    private boolean isLocalDisconnect(SwimMember member) {
+        var now = System.currentTimeMillis();
+        var suspectTimeoutMs = CORE_SWIM_CONFIG.suspectTimeout().millis();
+
+        if (now - faultyWindowStart > suspectTimeoutMs) {
+            faultyCountInWindow.set(0);
+            faultyWindowStart = now;
+        }
+
+        var faultyCount = faultyCountInWindow.incrementAndGet();
+        var totalMembers = swimProtocol.get()
+                                       .map(p -> p.members().size())
+                                       .or(0);
+
+        if (totalMembers > 0 && faultyCount > totalMembers / 2) {
+            locallyDisconnected = true;
+            log.warn("Local disconnect detected: {}/{} peers FAULTY within {}ms — suppressing topology drain for {}",
+                     faultyCount, totalMembers, suspectTimeoutMs, member.nodeId().id());
+            return true;
+        }
+
+        return false;
+    }
+
+    @SuppressWarnings("JBCT-RET-01") // State mutation helper — void inherent
+    private void clearLocalDisconnectFlag() {
+        if (locallyDisconnected) {
+            locallyDisconnected = false;
+            faultyCountInWindow.set(0);
+            log.info("Network recovered from local disconnect");
+        }
+    }
+
+    // ---- SWIM reconnect ----
+    @SuppressWarnings("JBCT-RET-01") // Void callback delegating to protocol
+    private void readdOrMarkAlive(SwimProtocol protocol, NodeId nodeId) {
+        if (protocol.members().containsKey(nodeId)) {
+            protocol.markAlive(nodeId);
+        } else {
+            resolveSwimAddress(nodeId)
+                .onPresent(addr -> addAndLogSeedMember(protocol, nodeId, addr));
+        }
+    }
+
+    @SuppressWarnings("JBCT-RET-01") // Logging side-effect helper
+    private static void addAndLogSeedMember(SwimProtocol protocol, NodeId nodeId, InetSocketAddress addr) {
+        protocol.addSeedMember(nodeId, addr);
+        log.info("Re-added SWIM member {} at {} after disconnect recovery", nodeId.id(), addr);
+    }
+
+    private Option<InetSocketAddress> resolveSwimAddress(NodeId nodeId) {
+        return Option.from(topologyConfig.coreNodes()
+                                         .stream()
+                                         .filter(node -> node.id().equals(nodeId))
+                                         .map(CoreSwimHealthDetector::toSwimAddress)
+                                         .findFirst());
+    }
+
+    private static InetSocketAddress toSwimAddress(NodeInfo node) {
+        return InetSocketAddress.createUnresolved(node.address().host(),
+                                                  node.address().port() + SWIM_PORT_OFFSET);
     }
 
     // ---- Internal ----
