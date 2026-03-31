@@ -10,5 +10,5 @@ public interface CompressionCodec {
     Result<byte[]> decompress(byte[] data, int originalSize);
 
     /// No-op codec for uncompressed blocks.
-    CompressionCodec NONE = new NoOpCodec();
+    CompressionCodec NONE = NoOpCodec.INSTANCE;
 }

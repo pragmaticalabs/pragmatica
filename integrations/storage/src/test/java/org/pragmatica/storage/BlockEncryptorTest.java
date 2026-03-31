@@ -22,7 +22,7 @@ class BlockEncryptorTest {
     void setUp() {
         key = new byte[32];
         new SecureRandom().nextBytes(key);
-        encryptor = BlockEncryptor.aesGcm(key, KEY_ID);
+        encryptor = BlockEncryptor.aesGcm(key, KEY_ID).unwrap();
     }
 
     @Nested
@@ -52,7 +52,7 @@ class BlockEncryptorTest {
         void encrypt_differentKey_cannotDecrypt() {
             var otherKey = new byte[32];
             new SecureRandom().nextBytes(otherKey);
-            var otherEncryptor = BlockEncryptor.aesGcm(otherKey, "other-key");
+            var otherEncryptor = BlockEncryptor.aesGcm(otherKey, "other-key").unwrap();
 
             encryptor.encrypt(TEST_DATA)
                      .flatMap(encrypted -> otherEncryptor.decrypt(encrypted.ciphertext(), encrypted.params()))
@@ -104,6 +104,16 @@ class BlockEncryptorTest {
             encryptor.encrypt(TEST_DATA)
                      .onFailure(cause -> fail("Encryption failed: " + cause.message()))
                      .onSuccess(encrypted -> assertThat(encrypted.params().algorithm()).isEqualTo("AES/GCM/NoPadding"));
+        }
+
+        @Test
+        void aesGcm_invalidKeyLength_returnsFailure() {
+            var shortKey = new byte[16];
+            new SecureRandom().nextBytes(shortKey);
+
+            BlockEncryptor.aesGcm(shortKey, KEY_ID)
+                          .onSuccess(_ -> fail("Should fail with invalid key length"))
+                          .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.InvalidKeyLength.class));
         }
 
         @Test

@@ -30,10 +30,10 @@ import java.net.http.HttpRequest.BodyPublishers;
 import org.pragmatica.lang.Result;
 
 import java.security.MessageDigest;
-import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -44,15 +44,17 @@ import static org.pragmatica.lang.Promise.success;
 record RestS3Client(S3Config config, HttpOperations http) implements S3Client {
     private static final String S3_SERVICE = "s3";
     private static final String OCTET_STREAM = "application/octet-stream";
+    private static final Pattern KEY_PATTERN = Pattern.compile("<Key>(.*?)</Key>");
 
     @Override
     public Promise<Unit> putObject(String key, byte[] content, String contentType) {
         var url = config.objectUrl(key);
-        var headers = Map.of("content-type", contentType, "content-md5", contentMd5(content));
-        return AwsSigV4Signer.sign(config.toAwsConfig(), S3_SERVICE, "PUT", url, headers, content)
-                             .async()
-                             .flatMap(signed -> sendPutRequest(url, content, contentType, signed))
-                             .flatMap(result -> checkPutSuccess(result, key));
+        return contentMd5(content)
+            .map(md5 -> Map.of("content-type", contentType, "content-md5", md5))
+            .flatMap(headers -> AwsSigV4Signer.sign(config.toAwsConfig(), S3_SERVICE, "PUT", url, headers, content))
+            .async()
+            .flatMap(signed -> sendPutRequest(url, content, contentType, signed))
+            .flatMap(result -> checkPutSuccess(result, key));
     }
 
     @Override
@@ -100,13 +102,21 @@ record RestS3Client(S3Config config, HttpOperations http) implements S3Client {
     private Promise<HttpResult<String>> sendPutRequest(String url, byte[] content,
                                                        String contentType,
                                                        Map<String, String> signedHeaders) {
+        return contentMd5(content)
+            .map(md5 -> buildPutRequest(url, content, contentType, md5, signedHeaders))
+            .async()
+            .flatMap(http::sendString);
+    }
+
+    private static HttpRequest buildPutRequest(String url, byte[] content, String contentType,
+                                                String md5, Map<String, String> signedHeaders) {
         var builder = HttpRequest.newBuilder()
                                 .uri(URI.create(url))
                                 .PUT(BodyPublishers.ofByteArray(content))
                                 .header("Content-Type", contentType)
-                                .header("Content-MD5", contentMd5(content));
+                                .header("Content-MD5", md5);
         signedHeaders.forEach(builder::header);
-        return http.sendString(builder.build());
+        return builder.build();
     }
 
     private Promise<HttpResult<byte[]>> sendGetRequest(String url, Map<String, String> signedHeaders) {
@@ -178,42 +188,23 @@ record RestS3Client(S3Config config, HttpOperations http) implements S3Client {
     // --- XML key extraction ---
 
     static List<String> extractKeys(String xml) {
-        var keys = new ArrayList<String>();
-        var keyTag = "<Key>";
-        var keyCloseTag = "</Key>";
-        var searchFrom = 0;
-
-        while (searchFrom < xml.length()) {
-            var startIdx = xml.indexOf(keyTag, searchFrom);
-            if (startIdx < 0) {
-                break;
-            }
-            var valueStart = startIdx + keyTag.length();
-            var endIdx = xml.indexOf(keyCloseTag, valueStart);
-            if (endIdx < 0) {
-                break;
-            }
-            keys.add(xml.substring(valueStart, endIdx));
-            searchFrom = endIdx + keyCloseTag.length();
-        }
-
-        return List.copyOf(keys);
+        return KEY_PATTERN.matcher(xml)
+                          .results()
+                          .map(m -> m.group(1))
+                          .toList();
     }
 
     // --- Content-MD5 computation ---
 
-    static String contentMd5(byte[] content) {
-        return Base64.getEncoder().encodeToString(md5Digest(content));
+    static Result<String> contentMd5(byte[] content) {
+        return liftDigest(content, "MD5")
+            .map(Base64.getEncoder()::encodeToString);
     }
 
-    private static byte[] md5Digest(byte[] content) {
-        return liftDigest(content, "MD5");
-    }
-
-    private static byte[] liftDigest(byte[] content, String algorithm) {
+    private static Result<byte[]> liftDigest(byte[] content, String algorithm) {
         return Result.lift(
             t -> new S3Error.NetworkError("Failed to compute " + algorithm, Option.option(t)),
             () -> MessageDigest.getInstance(algorithm).digest(content)
-        ).or(new byte[0]);
+        );
     }
 }

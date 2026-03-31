@@ -8,6 +8,7 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -411,8 +412,33 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
     /// A raw event read from the ring buffer.
     public record RawEvent(long offset, byte[] data, long timestamp) {
+
+        /// Defensive copy of mutable byte array.
+        public RawEvent {
+            data = data.clone();
+        }
+
         public static RawEvent rawEvent(long offset, byte[] data, long timestamp) {
             return new RawEvent(offset, data, timestamp);
+        }
+
+        /// Defensive copy -- prevent external mutation of the event data.
+        @Override
+        public byte[] data() {
+            return data.clone();
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof RawEvent other
+                   && offset == other.offset
+                   && timestamp == other.timestamp
+                   && Arrays.equals(data, other.data);
+        }
+
+        @Override
+        public int hashCode() {
+            return 31 * (31 * Long.hashCode(offset) + Arrays.hashCode(data)) + Long.hashCode(timestamp);
         }
     }
 }

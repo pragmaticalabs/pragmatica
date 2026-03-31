@@ -1,5 +1,6 @@
 package org.pragmatica.storage;
 
+import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 
 import javax.crypto.Cipher;
@@ -17,6 +18,7 @@ final class AesGcmBlockEncryptor implements BlockEncryptor {
     private static final String ALGORITHM = "AES/GCM/NoPadding";
     private static final int IV_LENGTH_BYTES = 12;
     private static final int GCM_TAG_LENGTH_BITS = 128;
+    private static final int REQUIRED_KEY_LENGTH = 32;
     private final byte[] key;
     private final String keyId;
     private final SecureRandom secureRandom;
@@ -27,8 +29,11 @@ final class AesGcmBlockEncryptor implements BlockEncryptor {
         this.secureRandom = new SecureRandom();
     }
 
-    static BlockEncryptor aesGcmBlockEncryptor(byte[] key, String keyId) {
-        return new AesGcmBlockEncryptor(key, keyId);
+    static Result<BlockEncryptor> aesGcmBlockEncryptor(byte[] key, String keyId) {
+        if (key.length != REQUIRED_KEY_LENGTH) {
+            return new EncryptionError.InvalidKeyLength(key.length, REQUIRED_KEY_LENGTH).result();
+        }
+        return Result.success(new AesGcmBlockEncryptor(key, keyId));
     }
 
     @Override
@@ -62,7 +67,7 @@ final class AesGcmBlockEncryptor implements BlockEncryptor {
         return encryptedData(ciphertext, encryptionParams(ALGORITHM, iv, keyId));
     }
 
-    private byte[] doCipher(int mode, byte[] input, byte[] iv) throws Exception {
+    private byte[] doCipher(int mode, byte[] input, byte[] iv) throws GeneralSecurityException {
         var spec = new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv);
         var secretKey = new SecretKeySpec(key, "AES");
         var cipher = Cipher.getInstance(ALGORITHM);

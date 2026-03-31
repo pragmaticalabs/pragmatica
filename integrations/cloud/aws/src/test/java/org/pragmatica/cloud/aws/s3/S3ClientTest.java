@@ -35,6 +35,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 class S3ClientTest {
     private static final S3Config AWS_CONFIG = S3Config.s3Config("test-bucket", "us-east-1",
@@ -91,7 +92,7 @@ class S3ClientTest {
 
             awsClient.putObject("test-key", "hello".getBytes(StandardCharsets.UTF_8), "text/plain")
                      .await()
-                     .onFailure(cause -> assertThat(cause).isNull())
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(unit -> assertThat(unit).isEqualTo(Unit.unit()));
 
             assertThat(capturedRequest.get().method()).isEqualTo("PUT");
@@ -118,7 +119,7 @@ class S3ClientTest {
 
             awsClient.getObject("test-key")
                      .await()
-                     .onFailure(cause -> assertThat(cause).isNull())
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(opt -> assertThat(opt.map(v -> new String(v, StandardCharsets.UTF_8)).or("")).isEqualTo("file-content"));
 
             assertThat(capturedRequest.get().method()).isEqualTo("GET");
@@ -130,7 +131,7 @@ class S3ClientTest {
 
             awsClient.getObject("missing-key")
                      .await()
-                     .onFailure(cause -> assertThat(cause).isNull())
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(opt -> assertThat(opt).isEqualTo(Option.none()));
         }
     }
@@ -144,7 +145,7 @@ class S3ClientTest {
 
             awsClient.headObject("test-key")
                      .await()
-                     .onFailure(cause -> assertThat(cause).isNull())
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(exists -> assertThat(exists).isTrue());
 
             assertThat(capturedRequest.get().method()).isEqualTo("HEAD");
@@ -156,7 +157,7 @@ class S3ClientTest {
 
             awsClient.headObject("missing-key")
                      .await()
-                     .onFailure(cause -> assertThat(cause).isNull())
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(exists -> assertThat(exists).isFalse());
         }
     }
@@ -170,7 +171,7 @@ class S3ClientTest {
 
             awsClient.deleteObject("test-key")
                      .await()
-                     .onFailure(cause -> assertThat(cause).isNull())
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(unit -> assertThat(unit).isEqualTo(Unit.unit()));
 
             assertThat(capturedRequest.get().method()).isEqualTo("DELETE");
@@ -182,7 +183,7 @@ class S3ClientTest {
 
             awsClient.deleteObject("missing-key")
                      .await()
-                     .onFailure(cause -> assertThat(cause).isNull())
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(unit -> assertThat(unit).isEqualTo(Unit.unit()));
         }
     }
@@ -196,7 +197,7 @@ class S3ClientTest {
 
             awsClient.listObjects("data/", 100)
                      .await()
-                     .onFailure(cause -> assertThat(cause).isNull())
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(keys -> assertThat(keys).containsExactly("data/file1.txt", "data/file2.txt"));
 
             assertThat(capturedRequest.get().method()).isEqualTo("GET");
@@ -210,7 +211,7 @@ class S3ClientTest {
 
             awsClient.listObjects("nonexistent/", 10)
                      .await()
-                     .onFailure(cause -> assertThat(cause).isNull())
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(keys -> assertThat(keys).isEmpty());
         }
     }
@@ -224,7 +225,7 @@ class S3ClientTest {
 
             awsClient.headObject("test-key")
                      .await()
-                     .onFailure(cause -> assertThat(cause).isNull());
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()));
 
             var authHeader = capturedRequest.get().headers().firstValue("Authorization");
             assertThat(authHeader).isPresent();
@@ -237,7 +238,7 @@ class S3ClientTest {
 
             awsClient.headObject("test-key")
                      .await()
-                     .onFailure(cause -> assertThat(cause).isNull());
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()));
 
             var dateHeader = capturedRequest.get().headers().firstValue("X-Amz-Date");
             assertThat(dateHeader).isPresent();
@@ -254,14 +255,14 @@ class S3ClientTest {
             testHttp.respondWithString(200, "");
             awsClient.putObject("rt-key", content, "text/plain")
                      .await()
-                     .onFailure(cause -> assertThat(cause).isNull());
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()));
 
             assertThat(capturedRequest.get().method()).isEqualTo("PUT");
 
             testHttp.respondWithBytes(200, content);
             awsClient.getObject("rt-key")
                      .await()
-                     .onFailure(cause -> assertThat(cause).isNull())
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                      .onSuccess(opt -> assertThat(opt.map(v -> new String(v, StandardCharsets.UTF_8)).or("")).isEqualTo("round-trip-content"));
         }
     }
@@ -293,15 +294,21 @@ class S3ClientTest {
 
         @Test
         void contentMd5_nonEmpty_returnsBase64() {
-            var md5 = RestS3Client.contentMd5("hello".getBytes(StandardCharsets.UTF_8));
+            RestS3Client.contentMd5("hello".getBytes(StandardCharsets.UTF_8))
+                        .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                        .onSuccess(ContentMd5::assertNonEmptyBase64);
+        }
+
+        private static void assertNonEmptyBase64(String md5) {
             assertThat(md5).isNotEmpty();
             assertThat(md5).isBase64();
         }
 
         @Test
         void contentMd5_empty_returnsBase64() {
-            var md5 = RestS3Client.contentMd5(new byte[0]);
-            assertThat(md5).isNotEmpty();
+            RestS3Client.contentMd5(new byte[0])
+                        .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                        .onSuccess(md5 -> assertThat(md5).isNotEmpty());
         }
     }
 

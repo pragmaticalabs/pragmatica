@@ -48,7 +48,7 @@ public interface BlockEncryptor {
     BlockEncryptor NONE = NoOpEncryptor.INSTANCE;
 
     /// Create an AES-256-GCM encryptor with the given key and key identifier.
-    static BlockEncryptor aesGcm(byte[] key, String keyId) {
+    static Result<BlockEncryptor> aesGcm(byte[] key, String keyId) {
         return AesGcmBlockEncryptor.aesGcmBlockEncryptor(key, keyId);
     }
 }
