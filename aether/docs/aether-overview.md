@@ -353,7 +353,7 @@ No polling. No periodic reconciliation loops for core state.
 | **Management** | 37 CLI commands (single + REPL), 30+ REST endpoints, web dashboard |
 | **Networking** | Netty-based cluster transport, topology management with quorum detection, reconnection with backoff |
 | **Local Dev** | Forge (5-node single-JVM simulator), chaos operations, load generation, web dashboard |
-| **Testing** | 81 E2E tests against 5-node Podman clusters, artifact repository tests, deployment lifecycle tests, chaos/recovery tests |
+| **Testing** | 10,686 unit tests, 21 Forge integration tests, 14 Docker integration suites (~50 scripts) against 5-node clusters |
 
 ### E2E Test Coverage
 

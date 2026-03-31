@@ -47,7 +47,7 @@ Comprehensive inventory of all Aether distributed runtime capabilities.
 
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
-| 13 | Rabia consensus | Battle-tested | Leaderless Byzantine fault-tolerant consensus for KV-Store replication |
+| 13 | Rabia consensus | Battle-tested | Leaderless crash-fault tolerant (CFT) consensus for KV-Store replication |
 | 14 | Leader election | Battle-tested | Lightweight leader detection with virtually instant re-election on departure |
 | 15 | Quorum state management | Battle-tested | Monotonic-sequenced quorum notifications, graceful degradation on quorum loss, automatic restoration |
 | 16 | Topology management | Battle-tested | Node discovery, addition/removal events, health tracking, grace period for departures |

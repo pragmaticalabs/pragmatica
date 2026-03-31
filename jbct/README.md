@@ -53,6 +53,14 @@ failOnWarning = false
 
 Categories: Return Kinds, Value Objects, Exceptions, Naming, Lambda/Composition, Patterns, Style, Logging, Architecture, Static Imports, Utilities, Nesting, Zones, Sealed Types, Acronyms.
 
+## JBCT Specification
+
+The full Java Backend Coding Technology specification — including structural patterns (Leaf, Sequencer, Fork-Join, Condition, Iteration), zone architecture, and BPMN integration guide — lives in the [coding-technology](https://github.com/pragmaticalabs/coding-technology) repository.
+
+Key references:
+- **Structural patterns** → BPMN correspondence: Leaf↔Task, Sequencer↔Sequence Flow, Fork-Join↔Parallel Gateway, Condition↔Exclusive Gateway, Iteration↔Multi-Instance Activity
+- **BPMN Integration Guide** → `coding-technology/BPMN-INTEGRATION-GUIDE.md`
+
 ## Dependencies
 
 - Java 25+
