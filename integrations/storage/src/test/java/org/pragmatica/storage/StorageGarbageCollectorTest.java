@@ -43,12 +43,12 @@ class StorageGarbageCollectorTest {
     private void makeOrphanedPastGrace(BlockId blockId) {
         var expired = System.currentTimeMillis() - GRACE_PERIOD_MS - 100;
         metadataStore.computeLifecycle(blockId, lc -> new BlockLifecycle(
-            lc.blockId(), lc.presentIn(), 0, expired, lc.createdAt()));
+            lc.blockId(), lc.presentIn(), 0, expired, lc.createdAt(), lc.accessCount()));
     }
 
     private void makeOrphanedRecent(BlockId blockId) {
         metadataStore.computeLifecycle(blockId, lc -> new BlockLifecycle(
-            lc.blockId(), lc.presentIn(), 0, System.currentTimeMillis(), lc.createdAt()));
+            lc.blockId(), lc.presentIn(), 0, System.currentTimeMillis(), lc.createdAt(), lc.accessCount()));
     }
 
     @Nested

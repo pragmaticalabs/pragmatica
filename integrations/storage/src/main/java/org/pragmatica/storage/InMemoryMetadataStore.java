@@ -90,6 +90,13 @@ final class InMemoryMetadataStore implements MetadataStore {
     }
 
     @Override
+    public List<BlockLifecycle> listBlocksByTier(TierLevel tier) {
+        return lifecycle.values().stream()
+                        .filter(lc -> lc.presentIn().contains(tier))
+                        .toList();
+    }
+
+    @Override
     public List<BlockLifecycle> listAllLifecycles() {
         return List.copyOf(lifecycle.values());
     }

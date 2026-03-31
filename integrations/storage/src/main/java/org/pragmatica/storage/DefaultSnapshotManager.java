@@ -213,6 +213,7 @@ final class DefaultSnapshotManager implements SnapshotManager {
           .append('|').append(lc.refCount())
           .append('|').append(lc.lastAccessedAt())
           .append('|').append(lc.createdAt())
+          .append('|').append(lc.accessCount())
           .append('\n');
     }
 
@@ -289,8 +290,9 @@ final class DefaultSnapshotManager implements SnapshotManager {
         var refCount = Integer.parseInt(parts[2]);
         var lastAccessed = Long.parseLong(parts[3]);
         var created = Long.parseLong(parts[4]);
+        var accessCount = parts.length > 5 ? Integer.parseInt(parts[5]) : 0;
 
-        return BlockLifecycle.blockLifecycle(id, tiers, refCount, lastAccessed, created);
+        return BlockLifecycle.blockLifecycle(id, tiers, refCount, lastAccessed, created, accessCount);
     }
 
     private static Set<TierLevel> parseTierSet(String tierString) {

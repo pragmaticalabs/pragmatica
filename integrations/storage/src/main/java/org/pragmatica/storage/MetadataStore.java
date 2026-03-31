@@ -47,6 +47,9 @@ public interface MetadataStore {
     /// The name of the storage instance this metadata store belongs to.
     String instanceName();
 
+    /// List blocks present in a specific tier.
+    List<BlockLifecycle> listBlocksByTier(TierLevel tier);
+
     /// List all block lifecycle entries (for snapshotting).
     List<BlockLifecycle> listAllLifecycles();
 

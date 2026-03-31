@@ -10,11 +10,13 @@ import java.util.Set;
 /// @param refCount number of named references pointing to this block
 /// @param lastAccessedAt timestamp of last read access
 /// @param createdAt timestamp when first stored
+/// @param accessCount total number of read accesses (for frequency-based eviction)
 public record BlockLifecycle(BlockId blockId,
                              Set<TierLevel> presentIn,
                              int refCount,
                              long lastAccessedAt,
-                             long createdAt) {
+                             long createdAt,
+                             int accessCount) {
 
     /// Defensive copy — ensure immutability of the tier set.
     public BlockLifecycle {
@@ -25,37 +27,38 @@ public record BlockLifecycle(BlockId blockId,
 
     public static BlockLifecycle blockLifecycle(BlockId blockId, TierLevel initialTier) {
         var now = System.currentTimeMillis();
-        return new BlockLifecycle(blockId, EnumSet.of(initialTier), 1, now, now);
+        return new BlockLifecycle(blockId, EnumSet.of(initialTier), 1, now, now, 0);
     }
 
     /// Reconstruction factory for deserialization from KV-Store.
     public static BlockLifecycle blockLifecycle(BlockId blockId, Set<TierLevel> presentIn,
-                                                int refCount, long lastAccessedAt, long createdAt) {
-        return new BlockLifecycle(blockId, presentIn, refCount, lastAccessedAt, createdAt);
+                                                int refCount, long lastAccessedAt,
+                                                long createdAt, int accessCount) {
+        return new BlockLifecycle(blockId, presentIn, refCount, lastAccessedAt, createdAt, accessCount);
     }
 
     public BlockLifecycle withTierAdded(TierLevel tier) {
         var tiers = EnumSet.copyOf(presentIn);
         tiers.add(tier);
-        return new BlockLifecycle(blockId, tiers, refCount, lastAccessedAt, createdAt);
+        return new BlockLifecycle(blockId, tiers, refCount, lastAccessedAt, createdAt, accessCount);
     }
 
     public BlockLifecycle withTierRemoved(TierLevel tier) {
         var tiers = EnumSet.copyOf(presentIn);
         tiers.remove(tier);
-        return new BlockLifecycle(blockId, tiers, refCount, lastAccessedAt, createdAt);
+        return new BlockLifecycle(blockId, tiers, refCount, lastAccessedAt, createdAt, accessCount);
     }
 
     public BlockLifecycle withRefCountIncremented() {
-        return new BlockLifecycle(blockId, presentIn, refCount + 1, lastAccessedAt, createdAt);
+        return new BlockLifecycle(blockId, presentIn, refCount + 1, lastAccessedAt, createdAt, accessCount);
     }
 
     public BlockLifecycle withRefCountDecremented() {
-        return new BlockLifecycle(blockId, presentIn, Math.max(0, refCount - 1), lastAccessedAt, createdAt);
+        return new BlockLifecycle(blockId, presentIn, Math.max(0, refCount - 1), lastAccessedAt, createdAt, accessCount);
     }
 
     public BlockLifecycle withAccessTimestamp() {
-        return new BlockLifecycle(blockId, presentIn, refCount, System.currentTimeMillis(), createdAt);
+        return new BlockLifecycle(blockId, presentIn, refCount, System.currentTimeMillis(), createdAt, accessCount + 1);
     }
 
     public boolean isOrphaned() {

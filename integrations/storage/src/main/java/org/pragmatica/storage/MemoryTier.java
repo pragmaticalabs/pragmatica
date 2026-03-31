@@ -16,13 +16,20 @@ public final class MemoryTier implements StorageTier {
     private final ConcurrentHashMap<BlockId, byte[]> store = new ConcurrentHashMap<>();
     private final AtomicLong usedBytes = new AtomicLong(0);
     private final long maxBytes;
+    private final TierLevel level;
 
-    private MemoryTier(long maxBytes) {
+    private MemoryTier(long maxBytes, TierLevel level) {
         this.maxBytes = maxBytes;
+        this.level = level;
     }
 
     public static MemoryTier memoryTier(long maxBytes) {
-        return new MemoryTier(maxBytes);
+        return new MemoryTier(maxBytes, TierLevel.MEMORY);
+    }
+
+    /// Create a memory-backed tier that reports a custom tier level (useful for testing).
+    public static MemoryTier memoryTier(long maxBytes, TierLevel level) {
+        return new MemoryTier(maxBytes, level);
     }
 
     @Override
@@ -68,7 +75,7 @@ public final class MemoryTier implements StorageTier {
 
     @Override
     public TierLevel level() {
-        return TierLevel.MEMORY;
+        return level;
     }
 
     @Override
