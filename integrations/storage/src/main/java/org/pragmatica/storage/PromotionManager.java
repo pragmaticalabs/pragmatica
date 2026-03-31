@@ -28,7 +28,7 @@ public interface PromotionManager {
 
     record PromotionStats(int blocksPromoted, long bytesMoved, long lastRunMs) {
 
-        static PromotionStats empty() {
+        static PromotionStats promotionStats() {
             return new PromotionStats(0, 0, 0);
         }
 

@@ -69,9 +69,8 @@ public final class StorageBackedPersistence<C extends Command> implements RabiaP
     public Option<SavedState<C>> load() {
         return contentStore.get(snapshotName)
                            .await()
-                           .option()
-                           .flatMap(opt -> opt)
-                           .flatMap(this::decodeState);
+                           .fold(_ -> Option.none(),
+                                 opt -> opt.flatMap(this::decodeState));
     }
 
     private Option<SavedState<C>> decodeState(byte[] encoded) {

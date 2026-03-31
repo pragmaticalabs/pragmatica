@@ -3,6 +3,7 @@ package org.pragmatica.storage;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
@@ -20,7 +21,7 @@ final class DefaultPromotionManager implements PromotionManager {
     private final MetadataStore metadataStore;
     private final PromotionConfig config;
     private static final Cause BLOCK_MISSING = Causes.cause("Block not present in source tier");
-    private final AtomicReference<PromotionStats> stats = new AtomicReference<>(PromotionStats.empty());
+    private final AtomicReference<PromotionStats> stats = new AtomicReference<>(PromotionStats.promotionStats());
     private volatile boolean active = false;
 
     DefaultPromotionManager(List<StorageTier> tiers,
@@ -72,17 +73,10 @@ final class DefaultPromotionManager implements PromotionManager {
     }
 
     private PromotionResult promoteAllTiers() {
-        var totalPromoted = 0;
-        var totalBytes = 0L;
-
         // Iterate from slowest to fastest (reverse order): promote from tier i to tier i-1.
-        for (var i = tiers.size() - 1; i > 0; i--) {
-            var result = promoteTier(tiers.get(i), tiers.get(i - 1));
-            totalPromoted += result.count();
-            totalBytes += result.bytes();
-        }
-
-        return new PromotionResult(totalPromoted, totalBytes);
+        return IntStream.iterate(tiers.size() - 1, i -> i > 0, i -> i - 1)
+                                         .mapToObj(i -> promoteTier(tiers.get(i), tiers.get(i - 1)))
+                                         .reduce(PromotionResult.NONE, PromotionResult::add);
     }
 
     private PromotionResult promoteTier(StorageTier sourceTier, StorageTier targetTier) {
@@ -98,19 +92,11 @@ final class DefaultPromotionManager implements PromotionManager {
     private PromotionResult promoteCandidates(List<BlockLifecycle> candidates,
                                               StorageTier sourceTier,
                                               StorageTier targetTier) {
-        var promotedCount = 0;
-        var promotedBytes = 0L;
-
-        for (var candidate : candidates) {
-            var moved = promoteBlock(candidate.blockId(), sourceTier, targetTier);
-
-            if (moved > 0) {
-                promotedCount++;
-                promotedBytes += moved;
-            }
-        }
-
-        return new PromotionResult(promotedCount, promotedBytes);
+        return candidates.stream()
+                         .map(candidate -> promoteBlock(candidate.blockId(), sourceTier, targetTier))
+                         .filter(moved -> moved > 0)
+                         .map(moved -> new PromotionResult(1, moved))
+                         .reduce(PromotionResult.NONE, PromotionResult::add);
     }
 
     private List<BlockLifecycle> selectCandidates(TierLevel tierLevel) {
@@ -174,5 +160,9 @@ final class DefaultPromotionManager implements PromotionManager {
 
     private record PromotionResult(int count, long bytes) {
         static final PromotionResult NONE = new PromotionResult(0, 0);
+
+        PromotionResult add(PromotionResult other) {
+            return new PromotionResult(count + other.count, bytes + other.bytes);
+        }
     }
 }
