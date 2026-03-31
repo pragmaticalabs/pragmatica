@@ -1,6 +1,7 @@
 package org.pragmatica.aether.stream;
 
 import org.pragmatica.aether.slice.StreamAccess;
+import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -15,6 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.allOf;
@@ -41,6 +43,7 @@ public final class StreamAccessImpl<T> implements StreamAccess<T> {
     private final int partitionCount;
     private final Option<Function<T, Object>> partitionKeyExtractor;
     private final CursorCheckpointWriter cursorWriter;
+    private final Option<SegmentReader> segmentReader;
     private final AtomicLong roundRobinCounter;
     private final ConcurrentHashMap<ConsumerPartitionKey, Long> committedOffsets;
 
@@ -50,7 +53,8 @@ public final class StreamAccessImpl<T> implements StreamAccess<T> {
                              String streamName,
                              int partitionCount,
                              Option<Function<T, Object>> partitionKeyExtractor,
-                             CursorCheckpointWriter cursorWriter) {
+                             CursorCheckpointWriter cursorWriter,
+                             Option<SegmentReader> segmentReader) {
         this.partitionManager = partitionManager;
         this.serializer = serializer;
         this.deserializer = deserializer;
@@ -58,6 +62,7 @@ public final class StreamAccessImpl<T> implements StreamAccess<T> {
         this.partitionCount = partitionCount;
         this.partitionKeyExtractor = partitionKeyExtractor;
         this.cursorWriter = cursorWriter;
+        this.segmentReader = segmentReader;
         this.roundRobinCounter = new AtomicLong(0);
         this.committedOffsets = new ConcurrentHashMap<>();
     }
@@ -75,7 +80,8 @@ public final class StreamAccessImpl<T> implements StreamAccess<T> {
                                       streamName,
                                       partitionCount,
                                       partitionKeyExtractor,
-                                      NOOP_WRITER);
+                                      NOOP_WRITER,
+                                      Option.none());
     }
 
     /// Create a StreamAccess instance with a consensus-backed cursor checkpoint writer.
@@ -92,7 +98,27 @@ public final class StreamAccessImpl<T> implements StreamAccess<T> {
                                       streamName,
                                       partitionCount,
                                       partitionKeyExtractor,
-                                      cursorWriter);
+                                      cursorWriter,
+                                      Option.none());
+    }
+
+    /// Create a StreamAccess instance with segment reader fallback for evicted events.
+    public static <T> StreamAccessImpl<T> streamAccess(StreamPartitionManager partitionManager,
+                                                       Serializer serializer,
+                                                       Deserializer deserializer,
+                                                       String streamName,
+                                                       int partitionCount,
+                                                       Option<Function<T, Object>> partitionKeyExtractor,
+                                                       CursorCheckpointWriter cursorWriter,
+                                                       SegmentReader segmentReader) {
+        return new StreamAccessImpl<>(partitionManager,
+                                      serializer,
+                                      deserializer,
+                                      streamName,
+                                      partitionCount,
+                                      partitionKeyExtractor,
+                                      cursorWriter,
+                                      Option.some(segmentReader));
     }
 
     @Override
@@ -113,11 +139,7 @@ public final class StreamAccessImpl<T> implements StreamAccess<T> {
 
     @Override
     public Promise<List<StreamEvent<T>>> fetch(int partition, long fromOffset, int maxEvents) {
-        return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents)
-                               .map(rawEvents -> rawEvents.stream()
-                                                          .map(raw -> toStreamEvent(raw, partition))
-                                                          .toList())
-                               .async();
+        return readPartition(partition, fromOffset, maxEvents).async();
     }
 
     @Override
@@ -162,9 +184,60 @@ public final class StreamAccessImpl<T> implements StreamAccess<T> {
 
     private Result<List<StreamEvent<T>>> readPartition(int partition, long fromOffset, int maxEvents) {
         return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents)
-                               .map(rawEvents -> rawEvents.stream()
-                                                          .map(raw -> toStreamEvent(raw, partition))
-                                                          .toList());
+                               .map(rawEvents -> toStreamEvents(rawEvents, partition))
+                               .fold(cause -> handleReadFailure(cause, partition, fromOffset, maxEvents),
+                                     Result::success);
+    }
+
+    private Result<List<StreamEvent<T>>> handleReadFailure(org.pragmatica.lang.Cause cause,
+                                                            int partition, long fromOffset, int maxEvents) {
+        if (cause instanceof StreamError.CursorExpired expired) {
+            return readWithSegmentFallback(partition, fromOffset, maxEvents, expired.requestedOffset());
+        }
+        return cause.result();
+    }
+
+    private Result<List<StreamEvent<T>>> readWithSegmentFallback(int partition, long fromOffset,
+                                                                  int maxEvents, long expiredOffset) {
+        return segmentReader.map(reader -> readFromSegmentThenBuffer(reader, partition, fromOffset, maxEvents))
+                            .or(() -> new StreamError.CursorExpired(expiredOffset,
+                                                                     partitionManager.partitionInfo(streamName, partition)
+                                                                                     .map(StreamPartitionManager.PartitionInfo::tailOffset)
+                                                                                     .or(0L)).result());
+    }
+
+    private Result<List<StreamEvent<T>>> readFromSegmentThenBuffer(SegmentReader reader, int partition,
+                                                                    long fromOffset, int maxEvents) {
+        var segmentEvents = reader.readEvents(streamName, partition, fromOffset, maxEvents)
+                                  .await();
+
+        return segmentEvents.map(sealedEvents -> combineWithBufferEvents(sealedEvents, partition, fromOffset, maxEvents));
+    }
+
+    private List<StreamEvent<T>> combineWithBufferEvents(List<OffHeapRingBuffer.RawEvent> sealedEvents,
+                                                          int partition, long fromOffset, int maxEvents) {
+        var remaining = maxEvents - sealedEvents.size();
+        var sealed = toStreamEvents(sealedEvents, partition);
+
+        if (remaining <= 0) {
+            return sealed;
+        }
+
+        var bufferStart = sealedEvents.isEmpty()
+                          ? fromOffset
+                          : sealedEvents.getLast().offset() + 1;
+
+        var bufferEvents = partitionManager.readLocal(streamName, partition, bufferStart, remaining)
+                                           .map(rawEvents -> toStreamEvents(rawEvents, partition))
+                                           .or(List.of());
+
+        return List.copyOf(Stream.concat(sealed.stream(), bufferEvents.stream()).toList());
+    }
+
+    private List<StreamEvent<T>> toStreamEvents(List<OffHeapRingBuffer.RawEvent> rawEvents, int partition) {
+        return rawEvents.stream()
+                        .map(raw -> toStreamEvent(raw, partition))
+                        .toList();
     }
 
     private static <T> List<StreamEvent<T>> mergeAndLimit(List<List<StreamEvent<T>>> lists, int maxEvents) {
