@@ -740,7 +740,7 @@
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
-                            <excludedGroups>Infinite, Slow, Benchmark</excludedGroups>
+                            <excludedGroups>Infinite, Slow, Benchmark, S3</excludedGroups>
                         </configuration>
                     </plugin>
                 </plugins>
