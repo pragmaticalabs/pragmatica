@@ -258,3 +258,73 @@ container_running() {
     local name="$1"
     remote_exec "docker ps --filter 'name=${name}' --filter 'status=running' -q" 2>/dev/null | grep -q .
 }
+
+# ---------------------------------------------------------------------------
+# Deployment operations (unified)
+# ---------------------------------------------------------------------------
+deploy_start() {
+    local coords="$1" strategy="$2"; shift 2
+    log_info "Starting ${strategy} deployment: ${coords}" >&2
+    aether_failover deploy "$coords" --"$strategy" "$@"
+}
+
+deploy_list() {
+    aether_failover deploy list --format json
+}
+
+deploy_status() {
+    local deployment_id="$1"
+    aether_failover deploy status "$deployment_id" --format json
+}
+
+deploy_promote() {
+    local deployment_id="$1"; shift
+    log_info "Promoting deployment: ${deployment_id}" >&2
+    aether_failover deploy promote "$deployment_id" "$@"
+}
+
+deploy_rollback() {
+    local deployment_id="$1"
+    log_info "Rolling back deployment: ${deployment_id}" >&2
+    aether_failover deploy rollback "$deployment_id"
+}
+
+deploy_complete() {
+    local deployment_id="$1"
+    log_info "Completing deployment: ${deployment_id}" >&2
+    aether_failover deploy complete "$deployment_id"
+}
+
+deploy_cleanup() {
+    # Complete or rollback any active deployments
+    local deployments
+    deployments=$(deploy_list 2>/dev/null)
+    echo "$deployments" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for d in data if isinstance(data, list) else data.get('deployments', []):
+        did = d.get('deploymentId', '')
+        state = d.get('state', '')
+        if did and state not in ('COMPLETED', 'ROLLED_BACK', 'FAILED'):
+            print(did)
+except: pass
+" 2>/dev/null | while read -r did; do
+        aether_failover deploy complete "$did" > /dev/null 2>&1 || \
+        aether_failover deploy rollback "$did" > /dev/null 2>&1 || true
+    done
+}
+
+# Extract deployment ID from the most recent entry in deploy list
+deploy_extract_id() {
+    local deployments="$1"
+    echo "$deployments" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    entries = data if isinstance(data, list) else data.get('deployments', [])
+    if entries:
+        print(entries[0].get('deploymentId', ''))
+except: pass
+" 2>/dev/null
+}
