@@ -25,6 +25,21 @@ public final class NamingConvention {
         return Character.toLowerCase(className.charAt(0)) + className.substring(1);
     }
 
+    /// camelCase -> snake_case: createdAt -> created_at
+    public static String toSnakeCase(String camelCase) {
+        var sb = new StringBuilder();
+        for (int i = 0; i < camelCase.length(); i++) {
+            char c = camelCase.charAt(i);
+            if (Character.isUpperCase(c) && i > 0) {
+                sb.append('_');
+                sb.append(Character.toLowerCase(c));
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
     /// active -> ACTIVE, on-hold -> ON_HOLD
     public static String toEnumConstant(String value) {
         return value.toUpperCase()
