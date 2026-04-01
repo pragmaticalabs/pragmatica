@@ -1,4 +1,4 @@
-# PostgreSQL Persistence Guide
+# Aether Store — PostgreSQL Persistence Guide
 
 Type-safe PostgreSQL persistence adapters for Aether slices with compile-time SQL validation.
 
